@@ -2216,7 +2216,9 @@ def _task_intraday_risk_check(ctx):
     seg_label = ctx.display_name or ctx.segment
     try:
         from intraday_risk_monitor import (
-            collect_intraday_alerts, aggregate_action,
+            collect_intraday_alerts, compute_halt_decision,
+            check_drawdown_acceleration, check_vol_spike,
+            check_held_position_halts,
             write_risk_halt_state, clear_risk_halt,
         )
         from market_data import get_bars
@@ -2273,22 +2275,62 @@ def _task_intraday_risk_check(ctx):
         sector_moves = _compute_sector_moves()
         halted_held_symbols = _compute_halted_held_symbols(ctx)
 
-        alerts = collect_intraday_alerts(
-            today_intraday_pct=today_intraday_dd,
-            avg_7d_intraday_pct=avg_7d_dd,
-            current_hourly_vol=current_hourly_vol,
-            avg_20d_hourly_vol=avg_20d_hourly_vol,
-            sector_moves=sector_moves,
-            halted_held_symbols=halted_held_symbols,
-        )
-        action = aggregate_action(alerts)
+        # SPY intraday move for Layer-3 breadth check. Today's bar's
+        # change from prior close. Defaults to 0 when 2-bar history
+        # is unavailable so we don't falsely halt on missing data.
+        spy_move_pct = 0.0
+        try:
+            if len(spy_daily) >= 2:
+                yest_close = float(spy_daily["close"].iloc[-2])
+                tod_close = float(spy_daily["close"].iloc[-1])
+                if yest_close > 0:
+                    spy_move_pct = (tod_close - yest_close) / yest_close * 100
+        except (KeyError, ValueError, AttributeError, TypeError,
+                ZeroDivisionError):
+            pass
 
-        if alerts:
+        # VIX absolute level for Layer-3 spike check. Best-effort; if
+        # ^VIX bars unavailable we just don't fire the VIX layer.
+        vix_level = 0.0
+        try:
+            vix_bars = get_bars("VIXY", limit=2)  # VIXY proxies VIX
+            if vix_bars is not None and len(vix_bars) >= 1:
+                vix_level = float(vix_bars["close"].iloc[-1])
+        except (KeyError, ValueError, AttributeError, TypeError,
+                ZeroDivisionError, OSError):
+            pass
+
+        # Non-sector alerts (drawdown, vol spike, held-position halts)
+        # — these still drive portfolio-wide halts via their existing
+        # suggested_action. The sector layers are computed inside
+        # compute_halt_decision so we don't double-emit.
+        non_sector_alerts = []
+        for alert in (
+            check_drawdown_acceleration(today_intraday_dd, avg_7d_dd),
+            check_vol_spike(current_hourly_vol, avg_20d_hourly_vol),
+            check_held_position_halts(halted_held_symbols),
+        ):
+            if alert is not None:
+                non_sector_alerts.append(alert)
+
+        decision = compute_halt_decision(
+            sector_moves=sector_moves,
+            spy_move_pct=spy_move_pct,
+            vix_level=vix_level,
+            other_alerts=non_sector_alerts,
+        )
+
+        if decision.halted_sectors or decision.alerts:
             logging.info(
-                f"[{seg_label}] Intraday risk: action={action}, "
-                f"alerts={[a.check_name for a in alerts]}"
+                f"[{seg_label}] Intraday risk: "
+                f"portfolio={decision.portfolio_action}, "
+                f"halted_sectors={list(decision.halted_sectors.keys())}, "
+                f"alerts={[a.check_name for a in decision.alerts]}"
             )
-            write_risk_halt_state(ctx.db_path, action, alerts)
+            write_risk_halt_state(
+                ctx.db_path, decision.portfolio_action,
+                decision.alerts, decision.halted_sectors,
+            )
         else:
             clear_risk_halt(ctx.db_path)
     except Exception:

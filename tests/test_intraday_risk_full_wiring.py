@@ -170,15 +170,18 @@ class TestHaltedHeldSymbolsHelper:
 # ---------------------------------------------------------------------------
 
 
-def test_scheduler_passes_all_collect_intraday_alerts_args():
-    """Inspect `intraday_risk_monitor.collect_intraday_alerts` to learn
-    its parameter names, then AST-scan `multi_scheduler.py` for the
-    call site and assert ALL parameter names appear as keyword args.
+def test_scheduler_passes_all_compute_halt_decision_args():
+    """2026-06-05 — guardrail moved from collect_intraday_alerts (old
+    aggregator) to compute_halt_decision (new 3-layer aggregator).
+
+    Inspect `intraday_risk_monitor.compute_halt_decision` to learn its
+    parameter names, then AST-scan `multi_scheduler.py` for the call
+    site and assert ALL parameter names appear as keyword args.
 
     Catches the 2026-05-09 bug shape: scheduler quietly drops a
     parameter and silently disables a check. Empty allowlist."""
-    from intraday_risk_monitor import collect_intraday_alerts
-    sig = inspect.signature(collect_intraday_alerts)
+    from intraday_risk_monitor import compute_halt_decision
+    sig = inspect.signature(compute_halt_decision)
     expected_args = set(sig.parameters.keys())
 
     SCHEDULER_PATH = os.path.join(
@@ -187,29 +190,28 @@ def test_scheduler_passes_all_collect_intraday_alerts_args():
     with open(SCHEDULER_PATH) as f:
         tree = ast.parse(f.read())
 
-    # Find the Call node for collect_intraday_alerts
     found = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        # Match either bare `collect_intraday_alerts(...)` or
-        # `module.collect_intraday_alerts(...)`.
         name = None
         if isinstance(func, ast.Name):
             name = func.id
         elif isinstance(func, ast.Attribute):
             name = func.attr
-        if name != "collect_intraday_alerts":
+        if name != "compute_halt_decision":
             continue
         passed = {kw.arg for kw in node.keywords if kw.arg is not None}
         line = getattr(node, "lineno", "?")
         found.append((line, passed))
 
     assert found, (
-        "No call to collect_intraday_alerts() found in multi_scheduler.py "
+        "No call to compute_halt_decision() found in multi_scheduler.py "
         "— either the scheduler stopped wiring it up entirely, or this "
-        "guardrail's call-site detection broke."
+        "guardrail's call-site detection broke. The 2026-06-05 rewrite "
+        "made this the primary risk-aggregation entry point; without "
+        "it the 3-layer model never runs."
     )
 
     leaks = []
@@ -218,9 +220,9 @@ def test_scheduler_passes_all_collect_intraday_alerts_args():
         if missing:
             leaks.append(
                 f"  multi_scheduler.py:{line} — call to "
-                f"collect_intraday_alerts() is missing kwargs "
+                f"compute_halt_decision() is missing kwargs "
                 f"{sorted(missing)}. The 2026-05-09 bug was exactly "
-                "this — scheduler 'deferred' two args and silently "
+                "this — scheduler 'deferred' an arg and silently "
                 "disabled half the safety net."
             )
     assert not leaks, "\n".join(leaks)

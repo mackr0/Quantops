@@ -17,6 +17,49 @@ Rules going forward:
 
 ---
 
+## 2026-06-05 — Three-layer institutional sector risk model (replaces blunt portfolio-wide halt). Severity: high (single-sector down day was halting all trades, even cross-sector longs).
+
+**Background:** The pre-2026-06-05 `check_sector_concentration_swing` picked the single biggest absolute sector move and, if it exceeded 3%, fired a portfolio-wide `block_new_entries`. The check was sign-blind (healthcare +4% halted the same as tech -5%), sector-blind (a tech drop blocked healthcare longs), and binary (no severity ladder). On 2026-06-05 with tech ETF -5.13% and healthcare +4.4%, every AI trade on every profile was blocked despite the AI generating BUY decisions on healthcare names with 75–90% confidence.
+
+**What this ships:** A three-layer desk-style risk model in `intraday_risk_monitor.py`:
+
+- **Layer 1 — asymmetric per-sector halts.** `SECTOR_DOWN_HALT_PCT = 3.0` (sector ≤ -3% halts new longs in that sector) and `SECTOR_UP_HALT_PCT = 6.0` (sector ≥ +6% halts new longs as parabolic/squeeze risk). The downside threshold is intentionally tighter than the upside — losing money fast is a danger signal at 3%; sectors ripping +4% are buying opportunities, not danger.
+- **Layer 2 — correlated-sector spillover.** A sector ≤ -5% (`SECTOR_HARD_HALT_PCT`) extends the halt to historically correlated sectors via a fixed map: `tech → {comm_services, consumer_disc}`, `finance ↔ real_estate`, `real_estate → utilities`, `energy → materials`. Models contagion without escalating to portfolio-wide.
+- **Layer 3 — breadth/portfolio halt.** Only escalates to portfolio-wide when there's evidence of a real macro event: `BREADTH_HALT_COUNT = 3` *primary* (Layer 1) sectors halted, OR SPY ≤ -2%, OR VIX ≥ 35. Critically, spillover-extended sectors do NOT count toward breadth — a single hard-down sector can spill to 2-3 correlated names but doesn't masquerade as broad selloff.
+
+**Per-trade gate:** `trade_pipeline.py` now resolves each proposed trade's underlying sector via `sector_classifier.get_sector(symbol)` and blocks only when that sector is in `halted_sectors` (or portfolio-wide). The old behavior — a single set-wide gate — is gone.
+
+**Storage:** `intraday_risk_halt` table grew a `halted_sectors_json` column. Schema upgrade is in-place via `ALTER TABLE ... ADD COLUMN`; old rows just see an empty halted_sectors dict.
+
+**Test coverage:** `tests/test_intraday_risk_three_layer_2026_06_05.py` (18 tests): Layer 1 asymmetric thresholds + boundary cases + the healthcare-allowed contract; Layer 2 spillover correctness + reason traces source sector + no spillover for soft-down; Layer 3 single-sector does NOT escalate (the core regression) + breadth/SPY/VIX escalation + calm-market no-halt + HaltDecision per-trade lookup. The wiring test `test_intraday_risk_full_wiring.py` was updated to pin `compute_halt_decision` as the new scheduler entry point.
+
+**Test that prevents recurrence:** `test_single_sector_halt_does_NOT_trigger_portfolio_halt` and `test_is_sector_halted_allows_clean_sectors` — both fail under the old code shape.
+
+---
+
+## 2026-06-05 — RC1/RC2/RC3/RC4 root-cause fixes for journal-broker drift. Severity: critical.
+
+**Background:** Drift accumulated across 13 EXP-A* profiles between the prior reset and 2026-06-05, primarily on stock-protective-stop closes. Four independent root causes were all live:
+
+- **RC1** — `pending_protective` journal rows never transitioned to `closed` when the broker fired the protective stop. The state machine in `_task_update_fills` only handled `pending_fill`, so the protective-fill path was permanently in `pending_protective`.
+- **RC2** — reconciler forward-walk dead-ended when Alpaca GC'd an intermediate `replaced_by` link. Trailing stops get replaced N times as the trail bumps; once an intermediate link is collected, the journal can no longer trace the journaled placement to the terminal fill.
+- **RC3** — `ensure_protective_stops` was not idempotent on the journal side. When a `broker_coverage` API blip returned empty, the dedup check fell through and submitted a duplicate protective order, producing two `pending_protective` rows for the same entry.
+- **RC4** — FIFO walk for closing entry lots wasn't scoped by `occ_symbol`, so a stock SELL could consume an option BUY lot (and vice versa).
+
+**Fixes:** RC1 adds `pending_protective` to the SELL/COVER state-machine branch with a forward chain-walk to find the terminal fill. RC2 adds `walk_replace_chain_backward` + `_find_terminal_via_backward_walk` in the reconciler — when forward walk dead-ends, scan recent broker SELLs and walk each candidate's `replaces` chain backward to see if it traces to the journaled id. RC3 adds a journal-side dedup check before `broker_coverage` is consulted: alive→skip, unreachable→skip (default-deny), terminal-but-unfilled→mark + replace, filled→skip. RC4 scopes FIFO consumption by `(side, symbol, occ_symbol)`.
+
+**Test coverage:** four dedicated regression suites — `test_pending_protective_resolves_2026_06_05.py`, `test_chain_walk_backward_2026_06_05.py`, `test_protective_idempotency_2026_06_05.py`, `test_fifo_walk_occ_scope_2026_06_05.py` (19 tests total). Each pins the contract structurally so a future refactor that drops the fix fails the test.
+
+---
+
+## 2026-06-05 — Dashboard "Next: Nm" countdown reads `users.scan_interval_minutes` instead of hardcoded 15. Severity: low (UI display only; scheduler cadence was always correct).
+
+**Background:** Two hardcoded `900 - elapsed` literals in `views.py` made the dashboard always report the next scan as "15 minutes away" regardless of the operator's Settings → Scan interval choice. With `scan_interval_minutes = 5`, the scheduler scanned every 5 min but the UI said "Next: 15m" — operator could not visually confirm the setting was taking effect.
+
+**What changed:** Both the dashboard view loop and `/api/scan-status/<pid>` now derive the window from `get_scan_interval_minutes(user_id)`. A structural regression test (`test_dashboard_scan_window_reads_setting_2026_06_05.py`) forbids the `900 - elapsed` pattern from returning.
+
+---
+
 ## 2026-06-04 — Operator-tunable scan cadence (Settings page). Severity: low (new capability; default preserves prior behavior).
 
 **Background:** Scan cadence had been hardcoded to 15 minutes in `multi_scheduler.py`. After the move to `gemini-2.5-flash-lite` + the prompt-cache / specialist optimizations, per-cycle AI cost dropped to ~$0.0003/profile/cycle — daily cost across all 10 AI profiles is ~$0.27. Cost is no longer the constraint; the question is wall-time safety (max scan time ~90s observed) and diminishing data-signal returns at higher frequencies.

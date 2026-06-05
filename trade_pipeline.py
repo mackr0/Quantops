@@ -2359,13 +2359,15 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 })
         ai_trades = filtered
 
-    # Item 2b — intraday risk gate. Read the active risk-halt state;
-    # if action is "pause_all" or "block_new_entries", prevent NEW
-    # entries (BUY / SHORT / OPEN actions). Exits / closes still go
-    # through (we don't lock the operator out of risk-reducing trades
-    # during a halt).
+    # 2026-06-05 — intraday risk gate, three-layer model.
+    # `portfolio_action` only fires on a real macro event (Layer 3:
+    # ≥3 sectors halted, SPY ≤ -2%, VIX ≥ 35, or any non-sector
+    # alert like vol spike). `halted_sectors` is sector-scoped: a
+    # proposed trade is checked against its own underlying's sector
+    # and only blocked when that sector is in the halted set.
     intraday_halt_action = None
     intraday_halt_alerts: List[Dict[str, Any]] = []
+    halted_sectors: Dict[str, str] = {}
     if ctx is not None:
         try:
             from intraday_risk_monitor import get_active_risk_halt
@@ -2373,18 +2375,19 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
             if halt:
                 intraday_halt_action = halt.get("action")
                 intraday_halt_alerts = halt.get("alerts", [])
+                halted_sectors = halt.get("halted_sectors", {}) or {}
         except Exception:
-            # Risk halt lookup failure means we don't know whether
-            # a halt is active — surface the warning so the operator
-            # can investigate. Falls through to no-halt behavior.
             logging.warning(
                 "Intraday risk-halt lookup failed; proceeding without halt gate",
                 exc_info=True,
             )
-    if intraday_halt_action and ai_trades:
+
+    if ai_trades and (intraday_halt_action or halted_sectors):
         new_entry_actions = {"BUY", "SHORT", "OPTIONS",
                               "MULTILEG_OPEN", "PAIR_TRADE"}
         before_count = len(ai_trades)
+
+        # Portfolio-wide blocks short-circuit per-sector logic.
         if intraday_halt_action == "pause_all":
             blocked_for_halt = list(ai_trades)
             ai_trades = []
@@ -2395,20 +2398,67 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                          if t.get("action", "").upper() not in new_entry_actions]
         else:
             blocked_for_halt = []
+
+        # Per-trade sector check for whatever survived the portfolio
+        # gate (Layer 1 + Layer 2 halts). Resolve each trade's sector
+        # via sector_classifier; if it's in halted_sectors AND the
+        # action is a new entry, block this individual trade.
+        if halted_sectors and ai_trades:
+            try:
+                from sector_classifier import get_sector
+            except ImportError:
+                get_sector = None  # type: ignore
+            kept: List[Dict[str, Any]] = []
+            for t in ai_trades:
+                action_u = t.get("action", "").upper()
+                if action_u not in new_entry_actions:
+                    kept.append(t)
+                    continue
+                sym = t.get("symbol")
+                sector = None
+                if get_sector and sym:
+                    try:
+                        sector = get_sector(sym)
+                    except Exception:
+                        sector = None
+                if sector and sector in halted_sectors:
+                    blocked_for_halt.append(t)
+                    details.append({
+                        "symbol": sym or "?",
+                        "action": "INTRADAY_RISK_HALT",
+                        "reason": (
+                            f"Sector '{sector}' halted: "
+                            f"{halted_sectors[sector]}"
+                        ),
+                    })
+                else:
+                    kept.append(t)
+            ai_trades = kept
+
         if blocked_for_halt:
             print(
-                f"  Intraday risk halt ({intraday_halt_action}): blocked "
-                f"{len(blocked_for_halt)} of {before_count} trade(s)"
+                f"  Intraday risk halt: blocked "
+                f"{len(blocked_for_halt)} of {before_count} trade(s) "
+                f"(portfolio={intraday_halt_action}, "
+                f"halted_sectors={list(halted_sectors.keys())})"
             )
-            for t in blocked_for_halt:
-                details.append({
-                    "symbol": t.get("symbol", "?"),
-                    "action": "INTRADAY_RISK_HALT",
-                    "reason": (
-                        f"Halt active ({intraday_halt_action}) — alerts: "
-                        f"{', '.join(a.get('check_name', '?') for a in intraday_halt_alerts)}"
-                    ),
-                })
+            # Only emit the portfolio-wide reason rows for the
+            # portfolio-blocked trades; per-sector rows were already
+            # added inline above so each one has a sector-specific
+            # reason instead of a generic one.
+            if intraday_halt_action in ("pause_all", "block_new_entries"):
+                for t in [bt for bt in blocked_for_halt
+                          if not any(d.get("symbol") == bt.get("symbol")
+                                     and d.get("action") == "INTRADAY_RISK_HALT"
+                                     for d in details)]:
+                    details.append({
+                        "symbol": t.get("symbol", "?"),
+                        "action": "INTRADAY_RISK_HALT",
+                        "reason": (
+                            f"Portfolio halt ({intraday_halt_action}) — alerts: "
+                            f"{', '.join(a.get('check_name', '?') for a in intraday_halt_alerts)}"
+                        ),
+                    })
 
     update_status(_pid, "Executing trades", "%d selected" % len(ai_trades))
     # ── STEP 5: Execute AI-selected trades ───────────────────────────

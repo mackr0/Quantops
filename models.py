@@ -837,9 +837,16 @@ def get_scan_interval_minutes(user_id: int = 1) -> int:
             ).fetchone()
         if row and row[0] and 1 <= int(row[0]) <= 60:
             return int(row[0])
-    except Exception:
-        # Defensive: never let a flaky DB read change cadence silently.
-        pass
+    except (sqlite3.OperationalError, sqlite3.DatabaseError,
+            ValueError, TypeError) as exc:
+        # Defensive: a flaky DB read must NOT silently change scan
+        # cadence. Log the failure so the operator can see when the
+        # fallback fires, then continue to the safe default.
+        logger.warning(
+            "get_scan_interval_minutes read failed (%s: %s); "
+            "falling back to default %d min",
+            type(exc).__name__, exc, _DEFAULT_SCAN_INTERVAL_MINUTES,
+        )
     return _DEFAULT_SCAN_INTERVAL_MINUTES
 
 

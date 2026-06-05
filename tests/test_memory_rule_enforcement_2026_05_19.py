@@ -144,6 +144,15 @@ CHANGELOG_PARITY_EXEMPT_SHAS = {
     "c70c28cbb8d79e7449d373c2c259a48eeb6a7759",  # B+C: chain-sync sweep + max_depth=50
     "80f1bc745ddb365f3c35e982d61d324d564c5de4",  # create_experiment_profiles: market_type stocks
     "99a4b3cb97c267b5be48e1d28b83d2ebcd444c9d",  # full_fresh_start: merge subprocess stderr
+    # 2026-06-05 RC1-4 root-cause fix series + dashboard fix. CHANGELOG
+    # entries for all four ship in the consolidated "RC1/RC2/RC3/RC4
+    # root-cause fixes for journal-broker drift" + "Dashboard 'Next:
+    # Nm' countdown" entries dated 2026-06-05 rather than being amended
+    # into each individual commit.
+    "177dcfdf19785bdc55164fc69799d4b5e6cd663b",  # RC1 fix: pending_protective resolves to closed
+    "0f1271257510faf302e67a188f9cdde2fa4291d6",  # RC3 fix: idempotent protective placement
+    "2f70c5d8d1666e42164e0a5b89c42a3fc43978e4",  # RC2 fix: reconciler chain-walk backward fallback
+    "88089b954b7ae2b07fc632f131b1a771cd5b80d9",  # Dashboard 'Next: Nm' reads scan_interval_minutes
 }
 
 
