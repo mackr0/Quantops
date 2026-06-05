@@ -176,7 +176,9 @@ The guardrail will fail until all six locations are updated.
 
 The guardrail will fail until the task is gated or allowlisted.
 
-### 4.5 Adding a new specialist to the ensemble
+### 4.5 Adding a new LLM-narrative specialist (`specialists/`)
+
+This procedure is for the 8-specialist LLM-narrative layer. For the cheaper deterministic-rule layer, see §4.5b. **Prefer §4.5b unless the rule structurally requires LLM synthesis** — every new LLM specialist multiplies per-cycle AI cost.
 
 - Add the specialist class to `ensemble.py`.
 - Plumb through `run_ensemble` synthesizer (verdict aggregation).
@@ -184,6 +186,17 @@ The guardrail will fail until the task is gated or allowlisted.
 - Add Platt-scaling layer in `specialist_calibration.py`.
 - Update `_task_specialist_health_check` if the specialist needs special calibration handling.
 - Render verdicts in the AI Awareness ensemble panel (`templates/ai.html` Awareness tab).
+
+### 4.5b Adding a new deterministic specialist (`deterministic_specialists/`)
+
+This is the high-volume layer — 179 rules and growing per `docs/17` Phase 3. Zero per-rule API cost; the right home for any pattern that's a clear `(candidate) → fact` mapping.
+
+- Drop a module under `deterministic_specialists/<rule_name>.py` exposing `NAME`, `DESCRIPTION`, `APPLIES_TO_SIGNALS` (tuple of signal strings the rule applies to), and `evaluate(candidate, ctx) -> Optional[{severity, reasoning}]`. Severity is one of `VETO` / `CAUTION` / `CONFIRM`.
+- Add the import path to `RULE_MODULES` in `deterministic_specialists/__init__.py`.
+- Add a positive-fixture row to `_FIRE_CASES` in `tests/test_deterministic_specialists_2026_05_18.py` so the structural test pins fire behavior. The test framework also auto-runs a no-op check on minimal candidates — exempt your rule from that via `_EMPTY_FIRE_EXEMPT` if its purpose IS to fire on minimal context.
+- No CHANGELOG entry per rule; batch-shipped rules get one summary entry.
+- No Platt-scaling layer (deterministic rules are not calibrated — they fire on objective conditions).
+- No `disabled_specialists` allowlist entry (rules can be neutralized by tightening their condition rather than disabling them).
 
 ## 5. Resolving disagreements
 
@@ -221,7 +234,7 @@ Each of these failure modes was observed in this project's history. The guardrai
 
 ## 8. What the system explicitly does not optimize for
 
-- **Throughput / latency.** This is a 5-15 minute cycle system. Sub-second execution is out of scope.
+- **Throughput / latency.** This is a multi-minute cycle system — cadence is operator-tunable (15 / 10 / 5 / 3 / 2 min via Settings → AI Behavior, persisted to `users.scan_interval_minutes`; default 15). Sub-second execution is out of scope.
 - **Multi-tenant deployment.** Single operator, single droplet, single Alpaca relationship.
 - **Open-source distribution.** Personal project; no license for redistribution.
 - **Frontend UX polish.** The web UI is functional, not designed. Operators are the audience.
