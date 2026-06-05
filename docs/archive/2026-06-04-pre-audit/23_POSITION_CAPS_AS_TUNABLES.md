@@ -1,5 +1,7 @@
 # Position-cap as soft bound — every cap is an AI-tunable parameter
 
+> **Archived 2026-06-04.** Describes state as of 2026-05-20 PM (SCOPED). Phase 1 (§3.1 pre-filter drop + §3.3 SELL-before-BUY + §3.4 multileg greek gate) and Phase 2 §3.5 (greek caps in Settings UI) have demonstrably landed per the docs/AUDIT_2026_06_04_DOC_RECONCILIATION.md verification. Remaining items (§3.6 three new tuners + max_total_positions LOOSEN direction, §3.7 param_bounds entries) belong on OPEN_ITEMS if they haven't shipped. Design rationale preserved here.
+
 **Caps exist as risk parameters. They are operator-settable in the UI and autonomously adjusted by the self-tuner based on observed outcomes. The AI trades within whatever the current cap is and can self-direct around it (emit SELL on a current holding to free room for a better candidate); it does NOT bypass caps on a per-trade basis. This brings every cap (greek-exposure and position-count) into the same paradigm that already exists for `max_position_pct`, `stop_loss_pct`, `take_profit_pct`, `ai_confidence_threshold`, etc.**
 
 Status: SCOPED 2026-05-20 PM.

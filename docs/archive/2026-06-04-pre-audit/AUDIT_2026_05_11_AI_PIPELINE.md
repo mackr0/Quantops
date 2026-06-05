@@ -1,5 +1,7 @@
 # AI Pipeline Option-Handling Audit — 2026-05-11
 
+> **Archived 2026-06-04.** Dated symptom map that drove the docs/14 instrument-pipeline architecture. Every audit finding is mapped to "how the architecture eliminates it" in docs/14 §5. Preserved as the foundation read for understanding WHY the StockPipeline / OptionPipeline split exists.
+
 **Scope**: Seven-stage pipeline audit for option-vs-stock conflation
 bugs.
 **Methodology**: Read-only static analysis; focus on data flow + decision

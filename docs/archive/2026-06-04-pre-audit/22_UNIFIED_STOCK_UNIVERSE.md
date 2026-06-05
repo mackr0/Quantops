@@ -1,5 +1,7 @@
 # Unified Stock Universe — Completing the Cap-Tier Removal
 
+> **Archived 2026-06-04.** Describes state as of 2026-05-20 PM (design); the planned migration LANDED that day in commit `a49c9d6`. All §3 changes (A-N) shipped, the SQL migration ran, and `segments.py:SEGMENTS` now has the two keys (`stocks` + `crypto`) this doc planned. Preserved as the canonical explanation of WHY cap tiers were removed.
+
 **Removes the cap-tier price-bracket grouping (large/mid/small/micro) as runtime dispatch and replaces it with a single `stocks` segment whose effective trading pool is every Alpaca-tradable US equity (~8,000 symbols), gated only by per-profile price/volume thresholds.**
 
 Status: IN PROGRESS — design 2026-05-20 PM.

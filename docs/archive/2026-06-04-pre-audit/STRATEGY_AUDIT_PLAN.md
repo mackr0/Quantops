@@ -1,5 +1,7 @@
 # Strategy audit + remediation plan — REVISION 2 (2026-05-15 evening)
 
+> **Archived 2026-06-04.** Dated plan; remediation work documented in CHANGELOG from 2026-05-15 onward.
+
 This is a re-audit after fixing the data-layer bugs that invalidated
 the first audit. The first audit looked at strategies WHILE Alpaca
 data was silently down (master key revoked, all bars from yfinance,

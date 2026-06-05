@@ -1,5 +1,7 @@
 # Experiment profile mapping (2026-05-19 snapshot)
 
+> **Archived 2026-06-04.** Pre cap-tier removal (`market_type=largecap` is no longer valid; current is `stocks` per commit `a49c9d6` 2026-05-20) and pre the 2026-06-04 fresh-slate cohort reset (profile IDs renumbered 12-24 → 25-37 in the new generation). The structural design (13 profiles, 3 Alpaca accounts, $1M each, 3 groups A1/A2/A3) is still in force; the specific column values and IDs are not. See `docs/15_EXPERIMENT_DESIGN_2026_05_17.md` for the active design.
+
 Reference for re-creating the 13-profile experiment after a fresh-slate restart.
 
 ## Common across all 13 profiles

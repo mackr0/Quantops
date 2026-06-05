@@ -1,5 +1,7 @@
 # Pre-Market Alt-Data Warmup + Cache Layer
 
+> **Archived 2026-06-04.** Self-labeled RETIRED 2026-05-20 PM (see "Retirement rationale" below). Moved to archive to make clear the design is not active; the cache layer (`alt_data_cache.py`) survives in production but the pre-fetcher work is gone. Preserved as institutional memory so the same idea isn't re-proposed without re-checking the (wrong) premise.
+
 **Status: RETIRED — 2026-05-20 PM.** Premise was wrong; the cycle-time problem the warmup was built to solve had a different root cause that landed the same day. See "Retirement rationale" below. The cache layer (`alt_data_cache.py`) survives the retirement — it still earns intra-cycle dedup. The pre-fetcher (`altdata_warmup.py` + `premarket_warmup.py` cron) is removed.
 
 This document is preserved as a record of the original design + the diagnosis correction so the same idea doesn't get re-proposed without re-checking the premise.

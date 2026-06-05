@@ -1,5 +1,7 @@
 # Strategy validation — hard-evidence sign-off — 2026-05-15
 
+> **Archived 2026-06-04.** Dated validation snapshot of every registered strategy with hard evidence at that point in time.
+
 Every registered strategy walked through with definitive evidence.
 No "watched" status. Every strategy is either:
 
