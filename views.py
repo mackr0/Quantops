@@ -1075,7 +1075,10 @@ def dashboard():
     # Build per-profile schedule status
     from datetime import datetime as _dt
     from zoneinfo import ZoneInfo
+    from models import get_scan_interval_minutes as _get_scan_min
     _now = _dt.now(ZoneInfo("America/New_York"))
+    _scan_window_sec = int(_get_scan_min(
+        current_user.effective_user_id)) * 60
     any_profile_active = False
     profile_schedules = []
 
@@ -1109,7 +1112,7 @@ def dashboard():
                         from datetime import datetime as _dt2
                         last_scan_dt = _dt2.strptime(row[0][:19], "%Y-%m-%d %H:%M:%S")
                         elapsed = (_dt.now(ZoneInfo("UTC")).replace(tzinfo=None) - last_scan_dt).total_seconds()
-                        remaining = max(0, 900 - elapsed)  # 15 min = 900s
+                        remaining = max(0, _scan_window_sec - elapsed)
                         if remaining > 0:
                             mins = int(remaining // 60)
                             next_scan_text = f"{mins}m"
@@ -5611,10 +5614,13 @@ def api_scan_status(profile_id):
             ).fetchone()
         if row:
             from datetime import datetime as _dt_scan, timezone
+            from models import get_scan_interval_minutes
             last = _dt_scan.strptime(row[0][:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
             now = _dt_scan.now(timezone.utc)
             elapsed = (now - last).total_seconds()
-            status["next_scan_sec"] = max(0, int(900 - elapsed))
+            window_sec = int(get_scan_interval_minutes(
+                current_user.effective_user_id)) * 60
+            status["next_scan_sec"] = max(0, int(window_sec - elapsed))
     except Exception as exc:
         logger.warning(
             "api_scan_status: next_scan_sec lookup failed for profile %s: %s",
