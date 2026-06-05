@@ -1244,6 +1244,46 @@ def _task_update_fills(ctx):
                     seg_label, trade["order_id"], exc,
                 )
                 continue
+            # Defensive: some broker SDKs return None for an unknown
+            # order_id instead of raising. Skip — the row stays in
+            # unfilled until the broker recognizes it or it ages out.
+            if order is None:
+                logging.debug(
+                    "[%s] update_fills: get_order(%s) returned None",
+                    seg_label, trade["order_id"],
+                )
+                continue
+            # RC1 chain-walk (2026-06-05): for pending_protective rows
+            # whose order_id is mid-chain (Alpaca silently replaces
+            # trailing stops as the trail bumps; each replace gets a
+            # fresh id), walk forward to find the terminal so we can
+            # see the actual fill. sync_pending_protective_order_ids
+            # is supposed to advance the journal's order_id, but if
+            # it hasn't run since the last replacement we still need
+            # to discover the terminal here or the fill will sit
+            # invisible.
+            if trade["status"] == "pending_protective":
+                broker_status = (
+                    getattr(order, "status", "") or ""
+                ).lower()
+                if broker_status in (
+                    "replaced", "pending_replace", "replacing",
+                ):
+                    try:
+                        from reconcile_journal_to_broker import (
+                            walk_replace_chain_forward,
+                        )
+                        terminal, _depth = walk_replace_chain_forward(
+                            api, trade["order_id"],
+                        )
+                        if terminal is not None:
+                            order = terminal
+                    except Exception as exc:
+                        logging.debug(
+                            "[%s] update_fills: chain-walk on "
+                            "pending_protective %s failed: %s",
+                            seg_label, trade["order_id"], exc,
+                        )
             # Terminal-unfilled detection. Without this, an expired/
             # canceled/rejected order with filled_qty=0 is silently
             # skipped (the `if not filled_avg_price: continue` below)
@@ -1392,7 +1432,23 @@ def _task_update_fills(ctx):
             # (read-time FIFO in get_virtual_positions correctly
             # computes the remaining qty without needing a status
             # flip).
-            if (trade["status"] == "pending_fill"
+            # RC1 (2026-06-05): pending_protective MUST transition to
+            # 'closed' here when the broker confirms the protective
+            # order filled. Without this branch, every fired
+            # protective stop wrote a `pending_protective` row at
+            # placement time (per bracket_orders._write_pending_
+            # protective_row) and the row stayed at that status
+            # forever — the virtual book never recorded the SELL,
+            # the entry stayed `open`, and broker → virtual drift
+            # accumulated cycle after cycle. This is the single
+            # biggest drift accumulator that produced the 2026-06-05
+            # journal/broker mismatch (BMNR virtual=5253 vs Alpaca=
+            # 4093 etc.). The state machine treats a fired
+            # protective stop identically to a fired SELL/COVER:
+            # close the row, FIFO-consume entry lots of the same
+            # instrument scope (occ_symbol-aware per the 2026-06-05
+            # FIFO scope fix).
+            if (trade["status"] in ("pending_fill", "pending_protective")
                     and trade["side"] in ("sell", "cover")):
                 conn.execute(
                     "UPDATE trades SET status = 'closed' WHERE id = ?",
