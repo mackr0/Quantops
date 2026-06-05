@@ -1230,7 +1230,9 @@ def settings():
             acct["_key_masked"] = "****"
 
     # Layer 9 — auto capital allocation user opt-in + cost ceiling
-    from models import get_scan_interval_minutes
+    from models import (
+        get_scan_interval_minutes, get_intraday_risk_blocks_trades,
+    )
     autonomy = {
         "auto_capital_allocation": bool(user.get("auto_capital_allocation", 0)),
         "daily_cost_ceiling_usd": user.get("daily_cost_ceiling_usd"),
@@ -1250,6 +1252,14 @@ def settings():
             (3,  "3 min",  "5× cycles, tight wall-time margin"),
             (2,  "2 min",  "7.5× cycles, risky if a scan tail spikes"),
         ],
+        # 2026-06-05 — research-mode toggle for intraday risk gates.
+        # OFF (default) = AI trades execute on every cycle so we
+        # collect data across all regimes; alerts + regime are still
+        # recorded for /issues + cycle_regime analysis.
+        # ON = the 3-layer halt model BLOCKS trades on bad days. Use
+        # for live-money capital preservation.
+        "intraday_risk_blocks_trades": get_intraday_risk_blocks_trades(
+            current_user.effective_user_id),
     }
     try:
         from cost_guard import status as _cost_status
@@ -1343,6 +1353,15 @@ def update_autonomy():
             flash(f"Invalid scan interval: {raw_scan_interval!r} ({exc})",
                   "error")
             return redirect(url_for("views.settings") + "#autonomy")
+
+    # 2026-06-05 — intraday risk gate toggle. Checkbox: present in
+    # the form (truthy value) means True; absent means False.
+    from models import set_intraday_risk_blocks_trades
+    risk_blocks = bool(
+        request.form.get("intraday_risk_blocks_trades")
+    )
+    set_intraday_risk_blocks_trades(
+        current_user.effective_user_id, risk_blocks)
 
     with closing(_get_conn()) as conn:
         conn.execute(

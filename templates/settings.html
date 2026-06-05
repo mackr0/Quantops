@@ -228,6 +228,17 @@
             </select>
         </label>
 
+        <label style="display:block;padding:0.5rem 0;border-top:1px solid var(--muted-border-color);margin-top:0.75rem;padding-top:0.75rem;">
+            <input type="checkbox" name="intraday_risk_blocks_trades" value="1"
+                   {{ 'checked' if autonomy.intraday_risk_blocks_trades else '' }}>
+            <strong>Block trades during intraday risk events</strong>
+            <small class="muted" style="display:block;margin-top:0.25rem;">
+                When ON (live-money mode): the three-layer intraday risk monitor stops new entries on bad days — sectors down ≥3%, SPY down ≥2%, VIX ≥35, or correlated-sector spillover. Exits still fire.
+                <br>When OFF (research mode, recommended for paper trading): the AI's per-trade confidence is the only risk filter. Trades execute on every cycle and the regime is recorded onto <code>cycle_regime</code> + alerts surface on <code>/issues</code> for post-hoc analysis. You get data on how the AI handles every regime, not just calm days.
+                <br>Currently: <strong>{{ 'BLOCKING' if autonomy.intraday_risk_blocks_trades else 'NOT BLOCKING' }}</strong>
+            </small>
+        </label>
+
         <button type="submit" style="margin-top:0.75rem;">Save</button>
     </form>
 </article>

@@ -451,6 +451,16 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             # Default 15 preserves pre-2026-06-04 behavior.
             ("users", "scan_interval_minutes",
              "INTEGER NOT NULL DEFAULT 15"),
+            # 2026-06-05 — toggle: should the intraday_risk_monitor's
+            # halt state actually BLOCK trades in trade_pipeline?
+            # Default 0 = research mode: alerts still fire (visible on
+            # /issues) and regime is recorded onto cycle_regime for
+            # post-hoc analysis, but trades execute unconditionally so
+            # we collect data across all regimes. Set to 1 for live-
+            # money mode where capital preservation matters more than
+            # measurement.
+            ("users", "intraday_risk_blocks_trades",
+             "INTEGER NOT NULL DEFAULT 0"),
             # Per-profile opt-in: lets the tuner A/B test ai_provider/ai_model
             # within the cost guard. Default OFF so cost-conscious users
             # aren't surprised by Sonnet/Opus calls.
@@ -863,6 +873,41 @@ def set_scan_interval_minutes(user_id: int, minutes: int) -> None:
         conn.execute(
             "UPDATE users SET scan_interval_minutes = ? WHERE id = ?",
             (int(minutes), user_id),
+        )
+        conn.commit()
+
+
+def get_intraday_risk_blocks_trades(user_id: int = 1) -> bool:
+    """Whether the intraday_risk_monitor's halt state should actually
+    block trades. Default False = research mode (collect data across
+    all regimes); set True for live-money capital preservation."""
+    try:
+        with closing(_get_conn()) as conn:
+            row = conn.execute(
+                "SELECT intraday_risk_blocks_trades FROM users "
+                "WHERE id = ?",
+                (user_id,),
+            ).fetchone()
+        if row:
+            return bool(row[0])
+    except (sqlite3.OperationalError, sqlite3.DatabaseError,
+            ValueError, TypeError) as exc:
+        logger.warning(
+            "get_intraday_risk_blocks_trades read failed (%s: %s); "
+            "falling back to False (research mode)",
+            type(exc).__name__, exc,
+        )
+    return False
+
+
+def set_intraday_risk_blocks_trades(user_id: int, blocks: bool) -> None:
+    """Flip the toggle. True = live-money mode (gate blocks trades);
+    False = research mode (gate is informational only)."""
+    with closing(_get_conn()) as conn:
+        conn.execute(
+            "UPDATE users SET intraday_risk_blocks_trades = ? "
+            "WHERE id = ?",
+            (1 if blocks else 0, user_id),
         )
         conn.commit()
 

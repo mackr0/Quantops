@@ -130,6 +130,11 @@ def check_drawdown_acceleration(
     if multiple < DRAWDOWN_ACCEL_MULTIPLE:
         return None
     severity = "critical" if multiple >= 3.0 else "warning"
+    # 2026-06-05 — research/paper-book book never escalates to
+    # pause_all. pause_all blocks EXITS too, which traps held risk on
+    # exactly the days the operator most wants to be able to close
+    # positions. block_new_entries stops adding risk while allowing
+    # exits to fire — the actual conservative behavior.
     return IntradayRiskAlert(
         check_name="drawdown_acceleration",
         severity=severity,
@@ -139,8 +144,7 @@ def check_drawdown_acceleration(
         ),
         metric_value=multiple,
         threshold=DRAWDOWN_ACCEL_MULTIPLE,
-        suggested_action=("pause_all" if severity == "critical"
-                            else "block_new_entries"),
+        suggested_action="block_new_entries",
     )
 
 
@@ -155,6 +159,10 @@ def check_vol_spike(
     if multiple < VOL_SPIKE_MULTIPLE:
         return None
     severity = "critical" if multiple >= 5.0 else "warning"
+    # 2026-06-05 — same reasoning as drawdown_acceleration: never
+    # escalate to pause_all. Vol spikes are exactly when exits MUST
+    # be allowed to fire (stop-losses, take-profits). Blocking them
+    # traps risk.
     return IntradayRiskAlert(
         check_name="vol_spike",
         severity=severity,
@@ -165,8 +173,7 @@ def check_vol_spike(
         ),
         metric_value=multiple,
         threshold=VOL_SPIKE_MULTIPLE,
-        suggested_action=("pause_all" if severity == "critical"
-                            else "block_new_entries"),
+        suggested_action="block_new_entries",
     )
 
 

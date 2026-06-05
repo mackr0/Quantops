@@ -43,7 +43,11 @@ class TestCheckDrawdownAcceleration:
         alert = check_drawdown_acceleration(0.04, 0.010)
         assert alert is not None
         assert alert.severity == "critical"
-        assert alert.suggested_action == "pause_all"
+        # 2026-06-05: research-book contract — critical drawdown
+        # escalates severity but NOT to pause_all. block_new_entries
+        # stops adding risk while allowing exits to fire. See
+        # test_research_book_never_pauses_all_2026_06_05.py.
+        assert alert.suggested_action == "block_new_entries"
 
     def test_zero_avg_returns_none(self):
         from intraday_risk_monitor import check_drawdown_acceleration

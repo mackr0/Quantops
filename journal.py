@@ -325,6 +325,26 @@ def init_db(db_path=None):
             CREATE INDEX IF NOT EXISTS idx_crisis_state_time
                 ON crisis_state_history(transitioned_at DESC);
 
+            -- 2026-06-05 — regime snapshot per Scan & Trade cycle. Captures
+            -- the market state in which the AI made its picks, so post-hoc
+            -- analysis can correlate AI confidence with realized outcomes
+            -- conditional on regime (SPY move, VIX, halted sectors,
+            -- intraday alerts). Replaces in-pipeline blocking: instead of
+            -- gating trades, we record the conditions and let analysis
+            -- ask "did the AI's picks at this confidence level work out
+            -- under regime X?"
+            CREATE TABLE IF NOT EXISTS cycle_regime (
+                cycle_id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                spy_move_pct REAL,
+                vix_level REAL,
+                halted_sectors_json TEXT,
+                intraday_alerts_json TEXT,
+                sector_moves_json TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_cycle_regime_time
+                ON cycle_regime(created_at DESC);
+
             -- Phase 9: event stream. Events are detected by pollers and
             -- dispatched to subscribed handlers. Idempotency is enforced on
             -- (type, symbol, DATE(detected_at)) so the same detector run

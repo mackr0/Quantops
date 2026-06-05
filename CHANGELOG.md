@@ -17,6 +17,36 @@ Rules going forward:
 
 ---
 
+## 2026-06-05 — Research-mode toggle: intraday risk gate is configurable, defaults OFF. Severity: high (paper-money experiments were systematically excluded from data on bad days; the gate code is preserved behind the toggle).
+
+**Background:** With the three-layer risk model in place, the gate still correctly identified macro selloffs and blocked AI trades on those days. But for the paper-money experimental setup — 13 strategy variants whose entire purpose is measuring AI behavior across regimes — the blocking is counterproductive: the most informative days (volatile, regime-shifting) become data deserts, and the comparison between non-AI baselines (which bypass the gate) and AI profiles (which don't) is permanently biased.
+
+**What this ships:**
+- New `users.intraday_risk_blocks_trades` column (default 0 = research mode).
+- `models.get_intraday_risk_blocks_trades(user_id)` / `set_intraday_risk_blocks_trades(user_id, blocks)` helpers.
+- `trade_pipeline.py` wraps the existing three-layer halt gate with the flag. When OFF (default), trades execute regardless of halt state. When ON, the gate runs exactly as before.
+- New `cycle_regime` table: every cycle writes the current `halted_sectors` + `intraday_alerts` snapshot keyed on `cycle_id`. The write is UNCONDITIONAL — regime data is audit, not gating. Post-hoc analysis joins on cycle_id to answer "did the AI's high-confidence picks work out under regime X?"
+- Settings UI checkbox under Autonomy that flips the toggle; UI shows current BLOCKING / NOT BLOCKING state.
+- `intraday_risk_monitor.py` still runs unchanged; alerts surface on /issues regardless of the toggle.
+
+**Why the toggle vs. deletion:** the 3-layer risk-gate code is correct and useful for live-money operation. Deleting it would mean re-implementing it when capital actually matters. The toggle preserves the work and makes the research-vs-live distinction an explicit operator choice.
+
+**Test coverage:** `tests/test_intraday_risk_toggle_2026_06_05.py` pins (1) the migration entry exists with default 0, (2) the trade_pipeline gate conditional includes `risk_gate_enabled`, (3) the flag is sourced from `get_intraday_risk_blocks_trades(ctx.user_id)`, (4) `cycle_regime` writes are unconditional (written even when the gate is OFF), and (5) the Settings UI plumbing reaches end-to-end.
+
+**Test that prevents recurrence:** the structural pins in `test_intraday_risk_toggle_2026_06_05.py` fail if a future refactor either removes the toggle or accidentally hard-codes it.
+
+---
+
+## 2026-06-05 — Research-book contract: `drawdown_acceleration` + `vol_spike` never escalate to `pause_all`. Severity: medium.
+
+**Background:** Both checks emitted `pause_all` on critical severity. `pause_all` blocks EXITS too, which traps held risk on exactly the days the operator most needs to close positions. For a research paper-book, this is also wrong because it actively prevents data collection on the most informative days.
+
+**What changed:** Both checks now emit `block_new_entries` regardless of severity. The severity classification (warning/critical) still flows to the UI for visibility — only the action changes. `held_position_halts` keeps `pause_all` on critical because the broker physically rejects orders on halted names (not a gate; physics).
+
+**Test coverage:** `tests/test_research_book_never_pauses_all_2026_06_05.py` pins both checks behaviorally (specific inputs → block_new_entries, not pause_all) AND structurally (no `pause_all` string literal in either function's source).
+
+---
+
 ## 2026-06-05 — Three-layer institutional sector risk model (replaces blunt portfolio-wide halt). Severity: high (single-sector down day was halting all trades, even cross-sector longs).
 
 **Background:** The pre-2026-06-05 `check_sector_concentration_swing` picked the single biggest absolute sector move and, if it exceeded 3%, fired a portfolio-wide `block_new_entries`. The check was sign-blind (healthcare +4% halted the same as tech -5%), sector-blind (a tech drop blocked healthcare longs), and binary (no severity ladder). On 2026-06-05 with tech ETF -5.13% and healthcare +4.4%, every AI trade on every profile was blocked despite the AI generating BUY decisions on healthcare names with 75–90% confidence.

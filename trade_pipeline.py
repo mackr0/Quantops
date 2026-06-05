@@ -2365,9 +2365,16 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     # alert like vol spike). `halted_sectors` is sector-scoped: a
     # proposed trade is checked against its own underlying's sector
     # and only blocked when that sector is in the halted set.
+    #
+    # The toggle `users.intraday_risk_blocks_trades` decides whether
+    # the gate ACTS on these signals. Default is False = research
+    # mode: alerts + regime are recorded for /issues + cycle_regime
+    # post-hoc analysis, but trades execute so we collect data across
+    # all regimes. Flip True for live-money capital preservation.
     intraday_halt_action = None
     intraday_halt_alerts: List[Dict[str, Any]] = []
     halted_sectors: Dict[str, str] = {}
+    risk_gate_enabled = False
     if ctx is not None:
         try:
             from intraday_risk_monitor import get_active_risk_halt
@@ -2381,8 +2388,43 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 "Intraday risk-halt lookup failed; proceeding without halt gate",
                 exc_info=True,
             )
+        # Audit-log the regime onto cycle_regime regardless of gate
+        # state. Post-hoc analysis needs to know what conditions the
+        # AI was operating under, even on cycles where we let trades
+        # through.
+        try:
+            from contextlib import closing as _closing
+            from journal import _get_conn as _journal_conn
+            with _closing(_journal_conn(ctx.db_path)) as _conn:
+                _conn.execute(
+                    "INSERT OR REPLACE INTO cycle_regime "
+                    "(cycle_id, halted_sectors_json, intraday_alerts_json) "
+                    "VALUES (?, ?, ?)",
+                    (
+                        cycle_id,
+                        json.dumps(halted_sectors),
+                        json.dumps(intraday_halt_alerts),
+                    ),
+                )
+                _conn.commit()
+        except Exception:
+            logging.warning(
+                "cycle_regime write failed; trade cycle continues",
+                exc_info=True,
+            )
+        try:
+            from models import get_intraday_risk_blocks_trades
+            risk_gate_enabled = get_intraday_risk_blocks_trades(ctx.user_id)
+        except Exception:
+            logging.warning(
+                "intraday_risk_blocks_trades lookup failed; defaulting "
+                "to research mode (gate OFF)",
+                exc_info=True,
+            )
+            risk_gate_enabled = False
 
-    if ai_trades and (intraday_halt_action or halted_sectors):
+    if (risk_gate_enabled and ai_trades
+            and (intraday_halt_action or halted_sectors)):
         new_entry_actions = {"BUY", "SHORT", "OPTIONS",
                               "MULTILEG_OPEN", "PAIR_TRADE"}
         before_count = len(ai_trades)
