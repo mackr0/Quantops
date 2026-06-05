@@ -254,7 +254,9 @@ After 6 months of paper trading on this design, the outcomes drive specific acti
 
 ## Stop / retune / restart conditions
 
-The 12 batches of code shipped 2026-05-17 are *tested* (3395 tests) and *audited* (seven-tier integrity contract running every 10 min) but most of the new code has never run against real broker activity. The first 2 weeks are a system shakeout, not a measurement window. The actual ablation-comparison clock starts on day 15 if days 1-14 ran clean.
+The 12 batches of code shipped 2026-05-17 are *tested* (3395 tests at ship, now 4,561 as of 2026-06-04) and *audited* (seven-tier integrity contract running every 10 min) but most of the new code had never run against real broker activity at ship. The first 2 weeks are a system shakeout, not a measurement window. The actual ablation-comparison clock starts on day 15 if days 1-14 ran clean.
+
+**2026-06-04 cohort-reset note:** The original 2026-05-17 cohort was reset on 2026-06-04 after the 2026-05-20 trailing-stop orphan-class incident produced 10 days of contaminated data across pid15–24. The reset used the `clean_orphaned_profiles` path (which deletes per-profile DBs outright — deliberately bypassing `reset_for_clean_experiment`'s archive step) because archiving contaminated data into the future fine-tune corpus was worse than losing it. Three new Alpaca paper accounts were funded; the same 13-profile design was re-created (per the manifest at `python3 create_experiment_profiles.py --apply`); profile IDs are now 25–37 in the new generation. The measurement clock restarted from 2026-06-04. See `docs/20_FINETUNE_PHASE_4B1_INCREMENTAL.md` "2026-06-04 update" for the data-corpus implications.
 
 ### Things most likely to misbehave (calibrated uncertainty)
 
