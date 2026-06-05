@@ -628,6 +628,102 @@ def ensure_protective_stops(api, positions, ctx, db_path,
             close_side = "buy" if is_short else "sell"
             abs_qty = abs(int(qty))
 
+            # RC3 (2026-06-05) — JOURNAL-SIDE dedup as the second
+            # defense layer behind broker_coverage. Pattern observed:
+            # broker_coverage occasionally returns empty for a symbol
+            # (Alpaca API blip, cache lag, etc.). When that happens,
+            # the original broker_coverage skip-check at line 642
+            # falls through and places a duplicate protective stop —
+            # producing the BMNR pid=29 pattern of two
+            # pending_protective rows for the same entry from
+            # different days.
+            #
+            # The journal records every pending_protective placement
+            # at the same timestamp the broker order goes out. If
+            # any pending_protective row for this symbol+close_side
+            # still has an active broker order behind it, skip the
+            # new placement: the existing one is the active coverage,
+            # and broker_coverage just couldn't see it this cycle.
+            #
+            # If the broker can't be reached to verify, default to
+            # SKIP. The position keeps its previously-placed
+            # protective; next cycle retries. RC1 ensures that when
+            # the existing protective eventually fills, the row
+            # transitions correctly so the journal stays accurate.
+            try:
+                _pending_row = conn.execute(
+                    "SELECT id, order_id, timestamp FROM trades "
+                    "WHERE symbol = ? AND side = ? "
+                    "  AND status = 'pending_protective' "
+                    "  AND order_id IS NOT NULL AND order_id != '' "
+                    "ORDER BY id DESC LIMIT 1",
+                    (symbol.upper(), close_side),
+                ).fetchone()
+            except sqlite3.Error:
+                _pending_row = None
+            if _pending_row:
+                _existing_oid = _pending_row["order_id"]
+                try:
+                    _existing_order = api.get_order(_existing_oid)
+                    _existing_status = (
+                        getattr(_existing_order, "status", "") or ""
+                    ).lower()
+                except Exception as _gex:
+                    # Can't verify — safer to skip than place a
+                    # potential duplicate. Position keeps its journaled
+                    # coverage; next cycle reattempts the check.
+                    logger.warning(
+                        "ensure_protective_stops: journal records "
+                        "pending_protective %s for %s but broker "
+                        "check failed (%s); skipping to avoid "
+                        "duplicate placement.",
+                        _existing_oid[:8], symbol, _gex,
+                    )
+                    continue
+                # Active broker statuses: the protective is in
+                # force. Skip placement.
+                if _existing_status in (
+                    "new", "accepted", "held", "pending_new",
+                    "accepted_for_bidding", "pending_replace",
+                    "replaced",
+                ):
+                    continue
+                # Terminal-but-unfilled (expired/canceled/rejected):
+                # mark the old row terminal so it stops being counted
+                # as active coverage, then proceed with new placement.
+                if _existing_status in (
+                    "expired", "canceled", "rejected", "done_for_day",
+                ):
+                    try:
+                        conn.execute(
+                            "UPDATE trades SET status = ? "
+                            "WHERE id = ?",
+                            (_existing_status, _pending_row["id"]),
+                        )
+                        conn.commit()
+                        logger.info(
+                            "ensure_protective_stops: stale "
+                            "pending_protective %s (broker status="
+                            "%s) marked terminal; placing fresh "
+                            "protective for %s",
+                            _existing_oid[:8], _existing_status,
+                            symbol,
+                        )
+                    except sqlite3.Error as _ue:
+                        logger.warning(
+                            "ensure_protective_stops: couldn't mark "
+                            "stale pending_protective terminal "
+                            "(%s); placing new anyway", _ue,
+                        )
+                # "filled" status: RC1's _task_update_fills will
+                # transition this row to 'closed' next cycle. The
+                # position is no longer at the broker (the
+                # protective fired), so there's nothing to protect.
+                # Skip placement — the entry will close once the
+                # state machine catches up.
+                if _existing_status == "filled":
+                    continue
+
             # 2026-05-21 — BROKER-TRUTH skip decision. If Alpaca
             # already has active protective coverage for this
             # (symbol, close_side) that meets/exceeds the position
