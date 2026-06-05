@@ -30,7 +30,7 @@ Every per-profile setting lives here. Source of truth: `models.py` `init_user_db
 | `id` | INTEGER PK | autoincrement | Profile ID. Used everywhere as the per-profile key. |
 | `user_id` | INTEGER | required | Foreign key → `users.id`. Owner. |
 | `name` | TEXT | required | User-chosen profile name. |
-| `market_type` | TEXT | required | `stocks` / `crypto`. Cap tiers (`largecap` / `midcap` / `small` / `micro`) were removed 2026-05-20 (commit `a49c9d6`); see `docs/archive/2026-06-04-pre-audit/22_UNIFIED_STOCK_UNIVERSE.md` for migration detail. `stocks` profiles trade the unified Alpaca-tradable US equity universe filtered per-profile by `min_price` / `max_price` / `min_volume`. `crypto` profiles use a separate code path (24/7 schedule, crypto data endpoints). The actual instrument-class pipeline split (`stock` vs `option`) lives in `pipelines/dispatch.py`. |
+| `market_type` | TEXT | required | `stocks` / `crypto`. `stocks` profiles trade the unified Alpaca-tradable US equity universe filtered per-profile by `min_price` / `max_price` / `min_volume`. `crypto` profiles use a separate code path (24/7 schedule, crypto data endpoints). The instrument-class pipeline split (`stock` vs `option`) lives in `pipelines/dispatch.py`, not here. |
 | `enabled` | INTEGER | 1 | Master on/off for this profile. |
 | `created_at` | TEXT | now() | Profile creation timestamp. |
 
@@ -62,8 +62,8 @@ Every per-profile setting lives here. Source of truth: `models.py` `init_user_db
 | Column | Type | Default | Description |
 |---|---|---|---|
 | `min_price` | REAL | 1.0 | Minimum stock price for inclusion. |
-| `max_price` | REAL | 10000.0 | Maximum stock price (widened to 10000 with the 2026-05-20 unified-universe migration so a profile actually sees the full Alpaca pool; prior cap-tier default of 20 was for `microsmall`). |
-| `min_volume` | INTEGER | 100000 | Minimum daily volume (lowered to 100K with the unified-universe migration; widen / tighten per profile to dial liquidity). |
+| `max_price` | REAL | 10000.0 | Maximum stock price. Schema default is intentionally generous (effectively no upper bound) so a fresh profile sees the full Alpaca pool; the operator narrows per-profile to dial scope. |
+| `min_volume` | INTEGER | 100000 | Minimum daily volume. Schema default sets a baseline liquidity floor; widen / tighten per profile. |
 | `volume_surge_multiplier` | REAL | 2.0 | Volume-vs-average ratio for surge detection. |
 | `rsi_overbought` | REAL | 85.0 | RSI level above which entries are suppressed. |
 | `rsi_oversold` | REAL | 25.0 | RSI level below which mean-reversion entries fire. |
@@ -102,7 +102,7 @@ Every per-profile setting lives here. Source of truth: `models.py` `init_user_db
 
 | Column | Type | Default | Description |
 |---|---|---|---|
-| `ai_provider` | TEXT | `google` | `anthropic` / `openai` / `google`. Default flipped from `anthropic` to `google` after the 2026-05-19 silent-fallback gate (CHANGELOG) and to reduce per-cycle cost (~$0.27/day at current `gemini-2.5-flash-lite` rate). |
+| `ai_provider` | TEXT | `google` | `anthropic` / `openai` / `google`. Default targets `gemini-2.5-flash-lite` at roughly $0.30/day per 13-profile fleet — the cheapest tier the current ensemble synthesizes well on. |
 | `ai_model` | TEXT | `gemini-2.5-flash-lite` | Provider-specific model ID. |
 | `ai_confidence_threshold` | INTEGER | 25 | Min AI confidence to act on. |
 | `ai_model_auto_tune` | INTEGER | 0 | Allow tuner to A/B-test models within cost guard. |
@@ -118,7 +118,7 @@ Every per-profile setting lives here. Source of truth: `models.py` `init_user_db
 
 | Column | Type | Default | Description |
 |---|---|---|---|
-| `enable_short_selling` | INTEGER | 1 | Allow opening short positions (default flipped 0→1 on 2026-05-12 for non-crypto profiles). AI-tunable via `_optimize_short_selling_toggle` based on 30-day short-side avg return. |
+| `enable_short_selling` | INTEGER | 1 | Allow opening short positions. Default is ON for non-crypto profiles; AI-tunable via `_optimize_short_selling_toggle` based on 30-day short-side avg return. When 0, the AI's action vocabulary closes around SHORT and STRONG_SHORT. |
 | `short_stop_loss_pct` | REAL | 0.08 | Short-side stop loss. |
 | `short_take_profit_pct` | REAL | 0.08 | Short-side take profit. |
 | `short_max_position_pct` | REAL | NULL | Short-side position cap (default = half of `max_position_pct`). |
@@ -131,7 +131,7 @@ Every per-profile setting lives here. Source of truth: `models.py` `init_user_db
 | Column | Type | Default | Description |
 |---|---|---|---|
 | `avoid_earnings_days` | INTEGER | 2 | Skip stocks with earnings in N days. |
-| `skip_first_minutes` | INTEGER | 5 | Skip first N minutes after market open (default bumped 0→5 on 2026-05-12). AI-tunable on win-rate AND slippage signals independently. |
+| `skip_first_minutes` | INTEGER | 5 | Skip first N minutes after market open. The opening auction tends to produce wide spreads and inflated slippage; the default trades a small opportunity cost for cleaner fills. AI-tunable on win-rate AND slippage signals independently. |
 
 ### ATR-based stops & limit orders
 
@@ -148,7 +148,7 @@ Every per-profile setting lives here. Source of truth: `models.py` `init_user_db
 
 | Column | Type | Default | Description |
 |---|---|---|---|
-| `use_conviction_tp_override` | INTEGER | 1 | Skip fixed TP when AI conviction is high (default flipped ON 2026-05-12). AI-tunable via `_optimize_conviction_tp_override` based on MFE capture + stop-to-TP ratio. |
+| `use_conviction_tp_override` | INTEGER | 1 | Skip the fixed take-profit when the AI's conviction on a position is high — lets winners run past the formula TP instead of forcing exit. AI-tunable via `_optimize_conviction_tp_override` based on MFE capture + stop-to-TP ratio. |
 | `option_iv_rich_threshold` | REAL | 55.0 | Above this IV rank, option candidate generator proposes credit-spread strategies (bull_put / bear_call). AI-tunable via `OptionPipeline.tune()`. |
 | `option_iv_cheap_threshold` | REAL | 55.0 | Below this IV rank, option candidate generator proposes debit-spread strategies (bull_call / bear_put). Default 55/55 = no dead zone. AI-tunable. |
 | `entry_blacklist` | TEXT (JSON) | `'{}'` | Per-symbol entry cool-off after 3+ stop-outs in 30 days. JSON `{"NVDA": "ISO_EXPIRY"}`. Auto-expires on read. Maintained by `_optimize_stop_out_blacklist`. |
@@ -159,7 +159,7 @@ Every per-profile setting lives here. Source of truth: `models.py` `init_user_db
 
 | Column | Type | Default | Description |
 |---|---|---|---|
-| `enable_self_tuning` | INTEGER | 1 | Master on/off for the autonomous self-tuner (12 original layers + 5 deterministic guardrails added 2026-05-18 per `docs/17`). When 0, no `_optimize_*` rule fires for this profile (used by the "No Self-Tuning" ablation in docs/15). |
+| `enable_self_tuning` | INTEGER | 1 | Master on/off for the autonomous self-tuner. When 1, the system adjusts per-profile parameters nightly based on resolved-prediction outcomes. When 0, no `_optimize_*` rule fires for this profile — the profile's parameters are frozen at whatever the operator set. Used by the "No Self-Tuning" ablation in docs/15. |
 | `signal_weights` | TEXT | `'{}'` | JSON dict {signal_name: weight ∈ [0.0, 1.0]} (Layer 2). |
 | `regime_overrides` | TEXT | `'{}'` | JSON {param: {regime: value}} (Layer 3). |
 | `tod_overrides` | TEXT | `'{}'` | JSON {param: {tod_bucket: value}} (Layer 4). |
@@ -171,7 +171,7 @@ Every per-profile setting lives here. Source of truth: `models.py` `init_user_db
 | Column | Type | Default | Description |
 |---|---|---|---|
 | `disabled_specialists` | TEXT | `'[]'` | JSON list of specialist names to skip (Lever 3). |
-| `meta_pregate_threshold` | REAL | 0.35 | Min meta_prob to pass pre-gate (Lever 2). Default lowered 0.5→0.35 on 2026-05-13 after audit found 68% of candidates being filtered before AI evaluation. AI-tunable via `_optimize_meta_pregate_threshold` based on 5-day actionable-signal ratio. |
+| `meta_pregate_threshold` | REAL | 0.35 | Min `meta_prob` to pass the pre-gate (Lever 2). The dial that trades off AI cost against opportunity-set breadth: higher values drop more candidates before the apex LLM call (cheaper, narrower); lower values pass more candidates through (more expensive, wider). AI-tunable via `_optimize_meta_pregate_threshold` based on 5-day actionable-signal ratio. |
 
 ### Capital allocation
 
@@ -211,7 +211,7 @@ These columns gate the pipeline-dispatch cutover (per `docs/14` Phase 0 → `doc
 |---|---|---|---|
 | `use_pipeline_dispatch` | INTEGER | 0 | When 1, `multi_scheduler:957` routes through `pipelines.dispatch.run_via_pipelines` (calls `Pipeline.run_cycle` per pipeline) instead of legacy `trade_pipeline.run_trade_cycle`. Mutually exclusive per cycle. |
 | `enable_pipeline_shadow_eval` | INTEGER | 0 | When 1, `pipelines/shadow.py` runs StockPipeline + OptionPipeline in parallel with the legacy dispatcher (read-only — stops before `execute()`) and writes divergence rows to `pipeline_shadow_runs`. Cost: ~$0.01–0.02/cycle per shadow-enabled profile. |
-| `scan_interval_minutes` | INTEGER | 15 | Operator-tunable scan cadence (15 / 10 / 5 / 3 / 2 min — added 2026-06-04). Read by `multi_scheduler._scan_interval_seconds()` every loop iteration; UI change takes effect on the next cycle (no restart). Settings → AI Behavior dropdown. |
+| `scan_interval_minutes` | INTEGER | 15 | Operator-tunable scan cadence (selectable: 15 / 10 / 5 / 3 / 2 min). Read by `multi_scheduler._scan_interval_seconds()` every loop iteration; a UI change takes effect on the next cycle (no restart required). Settings → AI Behavior dropdown. |
 
 ### Trading halt (operator override)
 
