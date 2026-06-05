@@ -45,16 +45,57 @@ _LEVEL_RE = re.compile(
 
 # Strip dynamic bits (UUIDs, timestamps, OCC symbols, hex IDs) so
 # "Option-premium fetch returned 0 for X" and "...for Y" group together.
+#
+# The first two timestamp patterns are load-bearing for dedup: python's
+# logger emits the local datetime + millisecond marker (e.g.
+# "2026-06-04 20:02:35,726") at the start of every line journald
+# captures, and ISO 8601 with a 'T' separator turns up in payloads.
+# Without stripping both, every otherwise-identical log entry has a
+# unique signature and the /issues page renders 611 rows instead of
+# the ~20 distinct issues actually firing.
 _DYN_PATTERNS = [
     (re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
                 r"[0-9a-f]{4}-[0-9a-f]{12}\b"), "<uuid>"),
-    (re.compile(r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\b"),
-     "<ts>"),
+    # python logger format: 2026-06-04 20:02:35,726 (with or without
+    # the comma-millisecond) — what journald sees on every line
+    (re.compile(r"\b\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}"
+                r"(?:[.,]\d+)?Z?\b"), "<ts>"),
+    # Time-only suffix (HH:MM:SS[.ms])
+    (re.compile(r"\b\d{2}:\d{2}:\d{2}(?:[.,]\d+)?\b"), "<time>"),
     (re.compile(r"\b[A-Z]{1,6}\d{6}[CP]\d{8}\b"), "<occ>"),
     (re.compile(r"\bprofile[ _]?\d+\b", re.IGNORECASE), "profile <n>"),
+    # quantopsai_profile_<n>.db filename references
+    (re.compile(r"quantopsai_profile_\d+\.db"),
+     "quantopsai_profile_<n>.db"),
+    # account references like "Account 14" / "account_id=14"
+    (re.compile(r"\b(?:Account|account_id=)\s*\d+\b"),
+     "Account <n>"),
+    # bare profile name prefixes (EXP-A1- / EXP-A2- / etc.) — keep
+    # the experiment-arm prefix but strip the trailing pid in brackets
+    (re.compile(r"\[EXP-[AB][0-9]-[A-Za-z0-9_-]+\]"),
+     "[EXP-<arm>]"),
     (re.compile(r"\bid=\d+\b"), "id=<n>"),
     (re.compile(r"\b#\d{1,9}\b"), "#<n>"),
+    (re.compile(r"\bqty=[\d.]+\b"), "qty=<n>"),
+    (re.compile(r"\bmedian=[\d.]+\b"), "median=<n>"),
+    (re.compile(r"\b\d+\.\d+x\b"), "<n>x"),  # "5.8x median"
+    # percentages and ratios
+    (re.compile(r"\b\d+/\d+\b"), "<n>/<n>"),
+    (re.compile(r"\(\d+\.\d+%\)"), "(<n>%)"),
+    # naked floor message: "floor 80.0%"
+    (re.compile(r"floor \d+\.\d+%"), "floor <n>%"),
     (re.compile(r"\b\d{4,}\b"), "<n>"),
+    # Trailing list payloads — the prefix is what tells us "stop
+    # coverage breach"; the specific list of naked symbols / rejected
+    # tickers etc. just varies on every cycle and should be collapsed.
+    (re.compile(r"Naked: .+$"), "Naked: <symbols>"),
+    (re.compile(r"failed symbols?: .+$", re.IGNORECASE),
+     "failed symbols: <list>"),
+    # Bare single-digit counts (e.g. "skipped 2 row(s)" vs
+    # "skipped 1 row(s)") — different counts of the same underlying
+    # issue should still group
+    (re.compile(r"\bskipped \d+ row"), "skipped <n> row"),
+    (re.compile(r"\(\d+ row(?:s?)\)"), "(<n> rows)"),
 ]
 
 
