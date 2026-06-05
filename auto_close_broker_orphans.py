@@ -216,15 +216,28 @@ def remediate_account_drift(
         )
 
         if close_result.get("status") != "submitted":
+            reject_reason = str(close_result.get("reason", ""))
+            # Classify retryable rejections (after-hours, transient
+            # rate limits) so the next scheduler audit-cycle retries
+            # instead of treating the drift as permanent. Options
+            # market orders are an Alpaca-side restriction during
+            # regular hours only — the close will succeed at the
+            # next market open without operator intervention.
+            retryable = (
+                "market hours" in reject_reason.lower()
+                or "42210000" in reject_reason
+                or "429" in reject_reason  # rate limit
+            )
             results.append({
                 "occ_symbol": sym,
                 "diff_qty": diff_qty,
-                "action": "ERROR",
+                "action": "DEFERRED" if retryable else "ERROR",
                 "close_order_id": None,
                 "reason": (
-                    "broker rejected close: "
-                    + str(close_result.get("reason", ""))
-                ),
+                    "broker rejected close — will retry next cycle: "
+                    if retryable
+                    else "broker rejected close: "
+                ) + reject_reason,
             })
             continue
 

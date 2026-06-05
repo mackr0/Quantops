@@ -261,6 +261,62 @@ def test_broker_flat_returns_broker_flat_action(
 # Atomic-placement contract on the remediation close itself
 # ---------------------------------------------------------------------------
 
+def test_after_hours_rejection_returns_deferred_not_error(
+        tmp_path, monkeypatch,
+):
+    """Alpaca rejects options market orders outside trading hours
+    (code 42210000, msg 'options market orders are only allowed
+    during market hours'). The remediator should classify this as
+    DEFERRED so the next audit cycle retries — not ERROR (which
+    would imply something requires operator attention)."""
+    master_db, pid = _temp_master_db(tmp_path, monkeypatch)
+    journal_db = _profile_journal_db(tmp_path)
+    occ = "NVDA260710C00240000"
+    _ctx, _api = _patch_ctx_and_api(
+        monkeypatch, journal_db,
+        broker_positions=[{
+            "symbol": occ, "qty": 6, "side": "long",
+        }],
+    )
+
+    monkeypatch.setattr(
+        "options_exits.submit_option_close",
+        lambda api_, occ_symbol, qty, side_to_close="sell",
+                limit_price=None: {
+            "action": "ERROR",
+            "occ_symbol": occ_symbol,
+            "status": "failed",
+            "reason": (
+                'Alpaca order rejected (422): '
+                '{"code":42210000,"message":"options market orders '
+                'are only allowed during market hours"}'
+            ),
+        },
+    )
+
+    from auto_close_broker_orphans import remediate_account_drift
+    results = remediate_account_drift(
+        alpaca_account_id=14,
+        profile_ids=[pid],
+        problems=_drift_lines(occ, virtual=4, alpaca=6),
+    )
+    assert len(results) == 1
+    assert results[0]["action"] == "DEFERRED", (
+        f"After-hours rejection should defer; got {results[0]}"
+    )
+    assert "retry" in results[0]["reason"].lower()
+
+    # Profile must NOT be halted — this is a transient broker
+    # restriction, not an atomic-placement contract violation.
+    with closing(sqlite3.connect(master_db)) as conn:
+        row = conn.execute(
+            "SELECT trading_halted FROM trading_profiles "
+            "WHERE id = ?",
+            (pid,),
+        ).fetchone()
+    assert row[0] == 0, "Profile must NOT be halted on DEFERRED"
+
+
 def test_journal_write_failure_cancels_close_and_halts(
         tmp_path, monkeypatch,
 ):

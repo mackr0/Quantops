@@ -1645,7 +1645,15 @@ def _task_virtual_audit(ctx):
 # advisory tracks the cap that's truly in effect.
 _COST_ALERT_THRESHOLD_RATIO = 0.80
 _cost_alerted_today = set()
-_cross_reconcile_checked = set()
+# Per-account last-audit epoch. Used to throttle the cross-account
+# reconcile to one run every _CROSS_RECONCILE_MIN_INTERVAL_SECONDS
+# per Alpaca account so it doesn't fire on every profile in a
+# snapshot pass, but DOES re-run on the next pass when drift
+# persists (e.g., after-hours options-close rejection that should
+# retry at market open). Replaces the old `set()` which dedup'd
+# for the whole process lifetime and prevented retry.
+_cross_reconcile_last_run: dict = {}
+_CROSS_RECONCILE_MIN_INTERVAL_SECONDS = 300  # 5 minutes
 
 
 def _task_cross_account_reconcile(ctx):
@@ -1667,10 +1675,14 @@ def _task_cross_account_reconcile(ctx):
 
     Runs once per Alpaca account per snapshot cycle.
     """
+    import time as _time
     acct_id = getattr(ctx, "alpaca_account_id", None)
-    if not acct_id or acct_id in _cross_reconcile_checked:
+    if not acct_id:
         return
-    _cross_reconcile_checked.add(acct_id)
+    last = _cross_reconcile_last_run.get(acct_id, 0.0)
+    if (_time.time() - last) < _CROSS_RECONCILE_MIN_INTERVAL_SECONDS:
+        return
+    _cross_reconcile_last_run[acct_id] = _time.time()
     try:
         from virtual_audit import audit_cross_account
         from models import get_user_profiles
