@@ -1217,7 +1217,7 @@ def _task_update_fills(ctx):
         unfilled = conn.execute(
             "SELECT id, order_id, price, decision_price, side, "
             "       symbol, status, signal_type, option_strategy, "
-            "       occ_symbol, qty, timestamp "
+            "       occ_symbol, qty, timestamp, pnl "
             "FROM trades "
             "WHERE ("
             "      fill_price IS NULL"
@@ -1434,31 +1434,36 @@ def _task_update_fills(ctx):
                         )
                 confirmed_closes += 1
             elif (trade["status"] == "pending_fill"
-                    and trade["occ_symbol"]):
-                # Roll-manager / option-leg close path: flip to
-                # 'closed' once confirmed; no opposite-side rows
-                # to flip (option close stands alone). Gated on
-                # occ_symbol presence so that BUY-side pending_fill
-                # rows for stocks don't fall into this branch and
-                # get wrongly closed on their first fill.
-                # Caught 2026-05-18 17:28 ET when P12/P13/P14 day-1
-                # BUYs flipped to closed the instant the broker
-                # confirmed each fill — only the SELL/COVER branch
-                # above is meant to flip status; for BUY pending_fill
-                # the correct transition is to 'open' (handled by
-                # the fill-price backfill above this block) so the
-                # entry stays in get_virtual_positions.
+                    and trade["occ_symbol"]
+                    and trade["pnl"] is not None):
+                # Option CLOSE path (roll manager, sell_to_close,
+                # buy_to_close, AUTO_RECONCILE_CLOSE): pnl is set
+                # only on closing rows, never on opens. The pnl
+                # discriminator is the load-bearing guard — without
+                # it, this branch fires on option OPEN rows that
+                # land in pending_fill via a non-default code path
+                # and incorrectly flips them to 'closed', producing
+                # the broker_orphan drift class where the broker
+                # still holds the position but the virtual book
+                # records it as closed (caught 2026-06-05 on EXP-A2
+                # NVDA strangle + GOOGL call). Option closes carry
+                # `pnl` because the close path computes realized
+                # P&L from the entry premium delta; opens never do.
                 conn.execute(
                     "UPDATE trades SET status = 'closed' WHERE id = ?",
                     (trade["id"],),
                 )
                 confirmed_closes += 1
             elif trade["status"] == "pending_fill":
-                # Stock BUY/SHORT pending_fill just got its fill
-                # confirmed by Alpaca — transition pending_fill -> open
-                # so it shows up as a held position in
-                # get_virtual_positions. (Prior code wrongly closed
-                # these.)
+                # Default pending_fill -> open transition. Covers:
+                #   - stock BUY / SHORT just confirmed by the broker
+                #   - option OPEN (long_call / multileg leg / etc.)
+                #     that landed in pending_fill via a non-default
+                #     code path and was previously caught by the
+                #     option-occ_symbol elif above and wrongly
+                #     marked closed
+                # An open row has pnl=NULL by construction; the
+                # option-close branch above gates on pnl IS NOT NULL.
                 conn.execute(
                     "UPDATE trades SET status = 'open' WHERE id = ?",
                     (trade["id"],),
