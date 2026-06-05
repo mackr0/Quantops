@@ -1649,8 +1649,24 @@ _cross_reconcile_checked = set()
 
 
 def _task_cross_account_reconcile(ctx):
-    """Compare sum of virtual positions against Alpaca's actual holdings.
-    Runs once per Alpaca account per snapshot cycle."""
+    """Compare sum of virtual positions against Alpaca's actual
+    holdings, then auto-remediate any broker_orphan drift on OCC
+    option contracts (broker holds more than the virtual book
+    reflects).
+
+    Per `feedback_ai_driven_no_manual_loop`: the audit alone is not
+    the design. When drift is detected, the system either (a) closes
+    the orphan contracts at the broker so the next audit pass
+    clears, or (b) halts the responsible profile and surfaces a loud
+    alert if the close fails. Asking the operator to log into the
+    broker dashboard is the failure mode, not the design.
+
+    Stock-side drift is not auto-remediated here — it's handled by
+    `reconcile_journal_to_broker` which has the per-symbol context
+    to attribute trades to the right profile.
+
+    Runs once per Alpaca account per snapshot cycle.
+    """
     acct_id = getattr(ctx, "alpaca_account_id", None)
     if not acct_id or acct_id in _cross_reconcile_checked:
         return
@@ -1664,12 +1680,47 @@ def _task_cross_account_reconcile(ctx):
         if len(pids) < 2:
             return
         problems = audit_cross_account(acct_id, pids)
-        if problems:
-            _safe_log_activity(
-                getattr(ctx, "profile_id", 0), ctx.user_id,
-                "cross_reconcile",
-                "Cross-Account Drift: %d issue(s)" % len(problems),
-                "\n".join("- %s" % p for p in problems),
+        if not problems:
+            return
+
+        # Surface the drift in the activity feed (operator visibility).
+        _safe_log_activity(
+            getattr(ctx, "profile_id", 0), ctx.user_id,
+            "cross_reconcile",
+            "Cross-Account Drift: %d issue(s)" % len(problems),
+            "\n".join("- %s" % p for p in problems),
+        )
+
+        # Auto-remediate option-contract orphans. The remediator
+        # submits `sell_to_close` / `buy_to_close` for each orphan
+        # OCC and journals each close atomically (halts the profile
+        # if the journal write fails after the broker accepts the
+        # close). Stock-side drift is skipped — handled by
+        # reconcile_journal_to_broker which has per-symbol attribution.
+        try:
+            from auto_close_broker_orphans import remediate_account_drift
+            results = remediate_account_drift(
+                alpaca_account_id=acct_id,
+                profile_ids=pids,
+                problems=problems,
+            )
+            if results:
+                summary_lines = [
+                    f"- {r['occ_symbol']}: {r['action']} "
+                    f"(diff={r['diff_qty']:.0f}, reason={r['reason']})"
+                    for r in results
+                ]
+                _safe_log_activity(
+                    getattr(ctx, "profile_id", 0), ctx.user_id,
+                    "cross_reconcile_remediation",
+                    "Auto-Close Orphan Contracts: %d action(s)"
+                    % len(results),
+                    "\n".join(summary_lines),
+                )
+        except Exception as exc:
+            logging.exception(
+                "Auto-close remediation failed for account %s: %s",
+                acct_id, exc,
             )
     except Exception as exc:
         logging.warning("Cross-account reconcile failed: %s", exc)
