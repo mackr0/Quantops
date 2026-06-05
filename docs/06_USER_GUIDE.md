@@ -108,7 +108,7 @@ Settings are organized into sections. Every numeric / boolean knob has a tooltip
 ### AI behavior
 
 - **AI confidence threshold** — minimum AI confidence (0-100) to act on a trade. Default 25.
-- **Self-tuning** — master toggle for the 12-layer self-tuner.
+- **Self-tuning** — master toggle for the self-tuner (12 original layers + 5 deterministic guardrails added 2026-05-18 per `docs/17`).
 - **AI Model Auto-Tune (cost-sensitive)** — allows the tuner to A/B-test alternative models. Default OFF (avoids surprise Sonnet/Opus calls).
 
 ### Advanced Risk & Research Features
@@ -125,10 +125,9 @@ Settings are organized into sections. Every numeric / boolean knob has a tooltip
 
 - Min/max price, min volume, volume surge multiplier, RSI overbought/oversold, momentum gain thresholds, gap threshold.
 
-### Strategy toggles
+### Strategy toggles (legacy)
 
-- Enable / disable: momentum_breakout, volume_spike, mean_reversion, gap_and_go.
-- (Other strategies are always on; toggle individual ones via Layer 2 weight = 0.)
+- Four columns exist for `momentum_breakout`, `volume_spike`, `mean_reversion`, `gap_and_go`. **These toggles gate dead-code paths** — the live versions of all four strategies are part of the 25 plugins in `strategies/` (the legacy files `fallback_strategy.py` / `strategy_small.py` are only invoked via the now-removed cap-tier branch in `strategy_router.py`). To disable a live strategy, use the **Tunable Signal Weights** panel on the AI Operations tab and set the weight to 0. This is the operator-tunable knob; the toggle columns are kept only for schema back-compat.
 
 ### Risk
 
@@ -250,7 +249,7 @@ Per-profile performance breakdown. The profile dropdown defaults to **All System
 
 ## 8. The virtual account model in practice
 
-10+ profiles share 3 paper accounts. Things to know:
+13 profiles share 3 Alpaca paper accounts. Things to know:
 
 - A trade on profile 5 affects the broker account it's mapped to (e.g. Account 2). Profile 8's broker view INCLUDES profile 5's positions if both are mapped to Account 2.
 - Per-profile dashboards and per-profile P&L are computed from each profile's `trades` ledger via FIFO accounting — these are the authoritative per-profile numbers.
@@ -259,10 +258,10 @@ Per-profile performance breakdown. The profile dropdown defaults to **All System
 
 ## 9. Troubleshooting checklist
 
-- **Scheduler not running:** check `/api/scheduler-status` for last cycle time per profile. If stale, scheduler may have crashed; restart it (`systemctl restart quantopsai-scheduler` on prod).
+- **Scheduler not running:** check `/api/scheduler-status` for last cycle time per profile. If stale, scheduler may have crashed; restart it (`systemctl restart quantopsai` on prod — the unit name is just `quantopsai`).
 - **No trades in days:** check candidate counts per cycle. If zero candidates, the universe is empty or screener filters are too tight. Lower `min_volume`, widen `min_price` / `max_price`, or check the Active Lessons panel for crisis-state pause.
 - **Trades firing but losing:** see workflow 7d above.
-- **Settings change doesn't take effect:** profile picks up settings on the next cycle (within 5 min). If the change involves a schema column, the migration runs on the next service restart.
+- **Settings change doesn't take effect:** profile picks up settings on the next cycle. Cadence is operator-tunable via Settings → AI Behavior → Scan interval (15 / 10 / 5 / 3 / 2 min — default 15 min); UI changes take effect on the next cycle without a restart. If the change involves a schema column, the migration runs on the next service restart.
 - **Symbol is being skipped:** check the cooldown table (`recently_exited_symbols`) — recently sold names get a 7-day cooldown; wash-trade-flagged names get 30 days. Also check the deprecated_strategies table.
 - **AI says it can't propose options:** check that the candidate has `options_oracle_summary` (Alpaca options data). Crypto and some illiquid names don't.
 
