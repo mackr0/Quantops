@@ -108,7 +108,7 @@ Four profiles share equal capital so their results are directly comparable. They
 | No Alt-Data | $200,000 | `enable_alt_data=0` | Marginal value of the paid+scraped data feeds (insider, Congress, Form 4, 13F, sentiment, biotech catalysts) — if return ≈ Anchor, alt-data adds nothing and the cost/complexity should be dropped |
 | No Meta-Model | $200,000 | `enable_meta_model=0` | Marginal value of the GBM + SGD calibration layer that maps raw AI confidence to a calibrated probability of win — if return ≈ Anchor, the calibration is doing nothing the AI doesn't already do |
 | No Self-Tuning | $200,000 | `enable_self_tuning=0` | Marginal value of the 12-layer autonomous parameter learner — explicitly tests the post-2026-05-14-fix self-tuner. If return < Anchor, self-tuner is helping; if return > Anchor, self-tuner is hurting (worth knowing) |
-| No Options | $200,000 | `enable_options=0` | Marginal value of the options pipeline (single-leg + multi-leg). After the 2026-05-13 episode that cost $200K on options, this is the most operationally important ablation — if return ≥ Anchor, options should be permanently disabled |
+| No Options | $200,000 | `enable_options=0` | Marginal value of the options pipeline (single-leg + multi-leg). If return ≥ Anchor, options add no edge and should be permanently disabled; if return < Anchor by a meaningful margin, options pay for themselves |
 | **No Alt-Data + No Meta-Model** | $200,000 | both off | **Combined ablation** — tests whether the two components are complementary (combined loss > sum of individual losses → keep both) or redundant (combined loss ≈ max of individual losses → keep only the cheaper one) |
 
 **Why the combined arm matters:** With only ~6 months of paper data, single-axis ablations may not have enough resolved trades to detect modest effects (especially alt-data, where the high-signal events are rare). The combined arm produces a bigger and easier-to-detect delta, AND it surfaces a question single ablations can't answer: *do the components reinforce each other or substitute for each other?* If alt-data and meta-model are redundant, we can drop the more expensive one. If they're complementary, we keep both even if each one's individual contribution looks marginal.
@@ -208,7 +208,7 @@ Two possible outcomes, both informative:
 | Comparative-returns chart (overlays all profiles vs baselines on dashboard) | ✅ commit 37cdbf4 |
 | Baselines excluded from system aggregates (dashboard footer, `/performance` "All System Profiles", `/ai-performance`) via `profile_classification.is_baseline_strategy` | ✅ 2026-05-22 — controls are benchmark-only, never folded into system totals; per-account P&L % is the cross-profile comparison |
 | Seven-tier integrity contract + 10-minute audit_runner | ✅ commits c2c6e47, 07dea6f, b6420de, 40c0f1c, 917c040 |
-| Options P&L auto-cutoff (#171 — prevents the 2026-05-13 episode) | ✅ commit f14f5f2 |
+| Options P&L auto-cutoff (`_optimize_options_pnl_cutoff` flips `enable_options=0` when 30-day options realized P&L breaches the threshold; auto-re-enables after 14 days) | ✅ |
 | Orphaned-profile cleanup script | ✅ `clean_orphaned_profiles.py` (commit 778e2f0) |
 | Morning health check | ✅ `morning_health_check.sh` (commit e196b4d) |
 
@@ -254,9 +254,9 @@ After 6 months of paper trading on this design, the outcomes drive specific acti
 
 ## Stop / retune / restart conditions
 
-The 12 batches of code shipped 2026-05-17 are *tested* (3395 tests at ship, now 4,561 as of 2026-06-04) and *audited* (seven-tier integrity contract running every 10 min) but most of the new code had never run against real broker activity at ship. The first 2 weeks are a system shakeout, not a measurement window. The actual ablation-comparison clock starts on day 15 if days 1-14 ran clean.
+The system that supports this experiment is tested (4,561 tests, 1 skipped) and audited (seven-tier integrity contract running every 10 min). The first 2 weeks after any cohort start are treated as system shakeout, not a measurement window — the actual ablation-comparison clock starts on day 15 if days 1–14 ran clean.
 
-**2026-06-04 cohort-reset note:** The original 2026-05-17 cohort was reset on 2026-06-04 after the 2026-05-20 trailing-stop orphan-class incident produced 10 days of contaminated data across pid15–24. The reset used the `clean_orphaned_profiles` path (which deletes per-profile DBs outright — deliberately bypassing `reset_for_clean_experiment`'s archive step) because archiving contaminated data into the future fine-tune corpus was worse than losing it. Three new Alpaca paper accounts were funded; the same 13-profile design was re-created (per the manifest at `python3 create_experiment_profiles.py --apply`); profile IDs are now 25–37 in the new generation. The measurement clock restarted from 2026-06-04. See `docs/20_FINETUNE_PHASE_4B1_INCREMENTAL.md` "2026-06-04 update" for the data-corpus implications.
+The experiment design is cohort-independent: if a cohort has to be reset, the same 13-profile A1/A2/A3 structure is re-created and the measurement clock restarts. Profile IDs shift across cohorts; the stable identifiers are the experiment names (`EXP-A1-FullSystemStandard`, `EXP-A2-NoAltData`, etc.).
 
 ### Things most likely to misbehave (calibrated uncertainty)
 
