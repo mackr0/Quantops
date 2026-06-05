@@ -1,21 +1,20 @@
 # 12 — Scaling and Graduation
 
-**Audience:** operators planning capital deployment beyond the current $10K paper baseline.
-**Purpose:** what changes at $10K paper → $10K real → $50K → $250K → $1M+. What breaks. What doesn't.
-**Last updated:** 2026-05-03.
+**Audience:** operators planning capital deployment beyond the current paper experiment.
+**Purpose:** what changes at $3M paper (current) → $10K real → $50K → $250K → $1M+. What breaks. What doesn't.
 
 ## 0. Where this stands today
 
 - **Mode:** paper trading on Alpaca.
-- **Capital:** simulated $10K per profile (configurable per virtual account).
-- **Profiles:** 10+, sharing 3 paper accounts via the virtual-account architecture.
-- **Goal of current stage:** prove the AI's prediction signal generates positive risk-adjusted returns over a meaningful sample. Two weeks of decision data is the corpus today; 30+ trading days with consistent positive P&L is the trigger to consider Stage 2.
+- **Capital:** $3M total virtual capital across 13 profiles ($1M per Alpaca paper-account × 3 accounts). Per-profile range $25K–$700K. See `docs/15_EXPERIMENT_DESIGN_2026_05_17.md` for the full baseline + ablation + scaling experiment design.
+- **Profiles:** 13, sharing 3 paper accounts via the virtual-account architecture.
+- **Goal of current stage:** prove the AI's prediction signal generates positive risk-adjusted returns over a meaningful sample. The cohort was reset on 2026-06-04 with three new Alpaca accounts after the 2026-05-20 trailing-stop orphan-class incident contaminated the prior corpus; data accumulation restarted from that date.
 
 ## 1. Stages
 
-### Stage 1 — $10K Paper (CURRENT)
+### Stage 1 — $3M Paper (CURRENT)
 
-**Purpose:** prove the strategy stack works in simulation.
+**Purpose:** prove the strategy stack works in simulation across a rigorous baseline + ablation + scaling experiment (per `docs/15_EXPERIMENT_DESIGN_2026_05_17.md`).
 
 **Success criteria:**
 
@@ -80,7 +79,7 @@
 | **Tighter correlation limit:** `max_correlation: 0.7 → 0.5` | Correlated losses scale faster at size. |
 | **Tighter sector concentration:** `max_sector_positions: 5 → 3` | Same. |
 | **Add VaR-based pre-trade gate** (currently informational) | Block entries that would push 95% VaR > 5% of book. |
-| **Drop `microsmall` profile** | Sub-$5 names lack liquidity at $50K notional. |
+| **Raise per-profile `min_price` / `min_volume` thresholds** | Sub-$5 names lack liquidity at $50K notional. Today's unified-universe architecture (per `segments.py`, post-2026-05-20 cap-tier removal) means there's no "drop a cap-tier profile" lever — tighten the per-profile filter instead. |
 
 **What stays the same:**
 
@@ -132,8 +131,8 @@ Latency improvement: minutes → milliseconds. Justified at $100K+ capital where
 | **Event-driven architecture (full rewrite of execution layer)** | Sub-second execution required. |
 | **Smart order routing (split large orders)** | Single venue exhaustion. |
 | **Market impact modeling** (estimate price impact pre-trade) | Already implemented (slippage model); now used as hard gate. |
-| **Drop `smallcap` profile** | Insufficient liquidity. |
-| **Mid + large cap only** | Capacity. |
+| **Raise per-profile `min_price` / `min_volume` further** | Sub-$20 names lack liquidity at $1M notional. (Same lever as Stage 3 — no cap-tier-segment "drop" available post-2026-05-20.) |
+| **Concentrate per-profile filters on $50M+ daily $vol names** | Capacity at $1M+. |
 | **Position size capped at 1% of stock's daily $vol** | Hard cap. |
 | **Real-time portfolio VaR** | Continuous, not daily snapshot. |
 | **Sector exposure limits: max 20% per sector** | Tighter than current 30%. |
@@ -166,8 +165,8 @@ These components work at any account size:
 | Component | Breaks at | Reason | Fix |
 |---|---|---|---|
 | Market orders | $50K+ | Slippage on small caps | Limit/VWAP orders |
-| Microcap universe | $50K+ | Orders >1% of daily volume | Drop microcaps |
-| Smallcap universe | $250K+ | Same liquidity issue | Raise volume floors |
+| Microcap universe coverage | $50K+ | Orders >1% of daily volume | Raise per-profile `min_price` / `min_volume` filters |
+| Smallcap universe coverage | $250K+ | Same liquidity issue | Raise per-profile volume floors further |
 | 5-15 min cycle | $100K+ | Too slow, miss opportunities | WebSocket streaming |
 | yfinance + Alpaca-free | $50K+ | Delayed prices increase slippage | Polygon subscription |
 | `max_correlation = 0.7` | $100K+ | Correlated losses too large | 0.5 |
