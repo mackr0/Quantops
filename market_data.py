@@ -64,10 +64,31 @@ def _resolve_alpaca_credentials():
     """
     base_url = os.getenv("ALPACA_BASE_URL",
                           "https://paper-api.alpaca.markets")
+    # Resolve the master DB path through config so cron / altdata
+    # invocations that run from a different working directory still
+    # find quantopsai.db. The prior hardcoded relative path caused
+    # 292+ WARN-spam events per day on the /issues page when the
+    # daily altdata cron ran from altdata/<project>/ — every call
+    # to this resolver hit "no such table: alpaca_accounts" because
+    # SQLite created an empty DB at the cron's CWD.
+    try:
+        from config import DB_PATH as _DB_PATH
+    except Exception:
+        _DB_PATH = os.environ.get("DB_PATH", "quantopsai.db")
+    # Absolute-ify if a relative path resolved to nothing useful.
+    if not os.path.isabs(_DB_PATH) and not os.path.exists(_DB_PATH):
+        for candidate in (
+            "/opt/quantopsai/quantopsai.db",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "quantopsai.db"),
+        ):
+            if os.path.exists(candidate):
+                _DB_PATH = candidate
+                break
     try:
         import sqlite3 as _sq3
         from contextlib import closing as _closing
-        with _closing(_sq3.connect("quantopsai.db")) as conn:
+        with _closing(_sq3.connect(_DB_PATH)) as conn:
             row = conn.execute(
                 "SELECT alpaca_api_key_enc, alpaca_secret_key_enc "
                 "FROM alpaca_accounts "
@@ -80,8 +101,8 @@ def _resolve_alpaca_credentials():
             return decrypt(row[0]), decrypt(row[1]), base_url
     except Exception as exc:
         logger.warning(
-            "alpaca_accounts credential lookup failed: %s: %s",
-            type(exc).__name__, exc,
+            "alpaca_accounts credential lookup failed (db=%s): %s: %s",
+            _DB_PATH, type(exc).__name__, exc,
         )
     return "", "", base_url
 
