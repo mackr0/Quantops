@@ -16,7 +16,7 @@ Three claims define what makes the architecture distinctive:
 
 3. **The platform runs 13 profiles in parallel inside three Alpaca paper accounts** via a virtual-account reconciliation layer. This is novel infrastructure: see "Virtual paper accounts," below. It compresses what would otherwise require 13 brokerage relationships into 3, and is the foundation for the rigorous baseline + ablation + scaling experiment in `docs/15_EXPERIMENT_DESIGN_2026_05_17.md`.
 
-4. **The deterministic-vs-narrative split is the cost story.** Hundreds of zero-API-cost rule checkers handle structurally-checkable patterns (RSI overbought, insider clusters, gap into resistance, regulatory events, etc.) so the single batched LLM call only spends tokens on the synthesis work the rule layer structurally can't do. Steady-state observed AI spend across the 13-profile fleet: **~$0.27/day** at the current `gemini-2.5-flash-lite` rate. Quality goes up with specialist count; cost does not.
+4. **The deterministic-vs-narrative split is the cost story.** Hundreds of zero-API-cost rule checkers handle structurally-checkable patterns (RSI overbought, insider clusters, gap into resistance, regulatory events, etc.) so the single batched LLM call only spends tokens on the synthesis work the rule layer structurally can't do. Steady-state observed AI spend across the 13-profile fleet: **~$0.27/day** at the current `gemini-2.5-flash-lite` rate. Quality goes up with specialist count; cost does not. The full enumeration of all 187 specialists with their individual roles is in `docs/24_SPECIALIST_CATALOG.md`.
 
 ## Why this might be valuable
 

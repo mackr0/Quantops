@@ -20,6 +20,7 @@ Read in this order — each doc is written for a specific audience.
 | [`docs/10_METHODOLOGY.md`](docs/10_METHODOLOGY.md) | Anyone extending or reviewing the system | …you want to understand how decisions are made, not just what was built. |
 | [`docs/11_INTEGRATION_GUIDE.md`](docs/11_INTEGRATION_GUIDE.md) | Developers adding new strategies, signals, or specialists | …you're extending the platform. |
 | [`docs/12_SCALING_AND_GRADUATION.md`](docs/12_SCALING_AND_GRADUATION.md) | Operators planning capital deployment | …you want to know what changes at $10K, $50K, $250K, $1M+. |
+| [`docs/24_SPECIALIST_CATALOG.md`](docs/24_SPECIALIST_CATALOG.md) | Quants, financial analysts, VC reviewers | …you want the canonical enumeration of all 187 specialists (8 LLM + 179 deterministic) with what each one checks. The value-prop story made concrete. |
 | [`CHANGELOG.md`](CHANGELOG.md) | Everyone | Chronological history of every behavior change. |
 | [`OPEN_ITEMS.md`](OPEN_ITEMS.md) | Everyone | Single source of truth for what is still pending. |
 | [`docs/archive/`](docs/archive/) | Archaeology | Pre-rewrite documentation. Frozen for traceability. |

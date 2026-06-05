@@ -26,6 +26,8 @@ Universe (~8,000 Alpaca-tradable US equities) →
 
 **This is the value-prop story.** The system scales the AI's accuracy without scaling its cost by putting hundreds of *deterministic* rule-checkers in front of the *narrative* LLM call. The 179 rule modules each cost zero API tokens — they're pure-Python pattern matchers — and they catch the structurally-checkable patterns (RSI overbought, insider clusters, gap into resistance, etc.) so the LLM only spends tokens on the synthesis work it's uniquely good at. Most decisions short-circuit cleanly through the rule layer; only the genuinely-contested candidates exercise the apex LLM. Result: ~$0.27/day of AI spend across the 13-profile fleet at the current `gemini-2.5-flash-lite` rate.
 
+> **Full enumeration** of all 187 specialists (8 LLM + 179 deterministic) with per-rule purpose + severity + direction lives in `docs/24_SPECIALIST_CATALOG.md`. The catalog is auto-derivable from the source — each rule's `NAME`, `DESCRIPTION`, and `APPLIES_TO_SIGNALS` are read directly out of `deterministic_specialists/*.py` — so it stays in sync.
+
 Each layer is documented below. Section sequence follows the data flow.
 
 ## 1. Universe construction
