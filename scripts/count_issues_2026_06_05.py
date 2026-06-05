@@ -18,5 +18,6 @@ print(f"Distinct groups: {distinct}")
 print()
 print("Top 25 groups by occurrence:")
 for g in sorted(groups, key=lambda x: -x["occurrences"])[:25]:
-    msg = g["message"][:150]
-    print(f"  x{g['occurrences']:>5}  [{g['level']}]  {msg}")
+    msg = g.get("sample_message") or g.get("signature") or "(no message)"
+    msg = msg[:180]
+    print(f"  x{g['occurrences']:>5}  [{g['level']}]  [{g.get('source','?')}]  {msg}")
