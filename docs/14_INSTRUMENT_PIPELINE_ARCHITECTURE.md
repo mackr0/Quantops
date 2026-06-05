@@ -463,9 +463,9 @@ side).
 - ✅ Phase 5b: `_OPTION_SIGNALS` ↔ `kind_from_signal` agree.
 - ✅ Phase 5c: option `actual_return_pct` reflects option economics (premium delta or spread P&L).
 - ✅ Phase 5c: link_option_prediction_to_trade fires after every successful option execution.
-- 🔲 Phase 5d (optional): historical option rows backfilled.
+- ✅ Phase 5d: historical option rows backfilled. The nightly task `_task_phase5c_backfill_nightly` calls `backfill_historical_option_predictions(force=True)` once per profile per day; row-level WHERE clause keeps it cheap on clean DBs. Shipped 2026-05-19 (per `docs/18` exit-criteria audit).
 
-**Estimated work remaining**: ~0.5 sessions for optional Phase 5d (backfill script — only needed if historical option rows' wrong values are interfering with calibration / specialist learning).
+**Estimated work remaining**: none for Phases 0-6. All exit criteria met. See `docs/18_OPTIONS_COMPLETION_INVENTORY.md` for the per-artifact completion status.
 
 ### Phase 6 — Risk model: delta-adjusted exposure aggregation   ✅ Phase 6a shipped 2026-05-11
 
