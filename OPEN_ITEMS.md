@@ -1,6 +1,6 @@
 # QuantOpsAI — Open Items (Master List)
 
-**Date:** 2026-05-03
+**Date:** 2026-06-04 (last reconciliation)
 **Purpose:** Single source of truth for every open / deferred / partial item across every plan file in the repo and every code-level marker (`TODO`, `deferred`, `future enhancement`, `honest limit`). One place to look so nothing stays invisible.
 
 **How to read it:**
@@ -47,7 +47,7 @@ When something here moves to ✅, update the entry with the commit + date. When 
 | Biotech FDA / PDUFA milestones | ⚠ PARTIAL | `alternative_data.get_biotech_milestones` works for clinical trials; **PDUFA scraper deferred** (per ALTDATA_INTEGRATION_PLAN.md line 11: "0 PDUFA events"). |
 | Google Trends search interest | ✅ DONE | `alternative_data.get_google_trends_signal` |
 | Wikipedia page-views | ✅ DONE | `alternative_data.get_wikipedia_pageviews_signal` |
-| App Store rankings | ⚠ PARTIAL | `alternative_data.get_app_store_ranking` shipped; **WoW change is None** (no daily snapshot). Fix: daily snapshot task → compute delta. |
+| App Store rankings | ✅ DONE | `alternative_data.get_app_store_ranking` shipped + WoW change wired via `_get_wow_change` at `alternative_data.py:2018-2096` (see §10 row). Earlier partial-status framing superseded by the §10 ✅ DONE marker; this row resolves the internal contradiction. |
 | GitHub commit activity | 🔒 DEFERRED | Most S&P doesn't have meaningful public repos; weak signal. |
 | Job-postings volume | 🔒 DEFERRED | No clean free source (LinkedIn paid, Indeed TOS-fragile). |
 | 10b5-1 insider planned-sale tracking | ⏳ OPEN | More granular than current insider data; SEC EDGAR free. |
@@ -176,7 +176,7 @@ Out-of-scope (per plan §7): multi-exchange expansion, corporate-action awarenes
 
 | Stage | Capital | Status |
 |---|---|---|
-| Stage 1: $10K Paper | $10K | ✅ ACTIVE |
+| Stage 1: $3M Paper | $3M virtual ($1M × 3 Alpaca paper accounts) | ✅ ACTIVE | Per docs/15 experiment design; cohort reset 2026-06-04 with new accounts after orphan-class contamination. |
 | Stage 2: $10K Real Money | $10K | ⏳ OPEN | Prerequisite: Stage 1 success criteria (30+ days, >45% win rate). Switch Alpaca paper → live. |
 | Stage 3: $50K Real Money | $50K | ⏳ OPEN | Prerequisites: Stage 2 profitable 60+ days. Add Polygon real-time data, $5M ADV filter, limit orders by default. |
 | Stage 4: $100K-$250K | $100K+ | ⏳ OPEN | WebSocket streaming arch, Level 2 order book, VWAP execution, iceberg orders. |
