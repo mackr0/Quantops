@@ -110,9 +110,10 @@ table.issues th {
 <h2>Issues — Warnings & Errors</h2>
 <p class="muted" style="font-size: 0.85rem;">
     Every WARNING/ERROR/CRITICAL from the scheduler service, web service,
-    altdata cron logs, and altdata scrape_runs in the last
-    <strong>{{ hours }}</strong> hour(s). Identical messages within the
-    same source are grouped so spam can't drown out a real issue.
+    alternative-data scraper logs, and alternative-data scrape results
+    in the last <strong>{{ hours }}</strong> hour(s). Identical messages
+    within the same source are grouped so spam can't drown out a real
+    issue.
 </p>
 
 {% set errs = summary.groups | selectattr('level', 'in', ['ERROR', 'CRITICAL']) | list %}

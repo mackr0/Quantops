@@ -651,19 +651,106 @@ def is_alpaca_active(symbol: str, ctx=None) -> bool:
     yfinance is the last resort and shouldn't be queried for symbols
     the broker can't trade anyway.
 
-    Permissive on empty cache (returns True) so a cold-start or
-    Alpaca-outage doesn't falsely block every yfinance lookup.
-    Pre-2026-05-16 every cron run pinged yfinance for ~10 known-
-    delisted tickers (BRK.B, CS, CT, HN, NJ, OL, REV, SPYB, SQ, VA)
-    and ate the "possibly delisted" ERROR log spam.
+    2026-06-06 — the in-process cache is module-local, so altdata
+    cron processes start with an empty cache and previously fell
+    through to permissive (returns True) which let yfinance fire
+    on known-delisted tickers. Now the cache is mirrored to a master
+    DB table on every scheduler refresh; cron processes read from
+    that DB cache when their in-process cache is empty. Permissive
+    fallback only on a TRUE cold start where BOTH caches are empty
+    AND no ctx is available to fetch.
     """
     if not symbol:
         return False
     actives = get_active_alpaca_symbols(ctx)
-    if not actives:
-        # Cache empty (Alpaca outage / cold start) — be permissive.
-        return True
-    return symbol.upper() in actives
+    if actives:
+        return symbol.upper() in actives
+    # In-process cache empty — try the persistent (cross-process)
+    # cache before falling through to permissive.
+    persisted = _read_persisted_active_symbols()
+    if persisted:
+        _active_symbols_cache["symbols"] = persisted
+        _active_symbols_cache["timestamp"] = _time.time()
+        return symbol.upper() in persisted
+    # Both caches empty AND we couldn't fetch — true cold start.
+    return True
+
+
+_PERSISTED_CACHE_PATH = "/opt/quantopsai/quantopsai.db"
+_PERSISTED_CACHE_TABLE = "alpaca_active_symbols_cache"
+
+
+def _ensure_persisted_cache_table() -> None:
+    """Idempotent. Single-row table: id=1, symbols_json blob, refreshed_at."""
+    try:
+        import sqlite3
+        with sqlite3.connect(_PERSISTED_CACHE_PATH) as conn:
+            conn.execute(
+                f"CREATE TABLE IF NOT EXISTS {_PERSISTED_CACHE_TABLE} ("
+                "  id INTEGER PRIMARY KEY,"
+                "  refreshed_at REAL NOT NULL,"
+                "  symbols_json TEXT NOT NULL)"
+            )
+            conn.commit()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError,
+            OSError) as exc:
+        _dyn_logger.warning(
+            "alpaca_active_symbols_cache schema init failed "
+            "(%s: %s); cross-process cache disabled this run",
+            type(exc).__name__, exc,
+        )
+
+
+def _read_persisted_active_symbols(max_age_seconds: int = 86400) -> set:
+    """Read the latest cached active-symbol set from the master DB.
+    Returns empty set if missing, stale, or unreadable."""
+    import sqlite3
+    import json
+    try:
+        with sqlite3.connect(_PERSISTED_CACHE_PATH) as conn:
+            row = conn.execute(
+                f"SELECT refreshed_at, symbols_json FROM "
+                f"{_PERSISTED_CACHE_TABLE} WHERE id=1"
+            ).fetchone()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError,
+            OSError) as exc:
+        _dyn_logger.debug(
+            "alpaca_active_symbols_cache read failed (%s: %s)",
+            type(exc).__name__, exc,
+        )
+        return set()
+    if not row:
+        return set()
+    refreshed_at, symbols_json = row
+    if _time.time() - refreshed_at > max_age_seconds:
+        return set()
+    try:
+        return set(json.loads(symbols_json))
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return set()
+
+
+def _write_persisted_active_symbols(symbols: set) -> None:
+    """Mirror the freshly-fetched set to the master DB so any
+    sibling process (altdata cron, etc.) can read it."""
+    import sqlite3
+    import json
+    _ensure_persisted_cache_table()
+    try:
+        with sqlite3.connect(_PERSISTED_CACHE_PATH) as conn:
+            conn.execute(
+                f"INSERT OR REPLACE INTO {_PERSISTED_CACHE_TABLE} "
+                "(id, refreshed_at, symbols_json) VALUES (1, ?, ?)",
+                (_time.time(), json.dumps(sorted(symbols))),
+            )
+            conn.commit()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError,
+            OSError) as exc:
+        _dyn_logger.warning(
+            "alpaca_active_symbols_cache write failed (%s: %s); "
+            "cross-process cache not refreshed this run",
+            type(exc).__name__, exc,
+        )
 
 
 _FAILED_LOOKUP_BACKOFF_SECONDS = 300  # 5 min between retries after failure
@@ -713,6 +800,21 @@ def get_active_alpaca_symbols(ctx=None, ttl=_ACTIVE_SYMBOLS_TTL):
         _active_symbols_cache["timestamp"] = now
         _active_symbols_cache["symbols"] = active
         _active_symbols_cache["last_failure_ts"] = 0.0
+        # 2026-06-06 — mirror the freshly-fetched set to the master
+        # DB so altdata cron processes (which run in a separate
+        # process with an empty module-level cache) can read it and
+        # actually skip yfinance for delisted tickers. Without this,
+        # the cron processes would fall through to permissive `True`
+        # and re-introduce the "possibly delisted" log spam the
+        # 2026-05-16 guard was supposed to eliminate.
+        try:
+            _write_persisted_active_symbols(active)
+        except Exception:
+            # Persistence is best-effort; failure here doesn't
+            # affect the scheduler's in-process cache.
+            _dyn_logger.exception(
+                "alpaca_active_symbols_cache write hit unexpected error"
+            )
         _dyn_logger.info("Alpaca active-symbols cache refreshed: %d symbols",
                          len(active))
         return active

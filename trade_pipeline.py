@@ -572,6 +572,51 @@ def ai_review(symbol, technical_signal, ctx=None, political_context=None):
 # Live position-count maintenance during the STEP 5 dispatch loop
 # ---------------------------------------------------------------------------
 
+def _append_new_stock_position(positions_list, trade_result):
+    """Symmetric mid-cycle increment for the position-cap snapshot.
+
+    Background: `_decrement_closed_stock_position` (below) frees a
+    slot when a SELL closes in-cycle. The mirror image — INCREMENT
+    when a BUY opens in-cycle — was missing, which is why pid 48 / 49
+    on 2026-06-05 ended up with 6+ open positions on max_total=5
+    profiles: the AI proposed 7 BUYs in one cycle, every BUY's
+    `check_portfolio_constraints` evaluated against the SAME
+    cycle-start snapshot (0 open) and each thought "0 < 5, fine."
+    All 7 placed. The next cycle correctly reported "5 of 5 used"
+    but by then the broker had already filled all 7.
+
+    Adds a minimal synthetic position row (`{"symbol", "qty",
+    "side"}`) to `positions_list` so the very next call to
+    `check_portfolio_constraints` in this cycle sees the higher
+    count. STOCK pipeline only — options have their own caps.
+
+    Mutates `positions_list` in place. Returns 1 when appended, 0
+    otherwise. Idempotent on already-present symbol (avoids
+    double-counting when the same BUY produces two trade_result
+    records for some reason)."""
+    if not isinstance(trade_result, dict):
+        return 0
+    if trade_result.get("action") not in ("BUY", "SHORT"):
+        return 0
+    sym = trade_result.get("symbol")
+    if not sym:
+        return 0
+    if any(p.get("symbol") == sym
+           and not getattr(p, "is_option", False)
+           for p in positions_list):
+        return 0
+    positions_list.append({
+        "symbol": sym,
+        "qty": trade_result.get("qty", 1),
+        "side": "long" if trade_result.get("action") == "BUY" else "short",
+        # Synthetic marker so any downstream code that wants to
+        # distinguish in-cycle placements from broker-confirmed
+        # positions can do so.
+        "_synthetic_in_cycle": True,
+    })
+    return 1
+
+
 def _decrement_closed_stock_position(positions_list, trade_result):
     """Remove the fully-closed STOCK symbol from the live
     positions_list so a later same-cycle BUY's position-cap check
@@ -2680,6 +2725,11 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
             # positions_list LIVE as closes execute, so a later
             # same-cycle BUY's position cap sees the freed slot.
             _decrement_closed_stock_position(positions_list, trade_result)
+            # 2026-06-06 — the symmetric increment for opens. Without
+            # this, every BUY in a multi-BUY cycle evaluates against
+            # the same cycle-start snapshot and the position cap is
+            # racy (caught on pid 48/49: open=6 with max_total=5).
+            _append_new_stock_position(positions_list, trade_result)
             # Visibility: when the trade dict says SKIP / EXCLUDED /
             # ERROR / etc., surface it. The previous behavior was
             # silent — the user only saw "Executing: SHORT X" and

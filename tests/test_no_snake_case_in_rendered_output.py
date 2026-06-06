@@ -230,7 +230,16 @@ class TestEveryDynamicContentInterpolationIsHumanized:
     accesses a dynamic-content field MUST pipe through a humanizing
     filter. Catches the structural pattern that bit on 2026-05-15:
     `{{ t.ai_reasoning or t.reason or '...' }}` in `_trades_table.html`
-    rendered raw because no `| humanize` was applied."""
+    rendered raw because no `| humanize` was applied.
+
+    2026-06-06 — this layer was missing a sibling: it covered the
+    DYNAMIC half of the bug class (`{{ field }}` interpolations) but
+    not the STATIC half (hardcoded English text between Jinja blocks).
+    A literal "altdata scrape_runs" sat in `templates/issues.html`
+    for months — fully invisible to this test because no `{{ ... }}`
+    was around it. The new method below closes that gap so this
+    file genuinely owns the whole class, as its own docstring
+    promised."""
 
     def test_every_dynamic_field_interpolation_uses_humanizing_filter(self):
         violations: List[Tuple[str, int, str, str]] = []  # (file, line, field, expr)
@@ -266,6 +275,115 @@ class TestEveryDynamicContentInterpolationIsHumanized:
                 "through `| humanize` (or `| display_name` for "
                 "single-identifier values). DO NOT widen the filter "
                 "allowlist — the fix is at the render site.\n\n"
+                f"{details}"
+            )
+
+    def test_static_template_prose_has_no_snake_case_identifiers(self):
+        """The sibling check that was missing until 2026-06-06.
+
+        Layer 2 above covers DYNAMIC values flowing through Jinja
+        expressions. This method covers STATIC prose — the hardcoded
+        English text BETWEEN the Jinja blocks. That's where 'altdata
+        scrape_runs' lived for months, undetected, because the rest
+        of the file only scanned `{{ ... }}` chunks.
+
+        Implementation: strip everything that ISN'T user-visible
+        prose (Jinja directives, `<code>`/`<pre>`/`<script>`/`<style>`
+        bodies, HTML comments, attribute values), then scan the
+        remainder for snake_case / UPPER_SNAKE tokens via the same
+        regexes Layer 1 uses. Any hit is a leak — describe the data
+        in plain English instead of dropping the column/table/var
+        name into the UI."""
+        # Block-level constructs we strip whole — these are NOT prose:
+        # Jinja directives, comments, code/script/style/pre regions,
+        # and HTML attribute values (`class="..."` etc. carry code-
+        # ish identifiers that aren't user-visible English).
+        STRIP_PATTERNS = [
+            (r"\{%.*?%\}",          re.DOTALL),  # Jinja statements
+            (r"\{\{.*?\}\}",        re.DOTALL),  # Jinja expressions
+            (r"\{#.*?#\}",          re.DOTALL),  # Jinja comments
+            (r"<!--.*?-->",         re.DOTALL),  # HTML comments
+            (r"<script\b[^>]*>.*?</script>",  re.IGNORECASE | re.DOTALL),
+            (r"<style\b[^>]*>.*?</style>",    re.IGNORECASE | re.DOTALL),
+            (r"<code\b[^>]*>.*?</code>",      re.IGNORECASE | re.DOTALL),
+            (r"<pre\b[^>]*>.*?</pre>",        re.IGNORECASE | re.DOTALL),
+            (r"<kbd\b[^>]*>.*?</kbd>",        re.IGNORECASE | re.DOTALL),
+            (r"<samp\b[^>]*>.*?</samp>",      re.IGNORECASE | re.DOTALL),
+            # Attribute values inside <tag attr="...">. Keeping the
+            # opening `<tag ` so tag boundaries survive but stripping
+            # everything from `=" ` to the closing quote.
+            (r'=\s*"[^"]*"',                  0),
+            (r"=\s*'[^']*'",                  0),
+        ]
+
+        # snake_case identifiers that legitimately appear in user-
+        # facing copy — the state-machine names the operator IS
+        # expected to read (the trades-page status filter, the audit
+        # dashboard drift categories, etc.). Each entry justified.
+        STATIC_PROSE_ALLOWLIST = {
+            "pending_protective",  # journal state machine state name
+            "pending_fill",        # journal state machine state name
+            "broker_orphan",       # drift class on the audit page
+            "journal_phantom",     # drift class on the audit page
+            "buy_hold",            # strategy_type value used as label
+        }
+
+        violations: List[Tuple[str, int, str, str]] = []
+        for path in _iter_template_files():
+            with open(path) as fh:
+                src = fh.read()
+            stripped = src
+            for pattern, flags in STRIP_PATTERNS:
+                stripped = re.sub(pattern, " ", stripped, flags=flags)
+            # Also strip the HTML tags themselves (we kept their
+            # structure to preserve line numbers, but tag names
+            # like `<div>` aren't prose either).
+            stripped_no_tags = re.sub(r"<[^>]+>", " ", stripped)
+            for m in LOWER_SNAKE_RE.finditer(stripped_no_tags):
+                ident = m.group(0)
+                if ident in STATIC_PROSE_ALLOWLIST:
+                    continue
+                # Original line number = number of newlines BEFORE
+                # this match's offset in `stripped` (which preserves
+                # newlines from the original file).
+                offset = m.start()
+                line = stripped[:offset].count("\n") + 1
+                snippet = stripped_no_tags[
+                    max(0, offset - 50):offset + len(ident) + 50
+                ].replace("\n", " ").strip()
+                violations.append((
+                    os.path.relpath(path, REPO_ROOT),
+                    line, ident, snippet,
+                ))
+            for m in UPPER_SNAKE_RE.finditer(stripped_no_tags):
+                ident = m.group(0)
+                if ident in STATIC_PROSE_ALLOWLIST:
+                    continue
+                offset = m.start()
+                line = stripped[:offset].count("\n") + 1
+                snippet = stripped_no_tags[
+                    max(0, offset - 50):offset + len(ident) + 50
+                ].replace("\n", " ").strip()
+                violations.append((
+                    os.path.relpath(path, REPO_ROOT),
+                    line, ident, snippet,
+                ))
+
+        if violations:
+            details = "\n".join(
+                f"  {f}:{ln} — {ident!r}  in: …{snippet}…"
+                for f, ln, ident, snippet in violations
+            )
+            pytest.fail(
+                "Snake-case identifier(s) found in STATIC template "
+                "prose. These render as visible English text — "
+                "describe the data in plain English rather than "
+                "leaking the column / table / variable name into "
+                "the UI.\n\n"
+                "Fix at the render site by rewording the prose. "
+                "Adding to STATIC_PROSE_ALLOWLIST is the rare "
+                "exception (only state-machine names operators ARE "
+                "expected to read in admin context).\n\n"
                 f"{details}"
             )
 

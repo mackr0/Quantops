@@ -1338,7 +1338,7 @@
         <article style="margin:1rem 0; background:#f8f8f6; padding:0.75rem 1rem;">
             <header style="padding:0;">
                 <h4 style="margin:0;">Stat-Arb Pair Book</h4>
-                <small class="muted">Cointegrated pairs the weekly universe scan has discovered. The AI sees these in its prompt with current z-scores and can propose PAIR_TRADE actions.</small>
+                <small class="muted">Cointegrated pairs the weekly universe scan has discovered. The AI sees these in its prompt with current z-scores and can propose paired long/short trades.</small>
             </header>
             {% for prof in pair_book_info.per_profile %}
             <details style="margin-top:0.5rem;">
@@ -2168,7 +2168,7 @@
         </div>
         <div class="grid">
             <div><h5>Price Context</h5><small>% from 52-week high, % from 52-week low, nearest Fibonacci distance, Gap %</small></div>
-            <div><h5>Strategy Votes</h5><small>26 registered strategies + ~7 legacy router sub-strategies (sector_momentum, pullback_support, etc.) — each can vote BUY/SELL/HOLD; combined score per candidate</small></div>
+            <div><h5>Strategy Votes</h5><small>26 registered strategies plus roughly 7 legacy router sub-strategies (sector momentum, pullback support, and similar) — each can vote BUY/SELL/HOLD; combined score per candidate</small></div>
             <div><h5>News Headlines</h5><small>Up to 3 recent headlines per stock from Alpaca News API (Benzinga feed)</small></div>
         </div>
 
@@ -2248,7 +2248,7 @@
         <div class="grid">
             <div><h5>Track Record</h5><small>Win/loss history for this specific symbol. Auto-blacklists chronic losers.</small></div>
             <div><h5>Last Prediction</h5><small>The AI's previous reasoning + outcome — remembers what it said and whether it was right.</small></div>
-            <div><h5>Specialist Ensemble Verdict</h5><small>8 specialist AIs (earnings_analyst, pattern_recognizer, sentiment_narrative, risk_assessor, adversarial_reviewer for stocks + iv_skew_specialist, gamma_pin_specialist, option_spread_risk for options) — confidence-weighted consensus + risk VETO status</small></div>
+            <div><h5>Specialist Ensemble Verdict</h5><small>8 specialist AIs (earnings analyst, pattern recognizer, sentiment narrative, risk assessor, and adversarial reviewer for stocks; IV-skew specialist, gamma-pin specialist, and option spread-risk reviewer for options) — confidence-weighted consensus plus risk-veto status</small></div>
         </div>
 
         <h4 style="margin-top:0.5rem;">Market-Wide Context (17 sources, shared across all candidates)</h4>
@@ -2273,8 +2273,8 @@
             <div><h5>CFTC Commitments of Traders</h5><small>Most-recent COT report date for key futures contracts. Public Socrata endpoint (cftc.gov).</small></div>
         </div>
         <div class="grid">
-            <div><h5>USDA Crop Reports <small class="muted">(if USDA_API_KEY set)</small></h5><small>Latest weekly corn / soy crop-condition % good+excellent (agri sector regime input).</small></div>
-            <div><h5>EIA Energy Inventories <small class="muted">(if EIA_API_KEY set)</small></h5><small>Latest weekly US crude-oil stocks + natural-gas storage (energy sector regime input).</small></div>
+            <div><h5>USDA Crop Reports <small class="muted">(when a USDA API key is configured)</small></h5><small>Latest weekly corn / soy crop-condition % good+excellent (agri sector regime input).</small></div>
+            <div><h5>EIA Energy Inventories <small class="muted">(when an EIA API key is configured)</small></h5><small>Latest weekly US crude-oil stocks + natural-gas storage (energy sector regime input).</small></div>
         </div>
         <div class="grid">
             <div><h5>Learned Patterns</h5><small>Discovered failure/success patterns by regime, strategy type, and time of day</small></div>
