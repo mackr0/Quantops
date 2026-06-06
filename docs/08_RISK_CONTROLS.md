@@ -46,25 +46,85 @@ State transitions logged to `crisis_state_history`. Surfaced in AI prompt as `**
 **Module:** `intraday_risk_monitor.py`
 **Cadence:** every cycle (gated by `enable_intraday_risk_halt`, default ON).
 
-Four checks. Any one firing → write an `intraday_risk_halt` row → trade pipeline blocks new entries.
+### 2.1 Three-layer sector / breadth model
 
-| Check | Condition | Severity (warning) | Severity (critical) |
-|---|---|---|---|
-| `drawdown_acceleration` | today's high-to-current drawdown / 7d-avg drawdown ≥ 2× | At 2-3× | At ≥3× |
-| `vol_spike` | last-hour SPY realized vol / 20d hourly avg ≥ 3× | At 3-5× | At ≥5× |
-| `sector_concentration_swing` | Largest sector intraday move ≥ 3% absolute | At 3-5% | At ≥5% |
-| `held_position_halts` | Number of held positions trading-halted | 1-2 names | ≥3 names |
+The pre-2026-06-05 design used a single check: largest absolute sector move ≥ 3% → portfolio-wide halt. That model was sign-blind (healthcare +4% halted the same as tech -5%), sector-blind (tech drop blocked healthcare longs), and binary (no severity ladder). Replaced by a three-layer institutional-style model:
 
-Alert action mapping:
+**Layer 1 — asymmetric per-sector halts** (`check_sector_halts`)
 
-| Severity | Suggested action |
+| Direction | Threshold | Constant |
+|---|---|---|
+| Sector ≤ -3% | halt new longs in that sector | `SECTOR_DOWN_HALT_PCT` |
+| Sector ≥ +6% | halt new longs in that sector (parabolic / squeeze risk) | `SECTOR_UP_HALT_PCT` |
+
+Downside is intentionally tighter than upside: losing money fast is a danger signal at 3%; +4% sectors are buying opportunities, not danger.
+
+**Layer 2 — correlated-sector spillover** (`apply_correlated_spillover`)
+
+A sector ≤ -5% (`SECTOR_HARD_HALT_PCT`) extends the halt to historically correlated sectors via a fixed map:
+
+| Source sector (hard down) | Spillover sectors |
 |---|---|
-| `warning` | `block_new_entries` |
-| `critical` | `pause_all` |
+| tech | comm_services, consumer_disc |
+| finance | real_estate |
+| real_estate | finance, utilities |
+| energy | materials |
+| consumer_disc | tech |
+| comm_services | tech |
 
-Aggregate action across multiple alerts: `pause_all > block_new_entries > monitor > pass` (most-restrictive wins).
+**Layer 3 — breadth/portfolio halt** (`check_breadth_collapse`)
 
-Auto-clear: 60 minutes after the last alert. The trade pipeline reads `get_active_risk_halt(db_path)` per cycle and refuses new entries when active.
+Escalates to portfolio-wide ONLY when there's evidence of a real macro event. Counts **primary** (Layer 1) halts only — spillover-extended sectors do NOT count.
+
+| Trigger | Threshold | Constant |
+|---|---|---|
+| ≥3 primary sectors halted | structural breadth | `BREADTH_HALT_COUNT` |
+| SPY intraday move ≤ -2% | market-wide selloff | `SPY_BROAD_HALT_PCT` |
+| VIX level ≥ 35 | tail-risk regime | `VIX_SPIKE_LEVEL` |
+
+### 2.2 Non-sector checks
+
+| Check | Condition | Severity (warning) | Severity (critical) | Action |
+|---|---|---|---|---|
+| `drawdown_acceleration` | today's high-to-current DD / 7d-avg DD ≥ 2× | At 2-3× | At ≥3× | `block_new_entries` (both severities) |
+| `vol_spike` | last-hour SPY realized vol / 20d hourly avg ≥ 3× | At 3-5× | At ≥5× | `block_new_entries` (both severities) |
+| `held_position_halts` | Number of held positions trading-halted at broker | 1-2 names | ≥3 names | `pause_all` at critical |
+
+**Why `drawdown_acceleration` and `vol_spike` never escalate to `pause_all`:** `pause_all` blocks exits too. Trapping risk on a high-vol day is the opposite of risk management. `block_new_entries` stops adding risk while allowing stop-losses and take-profits to fire. `held_position_halts` keeps `pause_all` because the broker physically can't fill orders on halted names (not a gate; physics). Pinned by `tests/test_research_book_never_pauses_all_2026_06_05.py`.
+
+### 2.3 Per-trade decision
+
+Stored state (`intraday_risk_halt` row) now includes both `action` (portfolio-wide) and `halted_sectors` (sector-scoped dict). Trade pipeline resolves each proposed trade's underlying sector via `sector_classifier.get_sector(symbol)`:
+
+1. Portfolio-wide halt active → block (regardless of sector).
+2. Trade's sector in `halted_sectors` → block this specific trade.
+3. Otherwise → allow.
+
+So tech longs are blocked on a tech-down day; healthcare longs go through unless breadth/SPY/VIX also fire.
+
+### 2.4 Research-mode toggle
+
+**Setting:** `users.intraday_risk_blocks_trades` (default 0 = OFF / research mode). UI: Settings → Autonomy → "Block trades during intraday risk events" checkbox.
+
+| Toggle | Behavior |
+|---|---|
+| OFF (default) | Risk monitor runs, alerts surface on `/issues`, regime persists to `cycle_regime` per cycle. **Trades execute unconditionally.** Goal: collect AI decision data across every regime — calm days AND stressed days. |
+| ON (live-money mode) | Three-layer gate blocks trades exactly as specified above. Goal: capital preservation. |
+
+The toggle exists because the platform is paper-money for AI experimentation. Blocking on bad days creates exactly the data deserts that prevent measuring the AI's response to crises. The non-AI baselines (`buy_hold`, `random`) bypass the gate entirely; if the AI is gated and the baselines aren't, the "does the AI beat random" comparison is permanently biased on the highest-information days. Flip ON only when transitioning to live capital.
+
+**`cycle_regime` table** (per-profile DB, written unconditionally):
+
+| Column | Purpose |
+|---|---|
+| `cycle_id` | join key to `ai_predictions.cycle_id` |
+| `halted_sectors_json` | which sectors would have been blocked |
+| `intraday_alerts_json` | which alerts fired (drawdown_accel, vol_spike, breadth_collapse, etc.) |
+| `created_at` | timestamp |
+
+Post-hoc analysis: `JOIN ai_predictions ON cycle_id` to ask "did the AI's high-confidence picks on tech-halted days produce positive outcomes? On VIX-spike days? Across the breadth-collapse regime vs calm regime?" That's the data you actually want from the experiment.
+
+Auto-clear: 60 minutes after the last alert. The trade pipeline reads `get_active_risk_halt(db_path)` per cycle and applies the gate (or records the regime) according to the toggle.
 
 ## 3. Per-trade stops
 
@@ -156,7 +216,7 @@ Symmetric — entries that improve neutrality always pass; entries that worsen i
 
 ### 4f. Intraday risk halt gate
 
-(See §2.) When `get_active_risk_halt(db_path)` returns an active state, new entries blocked.
+(See §2.) When `users.intraday_risk_blocks_trades = 1` AND `get_active_risk_halt(db_path)` returns an active state, new entries are blocked per the three-layer model (portfolio-wide for breadth/SPY/VIX triggers; sector-scoped via `sector_classifier.get_sector(symbol)` for Layer 1/2 halts). When the toggle is OFF (default), the gate is informational only: alerts surface on `/issues`, regime is recorded onto `cycle_regime`, and trades execute regardless.
 
 ### 4g. Cost guard
 

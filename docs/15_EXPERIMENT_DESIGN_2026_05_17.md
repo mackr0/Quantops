@@ -235,6 +235,28 @@ After 6 months of paper trading on this design, the outcomes drive specific acti
 
 ---
 
+## Measurement integrity — why intraday risk gates default OFF for this experiment
+
+(See `docs/08_RISK_CONTROLS.md §2.4` for the toggle mechanism.)
+
+The intraday risk monitor has a `users.intraday_risk_blocks_trades` toggle, defaulting to OFF for this experiment. The risk model still RUNS — alerts surface on `/issues`, `cycle_regime` records the regime per `cycle_id` — but trades are not blocked on bad days.
+
+This is a deliberate research choice, not a safety oversight:
+
+1. **The most informative regimes are stressed regimes.** Whether the AI's confidence-weighted reasoning generalizes to volatile, crisis, or sector-rotation days is the question we are trying to answer. Gating the AI on those exact days means we collect data only on calm days — answering "does the AI work when nothing is happening?" which is the easy half of the question.
+
+2. **The non-AI baselines bypass the gate by construction.** `simple_strategies` (used by `buy_hold` and `random`) short-circuits the trade pipeline before any halt logic. So if the AI is gated and the baselines are not, the "does the AI beat random?" comparison is permanently biased toward calm-day outcomes, and the headline result becomes scientifically uninterpretable.
+
+3. **The AI already has per-trade risk filtering.** Confidence thresholds, position sizing, stop-loss/take-profit calculations, options-vs-stocks decisions — these are the AI's own opinion about whether a given proposed trade is risk-adjusted-attractive. Adding a portfolio-level binary gate ON TOP corrupts the measurement of the AI's calibration. We want to learn whether the AI correctly down-weights aggressive longs on a -2% SPY day — we cannot learn that if we prevent it from trading at all.
+
+4. **Capital is paper.** The cost of a bad trade during the experiment is one extra data point, not real dollars. The cost of a halted trade is permanently missing data on a regime we may never see again in this configuration.
+
+5. **The regime is recorded onto every cycle.** `cycle_regime` table (per-profile DB, joined to `ai_predictions` via `cycle_id`) stores `halted_sectors_json` + `intraday_alerts_json` for every Scan & Trade cycle. Post-hoc analysis can answer: "did the AI's high-confidence picks on tech-halted days produce positive outcomes? On VIX-spike days? Across the breadth-collapse regime vs calm regime?" That's the data the experiment actually wants.
+
+The toggle is flipped ON when transitioning to live-money operation (the $25K real-money question in §3.A), where capital preservation matters more than measurement. Until then, leave it OFF on every profile.
+
+---
+
 ## Reset / kept on launch
 
 **Wiped** (via `reset_for_clean_experiment.py --apply`):
