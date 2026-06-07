@@ -17,6 +17,34 @@ Rules going forward:
 
 ---
 
+## 2026-06-07 — TODO #7 fixed: proactive pre-expiry exits for single-leg long options. Severity: medium (option positions could decay to zero without an exit before expiry).
+
+**Background:** `options_lifecycle.py` resolved options at EXPIRY (marked worthless, computed P&L, flagged assignments). It did NOT exit positions BEFORE expiry. A long call/put bought 60 DTE could ride a -50% premium drop and a -90% gamma-week decay with no automatic close — only the operator pressing the close button.
+
+**What this ships:** `options_proactive_exits.py` with two rules:
+
+- **Premium-based stop** (`PREMIUM_STOP_PCT = 0.50`): close when the current mid premium has dropped at least 50% from entry. Pure compute via `should_close_on_premium_stop(entry, current_mid)`; testable in isolation.
+- **Time-based exit** (`TIME_EXIT_DTE_THRESHOLD = 7`): close when days-to-expiry ≤ 7 to avoid the gamma blowup window.
+
+**Scope contract (pinned both behaviorally and structurally):**
+- `SINGLE_LEG_LONG_STRATEGIES = ("long_call", "long_put")` — WHITELIST, not blacklist, so new multileg strategies added later don't accidentally trip the sweep.
+- Multileg legs (`bull_put_spread`, `iron_condor`, etc.) are NOT scanned — they're managed at spread level by `options_multileg.py`.
+- Short-premium strategies (`covered_call`, `cash_secured_put`, `protective_put`) are NOT scanned — premium falling is GOOD for short premium; the exit logic shape is wrong for them.
+
+**Submission:** `sell_to_close` (Alpaca rejects option orders without `position_intent`) at LIMIT-at-mid using the current `_fetch_option_premium` quote. If no quote is available the sweep falls through to MARKET — a triggered-rule position needs to close regardless of liquidity. Order journaling goes through `journal.log_trade` with `status='pending_fill'`; the state machine in `multi_scheduler._task_update_fills` transitions to closed when the broker confirms.
+
+**Scheduler wiring:** new `_task_options_proactive_exits(ctx)` runs alongside `_task_options_lifecycle` on the existing 5-min exit-check cadence. Cheap when there are no open single-leg longs — query bounded by `option_strategy IN ('long_call', 'long_put') AND status='open'`.
+
+**Test coverage:** `tests/test_options_proactive_exits_2026_06_07.py` (23 tests across 4 layers):
+- Pure premium-stop math + days-to-expiry parse boundary cases (9)
+- Candidate selection — scope contract: long-call/long-put picked, multileg/short-premium/closed/sell-side NOT picked (7)
+- End-to-end sweep — time-exit + premium-stop + market fallback + empty-db (5)
+- Structural pins — scheduler wires the task; whitelist stays long-only (2)
+
+**Test that prevents recurrence:** `test_multileg_leg_NOT_picked` (a bull_put_spread leg must never reach the candidate list) and `test_strategy_whitelist_is_long_only` (the whitelist can't grow to include strategies with inverted economics).
+
+---
+
 ## 2026-06-07 — Three guardrail bugs fixed: journal-mutation authorization, env-resolver test hermeticity, Phase 5 doc-staleness CI. Severity: low (none affect trading behavior; all close gaps in the test surface).
 
 **Background:** Continuing the "all bugs are mine to fix" pass from yesterday. Three items that had been visible-but-deferred:

@@ -332,6 +332,11 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             db_path=ctx.db_path,
         )
         run_task(
+            f"[{seg_label}] Options Proactive Exits",
+            lambda: _task_options_proactive_exits(ctx),
+            db_path=ctx.db_path,
+        )
+        run_task(
             f"[{seg_label}] Options Roll Manager",
             lambda: _task_options_roll_manager(ctx),
             db_path=ctx.db_path,
@@ -2701,6 +2706,40 @@ def _task_options_lifecycle(ctx):
             )
     except Exception:
         logging.exception(f"[{seg_label}] Options lifecycle sweep failed")
+
+
+def _task_options_proactive_exits(ctx):
+    """Pre-expiry exit sweep for single-leg long options. Two rules:
+    premium-based stop (50% drop from entry) and time-based exit
+    (≤7 days to expiry). Multileg legs + short-premium strategies
+    are skipped (managed elsewhere or have inverted economics).
+
+    Cheap when there are no open single-leg longs — query is bounded
+    by `option_strategy IN ('long_call', 'long_put') AND status='open'`.
+    """
+    seg_label = ctx.display_name or ctx.segment
+    try:
+        from options_proactive_exits import sweep_proactive_option_exits
+        from client import get_api
+        api = get_api(ctx)
+        result = sweep_proactive_option_exits(api, db_path=ctx.db_path, ctx=ctx)
+        if result["scanned"] and (
+            result["time_exits_submitted"]
+            or result["premium_stops_submitted"]
+            or result["errors"]
+        ):
+            logging.info(
+                f"[{seg_label}] Options proactive exits: "
+                f"scanned={result['scanned']}, "
+                f"time_exits={result['time_exits_submitted']}, "
+                f"premium_stops={result['premium_stops_submitted']}, "
+                f"skipped_no_quote={result['skipped_no_quote']}, "
+                f"errors={result['errors']}"
+            )
+    except Exception:
+        logging.exception(
+            f"[{seg_label}] Options proactive exits sweep failed"
+        )
 
 
 def _task_capture_broker_activities(ctx):
