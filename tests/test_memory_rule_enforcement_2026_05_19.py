@@ -406,6 +406,7 @@ def test_no_direct_journal_mutation_outside_authorized_modules():
         "options_lifecycle.py",  # OCC option lifecycle (assignment/expiration/exercise) → trades UPDATE
         "models.py",             # schema layer
         "bracket_orders.py",     # UPDATEs protective_*_order_id columns only (Phase B1 atomicity pattern)
+        "options_multileg.py",   # _mark_legs_canceled — atomic-placement rollback for partial multi-leg journal writes (peer to bracket_orders' protective-atomicity pattern)
         "backfill_multileg_negative_prices.py",  # dated one-off fix
         "scripts/cleanup_phantom_stock_sells_2026_05_11.py",
         "cleanup_bug_cascade_buys_2026_05_18.py",

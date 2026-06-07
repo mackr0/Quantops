@@ -12,7 +12,7 @@ A strategy is a pure function that emits a vote per symbol per cycle.
 
 ### 1a. Steps
 
-1. **Create file:** `strategies/<strategy_name>.py`. Follow the convention of existing strategies — start by reading `strategies/momentum_breakout.py` as a template.
+1. **Create file:** `strategies/<strategy_name>.py`. Follow the convention of existing strategies — start by reading `strategies/fifty_two_week_breakout.py` as a template.
 2. **Define `run(symbol, market_type, df, params=None) → dict`**. Returns:
    ```python
    {

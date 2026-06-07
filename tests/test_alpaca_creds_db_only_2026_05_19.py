@@ -35,7 +35,16 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 @pytest.fixture
 def isolated_master_db(tmp_path, monkeypatch):
-    """Create a tmp master DB with one alpaca_accounts row."""
+    """Create a tmp master DB with one alpaca_accounts row.
+
+    Hermetic against local env state: pins `DB_PATH` env var AND
+    `config.DB_PATH` to the tmp file so the resolver can't read
+    `/opt/quantopsai/quantopsai.db` (or any other absolute path
+    the developer's `.env` may set). Without these pins the test
+    was state-dependent: it passed when no `.env` was loaded and
+    failed silently when one was, falling through to the resolver's
+    empty-string return path.
+    """
     master = tmp_path / "quantopsai.db"
     conn = sqlite3.connect(str(master))
     conn.executescript("""
@@ -58,6 +67,11 @@ def isolated_master_db(tmp_path, monkeypatch):
     conn.commit()
     conn.close()
     monkeypatch.chdir(tmp_path)
+    # Pin both env var AND config attr so neither path can leak in
+    # a different value from the dev machine's `.env`.
+    monkeypatch.setenv("DB_PATH", str(master))
+    import config
+    monkeypatch.setattr(config, "DB_PATH", str(master))
     return tmp_path
 
 

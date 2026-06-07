@@ -17,6 +17,30 @@ Rules going forward:
 
 ---
 
+## 2026-06-07 — Three guardrail bugs fixed: journal-mutation authorization, env-resolver test hermeticity, Phase 5 doc-staleness CI. Severity: low (none affect trading behavior; all close gaps in the test surface).
+
+**Background:** Continuing the "all bugs are mine to fix" pass from yesterday. Three items that had been visible-but-deferred:
+
+**1. `options_multileg.py:1526` — direct `UPDATE trades SET`.** Caught by `test_no_direct_journal_mutation_outside_authorized_modules`. The function is `_mark_legs_canceled` — atomic-placement rollback for multi-leg journal writes when a later leg's `log_trade` raises. It's a legitimate writer (peer to `bracket_orders.py`'s protective-atomicity pattern that's already on the AUTHORIZED list). Added `options_multileg.py` to the test's AUTHORIZED set with that justification. The function isn't refactored onto a `journal.*` helper because there isn't one for "mark these specific row IDs canceled" — and the operator-intent (broker rollback + journal rollback together) matches the AUTHORIZED-set bracket pattern exactly.
+
+**2. `test_env_set_to_garbage_resolver_still_returns_db_key` + `test_env_empty_resolver_still_returns_db_key` — state-dependent.** The `isolated_master_db` fixture created a tmp DB and chdir'd to it, but `_resolve_alpaca_credentials()` consults `config.DB_PATH` which loads from env at import time. On a dev box with `.env` setting `DB_PATH=/opt/quantopsai/quantopsai.db`, the resolver bypassed the tmp DB entirely and returned `("", "", base_url)` — making the test fail on any local with a populated `.env`. Fix: the fixture now also pins `DB_PATH` env var AND monkeypatches `config.DB_PATH` to the tmp file so neither path can leak in a different value from the dev machine.
+
+**3. Phase 5 of the doc audit — anti-staleness CI test.** `tests/test_docs_code_references_resolve.py` scans every backticked identifier in `docs/*.md` + `README.md` and fails if the referent doesn't exist in the current codebase:
+- File-path references → file exists somewhere in the repo (basename match within production tree + tests/).
+- Function references (`name()`) → `def name(` exists in production source.
+- Class references (`CamelCase`) → `class CamelCase` exists in production source OR tests/ (CHANGELOG legitimately cites test classes for new regression suites).
+
+CHANGELOG.md is intentionally out of scope (historical narrative; entries legitimately cite code that was renamed later). The CamelCase regex requires at least one lowercase letter so enum-shaped tokens like `CONFIRM` / `CAUTION` / `VETO` don't false-positive as class names. Allowlists are tight: Python builtins, stdlib exceptions, common typing/3rd-party (`DataFrame`, `Stream`, `Fernet`, `GradientBoostingClassifier`), and a small set of forward-looking placeholders (`CryptoPipeline`, `streaming.py`, the Phase 4B1 fine-tune files) that the docs intentionally cite as not-yet-built. Each allowlist entry has a one-line justification.
+
+Caught 5 actual stale references that the 2026-06-04 audit missed:
+- `docs/04_TECHNICAL_REFERENCE.md` cited `altdata_warmup.py` + `premarket_warmup.py` (retired modules); reworded to drop the dead file references.
+- `docs/04_TECHNICAL_REFERENCE.md` cited `tests/test_no_allcaps_snake_case_in_api.py`; corrected to the actual filename `tests/test_no_snake_case_in_api_responses.py`.
+- `docs/11_INTEGRATION_GUIDE.md` cited `strategies/momentum_breakout.py` as a template; updated to `strategies/fifty_two_week_breakout.py` (the actual closest analog in the current strategy set).
+
+Three self-checks pin the scanner's own correctness — synthetic-missing function + class are correctly NOT in the symbol set; a known-real function (`init_db`) is correctly FOUND. Without these, a regex break could silently disable the entire guardrail.
+
+---
+
 ## 2026-06-06 — Three root-cause fixes: snake_case template prose, position-cap race, cross-process yfinance guard. Severity: medium.
 
 **1. Snake_case prose in user-facing templates.** The standing rule "no snake_case in the UI" had a structural test (`test_no_snake_case_in_rendered_output.py`) covering DYNAMIC field interpolations via `| humanize`, but it never covered STATIC prose between Jinja blocks. `templates/issues.html:113` rendered the literal text "altdata scrape_runs" — `scrape_runs` is the alt-data subprojects' DB table name. Same gap caught 14 other pre-existing leaks in `ai.html` and `settings.html` (specialist names, env-var names, `MULTILEG_OPEN`, `PAIR_TRADE`, `Pipeline.run_cycle`). All reworded into plain English. The existing test grew a new method `test_static_template_prose_has_no_snake_case_identifiers` that strips Jinja directives, `<code>`/`<pre>`/`<script>`/`<style>` regions, and attribute values, then scans the remainder for snake_case tokens. Empty allowlist beyond five state-machine names (`pending_protective`, `pending_fill`, `broker_orphan`, `journal_phantom`, `buy_hold`) that legitimately appear in admin/audit prose.
