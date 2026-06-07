@@ -811,8 +811,11 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
 
     # Item 1a of COMPETITIVE_GAP_PLAN.md — options strategy advisor.
     # Surfaces covered-call / protective-put opportunities on existing
-    # positions to the AI prompt. Read-side only — execution requires
-    # the AI to propose with action='OPTIONS' (deferred to follow-up).
+    # positions to the AI prompt. The AI proposes via action='OPTIONS'
+    # (vocabulary + JSON example wired in _build_batch_prompt below);
+    # trade_pipeline dispatches OPTIONS proposals to
+    # OptionPipeline._execute_single_leg. Pinned by
+    # tests/test_ai_proposes_options_natively_2026_06_07.py.
     options_strategy_block = ""
     try:
         from options_strategy_advisor import render_for_prompt as opt_render

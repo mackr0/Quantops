@@ -17,6 +17,30 @@ Rules going forward:
 
 ---
 
+## 2026-06-07 — Stale `ai_analyst.py:815` "deferred to follow-up" TODO removed; OPTIONS-vocab contract pinned. Severity: low (the path was working; the comment was misleading).
+
+**Background:** `ai_analyst.py:815` carried a TODO comment from when the options-strategy-advisor block was first added:
+> "execution requires the AI to propose with action='OPTIONS' (deferred to follow-up)"
+
+The follow-up shipped in two stages back on 2026-05-19:
+1. `_build_batch_prompt` learned to include OPTIONS in the actions list whenever options context is present (either the advisor block is non-empty OR any candidate carries an `options_oracle_summary`). Full required-fields documentation + a JSON example are included in the prompt.
+2. `trade_pipeline.run_trade_cycle` learned to dispatch `action='OPTIONS'` proposals to `OptionPipeline._execute_single_leg`.
+
+Live observation 2026-06-05 confirmed the AI is proposing OPTIONS natively (e.g., `IBIT/OPTIONS/70` in pid 48's response). The TODO comment was outdated and misleading future readers into thinking the path was unimplemented.
+
+**What this ships:** stale comment removed; replaced with a pointer to the new test file.
+
+`tests/test_ai_proposes_options_natively_2026_06_07.py` (5 tests) pins the vocabulary contract end-to-end via the actual `_build_batch_prompt` call:
+- Layer 1: OPTIONS appears in the actions string when a candidate carries an options oracle summary
+- Layer 1b: OPTIONS does NOT appear when no options context exists (prevents the AI from proposing options against names with no oracle data)
+- Layer 2: prompt includes the JSON example with all required fields (`option_strategy`, `strike`, `expiry`, `contracts`)
+- Layer 2b: the OPTIONS note uses 'take as-is / adjust / propose' framing (matches the asset-class-neutrality work from 2026-05-19)
+- Layer 3: structural pin — the deleted comment can't be silently re-added without tripping the test
+
+Execution-side coverage already existed in `tests/test_pipelines_b_complete_2026_05_19.py` (OPTIONS proposals reach `OptionPipeline.decide`) and `tests/test_single_leg_options_migration_2026_05_19.py` (`OptionPipeline._execute_single_leg` handles the proposal shape).
+
+---
+
 ## 2026-06-07 — `wheel_symbols` round-trip smoke-tested end-to-end + ai_model_auto_tune allowlist fix. Severity: low (no behavior change for trading; closes the "code that compiles ≠ feature that works" gap).
 
 **Background:** The wheel automation infrastructure had been shipped for months — schema column, model allowlist, parser, UserContext field, AI-prompt wheel-block renderer, Settings UI textarea — but no Flask test-client smoke test proved the operator-visible round-trip worked. Per the standing rule (`feedback_ui_buttons_must_have_smoke_tests.md`): code that compiles ≠ button that works. The "feature is shipped" claim was unverified.
