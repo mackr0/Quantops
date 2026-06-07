@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS insider_txns (
     value_usd          REAL,
     acquired_disposed  TEXT,               -- 'A' (acquired) or 'D' (disposed)
     direct_indirect    TEXT,               -- 'D' or 'I'
+    is_10b5_1_plan     INTEGER NOT NULL DEFAULT 0,  -- 2026-06-07
     parser_version     TEXT,
     -- Dedup composite: an insider doesn't file the same txn-date+code+share
     -- count for the same security under the same accession twice.
@@ -143,10 +144,22 @@ CREATE TABLE IF NOT EXISTS no_cik_tickers (
 
 
 def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
-    """Create DB file + tables. Idempotent."""
+    """Create DB file + tables. Idempotent. Additive migrations
+    via ALTER TABLE for columns added after initial create."""
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     with sqlite3.connect(db_path) as conn:
         conn.executescript(SCHEMA)
+        # 2026-06-07 — migration: existing DBs need is_10b5_1_plan
+        # added. CREATE TABLE IF NOT EXISTS above doesn't add
+        # columns to pre-existing tables.
+        try:
+            conn.execute(
+                "ALTER TABLE insider_txns "
+                "ADD COLUMN is_10b5_1_plan INTEGER NOT NULL DEFAULT 0"
+            )
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
 
 
 @contextmanager
@@ -340,10 +353,16 @@ def insert_txn(
     officer_title: Optional[str] = None,
     acquired_disposed: Optional[str] = None,
     direct_indirect: Optional[str] = None,
+    is_10b5_1_plan: bool = False,
     parser_version: Optional[str] = None,
 ) -> bool:
     """Insert one insider transaction. Dedup'd on
-    (accession, rpt_owner, txn_date, txn_code, shares)."""
+    (accession, rpt_owner, txn_date, txn_code, shares).
+
+    `is_10b5_1_plan` (2026-06-07) flags transactions disclosed as
+    part of a pre-arranged Rule 10b5-1 trading plan. These carry
+    weaker bearish-signal weight (the plan locked the trade in
+    months earlier — mechanical, not timed)."""
     try:
         conn.execute(
             "INSERT INTO insider_txns ("
@@ -351,8 +370,8 @@ def insert_txn(
             "is_officer, is_director, is_ten_percent, officer_title, "
             "transaction_date, txn_code, shares, price_per_share, "
             "value_usd, acquired_disposed, direct_indirect, "
-            "parser_version) VALUES "
-            "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "is_10b5_1_plan, parser_version) VALUES "
+            "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (accession_number, cik, rpt_owner_name,
              1 if is_officer else 0,
              1 if is_director else 0,
@@ -360,6 +379,7 @@ def insert_txn(
              officer_title,
              transaction_date, txn_code, shares, price_per_share,
              value_usd, acquired_disposed, direct_indirect,
+             1 if is_10b5_1_plan else 0,
              parser_version),
         )
         return True
@@ -409,11 +429,21 @@ def get_recent_insider_activity(
 ) -> Dict[str, Any]:
     """Return the aggregate insider summary expected by the QuantOpsAI
     trade pipeline (matches the shape of the legacy
-    `alternative_data.get_insider_activity()`)."""
+    `alternative_data.get_insider_activity()`).
+
+    2026-06-07 — adds `discretionary_*` and `planned_*` splits so
+    callers can distinguish mechanical 10b5-1 plan trades from
+    discretionary insider activity. `net_direction` is now computed
+    ONLY from discretionary trades — a wave of 10b5-1 sales scheduled
+    months ago carries near-zero bearish signal and shouldn't flip
+    the direction call."""
     result = {
         "recent_buys": 0, "recent_sells": 0,
+        "discretionary_buys": 0, "discretionary_sells": 0,
+        "planned_10b5_1_buys": 0, "planned_10b5_1_sells": 0,
         "net_direction": "neutral", "notable": None,
         "total_buy_value": 0.0, "total_sell_value": 0.0,
+        "discretionary_buy_value": 0.0, "discretionary_sell_value": 0.0,
         "cluster_count": 0,
     }
     cik = cik_for_ticker(conn, ticker)
@@ -424,7 +454,8 @@ def get_recent_insider_activity(
     # signal codes traders actually care about.
     rows = conn.execute(
         "SELECT rpt_owner_name, officer_title, txn_code, shares, "
-        "price_per_share, value_usd, transaction_date "
+        "price_per_share, value_usd, transaction_date, "
+        "is_10b5_1_plan "
         "FROM insider_txns "
         "WHERE cik = ? AND txn_code IN ('P', 'S') "
         "AND date(transaction_date) >= date('now', ?) "
@@ -434,24 +465,46 @@ def get_recent_insider_activity(
 
     buy_value = 0.0
     sell_value = 0.0
+    discr_buy_value = 0.0
+    discr_sell_value = 0.0
     biggest_buy = None  # (value, owner, title, date)
     for r in rows:
         val = float(r["value_usd"] or 0)
+        is_planned = bool(r["is_10b5_1_plan"])
         if r["txn_code"] == "P":
             result["recent_buys"] += 1
             buy_value += val
-            if biggest_buy is None or val > biggest_buy[0]:
-                biggest_buy = (val, r["rpt_owner_name"],
-                               r["officer_title"], r["transaction_date"])
+            if is_planned:
+                result["planned_10b5_1_buys"] += 1
+            else:
+                result["discretionary_buys"] += 1
+                discr_buy_value += val
+                if biggest_buy is None or val > biggest_buy[0]:
+                    biggest_buy = (val, r["rpt_owner_name"],
+                                   r["officer_title"],
+                                   r["transaction_date"])
         else:  # "S"
             result["recent_sells"] += 1
             sell_value += val
+            if is_planned:
+                result["planned_10b5_1_sells"] += 1
+            else:
+                result["discretionary_sells"] += 1
+                discr_sell_value += val
     result["total_buy_value"] = round(buy_value, 2)
     result["total_sell_value"] = round(sell_value, 2)
+    result["discretionary_buy_value"] = round(discr_buy_value, 2)
+    result["discretionary_sell_value"] = round(discr_sell_value, 2)
 
-    if result["recent_buys"] > result["recent_sells"] * 1.5:
+    # Direction call uses DISCRETIONARY counts only — a 10b5-1 sale
+    # wave is mechanical, not bearish info. `biggest_buy` is also
+    # already restricted to discretionary buys (see loop above) so
+    # the `notable` line never highlights a plan-driven purchase.
+    d_buys = result["discretionary_buys"]
+    d_sells = result["discretionary_sells"]
+    if d_buys > d_sells * 1.5:
         result["net_direction"] = "buying"
-    elif result["recent_sells"] > result["recent_buys"] * 1.5:
+    elif d_sells > d_buys * 1.5:
         result["net_direction"] = "selling"
 
     if biggest_buy and biggest_buy[0] >= 100_000:
@@ -462,10 +515,14 @@ def get_recent_insider_activity(
             f"{biggest_buy[3][:10]}"
         )
 
-    # Cluster: distinct insiders BUYING within last 14 days.
+    # Cluster: distinct insiders DISCRETIONARILY buying within last
+    # 14 days. Plan-driven buys (10b5-1) don't count — a coincidence
+    # of multiple plans funding on the same day isn't a cluster
+    # signal, it's a scheduling artifact.
     cluster = conn.execute(
         "SELECT COUNT(DISTINCT rpt_owner_name) FROM insider_txns "
         "WHERE cik = ? AND txn_code = 'P' "
+        "AND is_10b5_1_plan = 0 "
         "AND date(transaction_date) >= date('now', '-14 days')",
         (cik,),
     ).fetchone()

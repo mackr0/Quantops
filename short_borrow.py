@@ -1,21 +1,30 @@
 """Short-borrow cost accrual.
 
-DYNAMIC_UNIVERSE_PLAN.md / TECHNICAL_DOCUMENTATION.md §15 deferred
-item — actual broker P&L on a short includes the daily borrow rate
-charged by the lender. Alpaca's `unrealized_pl` does NOT account
-for this; on most names the rate is 0.25-2% annualized so for trades
-held same-day it's noise, but for shorts held 5+ days it can swing
-the realized P&L meaningfully.
+Actual broker P&L on a short includes the daily borrow rate charged
+by the lender. Alpaca's `unrealized_pl` does NOT account for this;
+on most names the rate is 0.25-2% annualized so for trades held
+same-day it's noise, but for shorts held 5+ days it can swing the
+realized P&L meaningfully.
 
 This module computes a deterministic, conservative borrow accrual
-that's subtracted from cover-time P&L. Defaults match Interactive
-Brokers' "general collateral" rate for liquid names (~1.8% annualized
-≈ 0.5 bps/day). Per-symbol overrides for known hard-to-borrow names
-can be added to `HARD_TO_BORROW_BPS_PER_DAY`.
+that's subtracted from cover-time P&L. Three-tier model:
+
+  1. `easy_to_borrow=True` (Alpaca flag) → DEFAULT_BPS_PER_DAY
+     (general-collateral, ~1.8% annualized).
+  2. `easy_to_borrow=False` AND symbol not in HARD_TO_BORROW map →
+     MEDIUM_BORROW_BPS_PER_DAY (~8% annualized typical IBKR
+     non-GC rate).
+  3. Symbol in `HARD_TO_BORROW_BPS_PER_DAY` → explicit per-symbol
+     rate (illustrative typical IBKR ranges for known meme /
+     squeeze / hot-biotech names).
 
 The accrual is intentionally pessimistic: it never assumes the broker
 gave us a free borrow. Better to report P&L slightly low than fool
 ourselves on overnight holds.
+
+Future enhancement: a live borrow-rate API (IBKR, Interactive
+Brokers SLB, etc.) would replace the static defaults. Currently
+gated on subscription cost — see OPEN_ITEMS §1.1 (3c paid feeds).
 """
 
 from __future__ import annotations

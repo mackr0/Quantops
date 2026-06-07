@@ -254,6 +254,7 @@ def fetch_and_store_filing(
             officer_title=t.get("officer_title"),
             acquired_disposed=t.get("acquired_disposed"),
             direct_indirect=t.get("direct_indirect"),
+            is_10b5_1_plan=t.get("is_10b5_1_plan", False),
             parser_version=PARSER_VERSION,
         )
         if ok:

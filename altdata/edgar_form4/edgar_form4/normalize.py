@@ -38,6 +38,7 @@ Transaction codes (the ones that matter for the trade pipeline):
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 from xml.etree import ElementTree as ET
 
@@ -132,6 +133,24 @@ def parse_form4_xml(xml_text: str) -> Optional[Dict[str, Any]]:
         else {"name": "Unknown insider"}
     )
 
+    # 2026-06-07 — capture 10b5-1 plan indicator. SEC Form 4 stores
+    # the "this trade is part of a pre-arranged Rule 10b5-1 plan"
+    # signal as free-text inside a <footnote> element referenced by
+    # <footnoteId id="F1"/> tags inside the transaction. A 10b5-1
+    # sale by an insider is mechanical (the plan locked in the
+    # trade months earlier) and carries far weaker bearish-signal
+    # weight than a discretionary sale. The trade pipeline needs
+    # this distinction to avoid weighting plan-driven activity as
+    # if it were timed selling.
+    footnotes_by_id: Dict[str, str] = {}
+    footnotes_el = root.find("footnotes")
+    if footnotes_el is not None:
+        for fn in footnotes_el.findall("footnote"):
+            fid = fn.get("id")
+            text = (fn.text or "").strip()
+            if fid:
+                footnotes_by_id[fid] = text
+
     non_derivative_transactions = []
     table = root.find("nonDerivativeTable")
     if table is not None:
@@ -155,6 +174,24 @@ def parse_form4_xml(xml_text: str) -> Optional[Dict[str, Any]]:
             if shares is not None and price is not None:
                 value_usd = round(shares * price, 2)
 
+            # 2026-06-07 — 10b5-1 plan detection. Walk every
+            # <footnoteId id="..."/> reference anywhere inside this
+            # transaction's element tree, resolve to the footnote
+            # text, and check for the rule pattern. The footnote
+            # references can live under transactionCoding (whole-
+            # transaction note) or under any field-level sub-element
+            # (price, shares, etc.) — recursive scan is the
+            # cheapest way to cover all of them.
+            is_10b5_1 = False
+            for fn_ref in txn_el.iter("footnoteId"):
+                fid = fn_ref.get("id")
+                if not fid:
+                    continue
+                fn_text = footnotes_by_id.get(fid, "")
+                if _is_10b5_1_footnote(fn_text):
+                    is_10b5_1 = True
+                    break
+
             non_derivative_transactions.append({
                 "transaction_date": txn_date,
                 "txn_code": txn_code,
@@ -163,6 +200,7 @@ def parse_form4_xml(xml_text: str) -> Optional[Dict[str, Any]]:
                 "value_usd": value_usd,
                 "acquired_disposed": acquired_disposed,
                 "direct_indirect": direct_indirect,
+                "is_10b5_1_plan": is_10b5_1,
                 # Owner attribution: use primary; in multi-owner
                 # filings each owner's name is on the reportingOwner
                 # block, not embedded per-transaction. The same set
@@ -182,4 +220,25 @@ def parse_form4_xml(xml_text: str) -> Optional[Dict[str, Any]]:
         "issuer_ticker": issuer_ticker or None,
         "reporting_owners": reporting_owners,
         "non_derivative_transactions": non_derivative_transactions,
+        "footnotes_by_id": footnotes_by_id,
     }
+
+
+# Regex tolerates spaces and ANY of the common Unicode dash glyphs
+# between "10b5" and "1". SEC filers using rich-text editors emit
+# en-dash (U+2013), em-dash (U+2014), hyphen-minus (U+002D), the
+# Unicode hyphen (U+2010), and even minus sign (U+2212).
+# Case-insensitive via the re flag.
+_DASH_CHARS = "-‐‑‒–—―−"
+_10B5_1_RE = re.compile(
+    rf"\b10b5[\s{re.escape(_DASH_CHARS)}]?1\b",
+    re.IGNORECASE,
+)
+
+
+def _is_10b5_1_footnote(text: str) -> bool:
+    """True iff the footnote text references a Rule 10b5-1 trading
+    plan. Defensively case-insensitive + dash-variant-tolerant."""
+    if not text:
+        return False
+    return bool(_10B5_1_RE.search(text))

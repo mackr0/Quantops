@@ -44,13 +44,13 @@ When something here moves to ✅, update the entry with the commit + date. When 
 | Earnings transcript NLP | ✅ DONE | `sec_filings.get_earnings_call_sentiment` |
 | Congressional trades | ✅ DONE | `alternative_data.get_congressional_recent` |
 | Institutional 13F holdings | ✅ DONE | `alternative_data.get_13f_institutional` |
-| Biotech FDA / PDUFA milestones | ⚠ PARTIAL | `alternative_data.get_biotech_milestones` works for clinical trials; **PDUFA scraper deferred** (per ALTDATA_INTEGRATION_PLAN.md line 11: "0 PDUFA events"). |
+| Biotech FDA / PDUFA milestones | ✅ DONE | `alternative_data.get_biotech_milestones` reads from `pdufa_events`; `pdufa_scraper.py` populates via SEC EDGAR full-text search on 8-K filings + hand-curated fallback seed; wired into `_task_pdufa_scrape` daily-idempotent cron (multi_scheduler.py:3669). Prod has 21 events as of 2026-06-07. |
 | Google Trends search interest | ✅ DONE | `alternative_data.get_google_trends_signal` |
 | Wikipedia page-views | ✅ DONE | `alternative_data.get_wikipedia_pageviews_signal` |
 | App Store rankings | ✅ DONE | `alternative_data.get_app_store_ranking` shipped + WoW change wired via `_get_wow_change` at `alternative_data.py:2018-2096` (see §10 row). Earlier partial-status framing superseded by the §10 ✅ DONE marker; this row resolves the internal contradiction. |
 | GitHub commit activity | 🔒 DEFERRED | Most S&P doesn't have meaningful public repos; weak signal. |
 | Job-postings volume | 🔒 DEFERRED | No clean free source (LinkedIn paid, Indeed TOS-fragile). |
-| 10b5-1 insider planned-sale tracking | ⏳ OPEN | More granular than current insider data; SEC EDGAR free. |
+| 10b5-1 insider planned-sale tracking | ✅ DONE 2026-06-07 | Form 4 normalizer captures `is_10b5_1_plan` from footnote text via `_is_10b5_1_footnote` (case-insensitive, dash-variant-tolerant). `insider_txns.is_10b5_1_plan` column + ALTER-ADD migration. `get_recent_insider_activity` splits `discretionary_*` from `planned_10b5_1_*`; `net_direction` and `cluster_count` exclude plan-driven trades. |
 
 ### 1.2 Open inside 5c (better backtesting)
 
@@ -196,7 +196,7 @@ Out-of-scope (per plan §7): multi-exchange expansion, corporate-action awarenes
 | `options_roll_manager.py:31-34` | Earlier "Roll-window thresholds. Tunable per-profile in a future commit." | ✅ DONE — comment now reads "these are now per-profile tunable knobs (UserContext fields, settings UI). Module constants stay as fallbacks when a function is called without ctx." |
 | `slippage_model.py:163-168` | Earlier `:165` "We don't store ADV at trade time, so use a simple proxy" | ✅ DONE 2026-05-10 — comment rewritten in Issue 10 (commit `47de74d`) to describe actual behavior (`adv_at_decision` IS stored and used; legacy rows fall back to the $50M ADV proxy) |
 | `slippage_model.py:42` | Earlier `:197` "K is currently fitted from paper fills" — text now lives in module docstring at L42: "fills will deviate; the calibrator should be re-run after going [live]" | 🔒 DEFERRED — recalibrate after real money. Concept unchanged; only the line moved. |
-| `short_borrow.py:3` | "DYNAMIC_UNIVERSE_PLAN.md / TECHNICAL_DOCUMENTATION.md §15 deferred" | ⏳ OPEN — short borrow rate tracking infrastructure (currently uses Alpaca's binary `easy_to_borrow` flag only) |
+| `short_borrow.py:3` | "DYNAMIC_UNIVERSE_PLAN.md / TECHNICAL_DOCUMENTATION.md §15 deferred" | ✅ DONE — `short_borrow.py` has a 3-tier model: easy_to_borrow=True → DEFAULT_BPS_PER_DAY (general collateral), easy_to_borrow=False → MEDIUM_BORROW_BPS_PER_DAY (~8% annualized), per-symbol overrides in HARD_TO_BORROW_BPS_PER_DAY for known meme/squeeze/HTB names. Live borrow-rate API integration (IBKR SLB feed) remains a paid-feed dependency per §1 row 3c. Docstring updated 2026-06-07. |
 
 ---
 

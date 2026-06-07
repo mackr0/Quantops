@@ -17,6 +17,33 @@ Rules going forward:
 
 ---
 
+## 2026-06-07 — 10b5-1 insider plan detection + two stale OPEN_ITEMS entries closed. Severity: medium (insider-activity bearish signals were over-weighted on 10b5-1-heavy names; the other two were doc drift, not feature gaps).
+
+**Background:** The TODO list had three insider/short-related items. After investigation, two were stale (work shipped, doc out of date) and one was a real gap.
+
+**1. 10b5-1 insider planned-sale tracking — REAL gap, now fixed.**
+
+SEC Form 4 stores "this trade was made pursuant to a Rule 10b5-1 trading plan" as free text inside a `<footnote>` element referenced by `<footnoteId id="F1"/>` tags inside the transaction's element tree. The pre-2026-06-07 Form 4 normalizer ignored the footnotes block entirely. As a result, every plan-driven sale was indistinguishable from a discretionary sale, and the trade pipeline weighted a CEO's scheduled 50,000-share 10b5-1 distribution the same as an unplanned market-timed sale. Same bearish weight on mechanical activity — clearly wrong.
+
+What this ships:
+- `altdata/edgar_form4/edgar_form4/normalize.py`: parses `<footnotes>` into a dict keyed by id, walks every `<footnoteId>` reference inside each transaction (recursive `iter()` so coding / amounts / ownership sub-element refs are all covered), resolves the footnote text, and matches via `_10B5_1_RE` (case-insensitive, tolerant of all common Unicode dash glyphs: ASCII hyphen, Unicode hyphen, en-dash, em-dash, minus sign).
+- `altdata/edgar_form4/edgar_form4/store.py`: `insider_txns.is_10b5_1_plan INTEGER NOT NULL DEFAULT 0` column + ALTER-ADD migration in `init_db` for pre-existing prod DBs. `insert_txn` accepts the new kwarg.
+- `altdata/edgar_form4/edgar_form4/scrape.py`: passes through the parsed flag.
+- `get_recent_insider_activity` now returns `discretionary_buys` / `discretionary_sells` / `planned_10b5_1_buys` / `planned_10b5_1_sells` / `discretionary_buy_value` / `discretionary_sell_value` alongside the legacy aggregates. `net_direction` is computed from DISCRETIONARY counts ONLY — a 10b5-1 sale wave no longer flips the call to 'selling'. `cluster_count` excludes plan-driven buyers (a coincidence of 5 plans funding the same day isn't a cluster).
+- Tests: `altdata/edgar_form4/tests/test_10b5_1_detection_2026_06_07.py` (10 tests) — parser detects all dash variants + canonical phrasing; unrelated footnotes don't flag; dangling `<footnoteId>` without text doesn't crash or flag; persistence round-trip + the migration path on a pre-existing DB without the column; the aggregation contract that direction + cluster ignore plan-driven activity.
+
+**2. `short_borrow.py:3` "deferred" comment — stale.**
+
+The TODO claimed "currently uses Alpaca's binary `easy_to_borrow` flag only." Actually the module already had a 3-tier model: `easy_to_borrow=True` → `DEFAULT_BPS_PER_DAY` (~1.8% annualized GC), `easy_to_borrow=False` → `MEDIUM_BORROW_BPS_PER_DAY` (~8%), per-symbol overrides in `HARD_TO_BORROW_BPS_PER_DAY` for known meme/squeeze/HTB names. Module docstring rewritten to describe what the code actually does. OPEN_ITEMS entry updated to ✅ DONE with the live-API enhancement noted as a paid-feed dependency.
+
+**3. PDUFA scraper — stale.**
+
+The TODO claimed "0 PDUFA events." Actually `pdufa_scraper.py` shipped 2026-05-04 with EDGAR full-text search for "PDUFA date" in 8-K filings + hand-curated fallback seed, and `_task_pdufa_scrape` runs daily-idempotently. Prod altdata DB confirmed 21 events spanning 2025-08-31 → 2027-02-27. `alternative_data.get_biotech_milestones` reads from the `pdufa_events` table. OPEN_ITEMS entry updated to ✅ DONE.
+
+**Test that prevents recurrence:** `test_planned_sales_dont_flip_net_direction_to_selling` — pinned with the exact regression scenario (5 plan-driven sales + 1 discretionary buy → net_direction MUST be 'buying', not 'selling').
+
+---
+
 ## 2026-06-07 — Backtester dashboard panel: smoke tests + persistent history + nav link. Severity: low (no behavior change for trading; closes a discoverability and durability gap).
 
 **Background:** The per-profile "Backtest These Settings" button on `/settings` had been wired for months — POST `/api/backtest/<pid>` returned a job id; JS polled `/api/backtest/status/<job_id>` every 3s and rendered current-vs-proposed comparison. Three real gaps:
