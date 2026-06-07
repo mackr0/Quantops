@@ -49,8 +49,15 @@ def _update_job(job_id: str, **kwargs):
 
 
 def start_backtest(market_type, current_params, proposed_params, days=90,
-                    changes_summary=None):
-    """Start a backtest in a background thread. Returns job_id immediately."""
+                    changes_summary=None, profile_id=None, user_id=None):
+    """Start a backtest in a background thread. Returns job_id immediately.
+
+    `profile_id` + `user_id` (2026-06-07) are persisted to
+    `backtest_history` so the operator can look back across
+    param-tuning cycles after the 30-min in-memory expiry. Both
+    are optional to preserve back-compat with any caller that
+    doesn't know its profile context.
+    """
     job_id = str(uuid.uuid4())[:8]
 
     with _lock:
@@ -62,8 +69,21 @@ def start_backtest(market_type, current_params, proposed_params, days=90,
             "error": None,
             "progress": "Starting backtest...",
             "changes": changes_summary or [],
+            "profile_id": profile_id,
+            "user_id": user_id,
+            "market_type": market_type,
         }
         _write_jobs(jobs)
+
+    # Persist the started run immediately so an operator inspecting
+    # /backtest-history mid-job sees "running"; the completion side
+    # updates the row.
+    _persist_history_row(
+        job_id=job_id, profile_id=profile_id, user_id=user_id,
+        market_type=market_type, status="running",
+        current_params=current_params, proposed_params=proposed_params,
+        changes=changes_summary or [],
+    )
 
     def _run():
         try:
@@ -76,9 +96,17 @@ def start_backtest(market_type, current_params, proposed_params, days=90,
             result = backtest_comparison(market_type, current_params, proposed_params,
                                          days=days, progress_callback=_update_progress)
             _update_job(job_id, status="complete", result=result)
+            _finalize_history_row(
+                job_id=job_id, status="complete",
+                result=result, error=None,
+            )
         except Exception as exc:
             logger.exception("Backtest job %s failed", job_id)
             _update_job(job_id, status="failed", error=str(exc))
+            _finalize_history_row(
+                job_id=job_id, status="failed",
+                result=None, error=str(exc),
+            )
 
         # Clean up old jobs
         _cleanup_old_jobs()
@@ -87,6 +115,71 @@ def start_backtest(market_type, current_params, proposed_params, days=90,
     thread.start()
 
     return job_id
+
+
+def _persist_history_row(
+        job_id, profile_id, user_id, market_type, status,
+        current_params, proposed_params, changes,
+):
+    """Insert a backtest_history row at job start. Best-effort —
+    history persistence must never block the actual backtest run."""
+    try:
+        import sqlite3
+        from contextlib import closing
+        try:
+            from config import DB_PATH
+        except ImportError:
+            DB_PATH = "quantopsai.db"
+        with closing(sqlite3.connect(DB_PATH)) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO backtest_history "
+                "(job_id, profile_id, user_id, market_type, status, "
+                "current_params_json, proposed_params_json, changes_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    job_id, profile_id, user_id, market_type, status,
+                    json.dumps(current_params),
+                    json.dumps(proposed_params),
+                    json.dumps(changes),
+                ),
+            )
+            conn.commit()
+    except Exception as exc:
+        logger.warning(
+            "backtest_history insert failed (job=%s): %s: %s",
+            job_id, type(exc).__name__, exc,
+        )
+
+
+def _finalize_history_row(job_id, status, result, error):
+    """Update the backtest_history row when the job finishes. Best-
+    effort — failure here doesn't block the in-memory job update."""
+    try:
+        import sqlite3
+        from contextlib import closing
+        try:
+            from config import DB_PATH
+        except ImportError:
+            DB_PATH = "quantopsai.db"
+        with closing(sqlite3.connect(DB_PATH)) as conn:
+            conn.execute(
+                "UPDATE backtest_history "
+                "SET status=?, completed_at=datetime('now'), "
+                "    result_json=?, error=? "
+                "WHERE job_id=?",
+                (
+                    status,
+                    json.dumps(result) if result is not None else None,
+                    error,
+                    job_id,
+                ),
+            )
+            conn.commit()
+    except Exception as exc:
+        logger.warning(
+            "backtest_history finalize failed (job=%s): %s: %s",
+            job_id, type(exc).__name__, exc,
+        )
 
 
 def get_job_status(job_id):

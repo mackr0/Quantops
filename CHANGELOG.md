@@ -17,6 +17,31 @@ Rules going forward:
 
 ---
 
+## 2026-06-07 — Backtester dashboard panel: smoke tests + persistent history + nav link. Severity: low (no behavior change for trading; closes a discoverability and durability gap).
+
+**Background:** The per-profile "Backtest These Settings" button on `/settings` had been wired for months — POST `/api/backtest/<pid>` returned a job id; JS polled `/api/backtest/status/<job_id>` every 3s and rendered current-vs-proposed comparison. Three real gaps:
+1. **No smoke test** for the round-trip (button → API → polling → render). Standing rule `feedback_ui_buttons_must_have_smoke_tests.md` violated.
+2. **Results vanished after 30 minutes** — backtest_worker only persisted to `/tmp/quantopsai_backtest_jobs.json` with a hardcoded expiry. Operator running a backtest at 9am couldn't compare it to one from yesterday.
+3. **`/backtest/<market_type>` strategy-backtest pages had no nav link** — discoverable only by typing the URL.
+
+**What this ships:**
+
+- New `backtest_history` table in the master DB (job_id PK, profile_id, user_id, market_type, status, started_at, completed_at, current_params_json, proposed_params_json, result_json, changes_json, error). Indexed on completed_at + (profile_id, completed_at) for the list view.
+- `backtest_worker.start_backtest` extended to accept `profile_id` + `user_id`; `_persist_history_row` writes a `running`-status row at job start; `_finalize_history_row` updates with result/error on completion. Both are best-effort — DB failure doesn't block the actual backtest run.
+- `views.api_backtest` updated to pass profile_id + user_id to the worker so rows are attributable.
+- New route `/backtest-history` + `templates/backtest_history.html` — list of all past runs filtered by current_user, newest first, with current/proposed returns + delta + first-3 changes summary. Links each row back to the profile settings; flags completed/running/failed via color.
+- `base.html` nav grew a "Backtests" link between "Performance" and "AI" — appears on every authenticated page.
+
+**Test coverage:** `tests/test_backtest_dashboard_panel_2026_06_07.py` (11 tests) across three layers:
+- API smoke: Settings page renders the button + .backtest-btn class; POST /api/backtest/<pid> returns job_id AND passes profile_id + user_id to the worker (pinned via captured-call assertion so a refactor can't drop the attribution silently); GET /api/backtest/status/<job_id> returns the keys the polling JS reads.
+- Persistence: `_persist_history_row` inserts on start; `_finalize_history_row` updates status + completed_at + result_json on success; finalizer records `error` on failed jobs.
+- Route: `/backtest-history` renders empty state when no runs; renders completed run with returns + delta + profile name; filters by `current_user.id` (cross-user leak protection).
+- Nav: `href="/backtest-history"` present on /dashboard AND /settings.
+
+**Test that prevents recurrence:** `test_api_backtest_post_returns_job_id` pins the worker call signature including profile_id/user_id — without those, the history rows are unattributable and the per-user filter fails open.
+
+---
+
 ## 2026-06-07 — Stale `ai_analyst.py:815` "deferred to follow-up" TODO removed; OPTIONS-vocab contract pinned. Severity: low (the path was working; the comment was misleading).
 
 **Background:** `ai_analyst.py:815` carried a TODO comment from when the options-strategy-advisor block was first added:

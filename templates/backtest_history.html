@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}Backtest history — QuantOpsAI{% endblock %}
+{% block content %}
+
+<h1>Backtest history</h1>
+<p class="muted" style="font-size:0.9rem;">
+    Every backtest run ever submitted via the per-profile
+    "Backtest These Settings" button. Persists past the 30-minute
+    in-memory expiry on the worker side, so you can look back
+    across parameter-tuning cycles.
+</p>
+
+{% if not rows %}
+    <article>
+        <p>No backtests recorded yet. Open <a href="/settings">Settings</a>,
+        expand a profile, adjust parameters, and click
+        <strong>Backtest These Settings</strong>.</p>
+    </article>
+{% else %}
+    <p class="muted" style="font-size:0.85rem;margin-bottom:0.5rem;">
+        Showing {{ rows|length }} run(s), newest first.
+    </p>
+    <table style="width:100%;font-size:0.9rem;">
+        <thead>
+            <tr>
+                <th style="text-align:left;">When</th>
+                <th style="text-align:left;">Profile</th>
+                <th style="text-align:left;">Market</th>
+                <th style="text-align:left;">Status</th>
+                <th style="text-align:right;">Current return</th>
+                <th style="text-align:right;">Proposed return</th>
+                <th style="text-align:right;">Δ</th>
+                <th style="text-align:left;">Changes</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for row in rows %}
+            <tr>
+                <td>
+                    <small>{{ (row.completed_at or row.started_at) | friendly_time }}</small>
+                    <br><small class="muted">job {{ row.job_id }}</small>
+                </td>
+                <td>
+                    {% if row.profile_name %}
+                        <a href="/settings#profile-{{ row.profile_id }}">{{ row.profile_name }}</a>
+                    {% else %}
+                        <span class="muted">(deleted profile #{{ row.profile_id }})</span>
+                    {% endif %}
+                </td>
+                <td>{{ row.market_type or '—' }}</td>
+                <td>
+                    {% if row.status == 'complete' %}
+                        <span style="color:#00c853;">complete</span>
+                    {% elif row.status == 'running' %}
+                        <span style="color:#f0ad4e;">running</span>
+                    {% elif row.status == 'failed' %}
+                        <span style="color:#d9534f;" title="{{ row.error or '' }}">failed</span>
+                    {% else %}
+                        {{ row.status }}
+                    {% endif %}
+                </td>
+                {% if row.result and row.status == 'complete' %}
+                    {% set cur_ret = row.result.get('current', {}).get('total_return_pct') %}
+                    {% set prop_ret = row.result.get('proposed', {}).get('total_return_pct') %}
+                    <td style="text-align:right;">
+                        {% if cur_ret is not none %}{{ '%+.2f'|format(cur_ret) }}%{% else %}—{% endif %}
+                    </td>
+                    <td style="text-align:right;">
+                        {% if prop_ret is not none %}{{ '%+.2f'|format(prop_ret) }}%{% else %}—{% endif %}
+                    </td>
+                    <td style="text-align:right;">
+                        {% if cur_ret is not none and prop_ret is not none %}
+                            {% set delta = prop_ret - cur_ret %}
+                            <strong class="{{ 'pnl-pos' if delta >= 0 else 'pnl-neg' }}">
+                                {{ '%+.2f'|format(delta) }}%
+                            </strong>
+                        {% else %}—{% endif %}
+                    </td>
+                {% else %}
+                    <td style="text-align:right;" class="muted">—</td>
+                    <td style="text-align:right;" class="muted">—</td>
+                    <td style="text-align:right;" class="muted">—</td>
+                {% endif %}
+                <td>
+                    {% if row.changes %}
+                        {% for c in row.changes[:3] %}
+                            <small>{{ c }}</small><br>
+                        {% endfor %}
+                        {% if row.changes|length > 3 %}
+                            <small class="muted">+{{ row.changes|length - 3 }} more</small>
+                        {% endif %}
+                    {% else %}
+                        <span class="muted">—</span>
+                    {% endif %}
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+
+    <p class="muted" style="font-size:0.85rem;margin-top:1rem;">
+        Strategy backtests across the full universe (no parameter
+        comparison) are not listed here; those live at
+        <a href="/backtest/stocks">/backtest/stocks</a>,
+        <a href="/backtest/crypto">/backtest/crypto</a>, etc.
+    </p>
+{% endif %}
+
+{% endblock %}

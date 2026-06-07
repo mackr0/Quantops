@@ -1879,8 +1879,12 @@ def api_backtest(profile_id):
                 changes.append(f"{label}: {curr_val} → {prop_val}")
 
     from backtest_worker import start_backtest
-    job_id = start_backtest(market_type, current_params, proposed_params, days=90,
-                            changes_summary=changes)
+    job_id = start_backtest(
+        market_type, current_params, proposed_params, days=90,
+        changes_summary=changes,
+        profile_id=profile_id,
+        user_id=current_user.effective_user_id,
+    )
     return jsonify({"job_id": job_id})
 
 
@@ -6654,6 +6658,55 @@ def api_sec_alerts():
 # ---------------------------------------------------------------------------
 # Backtesting
 # ---------------------------------------------------------------------------
+
+@views_bp.route("/backtest-history")
+@login_required
+def backtest_history():
+    """Persistent history of per-profile backtest runs. Backed by
+    the `backtest_history` master-DB table; rows are written at
+    job start (status='running') and updated on completion. Survives
+    the 30-min in-memory expiry on the worker side."""
+    from contextlib import closing as _cl
+    from models import _get_conn
+    rows = []
+    try:
+        with _cl(_get_conn()) as conn:
+            cur = conn.execute(
+                "SELECT h.id, h.job_id, h.profile_id, "
+                "       h.market_type, h.status, h.started_at, "
+                "       h.completed_at, h.current_params_json, "
+                "       h.proposed_params_json, h.changes_json, "
+                "       h.result_json, h.error, p.name AS profile_name "
+                "FROM backtest_history h "
+                "LEFT JOIN trading_profiles p ON h.profile_id = p.id "
+                "WHERE h.user_id = ? OR h.user_id IS NULL "
+                "ORDER BY COALESCE(h.completed_at, h.started_at) DESC "
+                "LIMIT 200",
+                (current_user.effective_user_id,),
+            )
+            for r in cur.fetchall():
+                # sqlite3.Row supports dict access via [keyname]
+                row = {k: r[k] for k in r.keys()}
+                # Parse JSON fields for the template; on parse error
+                # leave the raw string so the operator can see what's
+                # broken instead of a silent missing field.
+                for col in ("current_params_json", "proposed_params_json",
+                              "changes_json", "result_json"):
+                    raw = row.get(col)
+                    parsed_key = col.replace("_json", "")
+                    if raw:
+                        try:
+                            row[parsed_key] = json.loads(raw)
+                        except (json.JSONDecodeError, TypeError):
+                            row[parsed_key] = None
+                    else:
+                        row[parsed_key] = None
+                rows.append(row)
+    except Exception as exc:
+        logger.warning("backtest_history page query failed: %s", exc)
+
+    return render_template("backtest_history.html", rows=rows)
+
 
 @views_bp.route("/backtest/<market_type>")
 @login_required

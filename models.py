@@ -292,6 +292,34 @@ def init_user_db(db_path: Optional[str] = None) -> None:
                 -- the helpers directly to need profile-row setup,
                 -- which is needless coupling.
             );
+            -- 2026-06-07 — persistent backtest history. The
+            -- per-profile "Backtest These Settings" button on
+            -- /settings runs an async job through backtest_worker;
+            -- without persistence, results vanish 30 min after
+            -- completion (in-memory + tmp-file only). This table
+            -- captures every completed run so the operator can
+            -- look back across param-tuning cycles. Schema kept
+            -- intentionally flat — JSON blobs for params + result
+            -- so the worker doesn't need to know table shape.
+            CREATE TABLE IF NOT EXISTS backtest_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id TEXT NOT NULL UNIQUE,
+                profile_id INTEGER,
+                user_id INTEGER,
+                market_type TEXT,
+                status TEXT NOT NULL,
+                started_at TEXT NOT NULL DEFAULT (datetime('now')),
+                completed_at TEXT,
+                current_params_json TEXT,
+                proposed_params_json TEXT,
+                result_json TEXT,
+                changes_json TEXT,
+                error TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_backtest_history_completed
+                ON backtest_history(completed_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_backtest_history_profile
+                ON backtest_history(profile_id, completed_at DESC);
         """)
         conn.commit()
 
