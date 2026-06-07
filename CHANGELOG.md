@@ -17,6 +17,24 @@ Rules going forward:
 
 ---
 
+## 2026-06-07 — `wheel_symbols` round-trip smoke-tested end-to-end + ai_model_auto_tune allowlist fix. Severity: low (no behavior change for trading; closes the "code that compiles ≠ feature that works" gap).
+
+**Background:** The wheel automation infrastructure had been shipped for months — schema column, model allowlist, parser, UserContext field, AI-prompt wheel-block renderer, Settings UI textarea — but no Flask test-client smoke test proved the operator-visible round-trip worked. Per the standing rule (`feedback_ui_buttons_must_have_smoke_tests.md`): code that compiles ≠ button that works. The "feature is shipped" claim was unverified.
+
+**What this ships:**
+
+- `tests/test_wheel_symbols_round_trip_2026_06_07.py` (6 tests): Flask test client posts to `/settings/profile/<id>` with various wheel_symbols payloads (whitespace-padded, lower-case, empty), then asserts the DB row holds a JSON list of uppercased tickers AND that `UserContext.wheel_symbols` parses back to the right Python list AND that the Settings page renders the textarea + previously-saved values. Each layer of the operator-visible chain (form → DB → ctx → UI re-render) gets its own assertion so a regression pinpoints the exact break.
+
+- Side bug caught: `ai_model_auto_tune` was defined in the migration (`models.py:467`) and written by the views handler (`views.py:1623`) but missing from `update_trading_profile`'s allowlist (`models.py:1453` area). The form save silently dropped the value — the column existed but no operator could set it from the UI. Added to the allowlist with a justification comment.
+
+**Test that prevents recurrence:** `test_settings_form_post_persists_wheel_symbols_as_json` — fails the moment any layer drops the value. `test_settings_page_renders_existing_wheel_symbols` — fails if a future refactor breaks the round-trip display.
+
+**Operator action available now:** wheel automation is fully wired. Set `wheel_symbols` on any profile via Settings → per-profile edit → "Wheel Symbols" textarea (comma-separated tickers). The wheel state-machine + recommendation surface to the AI prompt on every cycle for those symbols.
+
+Also registered `_task_options_proactive_exits` (shipped earlier today) on the INFRASTRUCTURE_TASKS list so the per-profile-task-must-be-gated guardrail passes — the task is no-op when no single-leg longs are open, so it's infrastructure (like `_task_options_lifecycle`) rather than a gated feature.
+
+---
+
 ## 2026-06-07 — TODO #7 fixed: proactive pre-expiry exits for single-leg long options. Severity: medium (option positions could decay to zero without an exit before expiry).
 
 **Background:** `options_lifecycle.py` resolved options at EXPIRY (marked worthless, computed P&L, flagged assignments). It did NOT exit positions BEFORE expiry. A long call/put bought 60 DTE could ride a -50% premium drop and a -90% gamma-week decay with no automatic close — only the operator pressing the close button.

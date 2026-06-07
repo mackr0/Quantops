@@ -1451,6 +1451,11 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         "long_vol_hedge_premium_pct",
         # OPEN_ITEMS #4 — wheel automation symbol opt-in list.
         "wheel_symbols",
+        # 2026-05-15 — per-profile opt-in for the tuner to A/B
+        # ai_provider/ai_model. Column is defined in the migration
+        # and set by views.py form handler; was missing here, so
+        # the form save silently dropped the value.
+        "ai_model_auto_tune",
         # OPEN_ITEMS #10 — options roll-window knobs.
         "options_roll_window_days",
         "options_auto_close_profit_pct",

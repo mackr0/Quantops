@@ -102,6 +102,10 @@ INFRASTRUCTURE_TASKS = {
     "_task_daily_summary_email",       # email digest (silent if no SMTP)
     "_task_options_lifecycle",         # exercise/assignment detection on
                                          # options positions; no-op when none
+    "_task_options_proactive_exits",   # 2026-06-07 TODO #7 — pre-expiry
+                                         # exits on single-leg longs;
+                                         # no-op when no long_call /
+                                         # long_put rows are open
     "_task_virtual_audit",             # virtual-profile reconciliation
     "_task_sec_filings",               # daily SEC EDGAR scan; once per
                                          # market_type, not per profile
