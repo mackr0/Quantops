@@ -123,11 +123,12 @@ resets that just swap Alpaca keys or wipe live state should use
 - **API key storage** — must follow the same encrypted-per-profile pattern as Gemini keys today (`ai_keys/openai_finetune.enc` or similar). See `feedback_no_master_key` memory rule — no env-level master keys.
 - **OpenAI billing budget** — recommend $50/month cap to start; raise after observing actual usage.
 
-### Operator decisions needed before implementation
-1. **Pilot profile choice** — recommend `EXP-A1-FullSystemStandard` (currently pid 28 after the 2026-06-04 reset; pids shift on every full reset, the experiment name is the stable identifier) since it's the AI Anchor profile with shadow harness already enabled.
-2. **Base model choice** — `gpt-4o-mini` (~$0.30/M input, $1.20/M output for fine-tuned) vs `gpt-4o` (~$3.75/M input, $15/M output for fine-tuned). Strongly recommend mini for cost; revisit if quality is insufficient.
-3. **Training cadence** — recommended weekly (Sunday 23:00 UTC). Could be daily but weekly batches give cleaner regime cohorts.
-4. **Pooled vs per-profile dataset** — recommended pooled for the first model (faster to useful dataset size); per-profile is a future iteration once each profile has 25K+ examples individually.
+### Decisions committed 2026-06-07 (see §15 for full rationale)
+1. **Pilot profile** — `EXP-A1-FullSystemStandard` (the AI Anchor; shadow harness enabled). Profile name is stable across resets; pid shifts.
+2. **Path** — **Phase 4b.2 (LoRA on Llama 3.1 8B)**, not Phase 4b.1. Hosted OpenAI fine-tune is rejected in favor of self-hosted weights for ownership / cost / data-sovereignty reasons. See §16.1 for the 4b.2 architecture and §15.2 for the rationale.
+3. **Training target** — reward-weighted on `return_pct_net`. Imitation and outcome-conditioned remain available as fallbacks (the corpus supports both without re-collection).
+4. **Training cadence** — weekly (Sunday 23:00 UTC).
+5. **Pooled vs per-profile** — pooled for the first model; per-profile waits until each profile has ≥25K resolved predictions.
 
 ---
 
@@ -656,15 +657,66 @@ tests/
 
 ---
 
-## 15. Open decisions
+## 15. Committed decisions (2026-06-07)
 
-1. **OpenAI account tier** — does the operator's current OpenAI account qualify for fine-tune API access? Verify before scoping further.
-2. **Pilot profile** — recommend `EXP-A1-FullSystemStandard` (the AI Anchor; currently pid 28 after the 2026-06-04 reset, pid shifts on every full reset but the experiment name is stable); operator can override.
-3. **Training cadence** — weekly recommended; daily is feasible but costs 7× more per run with no obvious quality benefit at our scale.
-4. **Pool everyone vs per-profile from day 1** — recommend pool. The ablation profiles (NoAltData, NoMetaModel, etc.) intentionally see different inputs; pooling washes that out but accelerates dataset growth. Trade-off worth taking until data per-profile crosses 25K.
-5. **Hyperparameter strategy** — `n_epochs=1` recommended for incremental; consider 2-3 epochs for the FIRST training job to bootstrap from the pooled archive.
-6. **Output format** — keep the existing JSON response shape (so downstream parsers stay unchanged) vs train on a tighter format (cheaper at inference time but breaks parser compat). Recommend keeping existing format for the first cut.
-7. **System prompt prefix** — should the fine-tune training file's system message be the FULL prompt prefix (all of `_build_batch_prompt`'s preamble) or a stripped-down version? Recommend full — gives the model the most context to learn from.
+The four research-design decisions below are committed as the active plan. The cost of changing any one later is one retraining cycle (~½ day human time + ~$100–200 GPU time) since the corpus preserves enough per-prediction context to support any of the alternatives. The data-foundation work shipped 2026-05-21 (B1/B2/B3 in §3) makes that cheap.
+
+### 15.1 Training target — reward-weighted on `return_pct_net`
+
+Train the model to prefer actions whose realized net return (after slippage + commission) was positive. Rationale:
+
+- It's the only target aligned with what the platform actually optimizes for.
+- Imitation caps the model at the base LLM's level — there's no reason to fine-tune just to copy the AI we already pay for.
+- Outcome-conditioned ("predict the outcome of action X under features Y") is useful as a meta-signal, not as a replacement for the apex AI.
+
+**Reversal cost:** ½ day to swap training objective + one retrain cycle. The same corpus rows support imitation training (use `raw_response_json` as the label) or outcome-conditioned (use `outcome_class` as the label) without re-collecting data.
+
+### 15.2 Base model + method — LoRA on Llama 3.1 8B (Phase 4b.2 path)
+
+This commits the project to **Phase 4b.2 over Phase 4b.1** (see §16.1 for the detailed 4b.2 architecture). Rationale for skipping the hosted OpenAI fine-tune path:
+
+- **Ownership** — LoRA weights are inspectable, auditable, transferable. Hosted weights are opaque and the vendor controls retraining lifecycle.
+- **Cost** — $0 training (operator's M2 Max 64GB handles a 7B/8B LoRA in hours); ~$50–200/mo inference on a managed endpoint. The 4b.1 hosted-fine-tune path is 5–20× more expensive per million tokens at scale.
+- **Data sovereignty** — paper-money research data shouldn't transit OpenAI corpora.
+- **Speed-to-result** — operator has already waited months for the corpus; another week of LoRA setup isn't the bottleneck.
+
+Alternative bases (Qwen 2.5 7B, Mistral 7B) remain on the table for the first soak — final pick deferred to training time based on whichever has the cleanest open-license + best instruction-following at the time the corpus is ready.
+
+**Reversal cost:** all training data is base-model-agnostic (`prompt_text` is the prompt regardless of who tokenizes it). Switching base models = one retrain; switching to hosted = re-derive training file in the vendor's format.
+
+### 15.3 Feature scope — prompt_text + raw inputs + regime IN; raw specialist scores OUT
+
+What the fine-tuned model sees in its training context:
+
+- **IN**: the exact `prompt_text` the AI saw at decision time (closest possible reproduction of production). `features_json` (per-symbol RSI, volume, ATR, etc.), `rule_votes_json` (deterministic specialist verdicts, which are stable code-level rules), `cycle_regime` snapshot (SPY move, VIX, sector moves at decision time — added 2026-06-05).
+- **OUT**: raw specialist scores (`meta_model_score`, `online_meta_score`, per-LLM-specialist verdicts). These churn whenever a specialist retrains or gets recalibrated; embedding them in the fine-tune locks the model to today's specialist behavior and breaks the comparison when a specialist's calibration shifts.
+
+**Reversal cost:** every excluded column is still preserved in the per-prediction row. Re-deriving a training file that includes them is a one-day data-builder change + a retrain.
+
+### 15.4 Soak harness — extend the existing per-profile shadow infrastructure to support self-hosted
+
+The existing `pipelines/shadow.py` cutover pattern (Scope C) was designed for Anthropic-vs-Gemini A/B comparison; both go through the same HTTP provider surface. The fine-tuned LoRA model lives on a self-hosted endpoint (Modal, Replicate, RunPod, or M2 Max — final hosting pick at §16.1 time). The shadow harness needs:
+
+- A `self_hosted` provider type added to `ai_providers.py`
+- Endpoint URL + auth carried per-profile (so different fine-tunes can be A/B'd)
+- The existing `pipeline_shadow_runs` table records the comparison (verdict agreement, lift) just like today's hosted-vs-hosted shadows
+
+Estimated effort: ~1 day before first training run finishes.
+
+### 15.5 Carried-forward decisions (no change from prior recommendation)
+
+| Decision | Choice | Why |
+|---|---|---|
+| Pilot profile | `EXP-A1-FullSystemStandard` (the AI Anchor) | Shadow harness already enabled; full system, no ablations |
+| Training cadence | Weekly (Sunday 23:00 UTC) | Cleaner regime cohorts than daily; 7× cheaper |
+| Pooled vs per-profile | Pooled for first model | Accelerates dataset growth; per-profile waits until ≥25K predictions each |
+| Hyperparameters (LoRA) | `lora_rank=16`, `lora_alpha=32`, `n_epochs=3` for first run; `n_epochs=1` for incremental | Conservative LoRA defaults; first run benefits from extra passes through the pooled archive |
+| Output format | Keep existing JSON response shape | Downstream parsers stay unchanged; tightening format is a separate retraining cycle if useful |
+| System prompt prefix | Full prefix (all of `_build_batch_prompt`'s preamble) | Gives the model the most context to learn from |
+
+### 15.6 Decision moot now that LoRA is committed
+
+- ~~OpenAI account tier qualification~~ — N/A under the LoRA path (Phase 4b.2 has no OpenAI dependency).
 
 ---
 
