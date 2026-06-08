@@ -17,6 +17,32 @@ Rules going forward:
 
 ---
 
+## 2026-06-08 — Resolver no longer auto-creates empty sqlite files. Severity: medium (daily WARN-spam on /issues; intermittent credential lookup failures in cron context).
+
+**Background:** `/issues` showed two paired WARNINGs every morning at ~06:07 (`market_data: alpaca_accounts credential lookup failed (db=quantopsai.db)` + `screener: get_active_alpaca_symbols: Alpaca lookup failed`). Both originated from the daily altdata cron run.
+
+**Root cause traced:**
+1. `congresstrades/prices.py:67` does `from screener import is_alpaca_active`.
+2. The cron subprocess runs from `/opt/quantopsai/altdata/congresstrades/`.
+3. `is_alpaca_active` → `get_active_alpaca_symbols(ctx=None)` → `client.get_api(None)` → `market_data._resolve_alpaca_credentials()`.
+4. The resolver fell back to `_DB_PATH = "quantopsai.db"` (relative; no env override in cron context).
+5. The path didn't exist in the cron's CWD, but `sqlite3.connect("quantopsai.db")` **auto-created a 0-byte sqlite file** there as a side effect.
+6. From that point on, the resolver's absolute-ify branch (which only triggers when `os.path.exists()` returns False) saw the stale 0-byte file and treated it as a usable master DB.
+7. Every subsequent call ran the credentials SELECT against an empty file → `OperationalError: no such table: alpaca_accounts` → WARN. Daily. Since 2026-05-20.
+
+**Two contracts pinned (test file: `tests/test_resolver_no_autocreate_empty_db_2026_06_08.py`):**
+
+1. **Connect uses `file:<path>?mode=ro` URI** so no auto-create can happen, period. Plus an `os.path.exists()` guard short-circuits before connect even tries.
+2. **Path candidacy validates the `alpaca_accounts` table is present**, not just file existence. New helper `_path_has_alpaca_table(path)` distinguishes a populated master DB from a 0-byte SQLite stub.
+
+Structural pins on both contracts (regex assertions on the resolver source) prevent silent reversion via a future refactor that goes back to plain `sqlite3.connect(_DB_PATH)`.
+
+**Operator action taken at deploy time:** the stale `/opt/quantopsai/altdata/congresstrades/quantopsai.db` (0 bytes, created 2026-05-20 06:07) deleted on prod. Without the cleanup the next altdata cron would still find it via the helper and warn one more time before the fix kicks in.
+
+**Test that prevents recurrence:** `test_resolver_does_not_autocreate_file_in_cwd` — calls the resolver from an empty CWD and asserts no file is left behind. `test_path_has_alpaca_table_distinguishes_empty_from_populated` pins the helper's contract.
+
+---
+
 ## 2026-06-07 — 10b5-1 insider plan detection + two stale OPEN_ITEMS entries closed. Severity: medium (insider-activity bearish signals were over-weighted on 10b5-1-heavy names; the other two were doc drift, not feature gaps).
 
 **Background:** The TODO list had three insider/short-related items. After investigation, two were stale (work shipped, doc out of date) and one was a real gap.

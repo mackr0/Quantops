@@ -39,6 +39,29 @@ _bars_cache: dict = {}  # (symbol, limit) → (epoch_seconds, DataFrame)
 _bars_cache_lock = threading.Lock()
 
 
+def _path_has_alpaca_table(path: str) -> bool:
+    """True iff the SQLite file at `path` exists AND has an
+    `alpaca_accounts` table. Distinguishes a real master DB from
+    an empty file SQLite auto-created on connect (which exists but
+    has no tables). 2026-06-08 — the empty-file case was the root
+    cause of repeated 'no such table: alpaca_accounts' WARN events
+    on altdata cron runs whose CWD happened to contain a stale
+    0-byte quantopsai.db."""
+    if not path or not os.path.exists(path):
+        return False
+    try:
+        import sqlite3 as _sq3
+        from contextlib import closing as _closing
+        with _closing(_sq3.connect(path)) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='table' AND name='alpaca_accounts'"
+            ).fetchone()
+            return row is not None
+    except Exception:
+        return False
+
+
 def _resolve_alpaca_credentials():
     """Return (key, secret, base_url) sourced from `alpaca_accounts`.
 
@@ -75,20 +98,44 @@ def _resolve_alpaca_credentials():
         from config import DB_PATH as _DB_PATH
     except Exception:
         _DB_PATH = os.environ.get("DB_PATH", "quantopsai.db")
-    # Absolute-ify if a relative path resolved to nothing useful.
-    if not os.path.isabs(_DB_PATH) and not os.path.exists(_DB_PATH):
+    # Absolute-ify when the resolved path is relative AND either
+    # missing OR pointing at an empty SQLite file with no
+    # alpaca_accounts table. The empty-file case bit us 2026-06-08:
+    # an altdata cron subprocess running from /opt/quantopsai/altdata/
+    # <project>/ had a stale empty `quantopsai.db` auto-created by
+    # an earlier sqlite3.connect() call (SQLite creates a 0-byte
+    # file on connect if the path doesn't exist). Pre-fix this
+    # branch ONLY triggered on file-doesn't-exist, so the resolver
+    # ran against the empty file and threw "no such table" warnings
+    # on every cron run. Now we verify the table is actually
+    # present before declaring the path usable.
+    if not os.path.isabs(_DB_PATH) and not _path_has_alpaca_table(_DB_PATH):
         for candidate in (
             "/opt/quantopsai/quantopsai.db",
             os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "quantopsai.db"),
         ):
-            if os.path.exists(candidate):
+            if _path_has_alpaca_table(candidate):
                 _DB_PATH = candidate
                 break
     try:
         import sqlite3 as _sq3
         from contextlib import closing as _closing
-        with _closing(_sq3.connect(_DB_PATH)) as conn:
+        # 2026-06-08 — connect with mode=ro URI so the resolver never
+        # auto-creates a 0-byte sqlite file at the resolved path. The
+        # auto-create side effect of plain sqlite3.connect() created
+        # the stale empty file at /opt/quantopsai/altdata/congresstrades/
+        # quantopsai.db on 2026-05-20 (when the cron-context resolver
+        # call hit a relative "quantopsai.db" that didn't exist in
+        # the cron's CWD). Subsequent cron runs then found that empty
+        # file via the relative-path-exists check and the WARN spam
+        # cycle began.
+        if not os.path.exists(_DB_PATH):
+            # Don't even attempt the read-only URI connect — sqlite
+            # would still raise but with a confusing error.
+            return "", "", base_url
+        ro_uri = f"file:{_DB_PATH}?mode=ro"
+        with _closing(_sq3.connect(ro_uri, uri=True)) as conn:
             row = conn.execute(
                 "SELECT alpaca_api_key_enc, alpaca_secret_key_enc "
                 "FROM alpaca_accounts "
