@@ -17,6 +17,50 @@ Rules going forward:
 
 ---
 
+## 2026-06-09 (post-reset, night) — Strike-snap collision detection + brain badge per-action-class matching. Severity: high. Both bugs surfaced on the FIRST cycle after the clean-slate reset, on a system I had told the operator was "fully clean." Earlier today I flagged the strike-snapper collapse as "separate change" and let it ride — that was the wrong call and the operator caught me. No more deferrals.
+
+**Bug 1 — strike-snap collision (the deferred-and-bit-me one).**
+
+Earlier today's `ea3e04d` commit widened `snap_to_listed_contract`'s per-strike tolerance with grid-aware logic. The commit message flagged:
+
+> "The NOK case ALSO has an upstream strike-snapper bug (collapsed both legs to NOK 15C). With this fix, that case now produces a clear 'duplicate-leg' drop reason instead of an 'uncovered' red herring. Fixing the strike snapper itself is a separate change."
+
+First post-reset cycle reproduced the exact pattern on NU260717P00011000: AI proposed a bull_put_spread whose two PUT strikes both snapped to the $11 contract on a $1-spaced chain. Combo submit failed with `invalid legs: leg.1 symbol "NU260717P00011000" is duplicated`. The earlier fix dutifully classified it as ERROR with the duplicate-leg reason — but the spread was lost.
+
+**Fix:** in `options_multileg.execute_multileg_strategy`, after the per-leg snap loop, walk the snapped legs and refuse with `"Strike-snap collision"` if any two legs share an OCC symbol. The refusal names the AI as the upstream source ("AI-proposed strikes ... both snapped to {OCC}. Original strikes were too close to distinct listed contracts on this chain — spread would be zero-width."). No broker submission happens.
+
+**Bug 2 — brain badge over-matched by symbol alone.**
+
+Same first post-reset cycle: BUY NU executed cleanly at the broker (status=open, qty 4221 @ $11.94). The operator saw it rendered as `GATED · ERROR` in the brain. Cause: `api_cycle_data`'s drop enrichment built `drop_by_symbol = {}` keyed on symbol only. The MULTILEG_OPEN drop on NU (strike-snap collision) contaminated the sibling BUY NU proposal because both have `symbol="NU"`.
+
+**Fix:** classify both sides by action surface before matching.
+
+`_drop_action_class(drop_code, drop_reason)` buckets a drop into `"stock"`, `"multileg"`, `"option"`, or `"any"` (the cross-cutting class for risk gates like CATASTROPHIC_SINGLE_TRADE / KILL_SWITCH / BOOK_CONCENTRATION_CAP that legitimately apply to every action on the symbol). Multileg ERROR drops are detected by reason-text keyword (`"multi-leg"`, `"combo"`, `"strike-snap"`, strategy names) since `drop_code="ERROR"` doesn't carry surface info.
+
+`_action_class_for_trades_selected(action)` classifies the proposal — handles both raw (`"BUY"`, `"MULTILEG_OPEN"`) and humanized (`"Multileg Open"`) action strings, because `humanize()` runs before the badge enrichment in `api_cycle_data`.
+
+The lookup is two-step: specific class first (`("NU", "stock")`), then `"any"` fallback (cross-cutting risk gates still badge every action).
+
+**Tests:**
+
+- `tests/test_strike_snap_collision_2026_06_09.py` (3): NU duplicate-collapse refuses pre-broker; distinct snaps proceed; source pin on the `seen_occ` collision-detection loop.
+- `tests/test_brain_badge_action_class_2026_06_09.py` (9): drop classifier handles MULTILEG_OPEN code, ERROR-with-multileg-keyword reason, cross-cutting CATASTROPHIC; action classifier handles raw + humanized strings; source pin on the enrichment using `(symbol, action_class)`.
+- `tests/test_brain_badge_correctness_2026_06_09.py` test_drop_after_cycle_does_badge fixed (was time-coupled to a hardcoded 2026-06-09 14:30 timestamp that fell out of `get_recent_trade_drops`'s 2-hour window; now time-relative).
+
+**Deferred-items audit done.** I grepped every today's commit message + this CHANGELOG for "out of scope" / "deferred" / "next investigation" / "separate change" / "future work" markers and addressed each:
+
+- SL clamp gap → fixed same commit as TP clamp (8540703)
+- TP polling design → fixed (6f0a686)
+- Per-profile COVER guard → fixed (32d0e21)
+- Drift alert → already operational pre-today
+- 2h window in `get_recent_trade_drops` → design choice (helper used elsewhere); fix is in the caller's cycle scoping
+- Strike-snapper collapse → fixed (this commit)
+- BITO off-chain strikes → 0 instances post-reset; grid-aware tolerance handles it
+
+No remaining "out of scope" markers from today's commits.
+
+---
+
 ## 2026-06-09 (night) — Broker-side take-profit placement wired up. Closes the polling-only TP gap that was leaking MFE on every successful run. Severity: high (root cause of the −67% MFE capture).
 
 **Background:** `submit_protective_take_profit` has existed in `bracket_orders.py:272` for some time but **was never called from any code path**. The `ensure_protective_stops` sweep placed only a trailing stop (when `use_trailing=True`) OR a static stop (else). The static-stop branch's comment said "No TP — that goes through polling." The polling — `check_stop_loss_take_profit` — runs once per ~5-min cycle and can miss intra-cycle price spikes past the AI's target.

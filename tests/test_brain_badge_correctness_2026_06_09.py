@@ -222,13 +222,22 @@ class TestApiCycleDataScopesDropsToCycle:
 
     def test_drop_after_cycle_does_badge(self, tmp_path, monkeypatch):
         """Drop happened DURING the cycle (after cycle start). It
-        SHOULD badge — that's the legitimate same-cycle gate fire."""
-        cycle_epoch = 1781015400  # 2026-06-09 14:30:00 UTC
-        # Drop at 14:30:30 (30s after cycle start) — should badge
+        SHOULD badge — that's the legitimate same-cycle gate fire.
+
+        Uses time-relative timestamps (cycle_ts = now-2min, drop_ts =
+        now-1min) so the test isn't coupled to wall-clock decay of
+        a hardcoded date — `get_recent_trade_drops` filters by
+        `datetime('now', '-2 hours')` and would mask any badging
+        if the seeded timestamps fall out of the window."""
+        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+        now = _dt.now(_tz.utc)
+        cycle_epoch = (now - _td(minutes=2)).timestamp()
+        drop_ts_iso = (now - _td(minutes=1)).strftime(
+            "%Y-%m-%d %H:%M:%S")
         db = _make_profile_db_with_drops(
             tmp_path,
             [
-                ("2026-06-09 14:30:30", "RGNT",
+                (drop_ts_iso, "RGNT",
                  "CATASTROPHIC_SINGLE_TRADE", "real same-cycle drop"),
             ],
         )

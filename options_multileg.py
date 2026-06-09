@@ -688,6 +688,44 @@ def execute_multileg_strategy(
                     qty=leg.qty,
                 )
                 snapped_legs.append(snapped_leg)
+            # 2026-06-09 — DUPLICATE-LEG DETECTION (post-snap).
+            # The per-leg snapper rounds each strike to the closest
+            # listed contract independently. For closely-spaced
+            # spreads on chains with sparse strikes, two distinct
+            # input strikes can snap to the same OCC contract (e.g.
+            # AI proposes bull_put_spread short=11, long=10.5 on a
+            # chain spaced $1; both snap to the $11 put). That
+            # produces a degenerate zero-width "spread" that Alpaca
+            # rejects with `leg.N symbol is duplicated` — caught
+            # this morning on NOK and again now on NU260717P00011000.
+            #
+            # Detect before submission: if any two legs end up at
+            # the same OCC symbol, refuse with a clean reason that
+            # names the upstream cause (AI proposed strikes whose
+            # snapped contracts collided) so the operator sees the
+            # source of the collapse instead of a downstream
+            # broker rejection.
+            seen_occ = {}
+            for leg in snapped_legs:
+                if leg.occ_symbol in seen_occ:
+                    other = seen_occ[leg.occ_symbol]
+                    result["reason"] = (
+                        f"Strike-snap collision: AI-proposed strikes "
+                        f"for {strategy.name} on {strategy.underlying} "
+                        f"both snapped to {leg.occ_symbol}. "
+                        f"Original strikes (pre-snap) were too close "
+                        f"to distinct listed contracts on this chain "
+                        f"— spread would be zero-width. Refusing "
+                        f"before broker submission."
+                    )
+                    logger.warning(
+                        "Strike-snap collision on %s %s: legs %d and "
+                        "%d both at %s — refusing.",
+                        strategy.underlying, strategy.name,
+                        other, snapped_legs.index(leg), leg.occ_symbol,
+                    )
+                    return result
+                seen_occ[leg.occ_symbol] = snapped_legs.index(leg)
             # Replace strategy.legs with snapped versions. OptionStrategy
             # is a non-frozen dataclass so mutating .legs in place is
             # safe and avoids needing to know every dataclass field.

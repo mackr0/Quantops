@@ -659,6 +659,74 @@ def _mask_key(key):
     return key[:4] + "*" * (len(key) - 8) + key[-4:]
 
 
+# Drop-code → action-class mapping for the brain-badge enrichment.
+# A drop's `drop_code` reflects what code path tripped: a multileg
+# build failure cannot be a drop on a single-leg BUY proposal, even
+# when both target the same symbol. Buckets:
+#   "stock"     — single-leg stock BUY/SELL/SHORT/COVER paths
+#   "multileg"  — vertical-spread, iron condor, straddle, etc.
+#   "option"    — single-leg long option (OPTIONS action)
+#   "any"       — drop_codes that legitimately apply to any action
+#                 on the symbol (cross-cutting gates like KILL_SWITCH,
+#                 DRAWDOWN_PAUSE, BOOK_CONCENTRATION_CAP). For these,
+#                 the badge SHOULD apply to any trades_selected entry.
+_MULTILEG_DROP_CODES = frozenset({
+    "MULTILEG_OPEN", "MULTILEG_CLOSE",
+})
+# Drop codes that originate inside the multileg pipeline (option.py /
+# options_multileg.py): build failures, position-intent mismatches on
+# combos, specialist vetoes on spreads, etc. The reasons typically
+# contain "Multi-leg" / "Combo" / "MLEG" / "strike-snap".
+_MULTILEG_DROP_REASON_KEYWORDS = (
+    "multi-leg", "multileg", "combo", "mleg",
+    "strike-snap", "strike snap",
+    "bull_put_spread", "bear_put_spread",
+    "bull_call_spread", "bear_call_spread",
+    "iron_condor", "iron_butterfly",
+    "long_straddle", "short_straddle", "long_strangle",
+)
+_CROSS_CUTTING_DROP_CODES = frozenset({
+    "KILL_SWITCH", "DRAWDOWN_PAUSE", "BOOK_CONCENTRATION_CAP",
+    "BROKER_DISCONNECTED", "CATASTROPHIC_SINGLE_TRADE",
+    "SCHEDULE_WINDOW",
+})
+
+
+def _drop_action_class(drop_code, drop_reason=""):
+    """Classify a trade_drops row by the action surface it belongs to.
+
+    Returns one of: "stock", "multileg", "option", "any".
+    """
+    code = (drop_code or "").upper()
+    if code in _CROSS_CUTTING_DROP_CODES:
+        return "any"
+    if code in _MULTILEG_DROP_CODES:
+        return "multileg"
+    # ERROR / SKIP drops carry the surface in the reason text.
+    reason = (drop_reason or "").lower()
+    for kw in _MULTILEG_DROP_REASON_KEYWORDS:
+        if kw in reason:
+            return "multileg"
+    if "occ_symbol" in reason or " contract" in reason:
+        return "option"
+    return "stock"
+
+
+def _action_class_for_trades_selected(action):
+    """Classify a `trades_selected` entry by its action so we can
+    match it to drops at the right surface.
+
+    Note: must accept BOTH raw and humanized action strings — the
+    enrichment runs after `humanize()` has been applied earlier in
+    api_cycle_data (e.g. "MULTILEG_OPEN" -> "Multileg Open")."""
+    a = (action or "").lower().replace(" ", "_")
+    if "multileg" in a:
+        return "multileg"
+    if a in ("options", "option"):
+        return "option"
+    return "stock"
+
+
 # Human-readable names for trading parameters
 PARAMETER_LABELS = {
     "ai_confidence_threshold": "AI Confidence Threshold",
@@ -6080,7 +6148,17 @@ def api_cycle_data(profile_id):
                 - _td(seconds=60)
             ).strftime("%Y-%m-%d %H:%M:%S")
         drops = get_recent_trade_drops(db_path, hours=2)
-        drop_by_symbol = {}
+        # 2026-06-09 (post-reset) — key drops by (symbol, action_class)
+        # instead of symbol alone. Pre-fix: one drop on NU contaminated
+        # ALL trades_selected entries on NU — BUY, MULTILEG_OPEN,
+        # OPTIONS — even when only one of them actually dropped. The
+        # operator saw BUY NU rendered as "GATED · ERROR" while the
+        # BUY had executed cleanly (status=open at the broker); the
+        # ERROR badge belonged to the sibling MULTILEG_OPEN proposal
+        # that hit the strike-snap collision. Action class is the
+        # coarse grouping of trades_selected actions vs drop_codes:
+        # see _drop_action_class below.
+        drop_by_symbol_action = {}
         for d in drops:
             sym = (d.get("symbol") or "").upper()
             d_ts = d.get("timestamp") or ""
@@ -6088,8 +6166,15 @@ def api_cycle_data(profile_id):
             # to a prior cycle and shouldn't badge the current one.
             if cycle_cutoff_iso and d_ts < cycle_cutoff_iso:
                 continue
-            if sym and sym not in drop_by_symbol:
-                drop_by_symbol[sym] = d
+            if not sym:
+                continue
+            action_class = _drop_action_class(
+                d.get("drop_code"), d.get("drop_reason") or "",
+            )
+            key = (sym, action_class)
+            # First (most-recent within window) wins per key
+            if key not in drop_by_symbol_action:
+                drop_by_symbol_action[key] = d
         for t in (data.get("trades_selected") or []):
             sym = (t.get("symbol") or "").upper()
             if not sym:
@@ -6133,7 +6218,16 @@ def api_cycle_data(profile_id):
             # broker outcome is the more recent / authoritative
             # disposition).
             if not r:
-                d = drop_by_symbol.get(sym)
+                # Match by (symbol, action_class) so a multileg drop
+                # doesn't badge a single-leg BUY on the same symbol.
+                # Two-step lookup: specific class first, then "any"
+                # (cross-cutting gates like CATASTROPHIC / KILL_SWITCH
+                # legitimately apply to every action on the symbol).
+                t_action_class = _action_class_for_trades_selected(
+                    t.get("action")
+                )
+                d = (drop_by_symbol_action.get((sym, t_action_class))
+                     or drop_by_symbol_action.get((sym, "any")))
                 if d:
                     t["execution_outcome"] = "gated"
                     t["gate_code"] = d.get("drop_code") or "other"
