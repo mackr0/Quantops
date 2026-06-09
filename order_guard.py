@@ -318,3 +318,138 @@ def allowable_sell_qty(
             f"journal claims {own_claim}, requested {requested_qty}",
         )
     return (requested_qty, "ok")
+
+
+def allowable_cover_qty(
+    api, symbol: str, requested_qty: int,
+    db_path: Optional[str] = None,
+) -> tuple:
+    """Pre-trade guard for buy-to-cover (closing a short). Mirror of
+    `allowable_sell_qty` for the short side.
+
+    2026-06-09. A profile may cover only what its own journal says
+    it virtually holds short. The aggregate broker short pool is
+    consulted as a drift sanity-check — if the broker is less short
+    than this profile claims, that's drift (likely a sibling already
+    over-covered our share) and we REFUSE rather than consume
+    sibling short positions.
+
+    Threat model: pid A holds 100 NOK short, pid B also 100 short,
+    aggregate broker short = 200. Pid A's stop fires for 100 cover.
+    Pre-fix the cover path had NO cross-account guard at all —
+    submit_order would have bought 100 NOK regardless of who owned
+    the short, and Alpaca's FIFO would attribute the buy across the
+    aggregate pool. Pid A's journal records the cover; pid B's short
+    may actually have closed at the broker. Same class of bug as
+    the sell side, opposite direction.
+
+    Returns (allowed_qty, reason):
+      - (requested_qty, "ok"): own journal has the short, broker
+        confirms sufficient short, proceed.
+      - (0, "refused: profile virtually holds N short, requested M"):
+        AI / trigger proposal exceeds the profile's own virtual
+        short qty.
+      - (0, "refused: drift detected — broker short N, journal
+        claims M"): broker is less short than this profile claims.
+        Likely a sibling already consumed our short.
+      - (requested_qty, "ok: option contract — guard bypassed").
+      - (requested_qty, "permissive: broker API failed").
+
+    Caller MUST honor the returned qty. Returns either
+    `(requested_qty, "ok")` or `(0, reason)` — no partial sizing.
+    """
+    if requested_qty <= 0:
+        return (0, "refused: non-positive qty")
+    target = (symbol or "").upper()
+    if len(target) > 6 and any(c.isdigit() for c in target[1:7]):
+        return (requested_qty, "ok: option contract — guard bypassed")
+
+    # Per-profile virtual short qty from this profile's own journal.
+    # `get_virtual_positions` returns shorts as negative qty; abs()
+    # to compare against the positive requested cover qty.
+    own_short_qty: Optional[int] = None
+    if db_path:
+        try:
+            from journal import get_virtual_positions
+            for pos in get_virtual_positions(db_path):
+                if (pos.get("symbol") or "").upper() != target:
+                    continue
+                try:
+                    own_signed = int(float(pos.get("qty") or 0))
+                except (ValueError, TypeError):
+                    own_signed = 0
+                # Shorts come back negative; zero or long means
+                # this profile has no short to cover.
+                own_short_qty = (
+                    abs(own_signed) if own_signed < 0 else 0
+                )
+                break
+            if own_short_qty is None:
+                own_short_qty = 0
+        except Exception as exc:
+            logger.warning(
+                "allowable_cover_qty: get_virtual_positions failed "
+                "for %s (db=%s) — refusing rather than risk sibling-"
+                "short consumption: %s", symbol, db_path, exc,
+            )
+            return (
+                0,
+                f"refused: virtual-qty lookup failed for {symbol} "
+                f"({type(exc).__name__})",
+            )
+        if requested_qty > own_short_qty:
+            logger.warning(
+                "allowable_cover_qty: REFUSED COVER %s %d — this "
+                "profile virtually holds only %d short. The trigger "
+                "proposed more than the profile owns; refusing to "
+                "consume sibling short positions.",
+                symbol, requested_qty, own_short_qty,
+            )
+            return (
+                0,
+                f"refused: profile virtually holds {own_short_qty} "
+                f"short, requested {requested_qty}",
+            )
+
+    # Drift sanity check against the broker. If broker is LESS short
+    # than this profile claims, our share of the short pool may
+    # have been consumed by a sibling or an external action.
+    try:
+        positions = api.list_positions()
+    except Exception as exc:
+        logger.warning(
+            "allowable_cover_qty: broker list_positions failed for "
+            "%s — permissive fallback: %s", symbol, exc,
+        )
+        return (requested_qty, f"permissive: broker API failed ({exc})")
+    broker_short_qty = 0
+    for p in positions:
+        if (getattr(p, "symbol", "") or "").upper() == target:
+            try:
+                signed = int(float(getattr(p, "qty", 0) or 0))
+            except Exception:
+                signed = 0
+            broker_short_qty = abs(signed) if signed < 0 else 0
+            break
+    drift_baseline = (
+        own_short_qty
+        if (own_short_qty is not None and own_short_qty > 0)
+        else requested_qty
+    )
+    if broker_short_qty < drift_baseline:
+        own_claim = (
+            own_short_qty if own_short_qty is not None else "?"
+        )
+        logger.warning(
+            "allowable_cover_qty: REFUSED COVER %s %d — broker is "
+            "short %d (journal claim=%s). Drift detected — refusing "
+            "to submit rather than risk consuming sibling shorts.",
+            symbol, requested_qty, broker_short_qty, own_claim,
+        )
+        return (
+            0,
+            f"refused: drift detected — broker short "
+            f"{broker_short_qty}, journal claims short {own_claim}, "
+            f"requested {requested_qty}",
+        )
+    return (requested_qty, "ok")

@@ -17,6 +17,41 @@ Rules going forward:
 
 ---
 
+## 2026-06-09 (evening, late) — COVER-side per-profile isolation. Mirror of the sell-side fix; closes the parallel risk on shorts. Severity: critical (same architectural class as the sell consumption bug; would manifest as cross-profile short consumption when shorts wind down).
+
+**Background:** This morning's per-profile sell isolation fix patched `allowable_sell_qty` but explicitly flagged the COVER (buy-to-cover) mirror as out of scope. The same architectural risk lives on the short side: one profile covers more shares than its own virtual short, consuming sibling profiles' short positions at the broker.
+
+**The threat model on shorts:**
+- pid A holds 100 NOK short (virtually)
+- pid B also holds 100 NOK short (virtually)
+- Aggregate broker short = 200
+- pid A's stop fires → buy 100 NOK to cover
+- Pre-fix: `_process_exit_trigger` submitted `side="buy", qty=100` with no cross-account validation
+- Alpaca buys 100 NOK from the aggregate short pool; FIFO attribution could close pid B's short
+- pid A's journal records its own cover (with whatever cash math the buy implies); pid B's journal still claims 100 short open → phantom
+
+**Fix:** `allowable_cover_qty` in `order_guard.py` mirrors the sell-side logic:
+1. Per-profile cap from journal (`own_short_qty` via `get_virtual_positions`; shorts return negative `qty`, take `abs()`).
+2. Drift check: if broker is less short than this profile claims → REFUSE with `"drift detected"` reason.
+3. No partial sizing — returns either `(requested_qty, "ok")` or `(0, reason)`.
+
+`trader._process_exit_trigger`'s COVER branch now invokes the guard with `db_path=db_path` before `submit_order`.
+
+**Test coverage:** `tests/test_per_profile_cover_isolation_2026_06_09.py` (8 tests):
+- Layer 1 — per-profile cap (4): within own short ok; exceeds own refuses; exact own ok; zero net short refuses.
+- Layer 2 — drift detection (2): broker less short than journal refuses; broker flat with journal-short refuses.
+- Layer 3 — call-site pin (1): trader.py COVER branch imports and passes `db_path=db_path`.
+- Layer 4 — no-downsize pin (1): function returns approve-or-refuse only, no partial qty.
+
+**Drift alert verification:** `multi_scheduler.py:2886-2913` already runs `audit_aggregate_drift` once per cycle on the first active profile, logs `[ERROR] AGGREGATE AUDIT DRIFT DETECTED`, and fires `notify_error` (debounced per subject for 1 hour to avoid spam). Confirmed firing today against CHAI residual drift. No new wiring needed — the alert layer the operator asked for is already live.
+
+**Pre-restart status:**
+- Sell-side isolation: fixed and verified blocking CHAI drift sells today.
+- Cover-side isolation: fixed in this commit.
+- Drift alert: already operational; will surface any new unknown bug class within one audit cycle (~15 min) instead of days later.
+
+---
+
 ## 2026-06-09 (evening) — ATR-derived stop/TP percentages clamped to [3%, 7%] SL / [4%, 12%] TP. Severity: high (root cause of the -67% MFE capture metric).
 
 **Background:** Operator surfaced "Stop-to-TP 7.5 (15 stops / 2 tps, 30d)" and "MFE capture -67% (23 trades)" on pid 42's brain. Investigation isolated the root cause as the ATR-derived stop/TP formula `(ATR × multiplier) / price` producing unbounded outputs for low-priced volatile small-caps.

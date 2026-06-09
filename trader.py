@@ -726,6 +726,26 @@ def _process_exit_trigger(trigger_signal, api, ctx, db_path, positions,
         logging.debug("Protective stop cleanup skipped: %s", _exc)
 
     if is_short:
+        # 2026-06-09 — per-profile cover guard. Mirror of the SELL
+        # isolation: a profile may cover only what its OWN journal
+        # says it virtually holds short. Without this, a stop-trigger
+        # cover for 100 shares would submit regardless of who at the
+        # broker actually holds the 100 short — Alpaca's FIFO would
+        # attribute the buy across the aggregate short pool and could
+        # consume sibling profiles' short positions. Same bug-class
+        # as pre-fix SELL on the long side, opposite direction.
+        from order_guard import allowable_cover_qty
+        allowed_qty, guard_reason = allowable_cover_qty(
+            api, symbol, int(qty), db_path=db_path,
+        )
+        if allowed_qty == 0:
+            logging.warning(
+                "[%s] COVER blocked by per-profile guard: %s qty=%d — %s",
+                trigger_signal.get("trigger", "?"),
+                symbol, qty, guard_reason,
+            )
+            return
+        qty = int(allowed_qty)
         # RETRY_OK: _process_exit_trigger is called from the per-position
         # try/except loop in check_exits (line ~513) — broker exceptions
         # surface there and the next position is processed normally.
