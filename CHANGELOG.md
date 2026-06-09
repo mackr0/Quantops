@@ -17,6 +17,38 @@ Rules going forward:
 
 ---
 
+## 2026-06-09 — AI prompt now surfaces the catastrophic-trade gate threshold. Severity: medium (gates were rejecting proposals the AI didn't know existed; wasted Gemini cycles, mysterious BLOCKED badges).
+
+**Background:** Yesterday's investigation showed the Catastrophic Single Trade Gate caught AI proposals at 5× the profile's recent average — and the AI didn't know about that floor. Confidence-tier sizing routinely pushed proposals above 5× baseline, the gate killed them silently, and operator was left with a contextless BLOCKED badge. The companion fix earlier today made the badge actually tell the operator which gate fired. This change goes one step further — tell the AI itself about the gate's threshold so it sizes within the limit instead of having proposals die at the safety net.
+
+**What this ships:**
+
+`ai_analyst._build_batch_prompt` builds a new `risk_limits_block` woven into the `PORTFOLIO STATE` section. When the profile has ≥5 prior stock trades:
+
+```
+System risk limits (system-enforced; proposals above auto-blocked):
+  Max single trade $: $25,000 (based on 5× recent avg trade $5,000)
+  Per-position cap: 10% of equity
+  Book concentration cap: any single symbol > 25% of total book exposure
+```
+
+The cap dollar value is computed by calling `single_trade_gate.recent_avg_position_value()` directly — same code path the gate uses to decide whether to fire. So the AI sees byte-for-byte what the gate enforces; no drift.
+
+When the profile has <5 prior stock trades the block is omitted entirely (no false floor surfaced before there's enough history to compute one).
+
+**What this is NOT:** the gate itself is unchanged. CATASTROPHIC_MULT stays at 5.0; the gate still fires on out-of-pattern proposals. This is "tell the AI the rules" not "loosen the rules." Defense-in-depth holds — if the AI ignores the limit or hallucinates around it, the gate still catches the trade.
+
+**Test coverage:** `tests/test_ai_sees_risk_limits_2026_06_09.py` (8 tests):
+- Block appears with sufficient history; cap value is correct
+- Block includes per-position % and 25% concentration line
+- Block omitted on empty profile + on under-minimum sample (the gate would return None there)
+- **Prompt cap exactly matches `single_trade_gate.recent_avg_position_value * CATASTROPHIC_MULT`** — the AI/gate drift contract
+- Structural pins: `{risk_limits_block}` interpolated into `portfolio_section`; uses `recent_avg_position_value` + `CATASTROPHIC_MULT` symbolically (not hardcoded values)
+
+**Test that prevents recurrence:** `test_prompt_cap_equals_gate_cap` — the value the prompt shows the AI MUST equal the value the gate computes. A refactor that drifts the two values (e.g., changing the window length on one side only) fails this test immediately.
+
+---
+
 ## 2026-06-09 — Pre-broker gate visibility on the AI Brain panel. Severity: medium (the gates were doing the right thing; the dashboard wasn't telling the operator anything about why).
 
 **Background:** The doomsday gates in `trade_pipeline.run_trade_cycle` (Catastrophic Single Trade, Book Concentration Cap, Kill Switch, Drawdown Pause, Broker Disconnect, etc.) wrote a `journalctl` WARNING line on every disposition but had no other persistence. The AI Brain panel's "BLOCKED" badge fired generically whenever no trade row matched a proposal — same gray badge whether the trade was 5.3× the catastrophic-single-trade cap, hit a concentration limit, or got killed by the master switch. Operator had to SSH to prod and search journalctl to diagnose any "BLOCKED" badge.

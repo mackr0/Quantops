@@ -1227,6 +1227,45 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
             f"if so, SELL it in this same cycle."
         )
 
+    # 2026-06-09 — surface the system-enforced risk gates to the AI
+    # so it sizes proposals WITHIN the limits instead of having them
+    # silently rejected by the doomsday gates downstream. The
+    # Catastrophic Single Trade Gate (single_trade_gate.py) compares
+    # proposed $ value to 5× the profile's recent average stock
+    # trade. Pre-2026-06-09 the AI didn't know about this floor, so
+    # confidence-tier sizing routinely pushed proposals above 5×
+    # baseline and they died silently. With this block, the AI sees
+    # the actual cap up front; the gate stays in place as defense-
+    # in-depth.
+    risk_limits_block = ""
+    try:
+        from single_trade_gate import (
+            recent_avg_position_value, CATASTROPHIC_MULT,
+        )
+        _db_path = getattr(ctx, "db_path", None) if ctx else None
+        if _db_path:
+            recent_avg = recent_avg_position_value(_db_path)
+            if recent_avg and recent_avg > 0:
+                cap = recent_avg * CATASTROPHIC_MULT
+                risk_limits_block = (
+                    f"\n  System risk limits (system-enforced; "
+                    f"proposals above auto-blocked):\n"
+                    f"    Max single trade $: ${cap:,.0f} "
+                    f"(based on {CATASTROPHIC_MULT:.0f}× recent avg "
+                    f"trade ${recent_avg:,.0f})\n"
+                    f"    Per-position cap: "
+                    f"{max_pos_pct * 100:.0f}% of equity\n"
+                    f"    Book concentration cap: any single symbol > "
+                    f"25% of total book exposure"
+                )
+    except Exception as _rl_exc:
+        # Risk-limit enrichment is best-effort; prompt continues
+        # without it. Surface for follow-up.
+        logger.debug(
+            "risk_limits_block build failed: %s: %s",
+            type(_rl_exc).__name__, _rl_exc,
+        )
+
     portfolio_section = (
         f"PORTFOLIO STATE:\n"
         f"  Equity: ${portfolio_state.get('equity', 0):,.0f} | "
@@ -1234,6 +1273,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         f"  Positions ({portfolio_state.get('num_positions', 0)}/{max_positions}):\n"
         f"{positions_text}\n"
         f"  Drawdown: {dd_pct:.1f}% from peak ({dd_action})"
+        f"{risk_limits_block}"
         f"{swap_directive_block}"
         f"{exposure_block}"
         f"{beta_target_block}"
