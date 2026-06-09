@@ -1231,14 +1231,19 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     # so it sizes proposals WITHIN the limits instead of having them
     # silently rejected by the doomsday gates downstream.
     #
-    # First iteration (earlier today) showed only the $ cap. The AI
-    # tried to size down but still hit the gate because the gate's $
-    # cap can be lower than (max_position_pct × equity), and the AI
-    # didn't know which constraint binds for THIS profile at THIS
-    # equity. Now: also compute and surface the EFFECTIVE max
-    # size_pct (the lower of: profile's max_position_pct, and
-    # catastrophic_$ / equity). The AI can use this single number
-    # to size every proposal without doing the math itself.
+    # Iteration history:
+    #  1. Showed $ cap only — AI sized down but still hit the gate
+    #     because gate's $ cap could be lower than position cap × equity.
+    #  2. Added EFFECTIVE max size_pct — AI knew which cap binds, BUT
+    #     for young profiles the gate's tight $ cap (from small recent
+    #     avg) made effective max < max_position_pct. Death spiral
+    #     because the gate suppressing big trades kept recent avg
+    #     small.
+    #  3. (now) — single_trade_gate floored at max_position_dollars,
+    #     so the gate NEVER binds below the operator's position cap.
+    #     Effective max == max_position_pct always. Block now shows
+    #     the position cap as the primary limit and describes the
+    #     gate as a backstop above it.
     risk_limits_block = ""
     try:
         from single_trade_gate import (
@@ -1246,30 +1251,33 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         )
         _db_path = getattr(ctx, "db_path", None) if ctx else None
         if _db_path:
-            recent_avg = recent_avg_position_value(_db_path)
             equity_for_limits = float(portfolio_state.get("equity") or 0)
-            if (recent_avg and recent_avg > 0
-                    and equity_for_limits > 0):
-                cap_dollars = recent_avg * CATASTROPHIC_MULT
-                cap_pct_of_equity = cap_dollars / equity_for_limits
-                effective_max_pct = min(max_pos_pct, cap_pct_of_equity)
-                effective_max_dollars = effective_max_pct * equity_for_limits
+            position_cap_dollars = equity_for_limits * max_pos_pct
+            recent_avg = recent_avg_position_value(_db_path)
+            if equity_for_limits > 0:
+                # Effective gate threshold = max(5×avg, position cap)
+                if recent_avg and recent_avg > 0:
+                    anomaly_cap = recent_avg * CATASTROPHIC_MULT
+                    gate_threshold = max(anomaly_cap, position_cap_dollars)
+                    anomaly_line = (
+                        f"\n    Anti-anomaly backstop: would also fire on "
+                        f"any single trade > ${gate_threshold:,.0f} "
+                        f"({CATASTROPHIC_MULT:.0f}× recent avg "
+                        f"${recent_avg:,.0f}, floored at position cap). "
+                        f"Catches qty-calc bugs / hallucinated 10× sizes."
+                    )
+                else:
+                    anomaly_line = ""
                 risk_limits_block = (
                     f"\n  System risk limits (system-enforced; "
                     f"proposals above auto-blocked):\n"
-                    f"    Max single trade $: ${cap_dollars:,.0f} "
-                    f"(based on {CATASTROPHIC_MULT:.0f}× recent avg "
-                    f"trade ${recent_avg:,.0f})\n"
-                    f"    Per-position cap: "
+                    f"    >>> Max position size: "
                     f"{max_pos_pct * 100:.1f}% of equity "
-                    f"(${equity_for_limits * max_pos_pct:,.0f})\n"
-                    f"    >>> EFFECTIVE max size_pct to propose: "
-                    f"{effective_max_pct * 100:.1f}% "
-                    f"(${effective_max_dollars:,.0f}) — lower of the "
-                    f"two caps; proposals above this die at the "
-                    f"catastrophic-trade gate <<<\n"
+                    f"(${position_cap_dollars:,.0f}) <<< (primary cap; "
+                    f"every BUY / STRONG_BUY sized to this max-or-less)"
+                    f"{anomaly_line}\n"
                     f"    Book concentration cap: any single symbol > "
-                    f"25% of total book exposure"
+                    f"25% of total book exposure across sibling profiles"
                 )
     except Exception as _rl_exc:
         # Risk-limit enrichment is best-effort; prompt continues

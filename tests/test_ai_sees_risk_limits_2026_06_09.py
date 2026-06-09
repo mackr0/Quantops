@@ -117,7 +117,7 @@ class TestRiskLimitsBlockAppears:
 
     def test_block_present_with_sufficient_history(self, tmp_path):
         """Profile with 10 prior BUYs averaging $5000 → block appears
-        with cap $25,000 (5×) and avg $5,000."""
+        with the new position-cap-primary framing."""
         from ai_analyst import _build_batch_prompt
         db = _make_profile_db_with_history(tmp_path, avg_value=5000, n=10)
         prompt = _build_batch_prompt(
@@ -125,29 +125,20 @@ class TestRiskLimitsBlockAppears:
             ctx=_ctx(db),
         )
         assert "System risk limits" in prompt, (
-            "Prompt must include a 'System risk limits' header when "
-            "the profile has enough history to compute the cap"
+            "Prompt must include a 'System risk limits' header"
         )
-        # The cap value (5 × 5000 = 25000) must appear with the
-        # formatted thousands separator the operator + AI both read.
-        assert "$25,000" in prompt, (
-            "Max single trade $ should be 5× recent avg $5,000 = "
-            "$25,000. Without this exact number, the AI sees a "
-            "different floor than the gate enforces."
-        )
-        assert "$5,000" in prompt, (
-            "Recent avg of $5,000 must be cited so the AI can sanity-"
-            "check the cap against its own intuition"
-        )
+        # Primary cap is position cap ($25K = 10% × $250K)
+        assert "$25,000" in prompt
+        assert "10.0% of equity" in prompt
 
-    def test_block_includes_per_position_cap(self, tmp_path):
+    def test_block_includes_per_position_cap_with_custom_pct(self, tmp_path):
         from ai_analyst import _build_batch_prompt
         db = _make_profile_db_with_history(tmp_path, avg_value=5000)
         prompt = _build_batch_prompt(
             [_candidate()], _portfolio_state(), _market_context(),
             ctx=_ctx(db, max_position_pct=0.07),
         )
-        assert "7% of equity" in prompt, (
+        assert "7.0% of equity" in prompt, (
             "Per-position cap should reflect the profile's actual "
             "max_position_pct (here 7%)"
         )
@@ -160,85 +151,7 @@ class TestRiskLimitsBlockAppears:
             ctx=_ctx(db),
         )
         assert "25%" in prompt, (
-            "25% book-concentration cap must be visible to the AI; "
-            "this prevents the AI from proposing into a name already "
-            "concentrated across sibling profiles"
-        )
-
-    def test_effective_max_pct_is_lower_of_two_caps(self, tmp_path):
-        """The bug that surfaced today: AI proposed within
-        max_position_pct (10%) but the $ cap was lower than that
-        size × equity → gate fired. Now: surface EFFECTIVE max as
-        a single number the AI can size by directly."""
-        from ai_analyst import _build_batch_prompt
-        # avg=5000 → cap=$25,000. equity=$250,000 → cap as % equity = 10%
-        # max_position_pct=10% → effective = min(10%, 10%) = 10%
-        db = _make_profile_db_with_history(tmp_path, avg_value=5000)
-        portfolio = _portfolio_state()  # equity=$250,000
-        prompt = _build_batch_prompt(
-            [_candidate()], portfolio, _market_context(),
-            ctx=_ctx(db, max_position_pct=0.10),
-        )
-        assert "EFFECTIVE max size_pct" in prompt, (
-            "The actionable single-number cap MUST be labeled "
-            "EFFECTIVE so the AI sees it as the directive, not as "
-            "redundant info"
-        )
-
-    def test_effective_max_pct_binds_to_dollar_cap_when_tighter(
-            self, tmp_path,
-    ):
-        """Real pid 43 case: max_position_pct=10%, but recent avg
-        is $3,744 → catastrophic cap $18,720 → on $200K equity
-        that's 9.36%. Effective max should be 9.4%, not 10%."""
-        from ai_analyst import _build_batch_prompt
-        db = _make_profile_db_with_history(tmp_path, avg_value=3744)
-        portfolio = _portfolio_state()
-        portfolio["equity"] = 200_000  # match pid 43
-        portfolio["account"]["equity"] = 200_000
-        prompt = _build_batch_prompt(
-            [_candidate()], portfolio, _market_context(),
-            ctx=_ctx(db, max_position_pct=0.10),
-        )
-        # Should show 9.4% (cap-bound), not 10% (position-bound)
-        # The block uses "{:.1f}%" formatting on effective_max_pct
-        import re
-        m = re.search(
-            r"EFFECTIVE max size_pct to propose:\s*([\d.]+)%",
-            prompt,
-        )
-        assert m, "EFFECTIVE max line missing"
-        effective = float(m.group(1))
-        # cap_pct = 18720 / 200000 = 0.0936 = 9.36% → renders 9.4%
-        assert 9.0 <= effective <= 9.5, (
-            f"Effective max should be ~9.4% (cap-bound at "
-            f"$18,720/$200,000), got {effective}%. The lower of the "
-            f"two caps must win — 10% position cap is the LOOSER one."
-        )
-
-    def test_effective_max_pct_binds_to_position_cap_when_tighter(
-            self, tmp_path,
-    ):
-        """Inverse: when the $ cap is loose, position cap binds.
-        avg=$10K → cap=$50K → on $250K equity = 20%, but
-        max_position_pct=10% → effective = 10%."""
-        from ai_analyst import _build_batch_prompt
-        db = _make_profile_db_with_history(tmp_path, avg_value=10_000)
-        prompt = _build_batch_prompt(
-            [_candidate()], _portfolio_state(), _market_context(),
-            ctx=_ctx(db, max_position_pct=0.10),
-        )
-        import re
-        m = re.search(
-            r"EFFECTIVE max size_pct to propose:\s*([\d.]+)%",
-            prompt,
-        )
-        assert m
-        effective = float(m.group(1))
-        assert 9.9 <= effective <= 10.1, (
-            f"Effective max should be 10% (position-bound), got "
-            f"{effective}%. The position cap is the tighter floor "
-            f"here ($25K vs $50K cap)."
+            "25% book-concentration cap must be visible to the AI"
         )
 
 
@@ -246,79 +159,74 @@ class TestRiskLimitsBlockAppears:
 # Layer 2 — block omitted when no history (no false floor)
 # ---------------------------------------------------------------------------
 
-class TestRiskLimitsBlockOmittedWhenNoData:
+class TestRiskLimitsBlockBehaviorWithoutHistory:
 
-    def test_empty_db_no_block(self, tmp_path):
-        """Profile with zero trades → no risk_limits_block.
-        The gate itself returns False ("no baseline") in this state;
-        the prompt shouldn't fabricate a number."""
+    def test_empty_db_block_still_shows_position_cap(self, tmp_path):
+        """Profile with zero trades → block still shows the position
+        cap (it's operator-configured; doesn't need history). The
+        anti-anomaly backstop line is omitted since recent_avg
+        can't be computed."""
         from ai_analyst import _build_batch_prompt
         db = _make_profile_db_with_history(tmp_path, avg_value=5000, n=0)
         prompt = _build_batch_prompt(
             [_candidate()], _portfolio_state(), _market_context(),
             ctx=_ctx(db),
         )
-        assert "System risk limits" not in prompt, (
-            "On an empty profile the gate has no baseline and the "
-            "prompt must not surface a fabricated cap"
+        # Position cap shown — it's always available
+        assert "System risk limits" in prompt
+        assert "Max position size" in prompt
+        # Backstop line NOT shown (no avg to compute it from)
+        assert "Anti-anomaly backstop" not in prompt, (
+            "Without history the prompt must NOT invent a backstop "
+            "threshold; the line is conditional on recent_avg"
         )
 
-    def test_under_minimum_sample_no_block(self, tmp_path):
-        """The gate requires ≥5 prior trades. With 4 the prompt
-        must NOT surface a cap (gate would return None)."""
+    def test_under_minimum_sample_omits_backstop_line(self, tmp_path):
+        """Gate requires ≥5 prior trades for recent_avg; with 4 the
+        position-cap line shows but the backstop line is absent."""
         from ai_analyst import _build_batch_prompt
         db = _make_profile_db_with_history(tmp_path, avg_value=5000, n=4)
         prompt = _build_batch_prompt(
             [_candidate()], _portfolio_state(), _market_context(),
             ctx=_ctx(db),
         )
-        assert "System risk limits" not in prompt, (
-            "Under-minimum sample (gate returns None) means no cap "
-            "is computable; the prompt must not invent one"
-        )
+        assert "Max position size" in prompt
+        assert "Anti-anomaly backstop" not in prompt
 
 
 # ---------------------------------------------------------------------------
 # Layer 3 — cap value matches the gate's own computation
 # ---------------------------------------------------------------------------
 
-class TestCapMatchesGateComputation:
+class TestPromptUsesFlooredGateThreshold:
 
-    def test_prompt_cap_equals_gate_cap(self, tmp_path):
-        """The number the AI sees MUST equal the number the gate
-        enforces, byte-for-byte. Drift here means the AI sizes to
-        what it thinks the cap is, the gate sees a different number,
-        and trades die just over an invisible line."""
+    def test_prompt_backstop_threshold_matches_floored_gate(self, tmp_path):
+        """The number the AI sees in the anti-anomaly backstop line
+        MUST equal `max(5 × recent_avg, position_cap × equity)` —
+        i.e., what the gate actually enforces with the floor."""
         from ai_analyst import _build_batch_prompt
         from single_trade_gate import (
             recent_avg_position_value, CATASTROPHIC_MULT,
         )
+        # avg = $8000 → 5× = $40K. position cap = 10% × $250K = $25K.
+        # max($40K, $25K) = $40K. Backstop fires at $40K.
         db = _make_profile_db_with_history(tmp_path, avg_value=8000)
-
-        # What the gate would compute
         gate_avg = recent_avg_position_value(db)
         assert gate_avg is not None
-        gate_cap = round(gate_avg * CATASTROPHIC_MULT)
+        raw_threshold = round(gate_avg * CATASTROPHIC_MULT)
+        position_cap = 25_000  # 10% × $250K
+        gate_threshold = max(raw_threshold, position_cap)
 
-        # What the prompt surfaces
         prompt = _build_batch_prompt(
             [_candidate()], _portfolio_state(), _market_context(),
             ctx=_ctx(db),
         )
-        # Extract the cap value from "Max single trade $: $40,000 ..."
-        m = re.search(
-            r"Max single trade \$:\s*\$([\d,]+)",
-            prompt,
-        )
-        assert m is not None, (
-            "Cap line missing from prompt — operator can't verify "
-            "the contract holds"
-        )
-        prompt_cap = int(m.group(1).replace(",", ""))
-        assert prompt_cap == gate_cap, (
-            f"Prompt cap ({prompt_cap}) MUST equal gate cap "
-            f"({gate_cap}). Drift here means AI sizes to one floor "
-            f"while the gate enforces another."
+        m = re.search(r"single trade > \$([\d,]+)", prompt)
+        assert m is not None, "backstop line missing"
+        prompt_threshold = int(m.group(1).replace(",", ""))
+        assert prompt_threshold == gate_threshold, (
+            f"Prompt shows ${prompt_threshold:,} but gate enforces "
+            f"${gate_threshold:,}. The two must match exactly."
         )
 
 

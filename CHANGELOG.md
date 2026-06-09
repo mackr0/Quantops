@@ -17,6 +17,41 @@ Rules going forward:
 
 ---
 
+## 2026-06-09 — Catastrophic single-trade gate floored at max_position_dollars (kills the death spiral). Severity: high (the gate was structurally blocking trades it had no business blocking).
+
+**Background:** Even after the morning's "AI sees EFFECTIVE max" fix, profiles with small recent trade averages were still getting blocked. Diagnosis: the catastrophic gate's threshold (`5 × recent_avg`) could sit BELOW the operator-configured `max_position_pct × equity`. So a within-position-cap trade hit the gate; the gate suppressed all bigger trades; recent_avg stayed small; threshold stayed below position cap; permanent block. Classic death spiral. Operator pointed it out: "if the gate is based on what it did previously, and it was arbitrarily small, it could never increase the trade size to a reasonable size."
+
+**Math confirmed the spiral.** Worked example for a $25K profile with $1K recent avg:
+
+| State | recent_avg | cap = 5× avg | Max trade size_pct |
+|---|---|---|---|
+| Now | $1,052 | $5,263 | 21% (position cap binds at 20%) |
+| After 10 trades at cap | $1,800 | $9,000 | 36% (position cap binds) |
+| After 50 trades at cap | $5,000 | $25,000 | 100% (position cap binds) |
+
+So the gate eventually self-corrects up to position cap — but "eventually" is 30-50 trades, and the gate provides ZERO useful protection in that window: the position cap already enforces the operator's intent; the catastrophic gate just blocks within-position-cap trades and never catches anything position cap doesn't already.
+
+**Structural fix:** `is_catastrophic` now accepts `max_position_dollars`. New formula:
+```
+threshold = max(5 × recent_avg, max_position_dollars)
+```
+
+For a young profile (small avg): threshold = max_position_dollars → catastrophic gate ≡ position cap. No death spiral.
+For a mature profile (large avg): threshold = 5 × avg → catches genuine 5× anomalies (qty-calc bugs, AI hallucination producing 10× normal sizes). Original gate intent preserved.
+
+**`trade_pipeline.py`** passes `equity × max_position_pct` as the floor.
+
+**AI prompt updated** to describe the new behavior: position cap is the PRIMARY limit ("Max position size: X% of equity ($Y)"). The catastrophic gate becomes an "Anti-anomaly backstop" line that explains the gate's role as a check above the position cap. The earlier-today "EFFECTIVE max size_pct" line is removed (with the floor, effective max ≡ position cap; the dedicated line is redundant).
+
+**Test coverage:**
+
+- `tests/test_catastrophic_gate_floor_2026_06_09.py` (7 tests): floor raises threshold when avg is small; floor doesn't loosen threshold when avg is large; `max_position_dollars` param is optional and backward compat; trade_pipeline passes the floor through; AI prompt marks position cap as primary; prompt describes gate as backstop; old EFFECTIVE line is gone.
+- `tests/test_ai_sees_risk_limits_2026_06_09.py` updated to new prompt structure (position cap always shown when equity > 0; backstop line shown only when recent_avg available).
+
+**Test that prevents recurrence:** `test_floor_lifts_threshold_when_avg_is_small` reproduces the death-spiral scenario byte-for-byte and asserts the gate stays open.
+
+---
+
 ## 2026-06-09 — AI prompt now surfaces the EFFECTIVE max size_pct (not just the $ cap). Severity: medium.
 
 **Background:** This morning's first cycle after the earlier "AI sees the $ cap" fix showed the gate still firing — the AI sized down to its understanding but the result was still above the catastrophic-trade $ cap. Reason: the gate's $ threshold can be LOWER than `max_position_pct × equity`. The AI saw the $ cap separately from its sizing decision and didn't know which constraint binds at this profile's equity. Real numbers from pid 43 (`max_position_pct=10%`, equity ≈$200K, recent avg trade $3,744 → cap $18,720): AI proposed at 10% (within position cap), but 10% × $200K = $20,000 > $18,720 → gate fires every time.

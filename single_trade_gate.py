@@ -67,29 +67,62 @@ def recent_avg_position_value(
 def is_catastrophic(
     proposed_value: float, db_path: str,
     mult: float = CATASTROPHIC_MULT,
+    max_position_dollars: Optional[float] = None,
 ) -> Tuple[bool, str, dict]:
     """Return (is_catastrophic, reason, detail).
 
-    detail = {avg_recent_value, threshold, multiple, sample_size}
+    `max_position_dollars` (2026-06-09): operator-configured
+    per-trade ceiling. The threshold is floored at this value so the
+    gate never tightens BELOW what the position cap already allows.
+    Without this floor, a young profile with a few small trades
+    establishes a tiny `recent_avg`, the 5× threshold sits below
+    `max_position_pct × equity`, and every within-position-cap trade
+    gets blocked — a death spiral where the cap can never grow
+    because the cap suppresses larger trades.
+
+    With the floor: `threshold = max(5 × recent_avg, max_position_$)`.
+    - Young profile (small avg): threshold = max_position_$ →
+      catastrophic gate ≡ position cap. No death spiral.
+    - Mature profile (large avg): threshold = 5 × avg → catches the
+      genuine 5× anomalies the gate exists for (qty bugs, AI
+      hallucination, etc.).
+
+    detail = {avg_recent_value, threshold, multiple, sample_size,
+              floor_applied}
     """
     avg = recent_avg_position_value(db_path)
     if avg is None:
         return False, "no baseline", {
             "avg_recent_value": None, "threshold": None,
             "multiple": None, "sample_size": 0,
+            "floor_applied": False,
         }
-    threshold = avg * mult
+    raw_threshold = avg * mult
+    floor = max_position_dollars or 0
+    threshold = max(raw_threshold, floor)
+    floor_applied = bool(floor and floor > raw_threshold)
     multiple = proposed_value / avg if avg > 0 else float("inf")
     detail = {
         "avg_recent_value": round(avg, 2),
         "threshold": round(threshold, 2),
         "multiple": round(multiple, 1),
         "sample_size": RECENT_WINDOW,
+        "floor_applied": floor_applied,
     }
     if proposed_value > threshold:
-        reason = (
-            f"Catastrophic single-trade: ${proposed_value:,.0f} is "
-            f"{multiple:.1f}× recent avg ${avg:,.0f} (cap {mult}×)"
-        )
+        if floor_applied:
+            reason = (
+                f"Catastrophic single-trade: ${proposed_value:,.0f} "
+                f"is above the floor ${threshold:,.0f} "
+                f"(max_position_pct × equity; recent avg ${avg:,.0f} "
+                f"× {mult}× = ${raw_threshold:,.0f} would have allowed "
+                f"more)"
+            )
+        else:
+            reason = (
+                f"Catastrophic single-trade: ${proposed_value:,.0f} "
+                f"is {multiple:.1f}× recent avg ${avg:,.0f} "
+                f"(cap {mult}×)"
+            )
         return True, reason, detail
     return False, "within mult", detail

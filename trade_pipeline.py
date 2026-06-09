@@ -818,12 +818,19 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
     try:
         from single_trade_gate import is_catastrophic
         equity_for_estimate = (account.get("equity") or 0)
-        proposed_dollars = (
-            equity_for_estimate * float(getattr(ctx, "max_position_pct", 0.10))
+        max_position_pct = float(
+            getattr(ctx, "max_position_pct", 0.10)
         )
+        proposed_dollars = equity_for_estimate * max_position_pct
+        # 2026-06-09 — floor at max_position_dollars so the gate
+        # never tightens BELOW the operator-configured per-position
+        # cap. Without this, young profiles get stuck in a death
+        # spiral (small avg → tight gate → only small trades
+        # accepted → avg stays small).
         cat, cat_reason, cat_detail = is_catastrophic(
             proposed_dollars, db_path=db_path,
             mult=float(getattr(ctx, "catastrophic_trade_mult", 5.0)),
+            max_position_dollars=proposed_dollars,
         )
         if cat:
             return {
