@@ -613,15 +613,32 @@ def ensure_protective_stops(api, positions, ctx, db_path,
             # to occ_symbol IS NULL picks the actual stock entry row,
             # so its protective_trailing_order_id is found and the
             # already-protected position is correctly skipped.
-            row = conn.execute(
-                "SELECT id, protective_stop_order_id, protective_tp_order_id, "
-                "protective_trailing_order_id "
-                "FROM trades "
-                "WHERE symbol = ? AND side = ? AND status = 'open'"
-                + _occ_filter +
-                " ORDER BY id DESC LIMIT 1",
-                (symbol, entry_side_in_db),
-            ).fetchone()
+            # 2026-06-09 — include take_profit column for broker-side
+            # TP placement. Test fixtures may use a minimal schema
+            # without it; fall back to the legacy column set so
+            # placement still runs (just without the TP).
+            try:
+                row = conn.execute(
+                    "SELECT id, protective_stop_order_id, "
+                    "protective_tp_order_id, "
+                    "protective_trailing_order_id, take_profit "
+                    "FROM trades "
+                    "WHERE symbol = ? AND side = ? AND status = 'open'"
+                    + _occ_filter +
+                    " ORDER BY id DESC LIMIT 1",
+                    (symbol, entry_side_in_db),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                row = conn.execute(
+                    "SELECT id, protective_stop_order_id, "
+                    "protective_tp_order_id, "
+                    "protective_trailing_order_id "
+                    "FROM trades "
+                    "WHERE symbol = ? AND side = ? AND status = 'open'"
+                    + _occ_filter +
+                    " ORDER BY id DESC LIMIT 1",
+                    (symbol, entry_side_in_db),
+                ).fetchone()
             if not row:
                 continue
 
@@ -798,50 +815,120 @@ def ensure_protective_stops(api, positions, ctx, db_path,
             sl_pct = sl_pct_short if is_short else sl_pct_long
 
             if use_trailing:
-                # Trailing-stop: covers BOTH downside AND profit-lock.
-                # Skip if already in place.
+                # Trailing-stop: covers downside + dynamic profit-lock
+                # (price-driven). The static TP placed below covers the
+                # case where price hits the AI's target precisely
+                # without giving back — locks in the AI's actual target
+                # rather than waiting for a 5% pullback. Both run
+                # concurrently as reduce-only orders; whichever fires
+                # first closes the position, the other becomes a
+                # no-shares-to-reduce sit-and-wait (cleaned by next
+                # cycle's broker-truth check).
                 existing_trail_id = row["protective_trailing_order_id"]
-                if existing_trail_id and _is_order_active(api, existing_trail_id):
-                    continue
-                # Free up qty by cancelling any stale stop/TP this row
-                # may have from a previous deploy that placed all three.
-                # Without this, the old reservations block the new trail.
-                _cancel_stale_other_orders(api, conn, row, ("stop", "tp"))
-                trail_pct = trail_percent_for_entry(sl_pct)
-                if trail_pct is None:
-                    continue
-                order_id = submit_protective_trailing(
-                    api, symbol, abs_qty, close_side, trail_pct,
-                    db_path=db_path, entry_trade_id=row["id"],
-                )
-                column = "protective_trailing_order_id"
+                if not (existing_trail_id and _is_order_active(api, existing_trail_id)):
+                    # Cancel any stale static stop AND any stale TP
+                    # (a legacy TP may be at yesterday's target price).
+                    # A fresh TP at the current entry-row target is
+                    # placed below — so this cancel + re-place gives
+                    # always-current TP pricing instead of leaving a
+                    # stale order at the broker.
+                    _cancel_stale_other_orders(api, conn, row, ("stop", "tp"))
+                    trail_pct = trail_percent_for_entry(sl_pct)
+                    if trail_pct is not None:
+                        order_id = submit_protective_trailing(
+                            api, symbol, abs_qty, close_side, trail_pct,
+                            db_path=db_path, entry_trade_id=row["id"],
+                        )
+                        if order_id:
+                            try:
+                                conn.execute(
+                                    "UPDATE trades SET protective_trailing_order_id = ? "
+                                    "WHERE id = ?",
+                                    (order_id, row["id"]),
+                                )
+                                conn.commit()
+                            except Exception as exc:
+                                logger.warning(
+                                    "Protective trailing placed but couldn't "
+                                    "store id: %s (symbol=%s)", exc, symbol,
+                                )
             else:
-                # Static stop only. No TP — that goes through polling.
+                # Static stop branch (use_trailing=False).
                 existing_stop_id = row["protective_stop_order_id"]
-                if existing_stop_id and _is_order_active(api, existing_stop_id):
-                    continue
-                _cancel_stale_other_orders(api, conn, row, ("tp", "trailing"))
-                stop_price = stop_price_for_entry(entry_price, sl_pct, is_short)
-                if stop_price is None:
-                    continue
-                order_id = submit_protective_stop(
-                    api, symbol, abs_qty, close_side, stop_price,
+                if not (existing_stop_id and _is_order_active(api, existing_stop_id)):
+                    # Cancel any stale trailing AND any stale TP
+                    # (legacy TP may be at yesterday's target). Fresh
+                    # TP placed below from the entry row's current
+                    # take_profit.
+                    _cancel_stale_other_orders(api, conn, row, ("tp", "trailing"))
+                    stop_price = stop_price_for_entry(entry_price, sl_pct, is_short)
+                    if stop_price is not None:
+                        order_id = submit_protective_stop(
+                            api, symbol, abs_qty, close_side, stop_price,
+                            db_path=db_path, entry_trade_id=row["id"],
+                        )
+                        if order_id:
+                            try:
+                                conn.execute(
+                                    "UPDATE trades SET protective_stop_order_id = ? "
+                                    "WHERE id = ?",
+                                    (order_id, row["id"]),
+                                )
+                                conn.commit()
+                            except Exception as exc:
+                                logger.warning(
+                                    "Protective stop placed but couldn't "
+                                    "store id: %s (symbol=%s)", exc, symbol,
+                                )
+
+            # 2026-06-09 — broker-side TAKE-PROFIT placement.
+            # Pre-fix, TPs went through `check_stop_loss_take_profit`
+            # polling — which ran once per ~5-min cycle and could miss
+            # intra-cycle spikes past the AI's target. Now place a
+            # GTC limit order at the entry row's `take_profit` price
+            # so the broker fills at the AI's clamped target the
+            # moment price reaches it. Runs alongside trailing/static
+            # stop: whichever fires first closes the position; the
+            # other becomes a no-shares-to-reduce order cleaned by
+            # the next cycle's broker-truth check (line ~740).
+            #
+            # Skip when:
+            #   - row has no take_profit price set (entry didn't
+            #     compute one)
+            #   - an active TP order already exists for this row
+            #   - conviction-TP override is active for this position
+            #     (caller already `continue`d above for that case)
+            try:
+                tp_price = row["take_profit"]
+            except (IndexError, KeyError):
+                # Legacy schema fallback (minimal-schema test
+                # fixtures) — no take_profit column means no
+                # broker-side TP for this row, skip the placement
+                # branch below.
+                tp_price = None
+            existing_tp_id = row["protective_tp_order_id"]
+            tp_active = (
+                existing_tp_id and _is_order_active(api, existing_tp_id)
+            )
+            if tp_price and float(tp_price) > 0 and not tp_active:
+                tp_order_id = submit_protective_take_profit(
+                    api, symbol, abs_qty, close_side, float(tp_price),
                     db_path=db_path, entry_trade_id=row["id"],
                 )
-                column = "protective_stop_order_id"
+                if tp_order_id:
+                    try:
+                        conn.execute(
+                            "UPDATE trades SET protective_tp_order_id = ? "
+                            "WHERE id = ?",
+                            (tp_order_id, row["id"]),
+                        )
+                        conn.commit()
+                    except Exception as exc:
+                        logger.warning(
+                            "Protective TP placed but couldn't store id: "
+                            "%s (symbol=%s)", exc, symbol,
+                        )
 
-            if order_id:
-                try:
-                    conn.execute(
-                        f"UPDATE trades SET {column} = ? WHERE id = ?",
-                        (order_id, row["id"]),
-                    )
-                    conn.commit()
-                except Exception as exc:
-                    logger.warning(
-                        "Protective order placed but couldn't store id: %s "
-                        "(symbol=%s, column=%s)", exc, symbol, column,
-                    )
     finally:
         try:
             conn.close()

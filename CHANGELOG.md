@@ -17,6 +17,36 @@ Rules going forward:
 
 ---
 
+## 2026-06-09 (night) — Broker-side take-profit placement wired up. Closes the polling-only TP gap that was leaking MFE on every successful run. Severity: high (root cause of the −67% MFE capture).
+
+**Background:** `submit_protective_take_profit` has existed in `bracket_orders.py:272` for some time but **was never called from any code path**. The `ensure_protective_stops` sweep placed only a trailing stop (when `use_trailing=True`) OR a static stop (else). The static-stop branch's comment said "No TP — that goes through polling." The polling — `check_stop_loss_take_profit` — runs once per ~5-min cycle and can miss intra-cycle price spikes past the AI's target.
+
+**Measurement (investigation 2026-06-09 afternoon, pid 42 30-day window):**
+- 0 of 60 entries had `protective_tp_order_id` set.
+- 0 PROTECTIVE_TAKE_PROFIT rows recorded.
+- 35 of 60 had a trailing stop; 25 entries (42%) had NO broker-side protective order at all.
+- The single take_profit fire in 30 days hit the profile-level fallback threshold, not a per-trade target.
+
+**Fix:** `ensure_protective_stops` now reads the entry row's `take_profit` price and places a GTC limit order at that level alongside whichever stop (trailing or static) is being placed. The two run concurrently as reduce-only orders; whichever fills first closes the position, the other becomes a no-shares-to-reduce no-op that the next cycle's broker-truth check (line ~740) cleans up.
+
+**Behavior contract changes:**
+
+- The `_cancel_stale_other_orders` calls in both branches still cancel any legacy TP — but a fresh TP at the current entry-row target is placed immediately after. Result: legacy TPs that don't match today's target get refreshed instead of leaving the broker holding stale orders.
+- Test `test_sweep_cancels_legacy_stop_and_tp_when_placing_trailing` continues to assert the legacy stop and TP are both cancelled. With the new code, a fresh TP is then placed if the entry row has a take_profit set; for that legacy-migration test the seeded row has `take_profit=NULL`, so no replacement TP is placed and the test's expectations are unchanged.
+- Trailing stops remain the give-back protection — they fire on a 5% pullback from MFE high (per `trail_percent_for_entry`). The TP is the precise-target capture. Best of both: TP fires the moment price hits the AI target; trailing catches the case where price runs up but never quite hits TP before pulling back.
+
+**Schema-fallback:** entry-row SELECT uses try/except to handle minimal test fixtures without the `take_profit` column. Production DBs have it via the standard migration. The fallback skips TP placement gracefully.
+
+**Test coverage:** `tests/test_broker_side_tp_2026_06_09.py` (6 tests):
+- Source pins: SELECT includes `take_profit`; sweep calls `submit_protective_take_profit`; order_id persists to `protective_tp_order_id` column; TP placement happens after both stop branches.
+- Helper pins: `submit_protective_take_profit` signature and `type="limit"` + `time_in_force="gtc"` (refactor protection).
+
+Existing `tests/test_bracket_orders.py` (35 tests) all continue to pass — the contract changes were either compatible or already covered by the test's legacy-NULL `take_profit` seed.
+
+**Combined with the ATR clamp** (which caps TP targets at +12% of entry), this is the second half of the MFE-capture fix: clamp the targets to realistic levels (ATR clamp); place them at the broker so they actually fire (this commit). The next cycle of new entries will be the first set of trades in this system's history with broker-side TPs alongside trailing stops.
+
+---
+
 ## 2026-06-09 (evening, late) — COVER-side per-profile isolation. Mirror of the sell-side fix; closes the parallel risk on shorts. Severity: critical (same architectural class as the sell consumption bug; would manifest as cross-profile short consumption when shorts wind down).
 
 **Background:** This morning's per-profile sell isolation fix patched `allowable_sell_qty` but explicitly flagged the COVER (buy-to-cover) mirror as out of scope. The same architectural risk lives on the short side: one profile covers more shares than its own virtual short, consuming sibling profiles' short positions at the broker.
