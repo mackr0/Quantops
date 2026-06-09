@@ -741,18 +741,51 @@ def ensure_protective_stops(api, positions, ctx, db_path,
                 if _existing_status == "filled":
                     continue
 
-            # 2026-05-21 — BROKER-TRUTH skip decision. If Alpaca
-            # already has active protective coverage for this
-            # (symbol, close_side) that meets/exceeds the position
-            # qty, the position IS protected — skip placement. Heal
-            # the journal entry-row pointer to the live order_id when
-            # it's missing or stale so journal == Alpaca (keyed on
-            # order_id). This replaces the prior logic that re-derived
-            # protection status from the entry row's stored id alone
-            # — which broke when the wrong row was matched or the
-            # pointer drifted, causing endless "insufficient qty
-            # available" retries on already-protected positions.
-            _cover = broker_coverage.get((symbol.upper(), close_side), [])
+            # 2026-06-09 (post-reset) — JOURNAL-OWNED coverage only.
+            # The pre-2026-06-09 broker-truth check summed ALL broker
+            # coverage for (symbol, close_side) across the account
+            # and skipped placement when total >= this profile's qty.
+            # That's how PAVS today became unprotected on 2 of 3
+            # sibling profiles: pid 59 placed a trailing sized to its
+            # own 10605 share; pids 56 and 63 then saw the broker's
+            # 10605 coverage >= their own ~1k/16k shares and skipped
+            # placement. When pid 59's trailing fired at $1.50, pids
+            # 56 and 63's positions stayed in at the worse current
+            # price (-18.8% from entry).
+            #
+            # The fix mirrors the sell/cover isolation: a profile
+            # owns ONLY the broker orders that its own journal points
+            # to. Filter broker_coverage to order_ids tracked in this
+            # profile's journal (any open entry's protective_*_order_id)
+            # before deciding whether THIS entry is protected. Sibling
+            # orders don't count toward our coverage — never did,
+            # really; the check just happened to skip without breakage
+            # in the single-profile case and silently mis-fired across
+            # shared Alpaca accounts.
+            own_protective_ids = set()
+            try:
+                own_rows = conn.execute(
+                    "SELECT protective_stop_order_id, "
+                    "       protective_tp_order_id, "
+                    "       protective_trailing_order_id "
+                    "FROM trades WHERE status = 'open' "
+                    "  AND (protective_stop_order_id IS NOT NULL "
+                    "    OR protective_tp_order_id IS NOT NULL "
+                    "    OR protective_trailing_order_id IS NOT NULL)"
+                ).fetchall()
+                for _r in own_rows:
+                    for _oid in _r:
+                        if _oid:
+                            own_protective_ids.add(_oid)
+            except sqlite3.OperationalError:
+                # Minimal-schema test fixtures may lack one of the
+                # columns; degrade to "no own ids known" so the skip
+                # below won't fire spuriously.
+                own_protective_ids = set()
+            _cover_all = broker_coverage.get(
+                (symbol.upper(), close_side), [])
+            _cover = [c for c in _cover_all
+                      if c.get("order_id") in own_protective_ids]
             _covered_qty = sum(c["qty"] for c in _cover)
             if _cover and _covered_qty >= abs_qty - 0.001:
                 # Already protected at the broker. Heal the journal

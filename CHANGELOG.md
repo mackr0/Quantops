@@ -17,6 +17,41 @@ Rules going forward:
 
 ---
 
+## 2026-06-09 (post-reset, very late) — Protective-orders per-profile isolation. Severity: CRITICAL (real money damage observed). This bug was pre-existing (added 2026-05-21) but masked by the cross-profile share consumption pattern. This morning's `ba1145b` sell-isolation fix removed the masking, and tonight's first sustained loss surfaced it on PAVS.
+
+**The damage observed:**
+
+Three profiles (56 EXP-A2-NoMetaModel, 59 EXP-A2-NoAltData-NoMetaModel, 63 EXP-A3-700K-AggressiveFree) all bought PAVS at ~$1.68 with stop at $1.58. Pid 59 placed a trailing stop at the broker sized to its 10605 shares. Pids 56 and 63 saw the broker's existing 10605 coverage and SKIPPED their own protective placement because the `broker_coverage` check at `bracket_orders.py:755-757` summed coverage account-wide and compared to this-profile's qty.
+
+When PAVS dropped, pid 59's trailing fired at $1.50 closing pid 59's 10605 shares cleanly. Pids 56 and 63's positions stayed in. Current state: pid 63 holds 29653 unprotected shares at $1.50, unrealized loss -$8,180; pid 56 at -$2,126; total -~$10K across the three profiles.
+
+**Pre-fix code (bracket_orders.py:755):**
+```
+_cover = broker_coverage.get((symbol.upper(), close_side), [])
+_covered_qty = sum(c["qty"] for c in _cover)
+if _cover and _covered_qty >= abs_qty - 0.001:
+    # already protected — skip placement
+    continue
+```
+
+The check trusted ANY broker order on (symbol, close_side) as "protective coverage," including orders placed by sibling profiles whose IDs are not in this profile's journal. For shared Alpaca accounts the check mis-fires every time more than one profile holds the same symbol.
+
+**Why this didn't surface before:**
+
+Pre-`ba1145b` (this morning), one profile's sell could consume sibling shares at the broker via the `allowable_sell_qty` downsize path. So when pid 59's trailing fired, the aggregate sell consumed pid 56 and 63's shares too. Positions got closed (by the wrong mechanism) and the missing-protective gap on siblings was invisible — they stayed flat at the broker even though their journals showed open. This morning's sell-isolation fix made the protective placement gap visible: now sibling sells only close their own positions, and pids without protective stay in.
+
+**Fix (post-reset, this commit):**
+
+`ensure_protective_stops` builds a set of THIS profile's `protective_*_order_id` values from open journal entries, then filters `broker_coverage` to include only orders whose `id` is in that set. Sibling-placed orders are ignored. Each profile now places its own protective sized to its own virtual qty, mirroring the sell/cover isolation pattern.
+
+`tests/test_protective_per_profile_isolation_2026_06_09.py` (2 tests):
+- Sibling-owned broker coverage no longer blocks own placement.
+- Source pin: `own_protective_ids` filter must be present.
+
+**Live remediation:** placing missing protective orders manually on the existing PAVS positions for pids 56 and 63 (and any other symbols with the same gap) immediately after deploy. The deploy's next sweep will heal going forward; the manual placement covers the gap window.
+
+---
+
 ## 2026-06-09 (post-reset, night) — Strike-snap collision detection + brain badge per-action-class matching. Severity: high. Both bugs surfaced on the FIRST cycle after the clean-slate reset, on a system I had told the operator was "fully clean." Earlier today I flagged the strike-snapper collapse as "separate change" and let it ride — that was the wrong call and the operator caught me. No more deferrals.
 
 **Bug 1 — strike-snap collision (the deferred-and-bit-me one).**
