@@ -73,19 +73,39 @@ def _build_multileg_strategy(builder, strategy_name, underlying,
     Each multi-leg builder has its own signature; this dispatcher knows
     which fields to pull for each. Reduces dispatch boilerplate in
     run_trade_cycle.
+
+    2026-06-09 — vertical-spread sort. All four vertical-spread
+    builders (`build_bull_call_spread`, `build_bear_put_spread`,
+    `build_bull_put_spread`, `build_bear_call_spread`) have the same
+    signature: `(underlying, expiry, lower_strike, upper_strike, qty)`.
+    Each builder INTERNALLY knows which strike is the short leg and
+    which is the long leg based on the strategy's structural rules
+    (bear-call → short=lower; bull-put → short=upper, etc.). The
+    AI's `{"short": X, "long": Y}` labels carry intent but the AI
+    sometimes inverts them — e.g. proposing bear_call_spread with
+    `{"short": 18, "long": 17}` because it generalizes from the
+    bull_put_spread example shown in the prompt where short > long.
+
+    Pre-fix: this dispatcher trusted the AI's labels and the bear-
+    call/bear-put builders raised "upper strike must be > lower
+    strike" on every inverted proposal. Operator saw "Multi-leg
+    build/submit failed" errors on RGTI 17/18, POET 9/10, etc.
+
+    Post-fix: for all four vertical spreads, the dispatcher sorts
+    the two strikes and passes `(min, max)` to the builder. The
+    builder assigns short/long per the strategy's structural rules.
+    Iron-condor / iron-butterfly / straddle / strangle keep their
+    multi-keyword signatures unchanged (no inversion ambiguity).
     """
-    if strategy_name == "bull_call_spread":
-        return builder(underlying, expiry_date,
-                       strikes["long"], strikes["short"], qty=contracts)
-    if strategy_name == "bear_put_spread":
-        return builder(underlying, expiry_date,
-                       strikes["short"], strikes["long"], qty=contracts)
-    if strategy_name == "bull_put_spread":
-        return builder(underlying, expiry_date,
-                       strikes["long"], strikes["short"], qty=contracts)
-    if strategy_name == "bear_call_spread":
-        return builder(underlying, expiry_date,
-                       strikes["short"], strikes["long"], qty=contracts)
+    _VERTICAL_SPREADS = {
+        "bull_call_spread", "bear_put_spread",
+        "bull_put_spread", "bear_call_spread",
+    }
+    if strategy_name in _VERTICAL_SPREADS:
+        lower = min(strikes["short"], strikes["long"])
+        upper = max(strikes["short"], strikes["long"])
+        return builder(underlying, expiry_date, lower, upper,
+                       qty=contracts)
     if strategy_name == "iron_condor":
         return builder(underlying, expiry_date,
                        put_long_strike=strikes["put_long"],

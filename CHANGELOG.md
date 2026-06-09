@@ -17,6 +17,32 @@ Rules going forward:
 
 ---
 
+## 2026-06-09 (evening) — Vertical-spread dispatcher sorts strikes (kills the "upper strike must be > lower strike" build failures). Severity: medium.
+
+**Background:** Operator surfaced `Multileg Open RGTI REJECTED · Insufficient Qty` and similar drops; investigation showed the root cause was an AI label-inversion: the AI was proposing bear_call_spread with `{"short": 18, "long": 17}` and bear_put_spread with `{"short": 10, "long": 9.5}`. The strikes themselves were sane; the LABELS were inverted.
+
+**Why the AI inverts:** the AI prompt's multileg example uses `bull_put_spread` with `{"short": 145, "long": 140}` — short > long. The AI generalizes "short is always the higher number," which is correct for `bull_put` but WRONG for `bear_call` (where short=lower) and `bear_put` (where short=lower).
+
+**Pre-fix dispatcher:** `_build_multileg_strategy` trusted the AI's labels. For `bear_call_spread` it passed `(strikes["short"], strikes["long"])` to `build_bear_call_spread(underlying, expiry, lower_strike, upper_strike)` — if the AI inverted, the builder received `lower=18, upper=17` and raised `upper strike (17) must be > lower strike (18)`. The whole multileg proposal hit `Multi-leg build/submit failed` and rendered as ERROR.
+
+**Fix:** all 4 vertical-spread builders have identical signatures `(underlying, expiry, lower_strike, upper_strike, qty)`. Each builder INTERNALLY assigns short/long based on its strategy's structural rule (bear_call → short=lower; bull_call → short=upper; etc.). The dispatcher now sorts the two strikes and passes `(min, max)` to all four. The AI's `short`/`long` labels become advisory; the structural rule is what wins.
+
+**Non-vertical spreads** (iron_condor, iron_butterfly, long_straddle, short_straddle, long_strangle) use named kwargs (`put_long_strike`, `call_short_strike`, etc.) — no inversion ambiguity, untouched.
+
+**Tests:**
+
+`tests/test_multileg_dispatcher_strike_sort_2026_06_09.py` (9 tests):
+- Layer 1: AI-inverted bear_call_spread (RGTI 17/18) and bear_put_spread (POET 9.5/10) build successfully; short/long legs land on the structurally-correct strikes.
+- Layer 2: correctly-labeled spreads still build identically (no regression on all 4 vertical types).
+- Layer 3: iron_condor and long_straddle dispatch untouched.
+- Layer 4: source pin — dispatcher must use `min()`/`max()` for vertical-spread strikes.
+
+**Working-as-intended drops in the same brain (no fix needed, explained for clarity):**
+- POET SKIP — `Duplicate-position guard: profile already has open journal row for POET260717P00010000`. Correct dedup.
+- ETHA SPECIALIST_VETOED — `adversarial_reviewer: book already has significant exposure to cryptocurrency-related assets (IBIT, MARA, ETHA short)`. Correct concentration veto.
+
+---
+
 ## 2026-06-09 (late afternoon) — Per-profile sell isolation: a profile can no longer consume sibling profiles' shares. Severity: CRITICAL (architecture invariant violation; root cause of multi-day journal/broker drift).
 
 **Background:** Operator discovered phantom journal rows on pid 45 (LXEH #67, NEXR #70 status='open' while broker has zero). Root-cause investigation revealed this is not a journal-sync bug — it's a sell-validation gap that lets one profile sell shares that virtually belong to other profiles sharing the same Alpaca account.
