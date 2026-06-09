@@ -2744,7 +2744,20 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
             # confusion when SHORT VALE printed "Executing" but no
             # order was actually submitted.
             ta = (trade_result or {}).get("action") if isinstance(trade_result, dict) else None
-            if ta and ta not in ("BUY", "SELL", "SHORT", "COVER"):
+            # 2026-06-09 — MULTILEG_OPEN / MULTILEG_CLOSE are SUCCESS
+            # actions (the multileg combo was submitted to the broker),
+            # not gate outcomes. Originally the allowlist only covered
+            # single-leg actions, so every successful multileg flowed
+            # into trade_drops and the AI Brain badged it "GATED ·
+            # Multileg Open" — the operator-visible symptom: bear_call_
+            # spread on NOK at 14:21:16 was a real successful submission
+            # rendered as a gate. Treat multileg success actions the
+            # same as BUY/SELL/SHORT/COVER.
+            _SUCCESS_ACTIONS = (
+                "BUY", "SELL", "SHORT", "COVER",
+                "MULTILEG_OPEN", "MULTILEG_CLOSE",
+            )
+            if ta and ta not in _SUCCESS_ACTIONS:
                 drop_reason = (trade_result or {}).get(
                     "reason", "no reason given"
                 )

@@ -6057,10 +6057,37 @@ def api_cycle_data(profile_id):
         # Brain panel's BLOCKED badge previously showed nothing more
         # specific than "blocked"; now the gate name + human reason
         # land in the badge tooltip.
+        #
+        # 2026-06-09 (afternoon) — scope drops to the CURRENT cycle
+        # only. The original 2-hour window meant a stale drop from
+        # a previous cycle (e.g., a CATASTROPHIC_SINGLE_TRADE drop
+        # from a pre-deploy cycle when the gate was misbehaving)
+        # would re-badge any future proposal of the same symbol —
+        # operator saw "RGNT GATED · Catastrophic" at 14:30 from a
+        # drop recorded at 13:57. The cycle's wall-clock timestamp
+        # is on `data["timestamp"]` (unix epoch float from when the
+        # scheduler wrote cycle_data_*.json). Only show drops with
+        # timestamp >= cycle_ts so each cycle's badges reflect THIS
+        # cycle's outcomes, not historical ones. Buffer of 60s back
+        # absorbs any clock-skew or drops written just before the
+        # cycle file landed.
+        cycle_ts_epoch = data.get("timestamp")
+        cycle_cutoff_iso = None
+        if isinstance(cycle_ts_epoch, (int, float)) and cycle_ts_epoch > 0:
+            from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+            cycle_cutoff_iso = (
+                _dt.fromtimestamp(cycle_ts_epoch, tz=_tz.utc)
+                - _td(seconds=60)
+            ).strftime("%Y-%m-%d %H:%M:%S")
         drops = get_recent_trade_drops(db_path, hours=2)
         drop_by_symbol = {}
         for d in drops:
             sym = (d.get("symbol") or "").upper()
+            d_ts = d.get("timestamp") or ""
+            # Skip drops older than this cycle's start — they belong
+            # to a prior cycle and shouldn't badge the current one.
+            if cycle_cutoff_iso and d_ts < cycle_cutoff_iso:
+                continue
             if sym and sym not in drop_by_symbol:
                 drop_by_symbol[sym] = d
         for t in (data.get("trades_selected") or []):

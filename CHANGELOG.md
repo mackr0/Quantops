@@ -17,6 +17,67 @@ Rules going forward:
 
 ---
 
+## 2026-06-09 — AI Brain badges now reflect THIS cycle (kills two false-GATED bugs). Severity: medium (operator-visible: looked like gates were firing when they weren't).
+
+**Background:** After the catastrophic-floor deploy stopped gate fires, the AI Brain still showed `RGNT GATED · Catastrophic Single Trade`, `Multileg Open NOK GATED · Multileg Open`, and similar. Operator reasonable read: "the fix didn't work." Actual cause: two separate brain-UI bugs.
+
+**Bug 1 — MULTILEG_OPEN logged as a drop:**
+
+`trade_pipeline.py:2747` filtered `if ta not in ("BUY", "SELL", "SHORT", "COVER"):` to record_trade_drop. MULTILEG_OPEN and MULTILEG_CLOSE are SUCCESS actions (the combo submitted to broker) but weren't in the allowlist — so every successful multileg fell through and got logged as a drop. Observed: NOK bear_call_spread submitted successfully at 14:21:16 (status=open at broker), yet rendered as "GATED · Multileg Open". Fix: include MULTILEG_OPEN and MULTILEG_CLOSE in the `_SUCCESS_ACTIONS` allowlist.
+
+**Bug 2 — Stale drops from prior cycles bleed into current badges:**
+
+`api_cycle_data` enrichment called `get_recent_trade_drops(hours=2)` and matched by symbol. A pre-deploy CATASTROPHIC drop for RGNT at 13:57 then re-badged every RGNT proposal until 15:57 (a full 2 hours) — even though no drop had been recorded for RGNT since deploy. Operator's symptom: "BUY RGNT GATED · Catastrophic" appearing cycle after cycle from a single stale drop.
+
+Fix: scope drops to the current cycle. The cycle's wall-clock start is on `data["timestamp"]` (unix epoch float that the scheduler writes when it persists `cycle_data_*.json`). Enrichment now computes a `cycle_cutoff_iso` from that timestamp (with a 60s back-buffer for clock-skew tolerance) and skips drops with `d_ts < cycle_cutoff_iso`. Each cycle's badges now reflect THIS cycle's gate outcomes only, never historical ones.
+
+**Test coverage:**
+
+`tests/test_brain_badge_correctness_2026_06_09.py` (6 tests):
+
+- 2 source pins: `_SUCCESS_ACTIONS` includes MULTILEG_OPEN/MULTILEG_CLOSE; original BUY/SELL/SHORT/COVER stay present.
+- 1 sanity: `get_recent_trade_drops` returns rows within window (the helper stays general; filtering is in the view).
+- 2 end-to-end: a drop 30 minutes BEFORE the cycle's `timestamp` does NOT badge a current proposal; a drop 30 seconds AFTER the cycle's start DOES badge it.
+- 1 source pin: views.py enrichment derives a cutoff from `data["timestamp"]` and uses it to filter drops.
+
+**Out of scope:**
+
+The 2-hour window stays in `get_recent_trade_drops` itself — the helper is general (used by the trade-drops dashboard and the ops audit page). The fix is in the caller, scoping to current cycle.
+
+---
+
+## 2026-06-09 — Sequential multileg fallback now submits buys before sells (kills the uncovered-short rejection on credit spreads). Severity: medium.
+
+**Background:** After the catastrophic-gate floor fix unblocked stock trades, options trades immediately surfaced their own pattern. NOK and similar credit spreads were producing `Multileg Open … GATED · ERROR` badges with `Leg 0 failed: Alpaca order rejected (403): account not eligible to trade uncovered option`. Initial read: account options-approval mismatch. Actual cause: leg ordering in the sequential fallback path.
+
+**The sequence that produced the bug:**
+
+1. `build_bear_call_spread`, `build_bull_put_spread`, and `build_iron_condor` all emit shorts FIRST in `legs[]` by convention (the credit-receiving leg is the dominant journal row). The atomic MLEG combo path is fine with this — Alpaca processes all legs together.
+2. When combo fails (transient 5xx OR a structural rejection like NOK's "leg.1 symbol is duplicated" from the upstream strike snapper collapsing both call strikes to 15.00), execution falls back to sequential per-leg submission.
+3. Sequential iterates `strategy.legs` directly → leg 0 (the short) is submitted ALONE → Alpaca sees an uncovered short → 403.
+4. Operator-visible drop says "uncovered option" → first impression is an account approval-level mismatch, not the leg-ordering / duplicate-strike root cause.
+
+**Fix:**
+
+`options_multileg.py` sequential fallback now sorts legs `buy` first, `sell` last (stable sort, preserves intra-side ordering for iron-condor wing matching). When the short leg hits Alpaca, the covering long is already open → accepted as covered.
+
+Additionally, combo failures whose error string contains "duplicated" / "duplicate" now refuse the sequential fallback entirely — sequential CAN'T fix duplicate-leg structural failures, and falling through just produces a misleading downstream symptom. The drop reason instead surfaces the real cause: "Combo rejected with duplicate-leg symbol … upstream strike picker / snapper collapsed two legs to the same OCC contract."
+
+**Test coverage:**
+
+`tests/test_multileg_sequential_leg_ordering_2026_06_09.py` (7 tests):
+
+- 4 layer-1 tests: bear_call_spread, bull_put_spread, iron_condor submit buys-first; bull_call_spread (already buy-first) is unchanged.
+- 2 layer-2 tests: duplicate-leg combo failure → ERROR immediately (sequential not called); transient 503 combo failure → sequential still runs with buys-first ordering.
+- 1 layer-3 source pin: the sequential loop iterates `sequential_legs` (sorted), not `strategy.legs` directly — guards against a future refactor silently dropping the sort.
+
+**Out of scope** (logged for follow-up):
+
+- The NOK case ALSO has an upstream strike-snapper bug (collapsed both legs to NOK 15C). With this fix, that case now produces a clear "duplicate-leg" drop reason instead of an "uncovered" red herring. Fixing the strike snapper itself is a separate change.
+- BITO `No listed Alpaca contract within tolerance` — strike/expiry doesn't exist on Alpaca's chain. Separate issue in the AI's strike selection.
+
+---
+
 ## 2026-06-09 — Catastrophic single-trade gate floored at max_position_dollars (kills the death spiral). Severity: high (the gate was structurally blocking trades it had no business blocking).
 
 **Background:** Even after the morning's "AI sees EFFECTIVE max" fix, profiles with small recent trade averages were still getting blocked. Diagnosis: the catastrophic gate's threshold (`5 × recent_avg`) could sit BELOW the operator-configured `max_position_pct × equity`. So a within-position-cap trade hit the gate; the gate suppressed all bigger trades; recent_avg stayed small; threshold stayed below position cap; permanent block. Classic death spiral. Operator pointed it out: "if the gate is based on what it did previously, and it was arbitrarily small, it could never increase the trade size to a reasonable size."

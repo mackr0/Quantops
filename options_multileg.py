@@ -804,6 +804,36 @@ def execute_multileg_strategy(
             })
             return result
         except Exception as exc:
+            exc_str = str(exc)
+            # Some combo failures are structurally unrecoverable —
+            # sequential submission will produce a different (wrong)
+            # error message that hides the real cause. Refuse fallback
+            # so the operator sees the original combo error.
+            #
+            # "is duplicated" — combo legs collapsed to the same OCC
+            # symbol (upstream strike-snapper rounded two strikes to
+            # the same listed contract). Sequential would submit leg
+            # 0 then have leg 1 net it back to zero (or hit uncovered
+            # if Alpaca infers the second leg as a separate position),
+            # producing a misleading "uncovered" reason in trade_drops
+            # instead of the real "duplicate strike" cause.
+            if "is duplicated" in exc_str or "duplicate" in exc_str.lower():
+                logger.warning(
+                    "Combo-order rejected with duplicate-symbol for %s "
+                    "on %s: %s. Refusing sequential fallback (it would "
+                    "obscure the real cause).",
+                    strategy.name, strategy.underlying, exc,
+                )
+                result.update({
+                    "action": "ERROR",
+                    "reason": (
+                        f"Combo rejected with duplicate-leg symbol: "
+                        f"{exc_str[:200]}. Sequential fallback refused "
+                        f"— upstream strike picker / snapper collapsed "
+                        f"two legs to the same OCC contract."
+                    ),
+                })
+                return result
             logger.warning(
                 "Combo-order path failed for %s on %s: %s. "
                 "Falling back to sequential submission.",
@@ -816,8 +846,24 @@ def execute_multileg_strategy(
     # without it Alpaca async-cancels short opens (the root cause of
     # the 2026-05-06 ARCC runaway). _INTENT_OPEN maps buy→buy_to_open
     # and sell→sell_to_open for opening legs.
+    #
+    # 2026-06-09 — leg ordering for sequential submission. Credit-spread
+    # builders emit legs in shorts-first convention (so the journal
+    # rows reflect the credit-receiving leg first). For an atomic
+    # MLEG combo that's fine — Alpaca processes all legs together. In
+    # sequential mode submitting a short leg ALONE makes Alpaca see
+    # an uncovered short → 403 "account not eligible to trade
+    # uncovered option" on accounts approved only for vertical
+    # spreads. Sort longs (buy) before shorts (sell) so each short
+    # is submitted after its covering long is already open at the
+    # broker. Stable sort preserves intra-side ordering so the
+    # rollback path still matches the original strategy.legs order.
+    sequential_legs = sorted(
+        strategy.legs,
+        key=lambda lg: 0 if lg.side == "buy" else 1,
+    )
     submitted: List[Dict[str, Any]] = []
-    for i, leg in enumerate(strategy.legs):
+    for i, leg in enumerate(sequential_legs):
         try:
             # Direct POST so position_intent reaches Alpaca — the
             # SDK's submit_order signature drops the kwarg.
