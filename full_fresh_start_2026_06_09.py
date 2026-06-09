@@ -145,7 +145,17 @@ NEW_KEYS = [
 # profile starts the new experiment with the same fresh credential.
 # All 13 enabled profiles currently use google/gemini-2.5-flash-lite
 # (verified pre-reset), so a single key applies uniformly.
-NEW_GOOGLE_AI_KEY = "__LEAKED_AND_REVOKED__"
+#
+# 2026-06-09 (post-leak rewrite) — the original commit hardcoded
+# the key inline. Github's secret scanner caught it within minutes
+# and the key was auto-revoked. Read from the environment variable
+# RESET_NEW_GOOGLE_AI_KEY at apply time instead. Set the var BEFORE
+# running --apply:
+#     export RESET_NEW_GOOGLE_AI_KEY='your-fresh-AIza...'
+#     venv/bin/python full_fresh_start_2026_06_09.py --apply
+# step1_verify_keys + the rest are unaffected; only step5c reads
+# this var.
+NEW_GOOGLE_AI_KEY = os.environ.get("RESET_NEW_GOOGLE_AI_KEY", "")
 
 # Master-DB tables to wipe AFTER clean_orphaned_profiles handles its
 # cascade. These hold contaminated state that isn't keyed on
