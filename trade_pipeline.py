@@ -1238,12 +1238,22 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
         # profile owns or monitors. (Caught 2026-05-06: 31 phantom
         # shorts had accumulated across the 3 accounts this way.)
         from order_guard import allowable_sell_qty
-        allowed_qty, guard_reason = allowable_sell_qty(api, symbol, int(sell_qty))
+        # 2026-06-09 — pass db_path so the guard checks THIS profile's
+        # own virtual qty (not the aggregate broker pool). The pre-
+        # rewrite version downsized to aggregate, which is how one
+        # profile's sell consumed sibling profiles' shares.
+        allowed_qty, guard_reason = allowable_sell_qty(
+            api, symbol, int(sell_qty), db_path=db_path,
+        )
         if allowed_qty == 0:
             result["action"] = "SKIP"
             result["reason"] = f"Pre-trade guard: {guard_reason}"
             return result
         if allowed_qty != int(sell_qty):
+            # Post-rewrite this branch is unreachable for the per-
+            # profile policy (the guard now returns either
+            # requested_qty or 0). Keep the assignment as defense in
+            # case some other guard mode reintroduces partial sizing.
             sell_qty = allowed_qty
 
         # INTRADAY_STOPS_PLAN Stage 1 — cancel any broker stop attached

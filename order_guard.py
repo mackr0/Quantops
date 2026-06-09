@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
@@ -168,33 +169,51 @@ def allowable_buy_qty(
     return (requested_qty, "ok")
 
 
-def allowable_sell_qty(api, symbol: str, requested_qty: int) -> tuple:
+def allowable_sell_qty(
+    api, symbol: str, requested_qty: int,
+    db_path: Optional[str] = None,
+) -> tuple:
     """Pre-trade guard: return (allowed_qty, reason) for a SELL of `requested_qty`.
 
-    Caught 2026-05-06: 31 broker shorts had accumulated across the 3
-    Alpaca accounts because multiple profiles share each account, and
-    cumulative SELLs from independent profile stop-losses overshot the
-    broker's actual long position. Each profile thought it was closing
-    its own long; the broker went net-short by tens of thousands.
+    2026-06-09 rewrite. Pre-rewrite, this checked the AGGREGATE broker
+    position across all profiles sharing the Alpaca account, and if the
+    aggregate was smaller than `requested_qty`, it would DOWNSIZE to
+    the aggregate. That mechanism is exactly how one profile consumed
+    sibling profiles' shares: pid 42 proposed SELL 2979 LXEH; the
+    aggregate broker pool was 2979 (because siblings had been buying);
+    guard said "ok, downsize unnecessary, go ahead"; pid 42 sold all
+    2979, including 1191 shares that virtually belonged to pid 45,
+    1788 to pid 44, etc. Pid 42's journal recorded the sell; the other
+    profiles' journals were never updated — instant phantom positions
+    on 4 sibling rows.
 
-    Strategy: query broker BEFORE submitting any SELL. The broker is
-    the only source of truth for "how many shares can I actually sell
-    on this account?" The journal abstraction is per-profile and can't
-    see cross-profile aggregation.
+    The fix: a profile may sell ONLY what its OWN journal says it
+    holds. The aggregate broker pool is consulted only as a sanity
+    check — if broker < own_virtual_qty, that's drift (something
+    closed our position outside this profile's awareness) and we
+    REFUSE rather than silently consume sibling shares.
 
     Returns (allowed_qty, reason):
-      - (requested_qty, "ok"): broker has enough longs, proceed.
-      - (broker_qty, "downsized: broker has only N shares"): broker has
-        SOME but fewer than requested. Downsize the SELL.
-      - (0, "refused: would create short, broker has 0 long {symbol}"):
-        broker has zero — submitting would open a short.
+      - (requested_qty, "ok"): own journal has the qty, broker confirms
+        sufficient longs, proceed.
+      - (0, "refused: profile virtually holds N, requested M"): the
+        AI's proposal exceeds the profile's own virtual qty. Either
+        the AI hallucinated, or there's stale state. Don't trade.
+      - (0, "refused: drift detected — broker has N, journal has M"):
+        broker has fewer longs than this profile claims. Likely a
+        sibling already consumed our share (the pre-rewrite bug) or
+        an external action closed the position. Refuse and surface
+        loudly so the operator can investigate.
+      - (requested_qty, "ok: option contract — guard bypassed"):
+        options have a separate guard surface.
       - (requested_qty, "permissive: broker API failed"): on broker
-        error, default to permissive — let the existing error handling
-        in submit_order surface real failures.
+        error, default to permissive — submit_order will surface a
+        real failure if there is one. (Does NOT skip the per-profile
+        check; that runs first if db_path is provided.)
 
-    Caller MUST honor the returned allowed_qty (downsize or skip).
-    Options contracts (occ_symbol) bypass this guard — option short
-    legs are intentional and tracked separately.
+    Caller MUST honor the returned allowed_qty (refuse-as-skip or
+    submit-as-requested). The downsize path is gone — there is no
+    case where this returns a positive qty less than requested.
     """
     if requested_qty <= 0:
         return (0, "refused: non-positive qty")
@@ -204,12 +223,62 @@ def allowable_sell_qty(api, symbol: str, requested_qty: int) -> tuple:
     if len(target) > 6 and any(c.isdigit() for c in target[1:7]):
         # OCC symbols look like UNDERLYING + 6-digit-date (YYMMDD) + P/C
         return (requested_qty, "ok: option contract — guard bypassed")
+
+    # Per-profile virtual qty from THIS profile's own journal.
+    # Computed from open buy rows minus matching sells/exits via FIFO.
+    # The cross-profile aggregate broker pool is NOT consulted to
+    # compute this number — that's the whole point of the rewrite.
+    own_virtual_qty: Optional[int] = None
+    if db_path:
+        try:
+            from journal import get_virtual_positions
+            for pos in get_virtual_positions(db_path):
+                if (pos.get("symbol") or "").upper() != target:
+                    continue
+                try:
+                    own_virtual_qty = int(float(pos.get("qty", 0) or 0))
+                except (ValueError, TypeError):
+                    own_virtual_qty = 0
+                break
+            if own_virtual_qty is None:
+                own_virtual_qty = 0
+        except Exception as exc:
+            logger.warning(
+                "allowable_sell_qty: get_virtual_positions failed for %s "
+                "(db=%s) — refusing rather than risk sibling-share "
+                "consumption: %s", symbol, db_path, exc,
+            )
+            return (
+                0,
+                f"refused: virtual-qty lookup failed for {symbol} "
+                f"({type(exc).__name__})",
+            )
+        if requested_qty > own_virtual_qty:
+            logger.warning(
+                "allowable_sell_qty: REFUSED SELL %s %d — this profile "
+                "virtually holds only %d. The AI proposed more than the "
+                "profile owns; refusing to consume sibling shares.",
+                symbol, requested_qty, own_virtual_qty,
+            )
+            return (
+                0,
+                f"refused: profile virtually holds {own_virtual_qty}, "
+                f"requested {requested_qty}",
+            )
+
+    # Sanity check against the broker. If the broker has fewer shares
+    # than this profile claims, drift exists (something closed our
+    # position without updating the journal — most likely a sibling
+    # already over-sold under the OLD downsize policy, or an external
+    # action). Refuse loud so the operator investigates. Do NOT
+    # silently downsize — that's the bug class this rewrite kills.
     try:
         positions = api.list_positions()
     except Exception as exc:
         logger.warning(
             "allowable_sell_qty: broker list_positions failed for %s — "
-            "permissive fallback: %s", symbol, exc,
+            "permissive fallback (per-profile check already passed if "
+            "db_path provided): %s", symbol, exc,
         )
         return (requested_qty, f"permissive: broker API failed ({exc})")
     broker_qty = 0
@@ -220,19 +289,32 @@ def allowable_sell_qty(api, symbol: str, requested_qty: int) -> tuple:
             except Exception:
                 broker_qty = 0
             break
-    if broker_qty <= 0:
-        logger.warning(
-            "allowable_sell_qty: REFUSED SELL %s %d — broker has 0 long "
-            "(would create a short via overshoot). Position is likely "
-            "already closed by another profile sharing this account.",
-            symbol, requested_qty,
+    # Drift check: if the profile claims more shares than the broker
+    # has, the discrepancy means our share of the pool may have been
+    # consumed (by a sibling under the OLD downsize policy, or by an
+    # external action). With db_path provided we compare to journal
+    # claim. Without db_path (legacy callers) we fall back to comparing
+    # to requested_qty so the historical guard still catches obvious
+    # under-counted broker pools.
+    drift_baseline = (
+        own_virtual_qty
+        if (own_virtual_qty is not None and own_virtual_qty > 0)
+        else requested_qty
+    )
+    if broker_qty < drift_baseline:
+        own_claim = (
+            own_virtual_qty if own_virtual_qty is not None
+            else "?"
         )
-        return (0, f"refused: would create short, broker has 0 long {symbol}")
-    if broker_qty < requested_qty:
         logger.warning(
-            "allowable_sell_qty: DOWNSIZED SELL %s %d → %d (broker has "
-            "only %d long across shared account)",
-            symbol, requested_qty, broker_qty, broker_qty,
+            "allowable_sell_qty: REFUSED SELL %s %d — broker has %d "
+            "long (journal claim=%s). Drift detected — refusing to "
+            "submit rather than risk consuming sibling shares.",
+            symbol, requested_qty, broker_qty, own_claim,
         )
-        return (broker_qty, f"downsized: broker has only {broker_qty} shares")
+        return (
+            0,
+            f"refused: drift detected — broker has {broker_qty}, "
+            f"journal claims {own_claim}, requested {requested_qty}",
+        )
     return (requested_qty, "ok")

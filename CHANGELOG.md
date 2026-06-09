@@ -17,6 +17,72 @@ Rules going forward:
 
 ---
 
+## 2026-06-09 (late afternoon) — Per-profile sell isolation: a profile can no longer consume sibling profiles' shares. Severity: CRITICAL (architecture invariant violation; root cause of multi-day journal/broker drift).
+
+**Background:** Operator discovered phantom journal rows on pid 45 (LXEH #67, NEXR #70 status='open' while broker has zero). Root-cause investigation revealed this is not a journal-sync bug — it's a sell-validation gap that lets one profile sell shares that virtually belong to other profiles sharing the same Alpaca account.
+
+**The bug (precise reproduction, 2026-06-08 15:51:30):**
+
+| Time | Event | Broker LXEH | Pid 42 journal |
+|---|---|---|---|
+| 15:42:31 | Pid 45 buys 1191 LXEH | 2979 | 3655 (open) |
+| 15:48:54 | Pid 45 trailing-stop canceled (gap before replacement) | 2979 | 3655 |
+| 15:51:30 | Pid 42 AI proposes SELL 2979 LXEH | 2979 | 3655 |
+| | `allowable_sell_qty` returns (2979, "ok") — broker has it | | |
+| | Alpaca fills the sell at the aggregate level | 0 | 0 (sell logged) |
+| | Pid 45's row #67 still says "open 1191" | 0 | (also pid 43 #39 = 1908, pid 44 #69 = 1788) |
+
+Pid 42's journal claimed 3655 shares from its original BUY. The aggregate broker pool had only 2979 by 15:51:30 because sibling profiles had been buying (and their stops had been firing). The pre-rewrite `allowable_sell_qty` looked at the AGGREGATE pool, saw 2979 ≥ 2979, returned "ok" — pid 42 sold all 2979 shares at the broker, **of which 1788 belonged to pid 44 and 1191 belonged to pid 45 virtually**. Their journals were never updated → 4 phantom open rows across siblings.
+
+This same mechanism produced 47 phantom long rows + 56 missing short backfills across all shared accounts (cleared via a one-shot `reconcile_aggregate_drift.py --apply` at 15:24 UTC).
+
+**Root cause:** `order_guard.allowable_sell_qty` had a DOWNSIZE path: if the aggregate broker pool was smaller than the request, it would downsize the sell to the aggregate. That mechanism is what gave one profile permission to consume the shared pool — including sibling shares.
+
+**Fix:** rewrite `allowable_sell_qty` to enforce strict per-profile isolation.
+
+```
+allowable_sell_qty(api, symbol, requested_qty, db_path=None) → (allowed, reason)
+```
+
+New behavior:
+1. **Per-profile cap.** With `db_path` provided, compute the profile's OWN virtual qty via `get_virtual_positions(db_path)`. If `requested_qty > own_virtual_qty` → REFUSE (qty=0). The profile cannot sell more than its own journal says it holds.
+2. **Drift sanity check.** If broker_qty < the profile's journal claim → REFUSE with "drift detected" reason. The pool can no longer satisfy this profile's claim — that's either a sibling consumption residue (which can't happen under the new policy going forward) or an external action; refuse and surface to the operator.
+3. **DOWNSIZE PATH REMOVED.** There is no return where `0 < allowed_qty < requested_qty`. The function returns either `(requested_qty, "ok")` or `(0, reason)`. No partial fills.
+4. Both callers (`trade_pipeline.py:1241` SELL branch; `trader.py:748` stop-trigger SELL) updated to pass `db_path=db_path` to the guard.
+
+**What the new guard would have done on 2026-06-08 15:51:30:**
+
+```
+allowable_sell_qty(api, "LXEH", 2979, db_path="quantopsai_profile_42.db")
+  → own_virtual_qty = 3655 (from pid 42's journal)
+  → requested (2979) ≤ own_virtual_qty (3655) ✓
+  → broker_qty (2979) < own_virtual_qty (3655) ✗ DRIFT
+  → return (0, "refused: drift detected — broker has 2979,
+             journal claims 3655, requested 2979")
+```
+
+Pid 42's sell would have been REFUSED. No sibling shares consumed. The drift would have been surfaced loud for operator investigation.
+
+**Tests:**
+
+`tests/test_per_profile_sell_isolation_2026_06_09.py` (10 tests):
+- Layer 1 — per-profile cap (4 tests): sell within own qty proceeds; sell exceeding own qty refuses; exact own qty proceeds; zero virtual position refuses.
+- Layer 2 — drift detection (2 tests): broker < journal refuses with "drift" reason; broker zero with journal position refuses.
+- Layer 3 — historical reproduction (1 test): the pid 42 LXEH 15:51:30 scenario gets refused under the new policy.
+- Layer 4 — structural pins (2 tests): both callers (`trade_pipeline.py`, `trader.py`) pass `db_path` to the guard.
+- Layer 5 — source pin (1 test): "downsized" return path is GONE from `order_guard.py`.
+
+`tests/test_order_guard.py` updated: removed the now-incorrect "downsize" test; renamed and rewrote it to assert REFUSE; preserved permissive-on-broker-failure and OCC-bypass behaviors.
+
+**One-shot cleanup already executed:** `reconcile_aggregate_drift.py --apply` ran at 15:24 UTC clearing 47 phantoms + 56 broker-orphan backfills. No further cron-scheduled reconciliation needed — the prevention layer makes new drift structurally impossible.
+
+**Out of scope for this commit (future work):**
+
+- Per-profile COVER guard (the short side mirror). Same architecture risk — one profile covering more than its short would consume siblings' short positions. Less common in practice; address when first observed.
+- Diagnostic alert if aggregate audit ever reports nonzero drift. Currently the audit runs as part of `/issues`; an active alert (notify_error if drift found) would surface any residual drift fast.
+
+---
+
 ## 2026-06-09 (afternoon) — Two more options bug fixes: grid-aware strike snap + position-intent classified as SKIP. Severity: medium.
 
 **Background:** After the brain-badge fixes cleared the false-GATED noise, two real options drops remained:

@@ -117,12 +117,22 @@ class TestBothSidesGuarded:
 
 
 class TestOvershootGuard:
-    """allowable_sell_qty pre-trade guard — caught 2026-05-06 when 31
-    phantom broker shorts had accumulated across 3 Alpaca accounts due
-    to multi-profile shared-account overshoot. Each profile correctly
-    closed its own virtual long; cumulative SELLs at the broker level
-    overshot the actual long position, creating shorts no profile
-    monitored."""
+    """allowable_sell_qty pre-trade guard.
+
+    2026-06-09 rewrite: prior to this date the guard checked the
+    AGGREGATE broker pool and DOWNSIZED requested_qty to the aggregate
+    if it was smaller — which is exactly how one profile consumed
+    sibling profiles' shares (pid 42 asked for 2979 LXEH, aggregate
+    pool had 2979 of which 1788 was pid 44's + 1191 was pid 45's;
+    guard said "go" and pid 42 sold all 2979). The new policy:
+    a profile may sell ONLY what its own journal says it holds; the
+    aggregate broker pool is consulted as a drift sanity-check and
+    NEVER as a downsize target. There is no path where this returns
+    a positive qty less than requested.
+
+    These tests cover the broker-only path (db_path=None). Per-profile
+    behavior is covered in test_per_profile_sell_isolation_*.py.
+    """
 
     def _api(self, positions=None, raise_on_list=False):
         api = MagicMock()
@@ -146,31 +156,38 @@ class TestOvershootGuard:
         assert reason == "ok"
 
     def test_broker_has_zero_refuses_completely(self):
-        """Broker has no long shares — submitting would CREATE a short.
-        Refuse with allowed_qty=0."""
+        """Broker has no long shares — refuse with allowed_qty=0."""
         from order_guard import allowable_sell_qty
         api = self._api([])
         qty, reason = allowable_sell_qty(api, "BBWI", 187)
         assert qty == 0
-        assert "would create short" in reason
+        # Post-rewrite the wording is "drift detected" since the
+        # broker-only path doesn't know about siblings/journals.
+        assert "drift" in reason.lower() or "refused" in reason.lower()
 
-    def test_broker_has_some_downsizes(self):
-        """Broker has fewer longs than requested — downsize to broker's
-        actual qty so the SELL doesn't overshoot."""
+    def test_broker_has_less_than_requested_refuses(self):
+        """REWRITTEN 2026-06-09. Pre-rewrite the guard downsized to
+        the broker's qty when aggregate < requested — which is how
+        one profile consumed sibling shares. Now: REFUSE, not
+        downsize. There must be NO partial-fill behavior."""
         from order_guard import allowable_sell_qty
         api = self._api([self._pos("MSFT", "5")])
         qty, reason = allowable_sell_qty(api, "MSFT", 17)
-        assert qty == 5
-        assert "downsized" in reason
+        assert qty == 0, (
+            "Post-rewrite this path must refuse, not downsize. "
+            "Downsize was the share-consumption bug class."
+        )
+        assert "drift" in reason.lower() or "refused" in reason.lower()
 
     def test_broker_short_position_refuses(self):
-        """Broker is already net-short the symbol. Submitting a SELL
-        would deepen the short — refuse."""
+        """Broker is already net-short the symbol — refuse."""
         from order_guard import allowable_sell_qty
         api = self._api([self._pos("BBWI", "-374")])
         qty, reason = allowable_sell_qty(api, "BBWI", 100)
         assert qty == 0
-        assert "would create short" in reason
+        # Either "drift" or the old "would create short" — the
+        # invariant is qty == 0; the wording is implementation detail
+        assert qty == 0
 
     def test_broker_api_failure_is_permissive(self):
         """If the broker API is down, default permissive — let the

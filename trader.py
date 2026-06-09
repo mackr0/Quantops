@@ -745,7 +745,12 @@ def _process_exit_trigger(trigger_signal, api, ctx, db_path, positions,
         # Submitting our SELL would create a phantom short. (See
         # 2026-05-06 incident: 31 phantom shorts on 3 accounts.)
         from order_guard import allowable_sell_qty
-        allowed_qty, guard_reason = allowable_sell_qty(api, symbol, int(qty))
+        # 2026-06-09 — pass db_path so the guard checks THIS profile's
+        # own virtual qty, not the aggregate. See order_guard.py
+        # rewrite notes.
+        allowed_qty, guard_reason = allowable_sell_qty(
+            api, symbol, int(qty), db_path=db_path,
+        )
         if allowed_qty == 0:
             logging.warning(
                 "[%s] SELL blocked by overshoot guard: %s qty=%d — %s",
@@ -754,6 +759,9 @@ def _process_exit_trigger(trigger_signal, api, ctx, db_path, positions,
             )
             return
         if allowed_qty != int(qty):
+            # Defense: with the per-profile policy this branch is
+            # unreachable. Kept for any future guard mode that
+            # legitimately returns a partial qty.
             logging.warning(
                 "[%s] SELL %s downsized %d → %d (%s)",
                 trigger_signal.get("trigger", "?"),
