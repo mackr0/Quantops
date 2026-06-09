@@ -17,6 +17,63 @@ Rules going forward:
 
 ---
 
+## 2026-06-09 (evening) — ATR-derived stop/TP percentages clamped to [3%, 7%] SL / [4%, 12%] TP. Severity: high (root cause of the -67% MFE capture metric).
+
+**Background:** Operator surfaced "Stop-to-TP 7.5 (15 stops / 2 tps, 30d)" and "MFE capture -67% (23 trades)" on pid 42's brain. Investigation isolated the root cause as the ATR-derived stop/TP formula `(ATR × multiplier) / price` producing unbounded outputs for low-priced volatile small-caps.
+
+**The math problem:** ATR is in dollars. For high-priced stable stocks the ratio is small (AMZN $246 with ~$6.91 ATR → 2.8%, so ATR×3 = 8.4% TP — fine). For low-priced volatile stocks the ratio explodes:
+
+| Symbol | Entry | ATR | ATR/price | Raw TP (×3) | Raw SL (×2) |
+|---|---|---|---|---|---|
+| RGNT | $3.36 | $0.94 | 28% | **+84%** | **−56%** |
+| NEXR | $1.28 | $0.40 | 31% | **+94%** | **−63%** |
+| DAIC | $2.80 | $0.66 | 24% | **+72%** | **−47%** |
+| LXEH | $1.25 | $0.16 | 13% | +39% | −26% |
+
+And the opposite pathology — when ATR is stale or mis-fed as ~0, the formula collapses to near-zero: RGNT #128 had entry $3.36 and stop $3.35 (0.3% below entry, fires on first tick of noise).
+
+**Why it matters:** measurement on pid 42 over the last 30 days:
+
+- AI's TP targets: median +29% above entry (p25 +18.5%, p75 +43.9%, max +153%)
+- Actual MFE: median +2.7% (p25 +0.4%, p75 +6.9%)
+- **0 of 45 closed trades had their MFE reach the AI's TP**
+
+The TPs were aspirational; the stops were either so wide they only fired on full collapse (defeating the protection) or so tight they fired on noise. End result: -67% MFE capture (giving back gains) and a 7.5 stop-to-TP ratio (vs the documented healthy band of 0.5-2.5).
+
+**Fix:** new module `risk_clamps.py` exposes `clamp_tp_pct(raw_frac)` and `clamp_sl_pct(raw_frac)`. Both call sites (`stock_strategy_advisor.evaluate_candidate_for_stock_action` and `trade_pipeline.execute_trade`'s ATR path) now route through the clamp.
+
+Constants:
+```
+ATR_TP_PCT_MIN = 0.04   # 4% floor
+ATR_TP_PCT_MAX = 0.12   # 12% cap (anchored just above p75 historical MFE 6.9%)
+ATR_SL_PCT_MIN = 0.03   # 3% floor (kills RGNT-style 0.3% noise stops)
+ATR_SL_PCT_MAX = 0.07   # 7% cap (kills 50%+ stops that defeat the protection)
+```
+
+**Replay against the historical 45 closed trades** (using their recorded MFEs):
+
+| | TP fires | Stop-to-TP ratio (estimate) |
+|---|---|---|
+| Pre-clamp (current) | 1 / 45 | 7.5 |
+| Post-clamp (12% TP / 7% SL) | ~6 / 45 | ~2-3 (back in the healthy band) |
+
+**Why these caps and not others:** 12% TP sits just above p75 historical MFE — high enough not to chop the top quartile of trades, low enough to kill the unreachable 80%+ targets. 7% SL is the wider edge of acceptable risk on a single trade; the existing 5% profile-default fallback sits comfortably inside the band.
+
+**Applied universally:** all 13 active profiles use `use_atr_stops=1` with identical multipliers (`sl=2.0`, `tp=3.0`), so the clamp affects every profile equally. No per-profile rollout needed; the experiment comparison stays clean.
+
+**Test coverage:** `tests/test_risk_clamps_2026_06_09.py` (14 tests):
+- Layer 1 — clamp bound values are pinned to their documented anchors (4 tests).
+- Layer 2 — historical reproductions (5 tests): RGNT 84% TP clamps to 12%; NEXR 63% SL clamps to 7%; RGNT 0.3% stale-ATR stop clamps to 3%; LXEH 39% TP clamps to 12%; AMZN's normal 5.6%/8.4% pass through unchanged.
+- Layer 3 — call-site integration (3 tests): the advisor produces clamped recommendations directly; near-zero ATR floors correctly; AMZN-normal inputs unchanged.
+- Layer 4 — source pins (2 tests): both call sites import from `risk_clamps`; a refactor that drops the import re-introduces the bug.
+
+**Out of scope (next investigation):**
+
+- Stop-loss sizing has the same problem — the multiplier formula needs the same kind of clamp. The current fix addresses both TP and SL ranges, but the AI prompt's "ATR-based stop" guidance may also need tuning.
+- TP polling design (no broker-side TP, only polling every cycle) — even with clamped TPs, runners that spike past TP intra-cycle could be missed. Separate issue; address after we see how the clamp changes TP fire rates.
+
+---
+
 ## 2026-06-09 (evening) — Vertical-spread dispatcher sorts strikes (kills the "upper strike must be > lower strike" build failures). Severity: medium.
 
 **Background:** Operator surfaced `Multileg Open RGTI REJECTED · Insufficient Qty` and similar drops; investigation showed the root cause was an AI label-inversion: the AI was proposing bear_call_spread with `{"short": 18, "long": 17}` and bear_put_spread with `{"short": 10, "long": 9.5}`. The strikes themselves were sane; the LABELS were inverted.

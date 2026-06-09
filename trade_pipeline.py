@@ -1112,7 +1112,11 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
             result["reason"] = constraint_reason
             return result
 
-        # ATR-based stops: calculate volatility-adapted stop/TP levels
+        # ATR-based stops: calculate volatility-adapted stop/TP levels.
+        # 2026-06-09 — clamp via risk_clamps so low-priced volatile
+        # stocks don't get 80%+ TPs / 50%+ stops (formula explodes
+        # when ATR/price ratio is large), and ATR≈0 stale values
+        # don't produce 0.3% stops that fire on noise.
         actual_sl_pct = stop_loss_pct
         actual_tp_pct = take_profit_pct
         if ctx is not None and getattr(ctx, "use_atr_stops", False) and price > 0:
@@ -1121,11 +1125,14 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
             atr_stop, atr_tp, atr_val = calculate_atr_stops(
                 symbol, price, atr_sl_mult, atr_tp_mult)
             if atr_stop is not None:
-                # Convert ATR prices to percentage equivalents
-                actual_sl_pct = round((price - atr_stop) / price, 4)
-                actual_tp_pct = round((atr_tp - price) / price, 4)
-                print(f"    ATR stops for {symbol}: SL ${atr_stop:.2f} ({actual_sl_pct:.1%}), "
-                      f"TP ${atr_tp:.2f} ({actual_tp_pct:.1%}), ATR ${atr_val:.2f}")
+                from risk_clamps import clamp_tp_pct, clamp_sl_pct
+                raw_sl_frac = (price - atr_stop) / price
+                raw_tp_frac = (atr_tp - price) / price
+                actual_sl_pct = round(clamp_sl_pct(raw_sl_frac), 4)
+                actual_tp_pct = round(clamp_tp_pct(raw_tp_frac), 4)
+                print(f"    ATR stops for {symbol}: SL {actual_sl_pct:.1%}"
+                      f" (raw {raw_sl_frac:.1%}), TP {actual_tp_pct:.1%}"
+                      f" (raw {raw_tp_frac:.1%}), ATR ${atr_val:.2f}")
 
         # Schedule guard: reject if pipeline overran the trading window
         from order_guard import check_can_submit, allowable_buy_qty

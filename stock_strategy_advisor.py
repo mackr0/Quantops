@@ -82,13 +82,20 @@ def evaluate_candidate_for_stock_action(
     size_pct = base_size * conviction
 
     # ATR-based stop / take-profit. ATR is in price units; convert
-    # to a percentage of entry price.
+    # to a percentage of entry price, then CLAMP to a sensible band.
+    # See risk_clamps.py for the rationale: raw ATR-as-percent
+    # explodes for low-priced volatile stocks (RGNT 84% TP, NEXR 63%
+    # SL) and collapses to near-zero when ATR is stale (RGNT 0.3%
+    # stop). Clamping addresses both at the source of truth.
     atr = float(candidate.get("atr") or 0)
     atr_mult_sl = float(getattr(ctx, "atr_multiplier_sl", 2.0) or 2.0)
     atr_mult_tp = float(getattr(ctx, "atr_multiplier_tp", 3.0) or 3.0)
     if atr > 0 and price > 0:
-        stop_loss_pct = round((atr * atr_mult_sl / price) * 100, 1)
-        take_profit_pct = round((atr * atr_mult_tp / price) * 100, 1)
+        from risk_clamps import clamp_tp_pct, clamp_sl_pct
+        raw_sl_frac = atr * atr_mult_sl / price
+        raw_tp_frac = atr * atr_mult_tp / price
+        stop_loss_pct = round(clamp_sl_pct(raw_sl_frac) * 100, 1)
+        take_profit_pct = round(clamp_tp_pct(raw_tp_frac) * 100, 1)
     else:
         stop_loss_pct = float(getattr(ctx, "stop_loss_pct", 3.0) or 3.0)
         take_profit_pct = float(
