@@ -947,6 +947,32 @@ function showOpTab(event, profileId, which) {
                                     'border-radius:3px;vertical-align:middle;margin-left:0.4rem;">' +
                                     'CANCELED</span>';
                         }
+                        // 2026-06-09 — pre-broker GATE block. The
+                        // doomsday gates (catastrophic single trade,
+                        // book concentration cap, kill switch, drawdown
+                        // pause, broker disconnect) report through
+                        // execution_outcome='gated' with the specific
+                        // gate name + human reason. Distinct from
+                        // BLOCKED (no specific reason) and REJECTED
+                        // (broker rejected). Without this the operator
+                        // saw plain 'BLOCKED' and had no idea WHICH
+                        // rule fired (CATASTROPHIC_SINGLE_TRADE vs
+                        // BOOK_CONCENTRATION_CAP vs KILL_SWITCH look
+                        // identical on the dashboard pre-fix).
+                        if (t.execution_outcome === 'gated') {
+                            var gateLabel = t.gate_code_display ||
+                                            'Gate';
+                            var gateTip = gateLabel +
+                                          (t.gate_message
+                                             ? ' — ' + t.gate_message
+                                             : '');
+                            blockBadge = ' <span title="' +
+                                gateTip.replace(/"/g, '&quot;') +
+                                '" style="display:inline-block;background:#6a1b9a;color:#fff;' +
+                                'font-size:0.65rem;font-weight:600;padding:0.05rem 0.4rem;' +
+                                'border-radius:3px;vertical-align:middle;margin-left:0.4rem;">' +
+                                'GATED · ' + gateLabel + '</span>';
+                        }
                         // Sizing detail differs by action type:
                         //   BUY/SELL/SHORT — `size_pct` (% equity)
                         //   MULTILEG_OPEN — `contracts` + strategy_name

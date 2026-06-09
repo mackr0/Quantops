@@ -6041,7 +6041,7 @@ def api_cycle_data(profile_id):
     # incident — operator went looking for a trade that Alpaca had
     # rejected via the cross-direction guard).
     try:
-        from journal import get_recent_broker_rejections
+        from journal import get_recent_broker_rejections, get_recent_trade_drops
         db_path = f"quantopsai_profile_{profile_id}.db"
         rejections = get_recent_broker_rejections(db_path, hours=2)
         # Index by symbol for O(1) lookup. Within the 2h window, the
@@ -6051,6 +6051,18 @@ def api_cycle_data(profile_id):
             sym = (r.get("symbol") or "").upper()
             if sym and sym not in rej_by_symbol:
                 rej_by_symbol[sym] = r
+        # 2026-06-09 — pre-broker drops (CATASTROPHIC_SINGLE_TRADE,
+        # BOOK_CONCENTRATION_CAP, KILL_SWITCH, DRAWDOWN_PAUSE, etc.).
+        # Distinct from broker_rejections (post-broker NO). The AI
+        # Brain panel's BLOCKED badge previously showed nothing more
+        # specific than "blocked"; now the gate name + human reason
+        # land in the badge tooltip.
+        drops = get_recent_trade_drops(db_path, hours=2)
+        drop_by_symbol = {}
+        for d in drops:
+            sym = (d.get("symbol") or "").upper()
+            if sym and sym not in drop_by_symbol:
+                drop_by_symbol[sym] = d
         for t in (data.get("trades_selected") or []):
             sym = (t.get("symbol") or "").upper()
             if not sym:
@@ -6086,6 +6098,23 @@ def api_cycle_data(profile_id):
                         # Replace rejection_message with just the
                         # reason (no leading "specialist veto (X):")
                         t["rejection_message"] = m.group(2).strip()[:240]
+            # 2026-06-09 — pre-broker drop. Distinct from broker
+            # rejection; surfaces the actual gate that fired (e.g.
+            # CATASTROPHIC_SINGLE_TRADE, BOOK_CONCENTRATION_CAP)
+            # plus the gate's human-readable reason. broker
+            # rejection takes precedence when both exist (post-
+            # broker outcome is the more recent / authoritative
+            # disposition).
+            if not r:
+                d = drop_by_symbol.get(sym)
+                if d:
+                    t["execution_outcome"] = "gated"
+                    t["gate_code"] = d.get("drop_code") or "other"
+                    t["gate_code_display"] = humanize(
+                        d.get("drop_code") or "other"
+                    )
+                    gate_msg = d.get("drop_reason") or ""
+                    t["gate_message"] = gate_msg[:240]
     except Exception as exc:
         logger.warning(
             "api_cycle_data: rejection-badge enrichment failed for "

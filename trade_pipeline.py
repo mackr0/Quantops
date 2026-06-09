@@ -2738,11 +2738,45 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
             # order was actually submitted.
             ta = (trade_result or {}).get("action") if isinstance(trade_result, dict) else None
             if ta and ta not in ("BUY", "SELL", "SHORT", "COVER"):
+                drop_reason = (trade_result or {}).get(
+                    "reason", "no reason given"
+                )
                 logging.warning(
                     "Trade NOT submitted for %s (%s): action=%s reason=%s",
-                    symbol, action, ta,
-                    (trade_result or {}).get("reason", "no reason given"),
+                    symbol, action, ta, drop_reason,
                 )
+                # 2026-06-09 — persist the drop so the AI Brain panel's
+                # BLOCKED badge can show WHY (not just THAT) a trade
+                # didn't make it to the broker. Every doomsday gate
+                # (CATASTROPHIC_SINGLE_TRADE, BOOK_CONCENTRATION_CAP,
+                # KILL_SWITCH, BROKER_DISCONNECTED, DRAWDOWN_PAUSE,
+                # etc.) flows through this single dispatch point, so
+                # one record_trade_drop call covers all of them.
+                try:
+                    from journal import record_trade_drop
+                    record_trade_drop(
+                        db_path=ctx.db_path if ctx else None,
+                        symbol=symbol,
+                        side=(action or "").lower() if action else None,
+                        drop_code=ta,
+                        drop_reason=drop_reason,
+                        cycle_id=cycle_id,
+                        ai_confidence=(
+                            ai_trade.get("confidence")
+                            if isinstance(ai_trade, dict) else None
+                        ),
+                        ai_reasoning=(
+                            ai_trade.get("reasoning")
+                            if isinstance(ai_trade, dict) else None
+                        ),
+                    )
+                except Exception as drop_exc:
+                    logging.debug(
+                        "record_trade_drop persistence failed for "
+                        "%s/%s: %s — drop still visible via the "
+                        "WARNING log above",
+                        symbol, ta, drop_exc,
+                    )
         except Exception as exc:
             # Classify known Alpaca rejections that aren't really errors
             # (the system did the right thing; the broker just won't

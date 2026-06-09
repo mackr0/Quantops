@@ -17,6 +17,32 @@ Rules going forward:
 
 ---
 
+## 2026-06-09 — Pre-broker gate visibility on the AI Brain panel. Severity: medium (the gates were doing the right thing; the dashboard wasn't telling the operator anything about why).
+
+**Background:** The doomsday gates in `trade_pipeline.run_trade_cycle` (Catastrophic Single Trade, Book Concentration Cap, Kill Switch, Drawdown Pause, Broker Disconnect, etc.) wrote a `journalctl` WARNING line on every disposition but had no other persistence. The AI Brain panel's "BLOCKED" badge fired generically whenever no trade row matched a proposal — same gray badge whether the trade was 5.3× the catastrophic-single-trade cap, hit a concentration limit, or got killed by the master switch. Operator had to SSH to prod and search journalctl to diagnose any "BLOCKED" badge.
+
+Triggered today by pid 41 yesterday: AI proposed BUY LXEH/CLIK/GMHS at 75% conf; Catastrophic Single Trade Gate caught them (proposed $24,791 vs recent avg $4,713 = 5.3×, cap 5.0×). The gate was right; the dashboard was useless.
+
+**Three-step fix:**
+
+1. **Persistence layer.** New `trade_drops` table in the per-profile journal DB (`symbol`, `side`, `drop_code`, `drop_reason`, `cycle_id`, `ai_confidence`, `ai_reasoning`, `timestamp`). New `journal.record_trade_drop()` + `journal.get_recent_trade_drops()` helpers. Best-effort writes — a DB failure here can never crash the live pipeline.
+
+2. **Single instrumentation point.** `trade_pipeline.run_trade_cycle` has one catch-all log point at the dispatch loop (`Trade NOT submitted for ...`) where every doomsday-gate disposition converges. Added `record_trade_drop()` next to the existing `logging.warning()` call there — covers every current and future pre-broker gate without needing to instrument each gate individually. Structural test pins the call within 50 lines of the log point.
+
+3. **Operator-visible badge.** `views.api_cycle_data` now reads `get_recent_trade_drops(profile_db, hours=2)` alongside `get_recent_broker_rejections`. When a `trades_selected` entry matches a drop, it gets stamped `execution_outcome='gated'` + `gate_code` + `gate_code_display` (humanized) + `gate_message`. `templates/dashboard.html` renders a distinct purple "GATED · Catastrophic Single Trade" badge with the human reason in the tooltip — distinct from the gray BLOCKED (no_fill, generic) and red REJECTED (post-broker) variants.
+
+**What this is NOT:** the gates themselves are unchanged. The Catastrophic Single Trade Gate, Book Concentration Cap, etc. are working correctly — they exist to prevent risk accidents, and the LXEH cycle was a real 5.3× outlier vs profile baseline. This fix is about giving the operator visibility into WHY a trade didn't make it, not about loosening any safety gate.
+
+**Test coverage:** `tests/test_trade_drop_visibility_2026_06_09.py` (7 tests):
+- Persistence round-trip via `record_trade_drop` + `get_recent_trade_drops`
+- Defensive no-raise on missing fields / DB failure (live-pipeline safety)
+- Structural pin on the catch-all dispatch log point + `record_trade_drop` call adjacency
+- API enrichment imports + indexes drops by symbol
+- API stamps `execution_outcome='gated'` with `gate_code_display` + `gate_message`
+- Dashboard renders the distinct purple GATED badge with tooltip
+
+---
+
 ## 2026-06-08 — Resolver no longer auto-creates empty sqlite files. Severity: medium (daily WARN-spam on /issues; intermittent credential lookup failures in cron context).
 
 **Background:** `/issues` showed two paired WARNINGs every morning at ~06:07 (`market_data: alpaca_accounts credential lookup failed (db=quantopsai.db)` + `screener: get_active_alpaca_symbols: Alpaca lookup failed`). Both originated from the daily altdata cron run.

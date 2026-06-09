@@ -171,6 +171,32 @@ def init_db(db_path=None):
             CREATE INDEX IF NOT EXISTS idx_broker_rejections_prediction_id
                 ON broker_rejections(prediction_id);
 
+            -- 2026-06-09 — PRE-broker drop log. broker_rejections (above)
+            -- records what Alpaca rejected. trade_drops records what
+            -- trade_pipeline.execute_trade dropped BEFORE submission —
+            -- the silent-skip paths that were invisible until this
+            -- table (instrumentation revealed they exist; the AI Brain
+            -- panel's "BLOCKED" badge previously showed nothing more
+            -- specific because there was no source-of-truth for why).
+            -- Every early-return in execute_trade now writes a row.
+            CREATE TABLE IF NOT EXISTS trade_drops (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+                symbol TEXT NOT NULL,
+                side TEXT,
+                drop_code TEXT NOT NULL,
+                drop_reason TEXT NOT NULL,
+                cycle_id TEXT,
+                ai_confidence INTEGER,
+                ai_reasoning TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_trade_drops_timestamp
+                ON trade_drops(timestamp DESC);
+            CREATE INDEX IF NOT EXISTS idx_trade_drops_symbol_ts
+                ON trade_drops(symbol, timestamp DESC);
+            CREATE INDEX IF NOT EXISTS idx_trade_drops_cycle
+                ON trade_drops(cycle_id);
+
             -- Phase 3: rolling performance snapshots per strategy/signal type.
             -- Written daily by alpha_decay monitoring task. Each row is one
             -- day's 30-day rolling view of a specific signal's performance.
@@ -1175,6 +1201,67 @@ def record_broker_rejection(db_path, *, symbol, action, signal_type,
             symbol, rejection_code, exc,
         )
         return None
+
+
+def record_trade_drop(db_path, symbol, side, drop_code, drop_reason,
+                       cycle_id=None, ai_confidence=None,
+                       ai_reasoning=None):
+    """Persist a pre-broker trade drop. Called from every early-return
+    path in trade_pipeline.execute_trade so the AI Brain panel can
+    show the actual reason a proposed trade didn't make it to the
+    broker — not just the generic "BLOCKED" badge.
+
+    drop_code: short identifier the UI humanizes (e.g.
+        'already_held_broker_side', 'entry_blacklist',
+        'qty_too_small', 'portfolio_constraint',
+        'schedule_window', 'qty_runaway', 'price_invalid').
+    drop_reason: human-readable, operator-visible string.
+
+    Best-effort: failures are logged but never raise — the live trade
+    pipeline must never be blocked by audit-table writes."""
+    import logging as _logging
+    if not db_path or not symbol or not drop_code:
+        return
+    try:
+        with closing(_get_conn(db_path)) as conn:
+            conn.execute(
+                "INSERT INTO trade_drops "
+                "(symbol, side, drop_code, drop_reason, cycle_id, "
+                " ai_confidence, ai_reasoning) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (symbol, side, drop_code, drop_reason, cycle_id,
+                 int(ai_confidence) if ai_confidence is not None else None,
+                 ai_reasoning),
+            )
+            conn.commit()
+    except Exception as exc:
+        _logging.warning(
+            "record_trade_drop(%s/%s) failed: %s: %s",
+            symbol, drop_code, type(exc).__name__, exc,
+        )
+
+
+def get_recent_trade_drops(db_path, hours=24, limit=200):
+    """Reader for the AI Brain panel — return pre-broker drops in the
+    last `hours`. Same shape as get_recent_broker_rejections."""
+    import logging as _logging
+    try:
+        with closing(_get_conn(db_path)) as conn:
+            rows = conn.execute(
+                "SELECT id, timestamp, symbol, side, drop_code, "
+                "       drop_reason, cycle_id, ai_confidence, ai_reasoning "
+                "FROM trade_drops "
+                "WHERE timestamp >= datetime('now', ?) "
+                "ORDER BY timestamp DESC LIMIT ?",
+                (f"-{int(hours)} hours", int(limit)),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception as exc:
+        _logging.warning(
+            "get_recent_trade_drops(%s) failed: %s",
+            db_path, exc,
+        )
+        return []
 
 
 def get_recent_broker_rejections(db_path, hours=24, limit=200):
