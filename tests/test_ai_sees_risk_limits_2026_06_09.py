@@ -165,6 +165,82 @@ class TestRiskLimitsBlockAppears:
             "concentrated across sibling profiles"
         )
 
+    def test_effective_max_pct_is_lower_of_two_caps(self, tmp_path):
+        """The bug that surfaced today: AI proposed within
+        max_position_pct (10%) but the $ cap was lower than that
+        size × equity → gate fired. Now: surface EFFECTIVE max as
+        a single number the AI can size by directly."""
+        from ai_analyst import _build_batch_prompt
+        # avg=5000 → cap=$25,000. equity=$250,000 → cap as % equity = 10%
+        # max_position_pct=10% → effective = min(10%, 10%) = 10%
+        db = _make_profile_db_with_history(tmp_path, avg_value=5000)
+        portfolio = _portfolio_state()  # equity=$250,000
+        prompt = _build_batch_prompt(
+            [_candidate()], portfolio, _market_context(),
+            ctx=_ctx(db, max_position_pct=0.10),
+        )
+        assert "EFFECTIVE max size_pct" in prompt, (
+            "The actionable single-number cap MUST be labeled "
+            "EFFECTIVE so the AI sees it as the directive, not as "
+            "redundant info"
+        )
+
+    def test_effective_max_pct_binds_to_dollar_cap_when_tighter(
+            self, tmp_path,
+    ):
+        """Real pid 43 case: max_position_pct=10%, but recent avg
+        is $3,744 → catastrophic cap $18,720 → on $200K equity
+        that's 9.36%. Effective max should be 9.4%, not 10%."""
+        from ai_analyst import _build_batch_prompt
+        db = _make_profile_db_with_history(tmp_path, avg_value=3744)
+        portfolio = _portfolio_state()
+        portfolio["equity"] = 200_000  # match pid 43
+        portfolio["account"]["equity"] = 200_000
+        prompt = _build_batch_prompt(
+            [_candidate()], portfolio, _market_context(),
+            ctx=_ctx(db, max_position_pct=0.10),
+        )
+        # Should show 9.4% (cap-bound), not 10% (position-bound)
+        # The block uses "{:.1f}%" formatting on effective_max_pct
+        import re
+        m = re.search(
+            r"EFFECTIVE max size_pct to propose:\s*([\d.]+)%",
+            prompt,
+        )
+        assert m, "EFFECTIVE max line missing"
+        effective = float(m.group(1))
+        # cap_pct = 18720 / 200000 = 0.0936 = 9.36% → renders 9.4%
+        assert 9.0 <= effective <= 9.5, (
+            f"Effective max should be ~9.4% (cap-bound at "
+            f"$18,720/$200,000), got {effective}%. The lower of the "
+            f"two caps must win — 10% position cap is the LOOSER one."
+        )
+
+    def test_effective_max_pct_binds_to_position_cap_when_tighter(
+            self, tmp_path,
+    ):
+        """Inverse: when the $ cap is loose, position cap binds.
+        avg=$10K → cap=$50K → on $250K equity = 20%, but
+        max_position_pct=10% → effective = 10%."""
+        from ai_analyst import _build_batch_prompt
+        db = _make_profile_db_with_history(tmp_path, avg_value=10_000)
+        prompt = _build_batch_prompt(
+            [_candidate()], _portfolio_state(), _market_context(),
+            ctx=_ctx(db, max_position_pct=0.10),
+        )
+        import re
+        m = re.search(
+            r"EFFECTIVE max size_pct to propose:\s*([\d.]+)%",
+            prompt,
+        )
+        assert m
+        effective = float(m.group(1))
+        assert 9.9 <= effective <= 10.1, (
+            f"Effective max should be 10% (position-bound), got "
+            f"{effective}%. The position cap is the tighter floor "
+            f"here ($25K vs $50K cap)."
+        )
+
 
 # ---------------------------------------------------------------------------
 # Layer 2 — block omitted when no history (no false floor)

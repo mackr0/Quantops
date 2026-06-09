@@ -1229,14 +1229,16 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
 
     # 2026-06-09 — surface the system-enforced risk gates to the AI
     # so it sizes proposals WITHIN the limits instead of having them
-    # silently rejected by the doomsday gates downstream. The
-    # Catastrophic Single Trade Gate (single_trade_gate.py) compares
-    # proposed $ value to 5× the profile's recent average stock
-    # trade. Pre-2026-06-09 the AI didn't know about this floor, so
-    # confidence-tier sizing routinely pushed proposals above 5×
-    # baseline and they died silently. With this block, the AI sees
-    # the actual cap up front; the gate stays in place as defense-
-    # in-depth.
+    # silently rejected by the doomsday gates downstream.
+    #
+    # First iteration (earlier today) showed only the $ cap. The AI
+    # tried to size down but still hit the gate because the gate's $
+    # cap can be lower than (max_position_pct × equity), and the AI
+    # didn't know which constraint binds for THIS profile at THIS
+    # equity. Now: also compute and surface the EFFECTIVE max
+    # size_pct (the lower of: profile's max_position_pct, and
+    # catastrophic_$ / equity). The AI can use this single number
+    # to size every proposal without doing the math itself.
     risk_limits_block = ""
     try:
         from single_trade_gate import (
@@ -1245,16 +1247,27 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         _db_path = getattr(ctx, "db_path", None) if ctx else None
         if _db_path:
             recent_avg = recent_avg_position_value(_db_path)
-            if recent_avg and recent_avg > 0:
-                cap = recent_avg * CATASTROPHIC_MULT
+            equity_for_limits = float(portfolio_state.get("equity") or 0)
+            if (recent_avg and recent_avg > 0
+                    and equity_for_limits > 0):
+                cap_dollars = recent_avg * CATASTROPHIC_MULT
+                cap_pct_of_equity = cap_dollars / equity_for_limits
+                effective_max_pct = min(max_pos_pct, cap_pct_of_equity)
+                effective_max_dollars = effective_max_pct * equity_for_limits
                 risk_limits_block = (
                     f"\n  System risk limits (system-enforced; "
                     f"proposals above auto-blocked):\n"
-                    f"    Max single trade $: ${cap:,.0f} "
+                    f"    Max single trade $: ${cap_dollars:,.0f} "
                     f"(based on {CATASTROPHIC_MULT:.0f}× recent avg "
                     f"trade ${recent_avg:,.0f})\n"
                     f"    Per-position cap: "
-                    f"{max_pos_pct * 100:.0f}% of equity\n"
+                    f"{max_pos_pct * 100:.1f}% of equity "
+                    f"(${equity_for_limits * max_pos_pct:,.0f})\n"
+                    f"    >>> EFFECTIVE max size_pct to propose: "
+                    f"{effective_max_pct * 100:.1f}% "
+                    f"(${effective_max_dollars:,.0f}) — lower of the "
+                    f"two caps; proposals above this die at the "
+                    f"catastrophic-trade gate <<<\n"
                     f"    Book concentration cap: any single symbol > "
                     f"25% of total book exposure"
                 )

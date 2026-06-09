@@ -17,6 +17,35 @@ Rules going forward:
 
 ---
 
+## 2026-06-09 — AI prompt now surfaces the EFFECTIVE max size_pct (not just the $ cap). Severity: medium.
+
+**Background:** This morning's first cycle after the earlier "AI sees the $ cap" fix showed the gate still firing — the AI sized down to its understanding but the result was still above the catastrophic-trade $ cap. Reason: the gate's $ threshold can be LOWER than `max_position_pct × equity`. The AI saw the $ cap separately from its sizing decision and didn't know which constraint binds at this profile's equity. Real numbers from pid 43 (`max_position_pct=10%`, equity ≈$200K, recent avg trade $3,744 → cap $18,720): AI proposed at 10% (within position cap), but 10% × $200K = $20,000 > $18,720 → gate fires every time.
+
+**What this ships:** the `risk_limits_block` now computes and surfaces the EFFECTIVE max size_pct directly:
+
+```
+System risk limits (system-enforced; proposals above auto-blocked):
+  Max single trade $: $18,720 (based on 5× recent avg trade $3,744)
+  Per-position cap: 10.0% of equity ($20,000)
+  >>> EFFECTIVE max size_pct to propose: 9.4% ($18,720) — lower of
+      the two caps; proposals above this die at the catastrophic-
+      trade gate <<<
+  Book concentration cap: any single symbol > 25% of total book exposure
+```
+
+The `EFFECTIVE max size_pct = min(max_position_pct, catastrophic_$ / equity)`. The AI can now size by this one number without computing which cap binds at the current equity.
+
+**Why this lets BUY proposals through:** the system applies multipliers downstream (`BUY × 0.75`, confidence-tier × 1.0–1.5) before the gate sees the final $ value. For any of those multiplier paths, the final alloc_pct is **at most** the AI's proposed size_pct (multipliers cap at the proposal). So if the AI proposes ≤ effective max, every downstream alloc stays ≤ effective max × equity ≤ catastrophic threshold. No path can blow through the gate.
+
+**Test coverage:** `tests/test_ai_sees_risk_limits_2026_06_09.py` grew to 11 tests:
+- `test_effective_max_pct_is_lower_of_two_caps` — the new line is present
+- `test_effective_max_pct_binds_to_dollar_cap_when_tighter` — the pid 43 scenario: 9.4% wins over 10% position cap
+- `test_effective_max_pct_binds_to_position_cap_when_tighter` — inverse: when $ cap is loose, position cap binds
+
+**Followup if the gate still fires on small accounts (e.g., pid 47/48 at $25K with $1K avg trade):** the catastrophic gate's recent_avg may need a floor (e.g., `max(recent_avg, equity × 1%)`) to prevent the death spiral where blocking all big trades keeps the historical avg artificially small. Watch the first post-deploy cycle to see if this is needed.
+
+---
+
 ## 2026-06-09 — AI prompt now surfaces the catastrophic-trade gate threshold. Severity: medium (gates were rejecting proposals the AI didn't know existed; wasted Gemini cycles, mysterious BLOCKED badges).
 
 **Background:** Yesterday's investigation showed the Catastrophic Single Trade Gate caught AI proposals at 5× the profile's recent average — and the AI didn't know about that floor. Confidence-tier sizing routinely pushed proposals above 5× baseline, the gate killed them silently, and operator was left with a contextless BLOCKED badge. The companion fix earlier today made the badge actually tell the operator which gate fired. This change goes one step further — tell the AI itself about the gate's threshold so it sizes within the limit instead of having proposals die at the safety net.
