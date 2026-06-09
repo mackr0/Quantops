@@ -17,6 +17,45 @@ Rules going forward:
 
 ---
 
+## 2026-06-09 (afternoon) — Two more options bug fixes: grid-aware strike snap + position-intent classified as SKIP. Severity: medium.
+
+**Background:** After the brain-badge fixes cleared the false-GATED noise, two real options drops remained:
+
+1. BITO `Multileg Open … GATED · ERROR — No listed Alpaca contract within tolerance for BITO P 7.5 exp 2026-07-17`. BITO's chain spaces strikes $1 apart (1, 2, 3, …, 21); the AI proposed $7.5; nearest listed is $7 or $8 (both 6.67% off), outside the fixed 5% tolerance. AI's thesis is valid for either neighbor — a half-strike snap should be accepted.
+2. NOK `Multileg Open … GATED · ERROR — Leg 0 failed: Alpaca order rejected (422): position intent mismatch, inferred: sell_to_close, specified: sell_to_open`. The broker already held a long position on that OCC; our local-journal duplicate-position guard missed it (journal drift from broker state). Currently surfaces as a red ERROR badge. It's not a system error — the broker correctly rejected stacking a conflicting position.
+
+**Fix 1 — `options_chain_alpaca.snap_to_listed_contract` uses grid-aware tolerance:**
+
+```
+strike_tolerance_dollars = max(
+    target_strike * 0.05,        # 5% (preserves old behavior for high-priced)
+    median_spacing * 0.5,        # half-strike snap (handles low-priced grids)
+)
+```
+
+For BITO target $7.5: median_spacing on the expiry = $1; tolerance = max($0.375, $0.50) = $0.50. Diff to $7 or $8 is $0.50 → snap accepted. For NVDA target $505 on a $5-spaced chain: tolerance = max($25.25, $2.50) = $25.25 — 5% rule still dominates; behavior unchanged for high-priced underlyings. For an off-grid AI proposal (target $1000 against a {$1100, $1200} chain): diff $100 vs tolerance ~$50 → still refuses; the half-grid rule only widens tolerance when the chain is widely-spaced relative to strike.
+
+**Fix 2 — `options_multileg.execute_multileg_strategy` classifies position-intent-mismatch as SKIP:**
+
+Both the combo path and the sequential-leg-loop path now detect `"position intent mismatch"` in the exception text and return `action="SKIP"` with a clear "already-positioned at broker" reason. Any legs that were submitted before the failure are rolled back. This stops the red ERROR badge in the AI Brain — operator sees an unambiguous skip ("not a bug, broker already has this position") rather than a system-error flag.
+
+Why text-match, not Alpaca's 42210000 code: that code is shared by the duplicate-leg combo error too. Matching on the code alone over-triggers and would re-classify duplicate-leg failures as SKIP, which is wrong.
+
+**Test coverage:**
+
+`tests/test_multileg_snap_and_intent_2026_06_09_pm.py` (7 tests):
+
+- 4 layer-1: BITO $7.5 snaps to $7 or $8 against a $1-grid; far-off targets still refuse; high-priced strikes still use the 5% rule; very-off targets refuse even with widening.
+- 3 layer-2: combo position-intent fails → SKIP (sequential not called); sequential position-intent fails → SKIP with rollback of any open legs; non-position-intent sequential failures still ERROR (the classification is specific).
+
+**Working-as-intended skips (no fix needed, explained for clarity):**
+
+- NOK pid 42 `Duplicate-position guard: profile already has open journal row for NOK260717C00015000` — correct dedup; we already opened the spread.
+- NOK pids 43/44/50 `Short skipped: NOK is down -3.0% today (only short on bounce days)` — operator-configured tuner rule. Don't pile on into existing weakness.
+- NOK pid 41 `SPECIALIST_VETOED by adversarial_reviewer — Book has significant concentrated, multi-legged long+short exposure to NOK` — concentration risk veto. Correct safety behavior.
+
+---
+
 ## 2026-06-09 — AI Brain badges now reflect THIS cycle (kills two false-GATED bugs). Severity: medium (operator-visible: looked like gates were firing when they weren't).
 
 **Background:** After the catastrophic-floor deploy stopped gate fires, the AI Brain still showed `RGNT GATED · Catastrophic Single Trade`, `Multileg Open NOK GATED · Multileg Open`, and similar. Operator reasonable read: "the fix didn't work." Actual cause: two separate brain-UI bugs.

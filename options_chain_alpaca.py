@@ -468,8 +468,40 @@ def snap_to_listed_contract(
             return 10**9
     closest_contract = min(candidates, key=_strike_diff)
     closest_strike = float(closest_contract.get("strike", 0))
-    if target_strike > 0 and abs(closest_strike - target_strike) / target_strike > 0.05:
-        # >5% off target — refuse rather than silently substitute
+
+    # 2026-06-09 — grid-aware tolerance. The old 5%-of-strike rule was
+    # too tight for low-priced underlyings: BITO P 7.5 exp 2026-07-17
+    # found no listed contract because the chain is spaced $1 apart
+    # (nearest listed = $7 or $8, both 6.67% off). The right tolerance
+    # depends on the strike grid: a half-strike snap is always
+    # acceptable (the AI's thesis is valid for either neighbor); a
+    # snap larger than half-grid means the AI proposed something the
+    # chain doesn't support at all. Compute the median spacing among
+    # listed strikes at this expiry and allow snaps up to half that,
+    # OR 5% of the target strike, whichever is larger.
+    listed_strikes = sorted(
+        float(c.get("strike", 0)) for c in candidates
+        if c.get("strike")
+    )
+    if len(listed_strikes) >= 2:
+        diffs = [
+            b - a for a, b in zip(listed_strikes, listed_strikes[1:])
+            if b - a > 0
+        ]
+        median_spacing = (
+            sorted(diffs)[len(diffs) // 2] if diffs else 0.0
+        )
+    else:
+        median_spacing = 0.0
+    strike_tolerance_dollars = max(
+        target_strike * 0.05,
+        median_spacing * 0.5,
+    )
+    if (target_strike > 0
+            and abs(closest_strike - target_strike)
+            > strike_tolerance_dollars):
+        # Too far from any listed contract — refuse rather than
+        # silently substitute a contract the AI didn't ask for.
         return None
 
     return {

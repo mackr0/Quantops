@@ -817,6 +817,28 @@ def execute_multileg_strategy(
             # if Alpaca infers the second leg as a separate position),
             # producing a misleading "uncovered" reason in trade_drops
             # instead of the real "duplicate strike" cause.
+            # 2026-06-09 — position-intent mismatch on the combo means
+            # at least one leg's OCC has an existing broker position
+            # that conflicts. Sequential fallback would hit the same
+            # rejection (same legs, same broker state). Classify as
+            # SKIP at the combo level to avoid the extra round-trip.
+            if "position intent mismatch" in exc_str.lower():
+                logger.info(
+                    "Combo-order skipped — broker already holds a "
+                    "conflicting position on one or more legs of %s "
+                    "on %s: %s",
+                    strategy.name, strategy.underlying, exc,
+                )
+                result.update({
+                    "action": "SKIP",
+                    "reason": (
+                        f"Already-positioned at broker on one of "
+                        f"{strategy.name}'s legs (Alpaca position-"
+                        f"intent mismatch — local journal drifted "
+                        f"from broker state). Not a system error."
+                    ),
+                })
+                return result
             if "is duplicated" in exc_str or "duplicate" in exc_str.lower():
                 logger.warning(
                     "Combo-order rejected with duplicate-symbol for %s "
@@ -880,6 +902,60 @@ def execute_multileg_strategy(
                 "order_id": getattr(order, "id", None),
             })
         except Exception as exc:
+            exc_str = str(exc)
+            # 2026-06-09 — position-intent mismatch means the broker
+            # already holds a position on this exact OCC that conflicts
+            # with our intent (we said sell_to_open; Alpaca inferred
+            # sell_to_close because there's an existing long, or vice
+            # versa). The duplicate-position guard above (line ~711)
+            # checks our LOCAL journal — if journal drifted from broker
+            # state we miss this and Alpaca catches it instead. Not a
+            # system ERROR; classify as SKIP with a clear reason so the
+            # operator sees "already-positioned at broker" rather than
+            # a red error badge in the AI Brain.
+            if "position intent mismatch" in exc_str.lower():
+                logger.info(
+                    "Leg %d (%s %s) of %s skipped — broker already "
+                    "holds a conflicting position on this OCC: %s",
+                    i, leg.side, leg.occ_symbol, strategy.name, exc,
+                )
+                # Rollback any legs we already opened in this attempt
+                # (typically zero, since position-intent issues usually
+                # surface on leg 0; but be defensive)
+                for sub in submitted:
+                    try:
+                        rev_side = (
+                            "sell" if sub["leg"].side == "buy" else "buy"
+                        )
+                        _submit_alpaca_order_raw(api, {
+                            "symbol": sub["leg"].occ_symbol,
+                            "qty": sub["leg"].qty,
+                            "side": rev_side,
+                            "type": "market",
+                            "time_in_force": "day",
+                            "position_intent": _INTENT_CLOSE.get(
+                                rev_side, "sell_to_close",
+                            ),
+                        })
+                    except Exception as _rb_exc:
+                        logger.warning(
+                            "Rollback of leg %d failed during position-"
+                            "intent skip: %s",
+                            sub["leg_index"], _rb_exc,
+                        )
+                result.update({
+                    "action": "SKIP",
+                    "leg_order_ids": [s["order_id"] for s in submitted],
+                    "reason": (
+                        f"Already-positioned at broker on "
+                        f"{leg.occ_symbol} (Alpaca position-intent "
+                        f"mismatch — local journal drifted from broker "
+                        f"state). Not a system error; the spread was "
+                        f"declined to avoid stacking a conflicting "
+                        f"position."
+                    ),
+                })
+                return result
             logger.error(
                 "Leg %d (%s %s) of %s failed: %s. Attempting rollback.",
                 i, leg.side, leg.occ_symbol, strategy.name, exc,
