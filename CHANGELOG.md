@@ -17,6 +17,32 @@ Rules going forward:
 
 ---
 
+## 2026-06-09 (rework) — Bracket-order entries replace the separate-protective-stops pattern. Severity: CRITICAL architecture fix. Closes the shared-account reduce-only contention bug surfaced by the PAVS loss.
+
+**The bug class:** Alpaca's reduce-only-qty accounting only allows total-reduce-only ≤ position-qty. When multiple profiles share an Alpaca account and each tried to place its own protective stop + TP separately (the prior `ensure_protective_stops` pattern), the FIRST profile's stop reserved its qty; sibling profiles' attempts hit "insufficient qty available." Result: only one of N profiles got broker-side protection on a shared symbol; the others sat unprotected, mathematically guaranteed.
+
+The earlier (prior-commit) per-profile-isolation fix to `ensure_protective_stops` only addressed the journal-attribution side. The reduce-only-qty contention is a broker-level constraint that can't be fixed by smarter journal tracking — it requires the protective and entry to be ATOMICALLY linked at the broker.
+
+**Fix:** `execute_trade` BUY and SHORT submits now use Alpaca's `order_class="bracket"`. The stop_loss + take_profit are OCO sub-orders of the parent entry — they reserve the entry's qty ONCE between them, not twice. Each profile's bracket is independent at the broker. For shared accounts the math holds: `sum(per-profile bracket qty) == aggregate position`.
+
+- BUY: stop below entry at `price × (1 - actual_sl_pct)`, TP above at `price × (1 + actual_tp_pct)` — both derived from the post-`risk_clamps` clamped percentages.
+- SHORT: stop above entry at `price × (1 + short_sl)`, TP below at `price × (1 - short_tp)` — mirror geometry.
+
+Bracket child IDs (when surfaced by the SDK on the parent response) are stamped onto the entry row's `protective_stop_order_id` and `protective_tp_order_id` columns so the subsequent `ensure_protective_stops` sweep sees live coverage and skips re-placement (avoiding the duplicate-stop attempt that triggered the original "insufficient qty" error).
+
+**Tests:** `tests/test_bracket_entry_2026_06_09.py` (4):
+- BUY submit uses `order_class="bracket"` with `stop_loss` + `take_profit` sub-orders (source pin).
+- SHORT submit uses bracket; geometry pinned (stop above, TP below).
+- Stop/TP prices derived from clamped percentages (post-`risk_clamps`).
+- Bracket child IDs stamped onto entry row's protective columns.
+
+**Kill switch raised before deploy.** Scheduler stopped via systemctl; kill_switch_state enabled. Trading resumes after this commit deploys + the manual remediation script runs to:
+1. Cancel orphaned per-symbol trailings (created under the old pattern)
+2. Mark their pending_protective journal rows canceled
+3. Resume scheduler with kill switch released
+
+---
+
 ## 2026-06-09 (post-reset, very late) — Protective-orders per-profile isolation. Severity: CRITICAL (real money damage observed). This bug was pre-existing (added 2026-05-21) but masked by the cross-profile share consumption pattern. This morning's `ba1145b` sell-isolation fix removed the masking, and tonight's first sustained loss surfaced it on PAVS.
 
 **The damage observed:**

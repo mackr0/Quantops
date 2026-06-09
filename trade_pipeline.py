@@ -1153,15 +1153,35 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
             result["reason"] = f"Order blocked: {qty_reason}"
             return result
 
-        # Limit orders: use limit price at current price for better fills
+        # 2026-06-09 (rework) — BRACKET ENTRY. Replaces the prior
+        # plain BUY submit + separate ensure_protective_stops sweep.
+        #
+        # Problem the rework solves: profiles share Alpaca accounts.
+        # Separate protective placements (one per profile) couldn't
+        # coexist on shared accounts because Alpaca's reduce-only-qty
+        # accounting only allows total-reduce-only <= position-qty.
+        # Once profile A placed its trailing reserving its own qty,
+        # profiles B/C couldn't add their own — they hit "insufficient
+        # qty available" and stayed unprotected (the PAVS damage).
+        #
+        # Brackets fix this: stop + TP are OCO sub-orders of the
+        # parent entry. They reserve the entry's qty ONCE between
+        # them, not twice. Each profile's bracket is independent —
+        # for shared accounts, total reserved = sum of bracket qtys
+        # = aggregate position. Mathematics works.
         use_limit = ctx is not None and getattr(ctx, "use_limit_orders", False)
         order_type = "limit" if use_limit else "market"
+        stop_price = round(price * (1 - actual_sl_pct), 2)
+        target_price = round(price * (1 + actual_tp_pct), 2)
         order_kwargs = {
             "symbol": symbol,
             "qty": qty,
             "side": "buy",
             "type": order_type,
             "time_in_force": "day",
+            "order_class": "bracket",
+            "stop_loss": {"stop_price": str(stop_price)},
+            "take_profit": {"limit_price": str(target_price)},
         }
         if use_limit:
             order_kwargs["limit_price"] = str(round(price, 2))
@@ -1171,9 +1191,36 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
         # there and the cycle continues with the next candidate.
         order = api.submit_order(**order_kwargs)
 
+        # Pull the bracket's child legs (stop + TP) so we can stamp
+        # their IDs onto the entry row's protective_*_order_id cols.
+        # ensure_protective_stops's broker-truth + journal checks then
+        # see the live children and correctly skip re-placement. The
+        # children may not be visible IMMEDIATELY after submit (Alpaca
+        # ingests asynchronously), so we tolerate empty and let the
+        # next protective sweep heal via the broker_coverage logic.
+        bracket_stop_id = None
+        bracket_tp_id = None
+        try:
+            # Some SDK versions expose legs on the parent order; fall
+            # back to a list_orders query keyed on parent_id otherwise.
+            legs = getattr(order, "legs", None) or []
+            for leg in legs:
+                ltype = getattr(leg, "order_type", "") or ""
+                if "stop" in ltype.lower():
+                    bracket_stop_id = getattr(leg, "id", None)
+                elif "limit" in ltype.lower():
+                    bracket_tp_id = getattr(leg, "id", None)
+        except Exception as _bx_exc:
+            logger.debug(
+                "Bracket child-leg parse skipped for %s: %s: %s",
+                symbol, type(_bx_exc).__name__, _bx_exc,
+            )
+
         result["action"] = "BUY"
         result["qty"] = qty
         result["order_id"] = order.id
+        result["bracket_stop_order_id"] = bracket_stop_id
+        result["bracket_tp_order_id"] = bracket_tp_id
         result["estimated_cost"] = round(qty * price, 2)
         result["stop_loss_pct"] = actual_sl_pct
         result["take_profit_pct"] = actual_tp_pct
@@ -1238,6 +1285,30 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                 adv_at_decision=adv_at_decision,
                 db_path=db_path,
             )
+            # Stamp the bracket child IDs onto the just-written entry
+            # row so ensure_protective_stops sees them as live coverage
+            # and skips re-placement. Without this the protective sweep
+            # would try to place duplicate stops + TPs against shares
+            # already reserved by Alpaca's bracket, hitting "insufficient
+            # qty" errors.
+            if bracket_stop_id or bracket_tp_id:
+                try:
+                    import sqlite3 as _sb
+                    with _sb.connect(db_path) as _bconn:
+                        _bconn.execute(
+                            "UPDATE trades SET "
+                            "  protective_stop_order_id = COALESCE(?, protective_stop_order_id), "
+                            "  protective_tp_order_id   = COALESCE(?, protective_tp_order_id) "
+                            "WHERE order_id = ? AND side = 'buy'",
+                            (bracket_stop_id, bracket_tp_id, order.id),
+                        )
+                except Exception as _us_exc:
+                    logger.warning(
+                        "Bracket child-id stamp failed for %s/%s: %s: %s "
+                        "(entry row written; protective sweep will heal)",
+                        symbol, order.id,
+                        type(_us_exc).__name__, _us_exc,
+                    )
 
     # ---- SELL logic (close existing long position) ---------------------------
     elif action in ("SELL", "STRONG_SELL") and symbol in positions and int(positions[symbol]["qty"]) > 0:
@@ -1513,15 +1584,25 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                         result["reason"] = f"Order blocked: outside {ctx.schedule_type} window"
                         return result
 
-                    # Limit orders for short entries
+                    # 2026-06-09 (rework) — BRACKET ENTRY for shorts.
+                    # Mirror of the BUY bracket: short opens an atomic
+                    # OCO with stop ABOVE entry + TP BELOW. The pair
+                    # is reduce-only against the entry qty (OCO not
+                    # additive), so shared-account math holds:
+                    # sum(brackets) == aggregate position.
                     use_limit = ctx is not None and getattr(ctx, "use_limit_orders", False)
                     order_type = "limit" if use_limit else "market"
+                    stop_price = round(price * (1 + short_sl), 2)
+                    target_price = round(price * (1 - short_tp), 2)
                     order_kwargs = {
                         "symbol": symbol,
                         "qty": qty,
                         "side": "sell",  # sell without owning = short
                         "type": order_type,
                         "time_in_force": "day",
+                        "order_class": "bracket",
+                        "stop_loss": {"stop_price": str(stop_price)},
+                        "take_profit": {"limit_price": str(target_price)},
                     }
                     if use_limit:
                         order_kwargs["limit_price"] = str(round(price, 2))
@@ -1529,17 +1610,32 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                     # caller in multi_scheduler wraps in try/except.
                     order = api.submit_order(**order_kwargs)
 
+                    bracket_stop_id = None
+                    bracket_tp_id = None
+                    try:
+                        legs = getattr(order, "legs", None) or []
+                        for leg in legs:
+                            ltype = (getattr(leg, "order_type", "") or "").lower()
+                            if "stop" in ltype:
+                                bracket_stop_id = getattr(leg, "id", None)
+                            elif "limit" in ltype:
+                                bracket_tp_id = getattr(leg, "id", None)
+                    except Exception as _bx_exc:
+                        logger.debug(
+                            "Short bracket child-leg parse skipped for %s: %s: %s",
+                            symbol, type(_bx_exc).__name__, _bx_exc,
+                        )
+
                     result["action"] = "SHORT"
                     result["qty"] = qty
                     result["order_id"] = order.id
+                    result["bracket_stop_order_id"] = bracket_stop_id
+                    result["bracket_tp_order_id"] = bracket_tp_id
                     result["estimated_proceeds"] = round(qty * price, 2)
                     result["stop_loss_pct"] = short_sl
                     result["take_profit_pct"] = short_tp
 
                     if log:
-                        # Shorts: stop is ABOVE entry, target is BELOW
-                        stop_price = round(price * (1 + short_sl), 4)
-                        target_price = round(price * (1 - short_tp), 4)
                         log_trade(
                             symbol=symbol,
                             side="short",
@@ -1556,6 +1652,26 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                             decision_price=price,
                             db_path=db_path,
                         )
+                        # Stamp bracket child IDs onto the entry row
+                        # so ensure_protective_stops sees live coverage
+                        # and skips re-placement.
+                        if bracket_stop_id or bracket_tp_id:
+                            try:
+                                import sqlite3 as _sb
+                                with _sb.connect(db_path) as _bconn:
+                                    _bconn.execute(
+                                        "UPDATE trades SET "
+                                        "  protective_stop_order_id = COALESCE(?, protective_stop_order_id), "
+                                        "  protective_tp_order_id   = COALESCE(?, protective_tp_order_id) "
+                                        "WHERE order_id = ? AND side = 'short'",
+                                        (bracket_stop_id, bracket_tp_id, order.id),
+                                    )
+                            except Exception as _us_exc:
+                                logger.warning(
+                                    "Short bracket child-id stamp failed for %s/%s: %s: %s",
+                                    symbol, order.id,
+                                    type(_us_exc).__name__, _us_exc,
+                                )
 
     # ---- HOLD / no-action -------------------------------------------------
     elif action == "HOLD":
