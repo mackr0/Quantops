@@ -71,6 +71,8 @@ CHANGED=$(rsync -az --delete --dry-run --itemize-changes \
     --exclude 'scheduler_status.json' \
     --exclude 'dynamic_screener_cache.json' \
     --exclude '.sync_test_marker' \
+    --exclude '.deploy_sha' \
+    --exclude '.deploy_timestamp' \
     --exclude '.daily_snapshot_done.marker' \
     --exclude '.daily_summary_sent_p*.marker' \
     --exclude '.weekly_digest_sent.marker' \
@@ -125,6 +127,8 @@ if ! $SKIP_RSYNC; then
         --exclude 'scheduler_status.json' \
         --exclude 'dynamic_screener_cache.json' \
         --exclude '.sync_test_marker' \
+    --exclude '.deploy_sha' \
+    --exclude '.deploy_timestamp' \
         --exclude '.daily_snapshot_done.marker' \
         --exclude '.daily_summary_sent_p*.marker' \
         --exclude '.weekly_digest_sent.marker' \
