@@ -645,6 +645,47 @@ def ensure_protective_stops(api, positions, ctx, db_path,
             close_side = "buy" if is_short else "sell"
             abs_qty = abs(int(qty))
 
+            # 2026-06-10 — BRACKET SKIP. If the entry's parent order
+            # was submitted as order_class='bracket' (post-rework),
+            # the broker is already managing the stop + TP as atomic
+            # OCO sub-orders of the entry. This sweep must NOT touch
+            # those — the prior behavior cancelled the bracket's TP
+            # via _cancel_stale_other_orders within ~5 min of every
+            # bracket entry (CCO entry 13:41, TP canceled 13:46).
+            # Detect by querying the broker for the entry's parent
+            # order_id and checking order_class. Failure-tolerant:
+            # if we can't determine, fall through to the legacy
+            # behavior so a transient broker blip doesn't leave
+            # positions unprotected.
+            try:
+                _entry_order_id = conn.execute(
+                    "SELECT order_id FROM trades WHERE id = ?",
+                    (row["id"],),
+                ).fetchone()
+                if _entry_order_id and _entry_order_id[0]:
+                    try:
+                        _parent = api.get_order(_entry_order_id[0])
+                        if (getattr(_parent, "order_class", "") or "") == "bracket":
+                            # The bracket's children handle protection.
+                            # Skip; don't risk cancelling live OCO legs.
+                            logger.debug(
+                                "ensure_protective_stops: skip entry "
+                                "#%s (%s) — parent order_class=bracket; "
+                                "broker is managing stop+TP atomically.",
+                                row["id"], symbol,
+                            )
+                            continue
+                    except Exception as _bc_exc:
+                        logger.debug(
+                            "Bracket-class check for entry #%s failed "
+                            "(continuing with legacy sweep): %s: %s",
+                            row["id"],
+                            type(_bc_exc).__name__, _bc_exc,
+                        )
+            except sqlite3.OperationalError:
+                # Test fixture without order_id column; legacy path.
+                pass
+
             # RC3 (2026-06-05) — JOURNAL-SIDE dedup as the second
             # defense layer behind broker_coverage. Pattern observed:
             # broker_coverage occasionally returns empty for a symbol

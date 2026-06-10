@@ -1193,27 +1193,32 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
 
         # Pull the bracket's child legs (stop + TP) so we can stamp
         # their IDs onto the entry row's protective_*_order_id cols.
-        # ensure_protective_stops's broker-truth + journal checks then
-        # see the live children and correctly skip re-placement. The
-        # children may not be visible IMMEDIATELY after submit (Alpaca
-        # ingests asynchronously), so we tolerate empty and let the
-        # next protective sweep heal via the broker_coverage logic.
+        # 2026-06-10 — the SDK does NOT populate `.legs` on the
+        # IMMEDIATE submit_order response, only on get_order with
+        # `nested=True`. Verified live this morning: bracket was
+        # placed correctly at broker (TP id f4c77838 sitting at
+        # $2.49 limit), but `order.legs` was None at submit time so
+        # the journal pointer stayed NULL, and ensure_protective_stops
+        # then ran with no own_protective_ids → cancelled the live
+        # bracket TP via _cancel_stale_other_orders. Re-fetch with
+        # nested=True to surface the children before journal write.
         bracket_stop_id = None
         bracket_tp_id = None
         try:
-            # Some SDK versions expose legs on the parent order; fall
-            # back to a list_orders query keyed on parent_id otherwise.
-            legs = getattr(order, "legs", None) or []
+            parent_nested = api.get_order(order.id, nested=True)
+            legs = getattr(parent_nested, "legs", None) or []
             for leg in legs:
-                ltype = getattr(leg, "order_type", "") or ""
-                if "stop" in ltype.lower():
+                ltype = (getattr(leg, "order_type", "") or "").lower()
+                if "stop" in ltype:
                     bracket_stop_id = getattr(leg, "id", None)
-                elif "limit" in ltype.lower():
+                elif "limit" in ltype:
                     bracket_tp_id = getattr(leg, "id", None)
         except Exception as _bx_exc:
-            logger.debug(
-                "Bracket child-leg parse skipped for %s: %s: %s",
-                symbol, type(_bx_exc).__name__, _bx_exc,
+            logger.warning(
+                "Bracket child-leg fetch (nested=True) failed for %s "
+                "/ %s: %s: %s — entry written without protective-id "
+                "stamps; next sweep will heal via broker_coverage.",
+                symbol, order.id, type(_bx_exc).__name__, _bx_exc,
             )
 
         result["action"] = "BUY"
@@ -1610,10 +1615,14 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                     # caller in multi_scheduler wraps in try/except.
                     order = api.submit_order(**order_kwargs)
 
+                    # 2026-06-10 — same nested=True re-fetch as the
+                    # BUY path. SDK's submit_order response doesn't
+                    # surface .legs even when order_class="bracket".
                     bracket_stop_id = None
                     bracket_tp_id = None
                     try:
-                        legs = getattr(order, "legs", None) or []
+                        parent_nested = api.get_order(order.id, nested=True)
+                        legs = getattr(parent_nested, "legs", None) or []
                         for leg in legs:
                             ltype = (getattr(leg, "order_type", "") or "").lower()
                             if "stop" in ltype:
@@ -1621,9 +1630,11 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                             elif "limit" in ltype:
                                 bracket_tp_id = getattr(leg, "id", None)
                     except Exception as _bx_exc:
-                        logger.debug(
-                            "Short bracket child-leg parse skipped for %s: %s: %s",
-                            symbol, type(_bx_exc).__name__, _bx_exc,
+                        logger.warning(
+                            "Short bracket child-leg fetch (nested=True) "
+                            "failed for %s / %s: %s: %s",
+                            symbol, order.id,
+                            type(_bx_exc).__name__, _bx_exc,
                         )
 
                     result["action"] = "SHORT"

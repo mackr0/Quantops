@@ -17,6 +17,28 @@ Rules going forward:
 
 ---
 
+## 2026-06-10 — Bracket-children stamp + ensure_protective_stops skips bracket entries. Severity: CRITICAL (without these, yesterday's bracket-rework SHIPPED A REGRESSION that cancelled live bracket TPs within ~5 min of every entry).
+
+**The regression:** yesterday's bracket-rework (`c59337e`) submitted bracket orders correctly at the broker but the SDK's `submit_order` response **does not populate `.legs`** even when `order_class="bracket"`. My code read `getattr(order, "legs", None)` immediately after submit, got None, didn't stamp `protective_stop_order_id` / `protective_tp_order_id` onto the entry row. Then the next `ensure_protective_stops` sweep ran with empty `own_protective_ids`, treated the bracket's live OCO sub-orders as un-tracked, and `_cancel_stale_other_orders` cancelled them.
+
+**Live reproduction:** pid 67 CCO bought at 13:41:16 UTC with a bracket TP at limit $2.49. Bracket TP record at the broker (id `f4c77838`) shows `canceled_at: 2026-06-10T13:46:38` — exactly the protective sweep firing on the next cycle. Every bracket entry placed this morning hit the same fate: TP cancelled within ~5 minutes, position left with no broker-side protection.
+
+**Two fixes:**
+
+1. **Re-fetch with `nested=True` after submit.** `get_order(parent_id, nested=True)` populates the `.legs` attribute with the bracket's children. Both BUY and SHORT bracket-submit paths now do this re-fetch, parse the legs, and stamp `protective_stop_order_id` / `protective_tp_order_id` before the entry row's protective columns get queried by the next sweep.
+
+2. **Skip bracket entries in `ensure_protective_stops`.** Even with the stamp working, a sweep-level safety: query the entry's parent `order_id` and check `order_class`. If `"bracket"`, the broker is managing stop+TP atomically as OCO sub-orders — the sweep MUST NOT touch them. `continue` past the per-position loop.
+
+Together these are belt-and-suspenders: even if the SDK behavior changes in the future and `.legs` becomes empty again, the bracket-class check at the sweep level prevents cancellation.
+
+**Tests:** `tests/test_bracket_skip_sweep_2026_06_10.py` (2):
+- Source pin on `ensure_protective_stops`: must include the BRACKET SKIP block calling `api.get_order` and checking `order_class == "bracket"`, with a `continue` after detection.
+- Source pin on `trade_pipeline.py`: BUY and SHORT bracket paths must both use `get_order(order.id, nested=True)`.
+
+**Live remediation:** after this commit deploys, all entries placed today have their bracket TPs already cancelled by yesterday's broken sweep. A one-shot script re-fetches each open entry's parent (nested=True), finds the live stop child (which Alpaca leaves alone — only the TP got mis-cancelled), and stamps both protective IDs onto the journal. New entries from this cycle onward use the post-fix path.
+
+---
+
 ## 2026-06-09 (rework) — Bracket-order entries replace the separate-protective-stops pattern. Severity: CRITICAL architecture fix. Closes the shared-account reduce-only contention bug surfaced by the PAVS loss.
 
 **The bug class:** Alpaca's reduce-only-qty accounting only allows total-reduce-only ≤ position-qty. When multiple profiles share an Alpaca account and each tried to place its own protective stop + TP separately (the prior `ensure_protective_stops` pattern), the FIRST profile's stop reserved its qty; sibling profiles' attempts hit "insufficient qty available." Result: only one of N profiles got broker-side protection on a shared symbol; the others sat unprotected, mathematically guaranteed.
