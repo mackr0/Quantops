@@ -17,6 +17,34 @@ Rules going forward:
 
 ---
 
+## 2026-06-10 (afternoon) — sync.sh hardened against the silent-deploy-failure class. Severity: CRITICAL infrastructure fix. The operator hit this multiple times today: "Both services running." printed while prod's git tracker was 4 commits behind origin/main; bug-fix commits weren't actually exercised.
+
+**Three failure paths the pre-fix script had:**
+
+1. **rsync no-changes path exit'd early.** When rsync's dry-run found no file content delta (because a previous deploy had already pushed content), the script ran `exit 0` BEFORE the `git reset --hard origin/main` block. If a previous deploy had crashed post-rsync / pre-reset, prod's .git/ stayed wherever it was — but rsync would now see "no changes" because content was already current. Result: silent staleness.
+
+2. **`--quiet` and `2>/dev/null` redirects hid git errors.** `git fetch origin --quiet` and `git reset --hard origin/main >/dev/null` suppressed stderr. Real failures (fetch couldn't reach origin, reset hit a corrupt ref, etc.) printed to stderr that nobody saw. `set -e` inside the SSH heredoc may not abort cleanly when stderr is printed but ssh returns 0.
+
+3. **"Both services running." was the only success signal.** Services can run with stale code. The signal didn't prove the deploy. Operator (rightly) trusted it; ate three failed deploys before catching the staleness.
+
+**Hardening:**
+
+- **No-changes path no longer exits early.** Sets `SKIP_RSYNC=true` and falls through to the post-deploy block. The rsync transfer is skipped (nothing to send) but the .git/ alignment + content verification still run. Catches the silent-drift class at the cost of ~2s.
+
+- **Post-deploy uses `ssh HOST bash -s <<SSHEOF`** (not `ssh HOST "..."` quoting). Chained with `|| { echo ...; exit 1; }` on the outer-shell side so failures inside the heredoc propagate. `set -euo pipefail` inside.
+
+- **Loud git operations.** Drop `--quiet` and `>/dev/null` redirects on `git fetch` and `git reset --hard`. Real errors print.
+
+- **CONTENT verification.** Compute sha256 of `trade_pipeline.py` locally, then on prod after the reset. Mismatch → abort with clear instructions. Catches the rare case where HEAD is correct but file content somehow doesn't match (rsync race, permission blip, etc.).
+
+- **Deploy marker on prod.** Post-deploy writes `/opt/quantopsai/.deploy_sha` (the commit SHA) and `.deploy_timestamp` (UTC ISO). Downstream tooling can verify deploy state without depending on .git/ internals. The final-services-check block reads `.deploy_sha` and re-hashes `trade_pipeline.py` before printing "Both services running." — that message is now only printed when the deploy is provably current.
+
+**Tests:** `tests/test_sync_sh_hardening_2026_06_10.py` (6 source pins): no early-exit in no-changes path; bash-heredoc + pipefail + outer ||; content verification via sha256; .deploy_sha + .deploy_timestamp written; final-check reads marker + re-hashes; no --quiet flags hiding errors.
+
+**The operator's "Both services running" trust contract is restored.** That message is no longer printed unless prod is provably running the deployed code.
+
+---
+
 ## 2026-06-10 (mid-session) — REAL prevention at the OPTIONS parser layer. Previous commit was wrong-shape — it improved error MESSAGES but didn't PREVENT the bad proposals from reaching execution.
 
 Operator's correction: "we shouldn't be encountering any of these errors." Right. This commit makes the bad proposals get rejected at the parse layer in `validate_ai_response`, so they never appear as ERROR/BLOCKED badges in the brain. Two real root causes addressed:
