@@ -17,6 +17,60 @@ Rules going forward:
 
 ---
 
+## 2026-06-10 (post-PM-reset) — Test-suite restoration: 10 failures (9 latent from the morning's commits + 1 from the severity rename) fixed. Severity: high (the suite was red on main; sync.sh deploys don't run tests, so the morning's sessions shipped without noticing).
+
+**How it surfaced:** Running the full suite before deploying the multileg parse fix found 10 failures. One was mine (severity-rename pin in `test_drawdown_acceleration_floor_2026_05_20.py`); stash-testing confirmed the other 9 fail on clean HEAD — left behind by the morning's bracket/options/prompt commits.
+
+**Production-code fixes (2):**
+
+- `ai_analyst.py` single-leg OPTIONS parse branch: chain-fetch outage no longer rejects proposals. `snap_to_listed_contract` returns None for BOTH "strike doesn't exist" and "chain unavailable"; the branch treated both as rejection, killing valid proposals on infra blips. Now fetches the chain explicitly and degrades to the execution-layer safety belt when it's empty — the same contract the new multileg validator uses. (Found via `test_options_action_passes_through_with_fields`, which runs offline.)
+- `bracket_orders.py:685`: bare `except sqlite3.OperationalError: pass` on the bracket-class pre-check (from the morning's RC9 work) now logs before falling through to the legacy sweep — a schema problem on a real journal is visible instead of silently degrading every sweep. (`test_no_bare_except_pass_on_db_or_broker_calls`.)
+
+**Stale-test updates (contract changed deliberately, tests not updated alongside — violations of the same-commit guardrail rule):**
+
+- `test_invalid_strategy_returns_skip`: pins the new multileg routing message ("single-leg only" + "MULTILEG_OPEN") instead of the old generic "Unsupported".
+- `test_skips_when_broker_already_covers`: rewritten for the 06-09 PAVS isolation contract — coverage must be journal-OWNED to suppress placement; the old test expected adoption of untracked broker orders, which is exactly the sibling-trust behavior the isolation fix removed.
+- `test_options_note_uses_inviting_verbs`: matches the "OPTIONS (single-leg" header prefix (gained "ONLY)" in the morning's prompt hardening).
+- `test_alert_fires_at_medium_severity...`: severity vocabulary pin updated with the warning→medium rename.
+
+**Guardrail-metadata refreshes:**
+
+- `MAX_LINES_TO_JOURNAL` 100→130: the multileg sequential path's 06-09 error-handling growth pushed `_log_strategy_legs` to ~110 lines after the raw POST; journaling unchanged, window follows the code.
+- `test_no_strategy_zombies`: fresh-start awareness — "zero lifetime predictions" only indicts a strategy when the prediction data spans ≥14 days of its deployed life. After today's resets every strategy read as a zombie (25 flagged); now the check stays quiet until data re-accumulates, then enforces again.
+- `OPEN_ITEMS.md` ai_analyst:640 entry marked ✅ DONE (AI proposes OPTIONS natively, shipped 06-07).
+- docs/01 + docs/13 test counts refreshed (4,561 → 5,133).
+
+---
+
+## 2026-06-10 (post-PM-reset) — Intraday-risk alert severity "warning" renamed to the platform-standard "medium". Severity: low (latent guardrail violation; surfaced by the severity-rendering test while shipping the multileg parse fix).
+
+**What broke:** `tests/test_alert_severity_rendering.py` failed on the literal `severity="warning"` at intraday_risk_monitor.py:443 (added in the 2026-06-05 research-mode commit). "warning" is not in the template severity ladder — if these alerts ever render, they'd fall through to muted LOW styling.
+
+**Why it wasn't caught:** The static scanner only sees literal kwargs; the file's four OTHER `"critical" if ... else "warning"` sites assign through a variable and were invisible to it. The 443 literal was the first scanner-visible instance of a vocabulary the module had used since 06-05.
+
+**What the fix does:** Renames the sub-critical tier to "medium" at all 5 sites + the dataclass docstring (not just the flagged literal — fixing the instance would leave 4 sites emitting the unrenderable value). "medium" is semantically equivalent and already in KNOWN_SEVERITIES, so the alerts are future-proof if they ever surface in a template. No consumer branches on the severity string (the halt gate reads `action`), so no behavior change. Tests' 6 vocabulary pins updated alongside.
+
+**Why the test would catch it next time:** It already did — this entry exists because the guardrail fired. The fix makes the module's whole vocabulary renderable instead of exempting the value.
+
+---
+
+## 2026-06-10 (post-PM-reset) — Multileg strike validation moved to the parse layer (strike-snap-collision ERROR class). Severity: high (operator-visible ERROR badges; the morning's RC11 fix only covered one of the two code paths that consume AI-proposed strikes).
+
+**What broke:** First cycle after the PM reset, 3 profiles (95/96/98) badged `Multileg Open AAL GATED · ERROR` on the same proposal: bear_call_spread with strikes 14/14.5. AAL's July chain is $1-spaced, so the execution-layer per-leg snap put BOTH legs on `AAL260717C00014000` and the 06-09 duplicate-leg detection refused the zero-width spread — correctly, but as an execution ERROR instead of a parse rejection.
+
+**Why it wasn't caught:** The morning's RC11 fix added parse-layer `snap_to_listed_contract` validation for single-leg `action='OPTIONS'` proposals only. `MULTILEG_OPEN` proposals passed through `validated.append` with raw AI strikes — an instance of fixing the path, not the class: two code paths consume AI strikes, one got the fix.
+
+**What the fix does:**
+
+- `options_chain_alpaca.snap_strike_group` — snaps an ascending group of same-right strikes to DISTINCT listed contracts, preserving order. Nearest-snap must pass the existing grid-aware tolerance; collisions are repaired by walking the colliding leg one grid step outward (up first, falling back to down). Unplaceable groups return None.
+- `options_multileg.validate_and_snap_multileg_strikes` — per-strategy-shape validation covering all 9 promptable strategies: verticals (group-snap), iron_condor (both pairs group-snapped + full `put_long < put_short < call_short < call_long` ordering enforced post-snap), straddles (body must exist on BOTH rights at the same strike), strangle (distinctness repair + put-side existence), iron_butterfly (wings must exist symmetrically at body±width). Unknown shapes and chain outages pass through unchanged — the execution-layer refusal stays as the safety belt.
+- `ai_analyst` MULTILEG_OPEN parse branch calls the validator: repaired strikes/expiry are baked into the proposal (so the executor builds contracts that exist), unplaceable proposals are rejected at parse and never reach the executor or the brain.
+- Prompt: multileg note now states every strike must be LISTED on the chain and spread legs must be DISTINCT listed strikes at least one strike-interval apart, with the 14/14.5→14/15 example.
+
+**Why the new test would catch it next time:** `tests/test_multileg_parse_snap_2026_06_10.py` (19 tests) pins the AAL 14/14.5→14/15 repair end-to-end through the validator, the rejection of unplaceable/zero-width/overlapping shapes for every strategy, and two source pins: the MULTILEG_OPEN parse branch must call `validate_and_snap_multileg_strikes` and enforce its None with `continue`, and the prompt note must keep the DISTINCT-listed-strikes constraint.
+
+---
+
 ## 2026-06-10 (afternoon) — sync.sh hardened against the silent-deploy-failure class. Severity: CRITICAL infrastructure fix. The operator hit this multiple times today: "Both services running." printed while prod's git tracker was 4 commits behind origin/main; bug-fix commits weren't actually exercised.
 
 **Three failure paths the pre-fix script had:**

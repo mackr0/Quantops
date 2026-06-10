@@ -81,7 +81,7 @@ HALT_AUTO_CLEAR_SECONDS = 60 * 60  # 60 min
 class IntradayRiskAlert:
     """One risk-check alert."""
     check_name: str
-    severity: str   # "warning" | "critical"
+    severity: str   # "medium" | "critical"
     message: str
     metric_value: float
     threshold: float
@@ -129,7 +129,7 @@ def check_drawdown_acceleration(
     multiple = today_intraday_pct / avg_7d_intraday_pct
     if multiple < DRAWDOWN_ACCEL_MULTIPLE:
         return None
-    severity = "critical" if multiple >= 3.0 else "warning"
+    severity = "critical" if multiple >= 3.0 else "medium"
     # 2026-06-05 — research/paper-book book never escalates to
     # pause_all. pause_all blocks EXITS too, which traps held risk on
     # exactly the days the operator most wants to be able to close
@@ -158,7 +158,7 @@ def check_vol_spike(
     multiple = current_hourly_vol / avg_20d_hourly_vol
     if multiple < VOL_SPIKE_MULTIPLE:
         return None
-    severity = "critical" if multiple >= 5.0 else "warning"
+    severity = "critical" if multiple >= 5.0 else "medium"
     # 2026-06-05 — same reasoning as drawdown_acceleration: never
     # escalate to pause_all. Vol spikes are exactly when exits MUST
     # be allowed to fire (stop-losses, take-profits). Blocking them
@@ -288,7 +288,7 @@ def check_sector_concentration_swing(
         (abs(sector_moves.get(s, 0)) * 100 for s in halted),
         default=0.0,
     )
-    severity = "critical" if max_abs_pct >= 5.0 else "warning"
+    severity = "critical" if max_abs_pct >= 5.0 else "medium"
     return IntradayRiskAlert(
         check_name="sector_concentration_swing",
         severity=severity,
@@ -306,7 +306,7 @@ def check_held_position_halts(
     if not halted_held_symbols:
         return None
     n = len(halted_held_symbols)
-    severity = "critical" if n >= 3 else "warning"
+    severity = "critical" if n >= 3 else "medium"
     return IntradayRiskAlert(
         check_name="held_position_halts",
         severity=severity,
@@ -440,7 +440,7 @@ def compute_halt_decision(
     if halted:
         all_alerts.append(IntradayRiskAlert(
             check_name="sector_concentration_swing",
-            severity="warning",
+            severity="medium",
             message="; ".join(
                 f"{s}: {r}" for s, r in sorted(halted.items())
             ),

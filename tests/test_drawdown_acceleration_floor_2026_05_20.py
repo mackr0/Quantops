@@ -54,14 +54,17 @@ def test_alert_fires_when_drawdown_above_floor_AND_multiple_exceeded():
     assert alert.severity == "critical"  # 3.0× hits the critical bar
 
 
-def test_alert_fires_at_warning_severity_at_2x_with_meaningful_drawdown():
-    """3% drawdown vs 1.4% baseline = 2.14× → warning + block_new_entries."""
+def test_alert_fires_at_medium_severity_at_2x_with_meaningful_drawdown():
+    """3% drawdown vs 1.4% baseline = 2.14× → medium + block_new_entries.
+
+    (Severity vocabulary renamed warning→medium 2026-06-10 to match
+    the platform-wide template severity ladder.)"""
     alert = check_drawdown_acceleration(
         today_intraday_pct=0.030,
         avg_7d_intraday_pct=0.014,
     )
     assert alert is not None
-    assert alert.severity == "warning"
+    assert alert.severity == "medium"
     assert alert.suggested_action == "block_new_entries"
 
 

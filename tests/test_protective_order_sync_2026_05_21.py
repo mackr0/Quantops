@@ -109,13 +109,31 @@ class TestActiveProtectiveCoverage:
 class TestBrokerTruthSkipAndHeal:
     def test_skips_when_broker_already_covers(self, full_db):
         """Broker has a live trailing stop covering the full position
-        → no new placement, even if the journal pointer is missing."""
+        AND this profile's journal tracks that order (on another open
+        row) → no new placement; the entry row's missing pointer is
+        healed.
+
+        2026-06-09 contract update (PAVS isolation): coverage only
+        counts broker orders whose IDs appear in THIS profile's
+        journal (own_protective_ids). The pre-isolation version of
+        this test had no journal row tracking 'fcx-live' and expected
+        the sweep to adopt it anyway — exactly the sibling-trust
+        behavior the isolation fix removed (see
+        test_protective_per_profile_isolation_2026_06_09 for the
+        sibling-owned case, which must now PLACE)."""
         from bracket_orders import ensure_protective_stops
-        # Stock entry row with NO protective pointer recorded (stale)
         conn = sqlite3.connect(full_db)
+        # Stock entry row with NO protective pointer recorded (stale)
         conn.execute(
             "INSERT INTO trades (id, symbol, side, qty, price, status, "
             "occ_symbol) VALUES (49, 'FCX', 'buy', 418, 60.2, 'open', NULL)")
+        # Older open row that still tracks the live protective order —
+        # this is what makes 'fcx-live' profile-owned coverage.
+        conn.execute(
+            "INSERT INTO trades (id, symbol, side, qty, price, status, "
+            "occ_symbol, protective_trailing_order_id) "
+            "VALUES (48, 'FCX', 'buy', 418, 59.8, 'open', NULL, "
+            "'fcx-live')")
         conn.commit()
         conn.close()
 

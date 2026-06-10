@@ -2365,6 +2365,11 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
             "short_straddle / long_strangle), symbol (underlying), "
             "strikes (dict matching the strategy — see examples in "
             "the rationale), expiry (YYYY-MM-DD), contracts (int). "
+            "Every strike must be a strike LISTED on the underlying's "
+            "option chain, and the legs of a spread must be DISTINCT "
+            "listed strikes (at least one strike-interval apart — "
+            "e.g. on a $1-spaced chain, 14/14.5 is invalid; use "
+            "14/15). "
             "size_pct NOT used. Multi-leg setups are first-class trades "
             "— there is NO preference for or against them relative to "
             "stocks or single-leg options. Defined-risk spreads can be "
@@ -2578,6 +2583,46 @@ def _validate_ai_trades(result, candidates_data, ctx=None,
                     "MULTILEG_OPEN missing strikes/expiry/contracts — skipped"
                 )
                 continue
+            # 2026-06-10 — PARSE-LAYER strike validation for multileg,
+            # mirroring the single-leg OPTIONS snap below. Without it,
+            # AI strikes that don't resolve to DISTINCT listed
+            # contracts only failed at execution (the strike-snap
+            # collision refusal) and badged GATED · ERROR on every
+            # profile that received the same proposal (AAL
+            # bear_call_spread 14/14.5 on a $1 grid hit 3 profiles in
+            # one cycle). Snap + repair here so the proposal is
+            # executable exactly as validated, or never reaches the
+            # brain.
+            try:
+                from options_multileg import (
+                    validate_and_snap_multileg_strikes,
+                )
+                _ml_snapped = validate_and_snap_multileg_strikes(
+                    ml_underlying, strategy_name, strikes, expiry,
+                )
+                if _ml_snapped is None:
+                    logger.warning(
+                        "MULTILEG_OPEN %s %s: strikes %s exp %s don't "
+                        "resolve to distinct listed contracts — "
+                        "rejected at parse layer (would have produced "
+                        "a zero-width or unbuildable spread at "
+                        "execution).",
+                        ml_underlying, strategy_name, strikes, expiry,
+                    )
+                    continue
+                strikes, expiry = _ml_snapped
+            except ImportError:
+                logger.debug(
+                    "Multileg snap check unavailable — proposal "
+                    "proceeds to executor without contract validation"
+                )
+            except Exception as _ml_snap_exc:
+                logger.debug(
+                    "MULTILEG_OPEN %s snap check failed (non-fatal): "
+                    "%s: %s",
+                    ml_underlying, type(_ml_snap_exc).__name__,
+                    _ml_snap_exc,
+                )
             validated.append({
                 "symbol": ml_underlying,
                 "action": "MULTILEG_OPEN",
@@ -2703,26 +2748,46 @@ def _validate_ai_trades(result, candidates_data, ctx=None,
                 )
                 continue
             try:
-                from options_chain_alpaca import snap_to_listed_contract
+                from options_chain_alpaca import (
+                    list_available_contracts, snap_to_listed_contract,
+                )
                 right = ("C" if opt_strategy in
                          ("covered_call", "long_call") else "P")
-                snapped = snap_to_listed_contract(
-                    sym, opt_expiry, float(opt_strike), right,
-                )
-                if snapped is None:
-                    logger.warning(
-                        "OPTIONS %s: no listed Alpaca contract within "
-                        "tolerance of %s %s strike $%s exp %s — "
-                        "rejected at parse layer (AI proposed a "
-                        "strike that doesn't exist; would have hit "
-                        "'asset not found' at broker).",
-                        sym, opt_strategy, right, opt_strike, opt_expiry,
+                # 2026-06-10 (post-PM-reset) — fetch the chain
+                # explicitly and degrade gracefully when it's
+                # unavailable. snap_to_listed_contract returns None
+                # for BOTH "strike doesn't exist" and "chain fetch
+                # failed"; treating the latter as a rejection killed
+                # valid proposals on infra blips. Same contract as
+                # the multileg validator: no chain data → the
+                # execution-layer snap remains the safety belt.
+                _chain = list_available_contracts(sym)
+                if not _chain:
+                    logger.debug(
+                        "OPTIONS %s: chain unavailable — proposal "
+                        "proceeds without parse-layer contract "
+                        "validation", sym,
                     )
-                    continue
-                # Use the snapped strike + expiry so the executor
-                # builds the OCC that actually exists.
-                opt_strike = snapped["strike"]
-                opt_expiry = snapped["expiration_date"]
+                else:
+                    snapped = snap_to_listed_contract(
+                        sym, opt_expiry, float(opt_strike), right,
+                        contracts=_chain,
+                    )
+                    if snapped is None:
+                        logger.warning(
+                            "OPTIONS %s: no listed Alpaca contract "
+                            "within tolerance of %s %s strike $%s exp "
+                            "%s — rejected at parse layer (AI proposed "
+                            "a strike that doesn't exist; would have "
+                            "hit 'asset not found' at broker).",
+                            sym, opt_strategy, right, opt_strike,
+                            opt_expiry,
+                        )
+                        continue
+                    # Use the snapped strike + expiry so the executor
+                    # builds the OCC that actually exists.
+                    opt_strike = snapped["strike"]
+                    opt_expiry = snapped["expiration_date"]
             except ImportError:
                 logger.debug(
                     "OPTIONS snap check unavailable — proposal "

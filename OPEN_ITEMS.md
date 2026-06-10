@@ -188,7 +188,7 @@ Out-of-scope (per plan §7): multi-exchange expansion, corporate-action awarenes
 
 | File:line | Item | Status |
 |---|---|---|
-| `ai_analyst.py:640` | "the AI to propose with action='OPTIONS' (deferred to follow-up)" | ⏳ OPEN — surface vocabulary for AI to propose options trades directly |
+| `ai_analyst.py:640` | Earlier "the AI to propose with action='OPTIONS' (deferred to follow-up)" | ✅ DONE 2026-06-07 — AI proposes OPTIONS natively (prompt vocabulary + parse-layer validation; `tests/test_ai_proposes_options_natively_2026_06_07.py`). Comment rewritten 2026-06-10 when single-leg-ONLY constraint + strike snap landed at the parse layer. |
 | `alternative_data.py` (App Store WoW) | Earlier "leave None — future enhancement when daily snapshots persist" | ✅ DONE — WoW logic implemented at `alternative_data.py:2018-2096` (`_get_wow_change`, "Item 2 of OPEN_ITEMS — WoW change vs 7 days ago") |
 | `mc_backtest.py` (by-day bootstrap) | Earlier "future enhancement" framing | ✅ DONE 2026-05-03 — `bootstrap_mode='by_day'` is the default (line 128); module docstring rewritten in Issue 10 (commit `47de74d`) |
 | `multi_scheduler.py:1257-1284` | Earlier `multi_scheduler.py:1196` "sector_moves + halted_held_symbols deferred" | ✅ DONE 2026-05-09 — comment removed; `_compute_sector_moves` (L1257) + `_compute_halted_held_symbols` (L1284) wired into the intraday risk check; AST guardrail in `tests/test_intraday_risk_full_wiring.py` enforces all kwargs are passed |

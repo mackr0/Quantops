@@ -34,7 +34,7 @@ class TestCheckDrawdownAcceleration:
         # Today 2.5%, avg 1% → 2.5x → warning
         alert = check_drawdown_acceleration(0.025, 0.010)
         assert alert is not None
-        assert alert.severity == "warning"
+        assert alert.severity == "medium"
         assert alert.suggested_action == "block_new_entries"
 
     def test_critical_at_3x_avg(self):
@@ -65,7 +65,7 @@ class TestCheckVolSpike:
         from intraday_risk_monitor import check_vol_spike
         alert = check_vol_spike(0.03, 0.01)
         assert alert is not None
-        assert alert.severity == "warning"
+        assert alert.severity == "medium"
 
     def test_critical_at_5x(self):
         from intraday_risk_monitor import check_vol_spike
@@ -111,7 +111,7 @@ class TestCheckHeldPositionHalts:
         from intraday_risk_monitor import check_held_position_halts
         alert = check_held_position_halts(["AAPL"])
         assert alert is not None
-        assert alert.severity == "warning"
+        assert alert.severity == "medium"
 
     def test_three_halts_critical(self):
         from intraday_risk_monitor import check_held_position_halts
@@ -136,7 +136,7 @@ class TestAggregateAction:
                 suggested_action="pause_all",
             ),
             IntradayRiskAlert(
-                check_name="y", severity="warning", message="m",
+                check_name="y", severity="medium", message="m",
                 metric_value=1, threshold=1,
                 suggested_action="block_new_entries",
             ),
@@ -149,7 +149,7 @@ class TestAggregateAction:
         )
         alerts = [
             IntradayRiskAlert(
-                check_name="x", severity="warning", message="m",
+                check_name="x", severity="medium", message="m",
                 metric_value=1, threshold=1,
                 suggested_action="block_new_entries",
             ),
@@ -190,7 +190,7 @@ class TestRiskHaltState:
         )
         write_risk_halt_state(tmp_db, "block_new_entries", [
             IntradayRiskAlert(
-                check_name="x", severity="warning", message="m",
+                check_name="x", severity="medium", message="m",
                 metric_value=1, threshold=1,
                 suggested_action="block_new_entries",
             ),

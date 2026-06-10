@@ -36,7 +36,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from options_trader import format_occ_symbol
 
@@ -1588,6 +1588,216 @@ ALL_MULTILEG_BUILDERS = {
     "calendar_spread": build_calendar_spread,
     "diagonal_spread": build_diagonal_spread,
 }
+
+
+# Which option right each strike key of a vertical spread trades.
+_VERTICAL_RIGHT = {
+    "bull_put_spread": "P", "bear_put_spread": "P",
+    "bull_call_spread": "C", "bear_call_spread": "C",
+}
+
+
+def validate_and_snap_multileg_strikes(
+    underlying: str,
+    strategy_name: str,
+    strikes: Dict[str, Any],
+    expiry: str,
+    contracts: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[Tuple[Dict[str, Any], str]]:
+    """Parse-layer strike validation for MULTILEG_OPEN proposals.
+
+    2026-06-10 — the single-leg OPTIONS path got parse-layer
+    snap-to-listed-contract validation this morning (RC11); multileg
+    did not. AI strikes that don't resolve to DISTINCT listed
+    contracts only failed at execution (the 06-09 strike-snap
+    collision refusal) and badged GATED · ERROR on every profile
+    that received the same proposal — AAL bear_call_spread 14/14.5
+    on a $1 grid hit 3 profiles on the first post-reset cycle.
+
+    This validates AND repairs at the parse layer so a proposal is
+    either executable exactly as validated (snapped strikes baked
+    in) or never reaches the executor/brain. Per strategy shape:
+
+      verticals       both strikes snapped as an ordered group on
+                      the strategy's right; collisions repaired one
+                      grid step outward (snap_strike_group)
+      iron_condor     put pair + call pair group-snapped on their
+                      rights; full put_long < put_short <
+                      call_short < call_long ordering enforced
+                      post-snap (the builder raises on violations)
+      straddles       body must exist at the SAME strike + expiry
+                      on both rights
+      long_strangle   pair group-snapped for distinctness/order on
+                      the call grid; put leg must exist at the
+                      lower strike (builder requires put < call)
+      iron_butterfly  body snapped on both rights; wings at
+                      body±width must exist and stay symmetric
+                      (builder takes a single wing_width)
+
+    Unknown shapes and chain-data outages pass through unchanged —
+    the execution-layer snap + collision refusal remains the safety
+    belt, same graceful degradation as the single-leg path.
+
+    Returns (snapped_strikes, snapped_expiry), or None when the
+    proposal is structurally unplaceable on the listed chain (the
+    caller must reject it before it enters the validated list).
+    """
+    from options_chain_alpaca import (
+        list_available_contracts, snap_strike_group,
+        snap_to_listed_contract,
+    )
+
+    name = (strategy_name or "").lower()
+    if contracts is None:
+        contracts = list_available_contracts(underlying)
+    if not contracts:
+        # Chain fetch failed — degrade gracefully rather than reject
+        # legitimate proposals on an infrastructure blip.
+        return strikes, expiry
+
+    try:
+        if name in _VERTICAL_RIGHT:
+            lo, hi = sorted(
+                (float(strikes["short"]), float(strikes["long"]))
+            )
+            if lo == hi:
+                return None
+            group = snap_strike_group(
+                underlying, expiry, [lo, hi], _VERTICAL_RIGHT[name],
+                contracts=contracts,
+            )
+            if group is None:
+                return None
+            new_lo, new_hi = group["strikes"]
+            # Preserve the AI's short/long labeling orientation for
+            # audit visibility; the dispatcher sorts before building
+            # so orientation doesn't affect execution.
+            if float(strikes["short"]) <= float(strikes["long"]):
+                out = {"short": new_lo, "long": new_hi}
+            else:
+                out = {"short": new_hi, "long": new_lo}
+            return out, group["expiration_date"]
+
+        if name == "iron_condor":
+            put_pair = sorted(
+                (float(strikes["put_long"]), float(strikes["put_short"]))
+            )
+            call_pair = sorted(
+                (float(strikes["call_short"]), float(strikes["call_long"]))
+            )
+            if put_pair[0] == put_pair[1] or call_pair[0] == call_pair[1]:
+                return None
+            gp = snap_strike_group(
+                underlying, expiry, put_pair, "P", contracts=contracts,
+            )
+            gc = snap_strike_group(
+                underlying, expiry, call_pair, "C", contracts=contracts,
+            )
+            if gp is None or gc is None:
+                return None
+            if gp["expiration_date"] != gc["expiration_date"]:
+                return None
+            pl, ps = gp["strikes"]
+            cs, cl = gc["strikes"]
+            if not (pl < ps < cs < cl):
+                # Wings overlap the body post-snap — the builder
+                # would raise; reject at parse instead.
+                return None
+            return (
+                {"put_long": pl, "put_short": ps,
+                 "call_short": cs, "call_long": cl},
+                gp["expiration_date"],
+            )
+
+        if name in ("long_straddle", "short_straddle"):
+            body = float(strikes["strike"])
+            sc = snap_to_listed_contract(
+                underlying, expiry, body, "C", contracts=contracts,
+            )
+            sp = snap_to_listed_contract(
+                underlying, expiry, body, "P", contracts=contracts,
+            )
+            if not sc or not sp:
+                return None
+            if (sc["strike"] != sp["strike"]
+                    or sc["expiration_date"] != sp["expiration_date"]):
+                return None
+            return {"strike": sc["strike"]}, sc["expiration_date"]
+
+        if name == "long_strangle":
+            put_s = float(strikes["put"])
+            call_s = float(strikes["call"])
+            if put_s >= call_s:
+                return None
+            group = snap_strike_group(
+                underlying, expiry, [put_s, call_s], "C",
+                contracts=contracts,
+            )
+            if group is None:
+                return None
+            new_put, new_call = group["strikes"]
+            sp = snap_to_listed_contract(
+                underlying, group["expiration_date"], new_put, "P",
+                contracts=contracts,
+            )
+            if (not sp or sp["strike"] != new_put
+                    or sp["expiration_date"] != group["expiration_date"]):
+                return None
+            return (
+                {"put": new_put, "call": new_call},
+                group["expiration_date"],
+            )
+
+        if name == "iron_butterfly":
+            body = float(strikes["body"])
+            width = float(strikes["wing_width"])
+            if body <= 0 or width <= 0:
+                return None
+            sc = snap_to_listed_contract(
+                underlying, expiry, body, "C", contracts=contracts,
+            )
+            sp = snap_to_listed_contract(
+                underlying, expiry, body, "P", contracts=contracts,
+            )
+            if not sc or not sp:
+                return None
+            if (sc["strike"] != sp["strike"]
+                    or sc["expiration_date"] != sp["expiration_date"]):
+                return None
+            snapped_body = sc["strike"]
+            snapped_exp = sc["expiration_date"]
+            cw = snap_to_listed_contract(
+                underlying, snapped_exp, snapped_body + width, "C",
+                contracts=contracts,
+            )
+            pw = snap_to_listed_contract(
+                underlying, snapped_exp, snapped_body - width, "P",
+                contracts=contracts,
+            )
+            if not cw or not pw:
+                return None
+            if (cw["expiration_date"] != snapped_exp
+                    or pw["expiration_date"] != snapped_exp):
+                return None
+            up = cw["strike"] - snapped_body
+            down = snapped_body - pw["strike"]
+            if up <= 0 or down <= 0 or up != down:
+                # Wing collapsed onto the body (width below the
+                # grid) or asymmetric wings — builder takes a single
+                # symmetric wing_width; reject at parse.
+                return None
+            return (
+                {"body": snapped_body, "wing_width": up},
+                snapped_exp,
+            )
+    except (KeyError, TypeError, ValueError):
+        # Malformed strikes dict for the declared strategy shape —
+        # structurally unbuildable, reject at parse.
+        return None
+
+    # Unknown strategy shape (calendar/diagonal etc.) — pass through;
+    # the execution-layer snap remains the safety belt.
+    return strikes, expiry
 
 
 class _AtomicPlacementBreach(Exception):

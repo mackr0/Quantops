@@ -366,7 +366,12 @@ class TestExecuteOptionStrategy:
             "contracts": 1,
         }, ctx=self._ctx(), log=False)
         assert result["action"] == "SKIP"
-        assert "Unsupported" in result["reason"]
+        # 2026-06-10 — multileg names under action='OPTIONS' get a
+        # specific ROUTING message (names the correct action class so
+        # the AI can retune from the badge), not a generic
+        # "Unsupported".
+        assert "single-leg only" in result["reason"]
+        assert "MULTILEG_OPEN" in result["reason"]
         api.submit_order.assert_not_called()
 
     def test_missing_fields_returns_skip(self, monkeypatch):

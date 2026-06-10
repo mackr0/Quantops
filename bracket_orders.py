@@ -682,9 +682,18 @@ def ensure_protective_stops(api, positions, ctx, db_path,
                             row["id"],
                             type(_bc_exc).__name__, _bc_exc,
                         )
-            except sqlite3.OperationalError:
-                # Test fixture without order_id column; legacy path.
-                pass
+            except sqlite3.OperationalError as _legacy_schema_exc:
+                # Journal schema without the order_id column (legacy
+                # fixtures / pre-migration DBs) — the bracket-class
+                # pre-check can't run; fall through to the legacy
+                # sweep, which handles those rows correctly. Logged
+                # so a schema problem on a REAL journal is visible
+                # instead of silently degrading every sweep.
+                logger.debug(
+                    "Bracket-class pre-check skipped (journal schema "
+                    "lacks order_id?): %s — using legacy sweep",
+                    _legacy_schema_exc,
+                )
 
             # RC3 (2026-06-05) — JOURNAL-SIDE dedup as the second
             # defense layer behind broker_coverage. Pattern observed:

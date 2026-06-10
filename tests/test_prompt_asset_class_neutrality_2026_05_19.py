@@ -175,9 +175,13 @@ class TestParallelStructureAcrossActions:
         # The single-leg OPTIONS section should use the same inviting
         # verbs as stocks (take/adjust/propose)
         # Look at the OPTIONS-specific section
-        options_section_start = prompt.find("OPTIONS (single-leg)")
+        # 2026-06-10 — header gained "ONLY" when multileg-under-
+        # OPTIONS proposals were rejected at the parse layer; match
+        # the prefix so the inviting-verbs pin survives wording
+        # hardening around the single-leg constraint.
+        options_section_start = prompt.find("OPTIONS (single-leg")
         assert options_section_start >= 0, (
-            "Could not find 'OPTIONS (single-leg)' section header in "
+            "Could not find 'OPTIONS (single-leg' section header in "
             "prompt — the equalised options_note language is missing."
         )
         # Check the OPTIONS section paragraph (~next 500 chars)

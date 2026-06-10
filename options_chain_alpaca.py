@@ -512,6 +512,142 @@ def snap_to_listed_contract(
     }
 
 
+def snap_strike_group(
+    symbol: str,
+    target_expiry: str,
+    target_strikes: List[float],
+    option_type: str,           # 'C' or 'P' (or 'call'/'put')
+    contracts: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Snap an ascending group of same-right strikes (one expiry) to
+    DISTINCT listed contracts, preserving the inputs' strict order.
+
+    2026-06-10 — built for parse-layer multileg validation. Snapping
+    each leg independently (what the execution layer does) collides
+    when the AI proposes strikes closer together than the chain's
+    grid: AAL bear_call_spread 14/14.5 on a $1 grid put both legs on
+    the 14C — a zero-width spread. This snapper assigns each target
+    its nearest listed strike, then resolves collisions by walking
+    the colliding leg one grid step outward (up first, falling back
+    to down), keeping the group strictly ordered.
+
+    Tolerances: a leg's NEAREST listed strike must be within the
+    same grid-aware tolerance `snap_to_listed_contract` uses
+    (max(5% of target, half the median grid spacing)); a REPAIRED
+    leg may additionally sit one grid step past its nearest snap.
+    Beyond that the chain can't host the group at the AI's intended
+    location and the whole group is refused.
+
+    Args mirror snap_to_listed_contract; `target_strikes` must be
+    strictly ascending and positive.
+
+    Returns {"expiration_date": str, "strikes": [floats, same order
+    as input, strictly ascending]} or None when the group can't be
+    placed (any nearest snap out of tolerance, not enough distinct
+    listed strikes, no expiry within 30 days, malformed input).
+    """
+    from datetime import date as _date
+
+    contracts = contracts if contracts is not None else list_available_contracts(symbol)
+    if not contracts:
+        return None
+
+    t = (option_type or "").lower()
+    if t in ("c", "call"):
+        wanted_type = "call"
+    elif t in ("p", "put"):
+        wanted_type = "put"
+    else:
+        return None
+
+    try:
+        targets = [float(s) for s in target_strikes]
+    except (TypeError, ValueError):
+        return None
+    if not targets or any(s <= 0 for s in targets):
+        return None
+    if any(b <= a for a, b in zip(targets, targets[1:])):
+        # Callers pass strictly ascending targets; equal or inverted
+        # inputs are malformed (a zero-width group can't be repaired
+        # because there's no ordering intent to preserve).
+        return None
+
+    typed = [c for c in contracts if (c.get("type") or "").lower() == wanted_type]
+    if not typed:
+        return None
+    try:
+        target_dt = _date.fromisoformat(target_expiry)
+    except Exception:
+        return None
+    by_exp: Dict[str, List[Dict[str, Any]]] = {}
+    for c in typed:
+        exp = c.get("expiration_date")
+        if exp:
+            by_exp.setdefault(exp, []).append(c)
+    if not by_exp:
+        return None
+
+    def _exp_diff(exp_str: str) -> int:
+        try:
+            return abs((_date.fromisoformat(exp_str) - target_dt).days)
+        except Exception:
+            return 10**9
+
+    closest_exp = min(by_exp.keys(), key=_exp_diff)
+    if _exp_diff(closest_exp) > 30:
+        return None
+
+    grid = sorted({
+        float(c.get("strike", 0)) for c in by_exp[closest_exp]
+        if c.get("strike")
+    })
+    if len(grid) < len(targets):
+        return None
+    diffs = [b - a for a, b in zip(grid, grid[1:]) if b - a > 0]
+    median_spacing = sorted(diffs)[len(diffs) // 2] if diffs else 0.0
+
+    def _tol(target: float) -> float:
+        return max(target * 0.05, median_spacing * 0.5)
+
+    def _nearest(target: float) -> int:
+        return min(range(len(grid)), key=lambda i: abs(grid[i] - target))
+
+    nearest = [_nearest(s) for s in targets]
+    for s, ni in zip(targets, nearest):
+        if abs(grid[ni] - s) > _tol(s):
+            # The AI's strike is too far from ANY listed contract —
+            # same refusal rule as the single-leg snapper.
+            return None
+
+    def _assign(direction: int) -> Optional[List[int]]:
+        out: List[Optional[int]] = [None] * len(targets)
+        prev = -1 if direction > 0 else len(grid)
+        order = (range(len(targets)) if direction > 0
+                 else range(len(targets) - 1, -1, -1))
+        for i in order:
+            if direction > 0:
+                ai = max(nearest[i], prev + 1)
+            else:
+                ai = min(nearest[i], prev - 1)
+            if ai < 0 or ai >= len(grid):
+                return None
+            if abs(grid[ai] - targets[i]) > _tol(targets[i]) + median_spacing:
+                return None
+            out[i] = ai
+            prev = ai
+        return out  # type: ignore[return-value]
+
+    assigned = _assign(+1)
+    if assigned is None:
+        assigned = _assign(-1)
+    if assigned is None:
+        return None
+    return {
+        "expiration_date": closest_exp,
+        "strikes": [grid[i] for i in assigned],
+    }
+
+
 def fetch_chain_alpaca(symbol: str,
                           today: Optional[_date] = None) -> Optional[Dict[str, Any]]:
     """Drop-in replacement for the yfinance-based _fetch_chain.

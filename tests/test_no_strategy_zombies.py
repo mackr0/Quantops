@@ -79,6 +79,46 @@ def _strategy_age_days(strategy_module):
         return 0
 
 
+def _prediction_data_window(db_paths):
+    """(earliest_ts, latest_ts) across ai_predictions in every DB,
+    or (None, None) when no DB holds a single prediction row.
+
+    2026-06-10 — added for fresh-start awareness. The zombie check
+    is only meaningful when the prediction DATA actually spans the
+    strategy's deployment window. Two ways that breaks:
+      * Full fresh-start reset (per-profile DBs rebuilt): every
+        strategy has zero lifetime predictions for the first cycles
+        of the new experiment — that's data loss, not 25 zombies
+        (exactly what fired locally after the 2026-06-10 PM reset).
+      * Stale local DBs older than the strategy file: the data
+        ended before the strategy existed, so it could never have
+        fired into them.
+    """
+    from datetime import datetime
+    earliest = latest = None
+    for db in db_paths:
+        try:
+            with closing(sqlite3.connect(db)) as conn:
+                row = conn.execute(
+                    "SELECT MIN(timestamp), MAX(timestamp) "
+                    "FROM ai_predictions"
+                ).fetchone()
+        except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError):
+            continue
+        if not row or not row[0]:
+            continue
+        for raw, agg in ((row[0], "min"), (row[1], "max")):
+            try:
+                ts = datetime.fromisoformat(str(raw).replace("Z", ""))
+            except ValueError:
+                continue
+            if agg == "min" and (earliest is None or ts < earliest):
+                earliest = ts
+            if agg == "max" and (latest is None or ts > latest):
+                latest = ts
+    return earliest, latest
+
+
 def _lifetime_n_anywhere(strategy_name, db_paths):
     """Total lifetime predictions for `strategy_name` summed across
     every profile DB. Returns 0 if no DB has a row."""
@@ -114,6 +154,21 @@ class TestNoStrategyZombies:
                 "data; skipped on CI / fresh checkout.",
             )
 
+        # 2026-06-10 — fresh-start awareness. "Zero lifetime
+        # predictions" only indicts a strategy when the prediction
+        # data covers >= GRACE_DAYS of the strategy's deployed life.
+        # After a full fresh-start reset (DBs rebuilt, e.g. the
+        # 2026-06-10 PM reset) the window is ~0 days and EVERY
+        # strategy would read as a zombie; same for stale local DBs
+        # whose data ended before the strategy file existed.
+        earliest_pred, latest_pred = _prediction_data_window(dbs)
+        if earliest_pred is None:
+            pytest.skip(
+                "Profile DBs hold no predictions at all (fresh-start "
+                "reset?) — zombie check needs accumulated data.",
+            )
+
+        from datetime import datetime, timedelta
         from strategies import discover_strategies
         # discover_strategies takes a market_type but to enumerate ALL
         # registered strategies we union across the markets we trade.
@@ -128,6 +183,14 @@ class TestNoStrategyZombies:
         for name, mod in all_modules.items():
             age = _strategy_age_days(mod)
             if age < _GRACE_DAYS:
+                continue
+            # Observation window: from the later of (strategy deploy,
+            # first data) to the last data point. Under GRACE_DAYS of
+            # observed life → not judgeable, skip.
+            deploy_ts = datetime.now() - timedelta(days=age)
+            observed_start = max(deploy_ts, earliest_pred)
+            observed_days = (latest_pred - observed_start).days
+            if observed_days < _GRACE_DAYS:
                 continue
             total = _lifetime_n_anywhere(name, dbs)
             if total == 0:

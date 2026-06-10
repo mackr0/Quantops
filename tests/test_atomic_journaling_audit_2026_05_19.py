@@ -128,7 +128,13 @@ JOURNAL_MARKERS = (
     "_write_pending_protective_row(",
 )
 
-MAX_LINES_TO_JOURNAL = 100  # accommodates ADV+slippage enrichment between submit and journal
+# 2026-06-10 — widened 100 → 130: the multileg sequential-submit
+# path grew ~60 lines of position-intent-mismatch handling +
+# rollback (06-09 leg-ordering work) between the raw POST and
+# _log_strategy_legs, pushing the marker to ~110 lines out. The
+# journaling is still atomic (same function, no early success-path
+# return); only the scan window needed to follow the code.
+MAX_LINES_TO_JOURNAL = 130  # accommodates ADV+slippage enrichment + multileg error handling between submit and journal
 
 
 # 2026-05-21 — Bracket-order submission USED to have a different
