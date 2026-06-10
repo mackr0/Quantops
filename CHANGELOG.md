@@ -17,6 +17,25 @@ Rules going forward:
 
 ---
 
+## 2026-06-10 (mid-session) — REAL prevention at the OPTIONS parser layer. Previous commit was wrong-shape — it improved error MESSAGES but didn't PREVENT the bad proposals from reaching execution.
+
+Operator's correction: "we shouldn't be encountering any of these errors." Right. This commit makes the bad proposals get rejected at the parse layer in `validate_ai_response`, so they never appear as ERROR/BLOCKED badges in the brain. Two real root causes addressed:
+
+**Root cause 1 — multileg strategy under `action='OPTIONS'`.** AI's `bull_put_spread` proposal under OPTIONS reached the executor because the parser had NO strategy validation — it just passed `option_strategy` through. Fix: parser enumerates `_MULTILEG_NAMES` and `_SINGLE_LEG`. Proposals with multileg `option_strategy` under `action='OPTIONS'` are logged + `continue`'d (rejected silently from the validated list). Unknown strategies (typos, hallucinations) same treatment.
+
+**Root cause 2 — off-chain strikes.** AI proposed INTC $115 call exp 2026-07-17. Alpaca returned 422 `asset "INTC  260717C00115000" not found` because that contract simply doesn't exist on Alpaca's chain. Single-leg options had NO strike-snap validation (the multileg path has this; single-leg went straight to submit_option_order). Fix: parser calls `snap_to_listed_contract(symbol, expiry, strike, right)` from `options_chain_alpaca`. If a listed contract is within tolerance, the proposal gets the snapped strike+expiry baked in (so the executor builds the OCC that actually exists). If no contract is within tolerance, the proposal is rejected — it's structurally unreachable.
+
+**Prompt clarity.** Even with parser-level prevention, the prompt itself is now explicit: `OPTIONS (single-leg ONLY)`, lists the valid strategies inline, names SPREADS as requiring `action='MULTILEG_OPEN'`, and requires the strike exist on Alpaca's listed chain. The AI's pattern-match on what does vs doesn't work was previously fuzzy; now it's a hard constraint stated in the prompt.
+
+**Tests:** `tests/test_options_parse_validation_2026_06_10.py` (3 source pins):
+- Parser uses `_MULTILEG_NAMES` + `_SINGLE_LEG` sets to reject bad strategies.
+- Parser calls `snap_to_listed_contract` to validate strike+expiry.
+- Prompt's `options_note` declares "single-leg ONLY" and points spreads at `MULTILEG_OPEN`.
+
+**The previous "Option-order rejection surfacing" commit stays** as a safety belt — IF a proposal slips past the new parser (e.g., contract goes unlisted between parse and submit), the executor's drop reason now includes the actual broker error string instead of a generic message. But the parser-level prevention means that fallback path should rarely fire.
+
+---
+
 ## 2026-06-10 — Option-order rejection surfacing + multileg-on-OPTIONS routing message. Severity: medium (operator-visibility — bad reasons in the brain mask real bugs).
 
 **Two distinct issues caught from the first post-reset open's brain:**

@@ -2269,21 +2269,34 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         # (more conditional, less inviting). Asymmetric framing
         # silently biased the AI toward stocks. Now parallel.
         options_note = (
-            "\n- OPTIONS (single-leg): pre-computed setups appear in the "
-            "OPTIONS STRATEGIES + ALT DATA / OPTIONS lines for any "
-            "candidate with tradeable options on Alpaca or any held "
-            "position. Take them as-is when they fit, ADJUST strike / "
-            "expiry / contracts based on the candidate's IV rank and "
-            "your conviction, or PROPOSE a different option setup. "
-            "Required fields: option_strategy (covered_call|"
-            "protective_put|long_call|long_put|cash_secured_put), "
-            "strike (number), expiry (YYYY-MM-DD), contracts (int). "
-            "Premium budget capped at 1% of equity for long_call/long_put. "
-            "covered_call requires the underlying held in long quantity "
-            "≥ contracts × 100. size_pct/stop_loss_pct/take_profit_pct "
-            "NOT required. Option setups are first-class trades — there "
-            "is NO preference for or against them relative to stocks "
-            "or multileg spreads.\n"
+            "\n- OPTIONS (single-leg ONLY): pre-computed setups appear "
+            "in the OPTIONS STRATEGIES + ALT DATA / OPTIONS lines for "
+            "any candidate with tradeable options on Alpaca or any "
+            "held position. Take them as-is when they fit, ADJUST "
+            "strike / expiry / contracts based on the candidate's IV "
+            "rank and your conviction, or PROPOSE a different option "
+            "setup. **option_strategy MUST be EXACTLY one of: "
+            "covered_call, protective_put, long_call, long_put, "
+            "cash_secured_put.** SPREADS (bull_put_spread, "
+            "bear_call_spread, iron_condor, etc.) ARE NOT allowed "
+            "under OPTIONS — they require action='MULTILEG_OPEN' "
+            "instead, which has different required fields. Proposals "
+            "with a spread strategy_name under OPTIONS are rejected "
+            "at the parse layer and never reach execution. "
+            "**strike MUST be a strike that exists on Alpaca's listed "
+            "chain for the named expiry** — proposals with off-chain "
+            "strikes are auto-snapped to the nearest listed contract "
+            "within tolerance, or rejected if no contract is within "
+            "tolerance. Required fields: option_strategy (single-leg "
+            "from the list above), strike (number that exists on "
+            "Alpaca's chain), expiry (YYYY-MM-DD, must be a listed "
+            "expiration), contracts (int). Premium budget capped at "
+            "1% of equity for long_call/long_put. covered_call "
+            "requires the underlying held in long quantity ≥ "
+            "contracts × 100. size_pct/stop_loss_pct/take_profit_pct "
+            "NOT required. Option setups are first-class trades — "
+            "there is NO preference for or against them relative to "
+            "stocks or multileg spreads.\n"
         )
         options_example = (
             ', {"symbol": "TICKER", "action": "OPTIONS", '
@@ -2636,14 +2649,97 @@ def _validate_ai_trades(result, candidates_data, ctx=None,
         # book beta the same way. Validation happens in
         # options_trader.execute_option_strategy.
         if action == "OPTIONS":
-            # Carry through option-specific fields the executor needs.
+            # 2026-06-10 — PROPOSAL-LEVEL VALIDATION. Bad OPTIONS
+            # proposals reaching the executor produced two distinct
+            # bug classes in this morning's brain:
+            #   (a) AI proposed a multileg strategy (bull_put_spread,
+            #       etc.) under action='OPTIONS', which is single-leg
+            #       only. Execution returned ERROR badge. Fix: reject
+            #       at this layer with a routing message.
+            #   (b) AI proposed strikes that don't exist on Alpaca's
+            #       chain (INTC 260717C00115000 — Alpaca returned
+            #       "asset not found"). Single-leg has no upstream
+            #       snap-to-listed-contract. Fix: validate strike +
+            #       expiry against Alpaca's listed contracts here.
+            _SINGLE_LEG = {
+                "covered_call", "protective_put",
+                "long_call", "long_put", "cash_secured_put",
+            }
+            _MULTILEG_NAMES = {
+                "bull_put_spread", "bull_call_spread",
+                "bear_put_spread", "bear_call_spread",
+                "iron_condor", "iron_butterfly",
+                "long_straddle", "short_straddle",
+                "long_strangle",
+            }
+            opt_strategy = (t.get("option_strategy") or "").lower()
+            if opt_strategy in _MULTILEG_NAMES:
+                logger.warning(
+                    "OPTIONS %s: AI proposed multileg strategy %r — "
+                    "rejected at parse layer. Spreads require "
+                    "action='MULTILEG_OPEN'.",
+                    sym, opt_strategy,
+                )
+                continue
+            if opt_strategy not in _SINGLE_LEG:
+                logger.warning(
+                    "OPTIONS %s: unsupported single-leg strategy %r — "
+                    "rejected. Supported: %s",
+                    sym, opt_strategy, sorted(_SINGLE_LEG),
+                )
+                continue
+
+            # Strike + expiry must resolve to a listed Alpaca contract.
+            # Skip the check for closes (covered_call / protective_put
+            # against an existing position the journal already tracks).
+            opt_strike = t.get("strike")
+            opt_expiry = t.get("expiry")
+            opt_contracts = int(t.get("contracts") or 0)
+            if (not opt_strike or not opt_expiry
+                    or opt_contracts <= 0):
+                logger.warning(
+                    "OPTIONS %s: missing strike/expiry/contracts — "
+                    "rejected.", sym,
+                )
+                continue
+            try:
+                from options_chain_alpaca import snap_to_listed_contract
+                right = ("C" if opt_strategy in
+                         ("covered_call", "long_call") else "P")
+                snapped = snap_to_listed_contract(
+                    sym, opt_expiry, float(opt_strike), right,
+                )
+                if snapped is None:
+                    logger.warning(
+                        "OPTIONS %s: no listed Alpaca contract within "
+                        "tolerance of %s %s strike $%s exp %s — "
+                        "rejected at parse layer (AI proposed a "
+                        "strike that doesn't exist; would have hit "
+                        "'asset not found' at broker).",
+                        sym, opt_strategy, right, opt_strike, opt_expiry,
+                    )
+                    continue
+                # Use the snapped strike + expiry so the executor
+                # builds the OCC that actually exists.
+                opt_strike = snapped["strike"]
+                opt_expiry = snapped["expiration_date"]
+            except ImportError:
+                logger.debug(
+                    "OPTIONS snap check unavailable — proposal "
+                    "proceeds to executor without contract validation"
+                )
+            except Exception as _snap_exc:
+                logger.debug(
+                    "OPTIONS %s snap check failed (non-fatal): %s: %s",
+                    sym, type(_snap_exc).__name__, _snap_exc,
+                )
             validated.append({
                 "symbol": sym,
                 "action": "OPTIONS",
-                "option_strategy": (t.get("option_strategy") or "").lower(),
-                "strike": t.get("strike"),
-                "expiry": t.get("expiry"),
-                "contracts": int(t.get("contracts") or 0),
+                "option_strategy": opt_strategy,
+                "strike": opt_strike,
+                "expiry": opt_expiry,
+                "contracts": opt_contracts,
                 "limit_price": t.get("limit_price"),
                 "confidence": int(t.get("confidence", 50)),
                 "reasoning": t.get("reasoning", ""),
