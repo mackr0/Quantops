@@ -17,6 +17,34 @@ Rules going forward:
 
 ---
 
+## 2026-06-10 — Option-order rejection surfacing + multileg-on-OPTIONS routing message. Severity: medium (operator-visibility — bad reasons in the brain mask real bugs).
+
+**Two distinct issues caught from the first post-reset open's brain:**
+
+1. **`INTC ERROR — Broker did not return order_id for INTC 260717C00115000`.** The single-leg option submit failed and the upstream caller had no visibility into why — could have been an invalid contract, a 4xx authentication, an extended-hours rejection, anything. The drop reason was a generic placeholder that didn't help diagnose. Operator can't tell whether the AI proposed something bad or the broker / network blipped.
+
+2. **`OPTIONS INTC BLOCKED — Unsupported option_strategy: 'bull_put_spread'`.** The AI proposed a multileg strategy under the single-leg `action='OPTIONS'`. The pre-fix message just said "Unsupported" without telling the AI (or operator) that bull_put_spread needs `action='MULTILEG_OPEN'`. AI retunes from the badge text; if the badge doesn't name the right action class, the AI keeps making the same mistake.
+
+**Fix 1 — `submit_option_order` records the actual rejection.** Module-level `_LAST_OPTION_ORDER_ERROR` captures (a) invalid-arg validation reasons, (b) the broker's missing-id case with status/client_order_id, (c) any exception's class+message. Back-compat: function still returns `Optional[str]` for the order_id; callers opt in to the detail via `get_last_option_order_error()`.
+
+`execute_option_strategy`'s `if not order_id:` branch now reads `get_last_option_order_error()` and stamps it into `result["reason"]`. Drop badge shows `Option order rejected for INTC 260717C00115000: RuntimeError: Alpaca order rejected (422): asset is no longer tradable` instead of the generic placeholder.
+
+**Fix 2 — multileg strategies on OPTIONS action get a specific routing message.** `execute_option_strategy` recognises the multileg names (bull_put_spread, bull_call_spread, bear_put_spread, bear_call_spread, iron_condor, iron_butterfly, long_straddle, short_straddle, long_strangle) and returns SKIP with reason:
+
+> `AI proposed 'bull_put_spread' under action='OPTIONS' which is single-leg only. This strategy requires action='MULTILEG_OPEN' (the multileg pipeline handles strikes dict, atomic combo submit, etc.).`
+
+Unrecognized strategies that AREN'T known multileg names get the supported single-leg set explicitly listed in the reason.
+
+**Tests:** `tests/test_options_error_surfacing_2026_06_10.py` (6):
+- `submit_option_order` records exception reasons.
+- Invalid args produce specific error reasons.
+- `execute_option_strategy` calls `get_last_option_order_error()` (source pin).
+- Multileg strategy on OPTIONS → reason explicitly names `MULTILEG_OPEN`.
+- Unknown strategy → reason lists all supported single-leg names.
+- Regression: `long_call` (a legitimate single-leg) passes the strategy-name gate.
+
+---
+
 ## 2026-06-10 — Bracket-children stamp + ensure_protective_stops skips bracket entries. Severity: CRITICAL (without these, yesterday's bracket-rework SHIPPED A REGRESSION that cancelled live bracket TPs within ~5 min of every entry).
 
 **The regression:** yesterday's bracket-rework (`c59337e`) submitted bracket orders correctly at the broker but the SDK's `submit_order` response **does not populate `.legs`** even when `order_class="bracket"`. My code read `getattr(order, "legs", None)` immediately after submit, got None, didn't stamp `protective_stop_order_id` / `protective_tp_order_id` onto the entry row. Then the next `ensure_protective_stops` sweep ran with empty `own_protective_ids`, treated the bracket's live OCO sub-orders as un-tracked, and `_cancel_stale_other_orders` cancelled them.

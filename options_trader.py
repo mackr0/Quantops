@@ -359,10 +359,35 @@ def execute_option_strategy(
     contracts = int(proposal.get("contracts") or 0)
     limit_price = proposal.get("limit_price")
 
-    # Validate the basics
-    if strategy not in ("covered_call", "protective_put", "long_call",
-                          "long_put", "cash_secured_put"):
-        result["reason"] = f"Unsupported option_strategy: {strategy!r}"
+    # Validate the basics. The OPTIONS action is single-leg only;
+    # spread strategies (bull_put_spread, bear_call_spread, iron_condor,
+    # etc.) must use action='MULTILEG_OPEN' so the multileg builder +
+    # bracket-via-MLEG pipeline runs instead of the single-leg path.
+    _SINGLE_LEG = ("covered_call", "protective_put", "long_call",
+                   "long_put", "cash_secured_put")
+    _MULTILEG_NAMES = ("bull_put_spread", "bull_call_spread",
+                       "bear_put_spread", "bear_call_spread",
+                       "iron_condor", "iron_butterfly",
+                       "long_straddle", "short_straddle",
+                       "long_strangle")
+    if strategy in _MULTILEG_NAMES:
+        # The AI proposed a multileg strategy under the single-leg
+        # OPTIONS action. Surface the routing mistake so the prompt
+        # tuner / AI sees this needs MULTILEG_OPEN, not OPTIONS.
+        result["reason"] = (
+            f"AI proposed {strategy!r} under action='OPTIONS' which is "
+            f"single-leg only. This strategy requires "
+            f"action='MULTILEG_OPEN' (the multileg pipeline handles "
+            f"strikes dict, atomic combo submit, etc.). Re-propose "
+            f"the trade with the correct action class."
+        )
+        return result
+    if strategy not in _SINGLE_LEG:
+        result["reason"] = (
+            f"Unsupported option_strategy: {strategy!r}. "
+            f"Single-leg path supports: {', '.join(_SINGLE_LEG)}. "
+            f"Multileg strategies need action='MULTILEG_OPEN'."
+        )
         return result
     if not underlying or not strike or not expiry_str or contracts <= 0:
         result["reason"] = (
@@ -548,8 +573,17 @@ def execute_option_strategy(
     )
 
     if not order_id:
+        # Surface the actual broker rejection (Alpaca error string,
+        # invalid args, etc.) instead of the generic message. The
+        # error is stashed in submit_option_order's module state
+        # because back-compat on Optional[str] return signature.
+        last_err = get_last_option_order_error()
         result["action"] = "ERROR"
-        result["reason"] = f"Broker did not return order_id for {occ}"
+        result["reason"] = (
+            f"Option order rejected for {occ}: {last_err}"
+            if last_err else
+            f"Broker did not return order_id for {occ}"
+        )
         return result
 
     if log:
@@ -690,9 +724,24 @@ def submit_option_order(
     Returns the broker order_id on success, None on failure (failure
     is logged, not raised — caller decides how to surface).
     """
+    # 2026-06-10 — Surface the rejection reason. Pre-fix the
+    # function only returned Optional[str] for order_id; on
+    # failure (early-validation refuse OR broker exception) the
+    # caller got None with no detail and reported the generic
+    # "Broker did not return order_id for {occ}". Now we also
+    # stash the reason on a module-level last-error attribute so
+    # callers can surface the actual cause.
+    global _LAST_OPTION_ORDER_ERROR
+    _LAST_OPTION_ORDER_ERROR = None
     if not occ_symbol or qty <= 0 or side not in ("buy", "sell"):
+        _LAST_OPTION_ORDER_ERROR = (
+            f"invalid args: occ={occ_symbol!r} qty={qty} side={side!r}"
+        )
         return None
     if order_type == "limit" and (limit_price is None or limit_price <= 0):
+        _LAST_OPTION_ORDER_ERROR = (
+            f"limit_price required for limit order (got {limit_price!r})"
+        )
         logger.warning(
             "submit_option_order: limit_price required for limit order"
         )
@@ -721,10 +770,36 @@ def submit_option_order(
                 "Option order placed: %s %d %s %s order_id=%s",
                 side, qty, occ_symbol, order_type, order_id,
             )
-        return order_id
+            return order_id
+        # No id but no exception either — surface what the broker
+        # returned so the caller can put it in the drop reason
+        # instead of the generic "did not return order_id."
+        _LAST_OPTION_ORDER_ERROR = (
+            f"broker response missing id; status={getattr(order, 'status', '?')!r} "
+            f"client_order_id={getattr(order, 'client_order_id', '?')!r}"
+        )
+        return None
     except Exception as exc:
+        _LAST_OPTION_ORDER_ERROR = (
+            f"{type(exc).__name__}: {str(exc)[:240]}"
+        )
         logger.warning(
             "Could not place option order (%s %d %s): %s",
             side, qty, occ_symbol, exc,
         )
         return None
+
+
+# Module-level last-error storage so the simple `Optional[str]`
+# return signature stays back-compat while the upstream drop
+# reason can still surface the actual broker rejection.
+_LAST_OPTION_ORDER_ERROR: Optional[str] = None
+
+
+def get_last_option_order_error() -> Optional[str]:
+    """Return the rejection reason from the most recent
+    `submit_option_order` call that returned None. Resets each
+    call to submit_option_order. Module-level so this works for
+    single-threaded scheduler dispatch; the option pipeline never
+    parallelizes across symbols within a single profile."""
+    return _LAST_OPTION_ORDER_ERROR
