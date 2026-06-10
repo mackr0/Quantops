@@ -58,9 +58,15 @@ def test_ensure_protective_stops_skips_bracket_parent_orders():
         "Removing the literal would skip ALL entries, including "
         "legacy entries that legitimately need the sweep."
     )
-    # And the actual continue must be present
-    bracket_section = body[body.find("BRACKET SKIP"):
-                            body.find("BRACKET SKIP") + 2500]
+    # And the actual continue must be present. Window widened
+    # 2026-06-10 PM: the branch gained the child-tracking heal
+    # (_heal_bracket_child_tracking) between detection and continue,
+    # so anchor the window's end on the next pipeline stage instead
+    # of a fixed offset.
+    _bs_start = body.find("BRACKET SKIP")
+    _bs_end = body.find("RC3 (2026-06-05)", _bs_start)
+    bracket_section = body[_bs_start:
+                            _bs_end if _bs_end > 0 else _bs_start + 6000]
     assert "continue" in bracket_section, (
         "After detecting a bracket entry, the sweep must `continue` "
         "to skip placement. Without `continue`, the cancel + place "

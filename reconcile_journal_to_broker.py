@@ -612,6 +612,43 @@ def _find_terminal_via_backward_walk(
     return None
 
 
+def _is_bracket_child_fill(api, conn, action, fill_oid) -> bool:
+    """True when `fill_oid` is a child leg of the bracket parent that
+    opened `action`'s entry trade.
+
+    2026-06-10 (PM) — bracket children are created broker-side as
+    part of the parent submit; our code never calls submit_order for
+    them, so they legitimately have no pending_protective row when
+    the at-submit stamp/pending-write raced the broker's child
+    materialization. The reconciler uses this check to classify such
+    fills as EXPECTED protective synthesis instead of halting the
+    profile. Precise (parent-child linkage by order id), no fuzzy
+    matching. Returns False on any lookup failure — the caller then
+    falls back to the conservative halt path."""
+    try:
+        entry = conn.execute(
+            "SELECT order_id FROM trades WHERE id = ?",
+            (action.get("trade_id"),),
+        ).fetchone()
+        entry_oid = entry[0] if entry else None
+        if not entry_oid:
+            return False
+        parent = api.get_order(entry_oid, nested=True)
+        if (getattr(parent, "order_class", "") or "") != "bracket":
+            return False
+        return any(
+            getattr(leg, "id", None) == fill_oid
+            for leg in (getattr(parent, "legs", None) or [])
+        )
+    except Exception as _bc_exc:
+        logger.debug(
+            "bracket-child fill check failed for %s (conservative "
+            "halt path applies): %s: %s",
+            fill_oid, type(_bc_exc).__name__, _bc_exc,
+        )
+        return False
+
+
 def _detect_protective_fill(api, row, used_sell_ids):
     """For any open BUY/SHORT, check whether its OWN protective order
     fired at the broker — independent of the symbol's broker_qty.
@@ -1217,6 +1254,31 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
                         (fill_oid,),
                     ).fetchone()
                     if not pending_row:
+                        # 2026-06-10 (PM) — bracket children are
+                        # broker-CREATED OCO legs; no submit_order
+                        # call of ours ever placed them, so "no
+                        # pending row" is the architecture, not a
+                        # journaling leak. The at-submit stamp +
+                        # pending-row write can race the broker's
+                        # child materialization (lost on every entry
+                        # of the first post-reset session → all 13
+                        # profiles falsely HALTED on the first child
+                        # fill, WCT 3f61e6fe). If the fill order is a
+                        # child leg of this entry's bracket parent,
+                        # it's expected protective synthesis — exempt
+                        # from the halt counter; the end-of-pass
+                        # journal sync backfills the row.
+                        if _is_bracket_child_fill(
+                            api, conn, a, fill_oid,
+                        ):
+                            logger.info(
+                                "Reconciler: %s fill %s is a bracket "
+                                "child of its entry's parent order — "
+                                "expected protective synthesis, no "
+                                "halt.",
+                                a.get("symbol"), fill_oid[:8],
+                            )
+                            continue
                         # No pre-journaled row → legacy gap → leave in
                         # the synthesis bucket for halt + alert
                         still_orphan_protective.append(a)

@@ -17,6 +17,25 @@ Rules going forward:
 
 ---
 
+## 2026-06-10 (post-PM-reset) — Bracket children become first-class journaled protectives; false "reconciler safety net" halt on every profile fixed. Severity: CRITICAL (all 13 profiles halted new entries within 30 minutes of the reset).
+
+**What broke:** Every profile showed "TRADING HALTED — Reconciler safety net: 1 synthesis action(s) needed". Concrete trigger: WCT bracket stop child `3f61e6fe` filled at $2.06 (17:28Z); the reconciler classified the fill as orphan synthesis and halted.
+
+**Root cause — the bracket architecture changed the protective-tracking contract in ONE place and not the others.** Pre-bracket, protectives were placed by our own submit_order calls, each writing a `pending_protective` journal row; the reconciler's contract is "protective fill with no pending row = journaling leak → halt". The 06-09/06-10 bracket switch made Alpaca create the stop/TP as server-side child legs — no submit_order call of ours, hence no pending rows, BY DESIGN. Compounding it: the RC9 at-submit `get_order(nested=True)` stamp raced the broker's child materialization and lost on every entry (legs list came back empty in the same second as submit — silently, since empty isn't an exception), so the `protective_*_order_id` stamps were NULL too. First child fill → "legacy gap" → halt, on all profiles.
+
+**Why it wasn't caught:** RC9 was verified against the morning's symptom (TP cancelled by the sweep) via the order_class skip, which doesn't need the stamps. Nothing exercised the reconciler against a bracket-child FILL until WCT stopped out live.
+
+**The fix — three layers + one noise fix:**
+
+- **A (prevention), trade_pipeline:** the nested fetch now retries 3× (~0.7s apart) — the children materialize within ~a second — and the children are journaled as `pending_protective` rows (PROTECTIVE_STOP / PROTECTIVE_TP) right after the entry's log_trade. Child fills now hit the reconciler's pending-row UPDATE path: no synthesis, no halt. On pending-write failure we log and do NOT cancel (cancelling a bracket child strips live protection — deliberate deviation from the cancel-on-journal-failure contract, covered by layer C).
+- **B (heal), bracket_orders:** the protective sweep's bracket-skip branch now fetches the parent with `nested=True` and heals missing stamps + pending rows every cycle (`_heal_bracket_child_tracking`) — closing the race window permanently.
+- **C (belt), reconcile_journal_to_broker:** `_is_bracket_child_fill` — if a protective fill with no pending row is a child leg of the entry's bracket parent (precise order-id linkage, no fuzzy matching), it's EXPECTED synthesis: exempt from the halt counter. This is also what auto-clears the currently-halted profiles on their next reconcile pass.
+- **D (noise), intraday_risk_monitor.clear_risk_halt:** "no such table: intraday_risk_halt" on a fresh-start DB means "never halted", not a failure — was WARNING-spamming every cycle of every profile after each reset; now debug.
+
+**Tests:** `tests/test_bracket_child_tracking_2026_06_10.py` (11): unit coverage of the bracket-child exemption (recognized / non-bracket / unrelated / api-failure), the sweep heal (stamps + pending rows, idempotency, terminal-leg skip), source pins on the at-submit retry + pending writes, the heal-before-continue ordering, the exemption-before-halt ordering, and the quiet missing-table clear.
+
+---
+
 ## 2026-06-10 (post-PM-reset) — Test-suite restoration: 10 failures (9 latent from the morning's commits + 1 from the severity rename) fixed. Severity: high (the suite was red on main; sync.sh deploys don't run tests, so the morning's sessions shipped without noticing).
 
 **How it surfaced:** Running the full suite before deploying the multileg parse fix found 10 failures. One was mine (severity-rename pin in `test_drawdown_acceleration_floor_2026_05_20.py`); stash-testing confirmed the other 9 fail on clean HEAD — left behind by the morning's bracket/options/prompt commits.

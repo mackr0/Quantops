@@ -599,7 +599,23 @@ def clear_risk_halt(db_path: str) -> None:
         with closing(_get_conn(db_path)) as conn:
             conn.execute("DELETE FROM intraday_risk_halt WHERE id=1")
             conn.commit()
-    except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as _hc_exc:
+    except sqlite3.OperationalError as _hc_exc:
+        # The table is created lazily on first WRITE
+        # (write_risk_halt_state). On a fresh-start DB that has never
+        # halted, "no such table" just means there's nothing to clear
+        # — not a failure. Logged WARNING pre-2026-06-10, which
+        # spammed every cycle of every profile after each reset.
+        if "no such table" in str(_hc_exc).lower():
+            logger.debug(
+                "clear_risk_halt: intraday_risk_halt table absent "
+                "(never halted) — nothing to clear",
+            )
+        else:
+            logger.warning(
+                "halt clear write failed: %s: %s",
+                type(_hc_exc).__name__, _hc_exc,
+            )
+    except (sqlite3.DatabaseError, OSError) as _hc_exc:
         # Halt clear write; next read re-evaluates. Surface for follow-up.
         logger.warning(
             "halt clear write failed: %s: %s",

@@ -1204,15 +1204,37 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
         # nested=True to surface the children before journal write.
         bracket_stop_id = None
         bracket_tp_id = None
+        # 2026-06-10 (PM) — RETRY the nested fetch. The children are
+        # materialized broker-side asynchronously; the immediate
+        # refetch (same second as submit) returned an empty legs list
+        # on EVERY entry of the first post-reset session — silently,
+        # because empty-legs isn't an exception. Result: no stamps,
+        # no pending rows, and the reconciler halted every profile
+        # when the children filled (WCT 3f61e6fe). Three attempts
+        # ~0.7s apart cover the observed materialization lag.
         try:
-            parent_nested = api.get_order(order.id, nested=True)
-            legs = getattr(parent_nested, "legs", None) or []
-            for leg in legs:
-                ltype = (getattr(leg, "order_type", "") or "").lower()
-                if "stop" in ltype:
-                    bracket_stop_id = getattr(leg, "id", None)
-                elif "limit" in ltype:
-                    bracket_tp_id = getattr(leg, "id", None)
+            import time as _bk_time
+            for _bk_attempt in range(3):
+                parent_nested = api.get_order(order.id, nested=True)
+                legs = getattr(parent_nested, "legs", None) or []
+                for leg in legs:
+                    ltype = (getattr(leg, "order_type", "") or "").lower()
+                    if "stop" in ltype:
+                        bracket_stop_id = getattr(leg, "id", None)
+                    elif "limit" in ltype:
+                        bracket_tp_id = getattr(leg, "id", None)
+                if bracket_stop_id or bracket_tp_id:
+                    break
+                if _bk_attempt < 2:
+                    _bk_time.sleep(0.7)
+            if not (bracket_stop_id or bracket_tp_id):
+                logger.warning(
+                    "Bracket children for %s / %s not visible after "
+                    "3 nested fetches — entry written without "
+                    "protective-id stamps; the protective sweep's "
+                    "bracket heal will stamp them next cycle.",
+                    symbol, order.id,
+                )
         except Exception as _bx_exc:
             logger.warning(
                 "Bracket child-leg fetch (nested=True) failed for %s "
@@ -1313,6 +1335,44 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                         "(entry row written; protective sweep will heal)",
                         symbol, order.id,
                         type(_us_exc).__name__, _us_exc,
+                    )
+                # 2026-06-10 (PM) — journal the bracket children as
+                # pending_protective rows. The bracket architecture
+                # replaced sweep-placed protectives (which write a
+                # pending row at every submit) with broker-created
+                # children that NO code path journals. The reconciler's
+                # pending-row contract then read every child fill as
+                # orphan synthesis and HALTED the profile — all 13
+                # profiles, first post-reset session. With pending rows
+                # the child fill hits the reconciler's UPDATE path:
+                # no synthesis, no halt. On write failure we log and
+                # do NOT cancel (cancelling a bracket child would
+                # strip live protection); the reconciler's
+                # bracket-child exemption is the backstop.
+                try:
+                    from bracket_orders import _write_pending_protective_row
+                    if bracket_stop_id:
+                        _write_pending_protective_row(
+                            db_path, symbol, "sell", qty,
+                            bracket_stop_id, "PROTECTIVE_STOP",
+                            stop_price,
+                            reason="bracket child stop; awaiting fill",
+                        )
+                    if bracket_tp_id:
+                        _write_pending_protective_row(
+                            db_path, symbol, "sell", qty,
+                            bracket_tp_id, "PROTECTIVE_TP",
+                            target_price,
+                            reason="bracket child take-profit; "
+                                   "awaiting fill",
+                        )
+                except Exception as _pp_exc:
+                    logger.warning(
+                        "Bracket-children pending rows failed for "
+                        "%s/%s: %s: %s — reconciler bracket exemption "
+                        "covers the fills meanwhile",
+                        symbol, order.id,
+                        type(_pp_exc).__name__, _pp_exc,
                     )
 
     # ---- SELL logic (close existing long position) ---------------------------

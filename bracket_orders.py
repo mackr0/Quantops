@@ -103,6 +103,102 @@ def _write_pending_protective_row(
         return False
 
 
+def _heal_bracket_child_tracking(
+    conn,
+    db_path: Optional[str],
+    row,
+    parent,
+    symbol: str,
+    close_side: str,
+    abs_qty: int,
+) -> None:
+    """Backfill missing journal tracking for a bracket entry's child
+    legs: protective_*_order_id stamps on the entry row, and
+    pending_protective rows for each child the journal doesn't know.
+
+    2026-06-10 (PM) — the at-submit nested fetch races the broker's
+    child materialization; when it loses, the entry has NULL stamps
+    and the children have no pending rows. The reconciler's
+    pending-row contract then reads the eventual child fill as
+    orphan synthesis and HALTS the profile (observed on all 13
+    profiles in the first post-reset session). This heal runs from
+    the protective sweep every cycle, by which time the children
+    are visible. Best-effort: failures log debug and retry next
+    sweep."""
+    try:
+        stop_id = stop_trigger = tp_id = tp_trigger = None
+        for leg in (getattr(parent, "legs", None) or []):
+            ltype = (getattr(leg, "order_type", "") or "").lower()
+            lstatus = (getattr(leg, "status", "") or "").lower()
+            # Terminal-unfilled legs (the OCO partner of a filled
+            # child, expired GTCs) need no forward tracking.
+            if lstatus in ("canceled", "expired", "rejected"):
+                continue
+            if "stop" in ltype:
+                stop_id = getattr(leg, "id", None)
+                stop_trigger = getattr(leg, "stop_price", None)
+            elif "limit" in ltype:
+                tp_id = getattr(leg, "id", None)
+                tp_trigger = getattr(leg, "limit_price", None)
+        if not (stop_id or tp_id):
+            return
+        # Stamp the entry row where the at-submit stamp is missing.
+        try:
+            needs_stop = stop_id and not row["protective_stop_order_id"]
+            needs_tp = tp_id and not row["protective_tp_order_id"]
+        except (KeyError, IndexError):
+            needs_stop = needs_tp = False
+        if needs_stop or needs_tp:
+            conn.execute(
+                "UPDATE trades SET "
+                "  protective_stop_order_id = COALESCE(?, protective_stop_order_id), "
+                "  protective_tp_order_id   = COALESCE(?, protective_tp_order_id) "
+                "WHERE id = ?",
+                (stop_id if needs_stop else None,
+                 tp_id if needs_tp else None,
+                 row["id"]),
+            )
+            conn.commit()
+            logger.info(
+                "Healed bracket child stamps for %s entry #%s "
+                "(stop=%s tp=%s)",
+                symbol, row["id"],
+                (stop_id or "")[:8], (tp_id or "")[:8],
+            )
+        # Write pending_protective rows for children the journal
+        # doesn't track at all (no row carries their order_id).
+        for child_id, signal_type, trigger in (
+            (stop_id, "PROTECTIVE_STOP", stop_trigger),
+            (tp_id, "PROTECTIVE_TP", tp_trigger),
+        ):
+            if not child_id:
+                continue
+            known = conn.execute(
+                "SELECT 1 FROM trades WHERE order_id = ? LIMIT 1",
+                (child_id,),
+            ).fetchone()
+            if known:
+                continue
+            try:
+                trigger_f = float(trigger) if trigger else None
+            except (TypeError, ValueError):
+                trigger_f = None
+            _write_pending_protective_row(
+                db_path, symbol, close_side, abs_qty, child_id,
+                signal_type, trigger_f,
+                entry_trade_id=row["id"],
+                reason=f"bracket child {signal_type.lower()} "
+                       f"(healed by protective sweep); awaiting fill",
+            )
+    except Exception as _heal_exc:
+        logger.debug(
+            "Bracket child-tracking heal failed for %s entry #%s "
+            "(retries next sweep): %s: %s",
+            symbol, row["id"] if row else "?",
+            type(_heal_exc).__name__, _heal_exc,
+        )
+
+
 def _rollback_broker_order(api, order_id: str, why: str) -> None:
     """Cancel a broker order after the journal write failed, so the
     placement is atomic (either both succeed or both are rolled back).
@@ -664,10 +760,27 @@ def ensure_protective_stops(api, positions, ctx, db_path,
                 ).fetchone()
                 if _entry_order_id and _entry_order_id[0]:
                     try:
-                        _parent = api.get_order(_entry_order_id[0])
+                        _parent = api.get_order(
+                            _entry_order_id[0], nested=True,
+                        )
                         if (getattr(_parent, "order_class", "") or "") == "bracket":
                             # The bracket's children handle protection.
                             # Skip; don't risk cancelling live OCO legs.
+                            # 2026-06-10 (PM) — HEAL first: the
+                            # at-submit nested fetch can race the
+                            # broker's child materialization (observed
+                            # on every entry of the first post-reset
+                            # session), leaving NULL stamps and no
+                            # pending rows. This sweep runs every
+                            # cycle and the children are long since
+                            # visible — stamp the entry row and write
+                            # any missing pending_protective rows here
+                            # so the reconciler's pending-row contract
+                            # holds for bracket children too.
+                            _heal_bracket_child_tracking(
+                                conn, db_path, row, _parent, symbol,
+                                close_side, abs_qty,
+                            )
                             logger.debug(
                                 "ensure_protective_stops: skip entry "
                                 "#%s (%s) — parent order_class=bracket; "
