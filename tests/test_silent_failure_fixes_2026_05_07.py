@@ -83,7 +83,12 @@ class TestStaticGuardNoBareExceptPassInTradeExecutionPaths:
         anchor = "cancel_for_symbol(api, db_path, symbol)"
         idx = src.find(anchor)
         assert idx >= 0, "anchor moved; update test"
-        window = src[idx:idx + 600]
+        # Window widened 600 → 1300 on 2026-06-11: the abort-on-
+        # filled-protective block (BATL oversell prevention) now sits
+        # between the call and the except's warning. The contract
+        # (cancel failure logs a WARNING, never bare pass) is
+        # unchanged.
+        window = src[idx:idx + 1300]
         assert "Stop may fire on flat position" in window, (
             f"Silent swallow returned at trade_pipeline cancel_for_symbol; "
             f"expected WARNING about flat position. Window:\n{window}"

@@ -754,7 +754,18 @@ def _process_exit_trigger(trigger_signal, api, ctx, db_path, positions,
     # killed the order; this just resets the DB column.
     try:
         from bracket_orders import cancel_for_symbol
-        cancel_for_symbol(api, db_path, symbol)
+        # 2026-06-11 — ABORT the poll exit when a protective already
+        # filled: the position is closed at the broker and the fill
+        # confirmation is in flight. Proceeding sells sibling
+        # profiles' shares (the BATL 5,145-share oversell).
+        if cancel_for_symbol(api, db_path, symbol):
+            logging.warning(
+                "[%s] Poll exit ABORTED for %s — protective already "
+                "filled at broker; position closed, confirmation "
+                "pending.",
+                getattr(ctx, "display_name", "?") or "?", symbol,
+            )
+            return
     except Exception as _exc:
         logging.debug("Protective stop cleanup skipped: %s", _exc)
 

@@ -1570,18 +1570,29 @@ def _entry_pointer_column_for_signal(signal_type: str):
     return _PROTECTIVE_ENTRY_POINTER_BY_SIGNAL.get(signal_type)
 
 
-def cancel_for_symbol(api, db_path: str, symbol: str) -> None:
+def cancel_for_symbol(api, db_path: str, symbol: str) -> bool:
     """Cancel any active protective stop / take-profit / trailing-stop
     orders for the given symbol.
 
     Called before a manual exit (AI SELL, polling-triggered exit, etc.)
     so the broker orders don't fire AFTER our market sell on a now-flat
-    position. The matching trade row's protective_*_order_id columns
-    are cleared either way (cancel succeeded, or the order is already gone).
+    position.
+
+    Returns True when a protective for this symbol ALREADY FILLED —
+    the position is already closed at the broker and the caller MUST
+    ABORT its exit. 2026-06-11, the BATL oversell: p97's stop filled
+    at 17:52:59; the fill confirmation hadn't reached the journal
+    when the next exit fired at 17:55:23, the old void-return cancel
+    logged "cancel failed" and the SELL proceeded — selling 5,145
+    shares that belonged to a SIBLING profile on the shared account.
+    Order status is checked BEFORE attempting each cancel; a filled
+    protective keeps its journal pointer (the fill state machine
+    needs it) while active ones are canceled and cleared.
     """
     import sqlite3
     if not db_path or not symbol:
-        return
+        return False
+    any_filled = False
     try:
         with closing(sqlite3.connect(db_path)) as conn:
             conn.row_factory = sqlite3.Row
@@ -1596,19 +1607,42 @@ def cancel_for_symbol(api, db_path: str, symbol: str) -> None:
                 (symbol,),
             ).fetchall()
             for r in rows:
-                if r["protective_stop_order_id"]:
-                    cancel_protective_stop(api, r["protective_stop_order_id"])
-                if r["protective_tp_order_id"]:
-                    cancel_protective_stop(api, r["protective_tp_order_id"])
-                if r["protective_trailing_order_id"]:
-                    cancel_protective_stop(api, r["protective_trailing_order_id"])
-                conn.execute(
-                    "UPDATE trades SET protective_stop_order_id = NULL, "
-                    "protective_tp_order_id = NULL, "
-                    "protective_trailing_order_id = NULL "
-                    "WHERE id = ?",
-                    (r["id"],),
-                )
+                row_filled = False
+                for oid in (r["protective_stop_order_id"],
+                            r["protective_tp_order_id"],
+                            r["protective_trailing_order_id"]):
+                    if not oid:
+                        continue
+                    status = ""
+                    try:
+                        status = (getattr(
+                            api.get_order(oid), "status", "") or "").lower()
+                    except Exception as _st_exc:
+                        logger.debug(
+                            "protective %s status lookup failed "
+                            "(%s) — attempting cancel anyway",
+                            str(oid)[:8], _st_exc,
+                        )
+                    if status == "filled":
+                        any_filled = True
+                        row_filled = True
+                        logger.warning(
+                            "cancel_for_symbol(%s): protective %s "
+                            "ALREADY FILLED — position is closed at "
+                            "the broker; caller must abort its exit.",
+                            symbol, str(oid)[:8],
+                        )
+                        continue
+                    cancel_protective_stop(api, oid)
+                if not row_filled:
+                    conn.execute(
+                        "UPDATE trades SET protective_stop_order_id = NULL, "
+                        "protective_tp_order_id = NULL, "
+                        "protective_trailing_order_id = NULL "
+                        "WHERE id = ?",
+                        (r["id"],),
+                    )
             conn.commit()
     except Exception as exc:
         logger.debug("cancel_for_symbol(%s) skipped: %s", symbol, exc)
+    return any_filled

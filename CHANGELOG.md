@@ -17,6 +17,18 @@ Rules going forward:
 
 ---
 
+## 2026-06-11 — Cross-profile oversell: exit raced its own protective fill and sold a sibling's shares. Severity: CRITICAL (the one genuine cross-profile contamination event of the experiment; bounded to 5,145 BATL shares, fully attributed via broker order history).
+
+**The event (A2 account, broker order history):** p97's BATL protective stop filled at 17:52:59. Its next exit fired at 17:55:23 — before the fill confirmation reached the journal — and `cancel_for_symbol` returned void on "cancel failed (already filled)", so the SELL proceeded: 5,145 shares sold out of p94's freshly-filled 11,274-share position. p94's books claimed 11,274 while the broker held 6,129; p97's books credited ~$7.6K of proceeds for shares it never owned (its reconciliation gap to the dollar).
+
+**Prevention:** `cancel_for_symbol` now checks each protective's broker status BEFORE canceling and returns True when one ALREADY FILLED — the position is closed, confirmation merely in flight. Both exit paths abort on True: the AI SELL path returns SKIP ("Position already closed by a protective fill"), the poll exit path logs and returns. A filled protective's journal pointer is preserved (the fill state machine needs it); only live ones are canceled and cleared.
+
+**Repair:** `repair_batl_oversell_2026_06_11.py` — accounting reattribution, no new orders: p97's oversell row voided (status canceled + `data_quality='oversold_sibling_shares'`, cash/FIFO exclude it), p94 gets the closed SELL row carrying the real broker order id (its book becomes 6,129 == broker), realized P&L re-trued on both. Refuses any shape that doesn't match the verified event.
+
+**Tests:** section 5 of `tests/test_poll_exit_cascade_2026_06_11.py` — filled-protective detection with pointer preservation, and abort pins on both exit paths.
+
+---
+
 ## 2026-06-11 (follow-up) — update_fills re-polls recent OPEN entries so qty-truth actually fires. Severity: high (the qty-truth shipped earlier today was gated behind `fill_price IS NULL` — once the price stamped on the first pass, a partial fill's quantity was never revisited).
 
 **Fix:** third arm in the row selection — OPEN buy/short rows from the last 48h are re-polled even with fill_price present, so the terminal-state qty correction can catch DAY orders that partially filled after their price was stamped. Bounded to 48h so it never becomes a full-table broker poll. Idempotent re-stamps of identical fills are accepted noise.

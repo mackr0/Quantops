@@ -129,3 +129,65 @@ def test_update_fills_trues_qty_on_terminal_orders():
         "correcting from a still-working order writes a number "
         "that can change again."
     )
+
+
+# ---------------------------------------------------------------------------
+# (5) Protective-already-filled aborts the exit (BATL oversell class)
+# ---------------------------------------------------------------------------
+
+def test_cancel_for_symbol_reports_filled_protective(tmp_path):
+    import sqlite3
+    from contextlib import closing
+    from bracket_orders import cancel_for_symbol
+    db = str(tmp_path / "p.db")
+    with closing(sqlite3.connect(db)) as conn:
+        conn.execute(
+            "CREATE TABLE trades (id INTEGER PRIMARY KEY, symbol TEXT,"
+            " status TEXT, protective_stop_order_id TEXT,"
+            " protective_tp_order_id TEXT,"
+            " protective_trailing_order_id TEXT)")
+        conn.execute(
+            "INSERT INTO trades (symbol, status,"
+            " protective_stop_order_id) VALUES"
+            " ('BATL', 'open', 'stop-1')")
+        conn.commit()
+    api = MagicMock()
+    filled = MagicMock()
+    filled.status = "filled"
+    api.get_order.return_value = filled
+    assert cancel_for_symbol(api, db, "BATL") is True, (
+        "Filled protective must be reported — the caller's exit "
+        "would double-sell sibling shares (BATL 5,145 oversell)."
+    )
+    with closing(sqlite3.connect(db)) as conn:
+        ptr = conn.execute(
+            "SELECT protective_stop_order_id FROM trades").fetchone()[0]
+    assert ptr == "stop-1", (
+        "Filled protective's journal pointer must be PRESERVED — "
+        "the fill state machine needs it to close the entry."
+    )
+    live = MagicMock()
+    live.status = "new"
+    api.get_order.return_value = live
+    assert cancel_for_symbol(api, db, "BATL") is False
+
+
+def test_sell_path_aborts_on_filled_protective():
+    src = (REPO / "trade_pipeline.py").read_text()
+    idx = src.index("if cancel_for_symbol(api, db_path, symbol):")
+    window = src[idx:idx + 600]
+    assert "SKIP" in window and "already closed" in window.lower() or \
+           "Position already closed" in window, (
+        "SELL path no longer aborts when a protective already "
+        "filled — double exits take sibling shares."
+    )
+
+
+def test_poll_exit_aborts_on_filled_protective():
+    src = (REPO / "trader.py").read_text()
+    idx = src.index("if cancel_for_symbol(api, db_path, symbol):")
+    window = src[idx:idx + 500]
+    assert "return" in window and "ABORTED" in window, (
+        "Poll exit no longer aborts when a protective already "
+        "filled."
+    )

@@ -1488,7 +1488,19 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
         # what's now a flat position.
         try:
             from bracket_orders import cancel_for_symbol
-            cancel_for_symbol(api, db_path, symbol)
+            # 2026-06-11 — ABORT when a protective already filled.
+            # The position is closed at the broker; the journal just
+            # hasn't confirmed it yet. Selling anyway takes sibling
+            # profiles' shares on the shared account (BATL: p97
+            # oversold 5,145 of p94's shares exactly this way).
+            if cancel_for_symbol(api, db_path, symbol):
+                result["action"] = "SKIP"
+                result["reason"] = (
+                    "Position already closed by a protective fill "
+                    "(confirmation pending) — sell aborted to avoid "
+                    "double exit"
+                )
+                return result
         except Exception as exc:
             # If cancel fails the broker stop will fire on a now-flat
             # position — surface so we know to investigate, not silent.
