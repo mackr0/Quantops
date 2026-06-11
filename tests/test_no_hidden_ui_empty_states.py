@@ -216,6 +216,14 @@ class TestAIDashEmptyStates:
 ALLOWLIST = {
     ("dashboard.html", "broken_profiles"),
     ("dashboard.html", "scan_failures"),
+    # 2026-06-10 — TRADING HALTED alert banner. Same class as
+    # scan_failures: an ALERT that must be loud when present and
+    # absent when healthy. A permanent "No profiles halted" section
+    # would train the operator to skim past the spot where the
+    # red banner appears. Rendering is pinned by
+    # test_dashboard_halt_banner_2026_06_10.py (banner present when
+    # halted, absent when not).
+    ("dashboard.html", "halted_profiles"),
     ("dashboard.html", "prof.account"),
     ("settings.html", "current_user.is_viewer"),
     ("ai_performance.html", "selected_profile"),

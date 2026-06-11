@@ -1217,6 +1217,22 @@ def dashboard():
     except Exception:
         kill_switch_state = {"enabled": False, "reason": ""}
 
+    # 2026-06-10 — per-profile trading halts surfaced on the
+    # DASHBOARD, not just /settings. The reconciler safety-net halt
+    # blocked all 13 profiles for half a session before the operator
+    # saw it, because the only banner lived on the settings page.
+    # The dashboard is the page the operator actually watches.
+    halted_profiles = [
+        {
+            "id": p["id"],
+            "name": p["name"],
+            "halt_reason": p.get("halt_reason") or "(no reason recorded)",
+            "halted_at": p.get("halted_at") or "",
+        }
+        for p in profiles
+        if p.get("trading_halted")
+    ]
+
     # Cost cap status — surfaces a banner when today's spend reaches
     # the daily ceiling (AI calls now hard-block; the banner explains
     # why no new entries are landing).
@@ -1233,6 +1249,7 @@ def dashboard():
                            profile_schedules=profile_schedules,
                            scan_failures=scan_failures,
                            kill_switch=kill_switch_state,
+                           halted_profiles=halted_profiles,
                            cost_status=cost_status)
 
 

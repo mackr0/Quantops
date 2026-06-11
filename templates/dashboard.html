@@ -64,6 +64,37 @@
 </p>
 {% endif %}
 {% endif %}
+
+{% if halted_profiles %}
+<article style="background:#fff3cd;border:2px solid #c62828;padding:0.85rem 1.1rem;margin-bottom:1rem;border-radius:6px;">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:0.5rem;">
+        <div>
+            <strong style="color:#c62828;font-size:1.1rem;">
+                ⚠ TRADING HALTED — {{ halted_profiles|length }}
+                profile{{ 's' if halted_profiles|length != 1 else '' }} blocked from new entries
+            </strong>
+            <div style="margin-top:0.4rem;color:#555;font-size:0.9rem;">
+                {% for hp in halted_profiles %}
+                <div style="margin-bottom:0.3rem;">
+                    <strong>{{ hp.name }}</strong> — {{ hp.halt_reason }}
+                    {% if hp.halted_at %}<br><small>Halted at: {{ hp.halted_at }}</small>{% endif %}
+                </div>
+                {% endfor %}
+                <small>
+                    Existing exits and monitoring continue; only new entries are blocked.
+                    Halts auto-clear once the system confirms the trade journal matches
+                    the broker again.
+                </small>
+            </div>
+        </div>
+        {% if not current_user.is_viewer %}
+        <a href="/settings" role="button" class="outline" style="font-size:0.9rem;padding:0.4rem 0.9rem;border-color:#c62828;color:#c62828;">
+            Review on Settings page
+        </a>
+        {% endif %}
+    </div>
+</article>
+{% endif %}
 <script>
 (function() {
     var act = document.getElementById('kill-switch-activate');

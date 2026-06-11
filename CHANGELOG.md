@@ -17,6 +17,16 @@ Rules going forward:
 
 ---
 
+## 2026-06-10 (post-PM-reset) — Trading-halt banner added to the dashboard. Severity: medium (operator visibility — halts were only visible on /settings).
+
+**What was wrong:** When the reconciler safety net halted all 13 profiles this afternoon, the only banner lived on the settings page. The dashboard — the page the operator actually watches intraday — showed nothing. The halt ran half a session before being noticed.
+
+**Fix:** The dashboard view collects every active profile with `trading_halted` set (from the raw profile rows, deliberately OUTSIDE the per-profile account loader so a dead Alpaca credential or API outage can't suppress the banner) and renders a red TRADING HALTED banner above the overview: profile names, halt reasons, halted-at times, and a link to the settings page where the operator-override clear button lives. Plain-English copy; auto-clear behavior explained inline.
+
+**Tests:** `tests/test_dashboard_halt_banner_2026_06_10.py` — real Flask test-client renders (halted profile → banner with name + reason; no halt → no banner) plus a source pin that the banner data is built outside the exception-swallowing loader and actually passed to the template.
+
+---
+
 ## 2026-06-10 (post-PM-reset) — Bracket children become first-class journaled protectives; false "reconciler safety net" halt on every profile fixed. Severity: CRITICAL (all 13 profiles halted new entries within 30 minutes of the reset).
 
 **What broke:** Every profile showed "TRADING HALTED — Reconciler safety net: 1 synthesis action(s) needed". Concrete trigger: WCT bracket stop child `3f61e6fe` filled at $2.06 (17:28Z); the reconciler classified the fill as orphan synthesis and halted.
