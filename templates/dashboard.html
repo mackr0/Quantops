@@ -909,6 +909,14 @@ function showOpTab(event, profileId, which) {
                         // operator goes hunting for a non-existent fill
                         // (caught 2026-05-11: CWAN cross-direction guard).
                         var badge = '';
+                        // 2026-06-11 — every outcome badge also sets
+                        // outcomeNote, rendered as a VISIBLE line
+                        // under the trade. The explanations used to
+                        // live only in title= hover tooltips, which
+                        // the operator (rightly) never discovered —
+                        // "I'm not a fan of invisible tooltips."
+                        var outcomeNote = '';
+                        var outcomeColor = '#888';
                         if (t.execution_outcome === 'rejected') {
                             // 2026-05-12 — when the rejection is a
                             // specialist veto, attribute it to the
@@ -928,6 +936,8 @@ function showOpTab(event, profileId, which) {
                                     'font-size:0.65rem;font-weight:600;padding:0.05rem 0.4rem;' +
                                     'border-radius:3px;vertical-align:middle;margin-left:0.4rem;">' +
                                     'REJECTED · ' + label + '</span>';
+                            outcomeNote = escapeHtml(t.rejection_message || '');
+                            outcomeColor = '#c62828';
                         }
                         // 2026-05-12 — surface intent-vs-outcome
                         // mismatch (e.g. AI says SHORT F but
@@ -946,6 +956,8 @@ function showOpTab(event, profileId, which) {
                                     'border-radius:3px;vertical-align:middle;margin-left:0.4rem;">' +
                                     'EXECUTED AS ' + escapeHtml((t.executed_action || '').toUpperCase()) +
                                     '</span>';
+                            outcomeNote = ctip;
+                            outcomeColor = '#b26a00';
                         }
                         // 2026-05-18 — BLOCKED badge for AI picks that
                         // the pre-trade gate skipped (e.g. short-on-
@@ -966,6 +978,8 @@ function showOpTab(event, profileId, which) {
                                     'font-size:0.65rem;font-weight:600;padding:0.05rem 0.4rem;' +
                                     'border-radius:3px;vertical-align:middle;margin-left:0.4rem;">' +
                                     'BLOCKED</span>';
+                            outcomeNote = btip;
+                            outcomeColor = '#757575';
                         }
                         // Canceled — limit order never filled / reconcile
                         // canceled it because broker had no matching
@@ -977,6 +991,8 @@ function showOpTab(event, profileId, which) {
                                     'font-size:0.65rem;font-weight:600;padding:0.05rem 0.4rem;' +
                                     'border-radius:3px;vertical-align:middle;margin-left:0.4rem;">' +
                                     'CANCELED</span>';
+                            outcomeNote = ktip;
+                            outcomeColor = '#546e7a';
                         }
                         // 2026-06-09 — pre-broker GATE block. The
                         // doomsday gates (catastrophic single trade,
@@ -1003,6 +1019,8 @@ function showOpTab(event, profileId, which) {
                                 'font-size:0.65rem;font-weight:600;padding:0.05rem 0.4rem;' +
                                 'border-radius:3px;vertical-align:middle;margin-left:0.4rem;">' +
                                 'GATED · ' + gateLabel + '</span>';
+                            outcomeNote = escapeHtml(t.gate_message || '');
+                            outcomeColor = '#6a1b9a';
                         }
                         // Sizing detail differs by action type:
                         //   BUY/SELL/SHORT — `size_pct` (% equity)
@@ -1050,6 +1068,10 @@ function showOpTab(event, profileId, which) {
                                 (didntExecute ? 'text-decoration:line-through;' : '') +
                                 '">' + escapeHtml(t.action || '') + ' ' + escapeHtml(t.symbol || '') + '</span>' + badge + convertBadge + blockBadge +
                                 ' (' + detail + (t.confidence != null ? t.confidence + '% confidence' : 'confidence n/a') + ')<br>' +
+                                (outcomeNote
+                                    ? '<small style="display:block;margin:0.1rem 0 0.15rem 0.75rem;color:' +
+                                      outcomeColor + ';">↳ ' + outcomeNote + '</small>'
+                                    : '') +
                                 '<em>' + escapeHtml(t.reasoning || '') + '</em><br>';
                     });
                 }

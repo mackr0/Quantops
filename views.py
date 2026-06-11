@@ -6076,10 +6076,15 @@ def api_cycle_data(profile_id):
                 intent = (t.get("action") or "").lower()
                 if "short" in intent and executed == "Long Close":
                     t["execution_outcome"] = "converted_to_close"
+                    # 2026-06-11 — name the ACTUAL symbol. The
+                    # pre-fix string hardcoded a literal "F" (an
+                    # f-string that never got its prefix), so every
+                    # conversion claimed Ford was the held position.
                     t["execution_outcome_display"] = (
-                        "Executed as long-close — "
-                        "F was already held long, can't open a new "
-                        "short on the same symbol")
+                        f"Executed as long-close — {sym} was "
+                        f"already held long; a short can't be "
+                        f"opened on the same symbol until the "
+                        f"long is closed")
                 # 2026-05-14 — surface canceled trades on the brain
                 # ticker. Limit-order profiles can submit a trade
                 # that never fills (market moves past the limit) and

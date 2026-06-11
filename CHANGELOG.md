@@ -17,6 +17,16 @@ Rules going forward:
 
 ---
 
+## 2026-06-11 — Outcome-badge explanations made visible (no more hover-only tooltips) + converted-to-close names the real symbol. Severity: medium (operator visibility) + low copy bug.
+
+**What was wrong:** Every execution-outcome badge on the AI Brain panel (REJECTED, EXECUTED AS …, BLOCKED, CANCELED, GATED) put its explanation in a `title=` hover tooltip only. The operator hit this live on the FRMI "EXECUTED AS LONG CLOSE" badge: nothing on the page said WHY a SHORT became a close — and the hover text was wrong anyway, hardcoded to "F was already held long" (an f-string that never got its prefix, so every conversion claimed Ford was the held position).
+
+**Fix:** (1) `views.py` interpolates the actual symbol into the converted-to-close explanation. (2) All five badge branches in `dashboard.html` now also emit a visible `↳ explanation` line under the trade, color-matched to the badge family; the hover tooltips remain but are no longer the only path.
+
+**Tests:** `tests/test_visible_outcome_notes_2026_06_11.py` — the old hardcoded string is pinned dead, `{sym}` interpolation pinned present, every outcome branch must set `outcomeNote`, and the assembly must render it as a visible element.
+
+---
+
 ## 2026-06-10 (post-PM-reset) — Trading-halt banner added to the dashboard. Severity: medium (operator visibility — halts were only visible on /settings).
 
 **What was wrong:** When the reconciler safety net halted all 13 profiles this afternoon, the only banner lived on the settings page. The dashboard — the page the operator actually watches intraday — showed nothing. The halt ran half a session before being noticed.
