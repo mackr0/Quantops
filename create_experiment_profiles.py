@@ -106,7 +106,9 @@ PROFILES: List[Dict[str, Any]] = [
         "enable_short_selling": 1,
         "is_virtual": 1,
         "max_position_pct": 0.10,
-        "max_total_positions": 10,
+        "max_total_positions": 999,  # effectively uncapped (2026-06-11): the AI
+        # decides position count; only BuyHoldSPY (1) and the Randoms (5)
+        # keep fixed caps for the life of the experiment.
         "ai_confidence_threshold": 0.60,
     },
 
@@ -130,7 +132,9 @@ PROFILES: List[Dict[str, Any]] = [
         "enable_short_selling": 1,
         "is_virtual": 1,
         "max_position_pct": 0.10,
-        "max_total_positions": 10,
+        "max_total_positions": 999,  # effectively uncapped (2026-06-11): the AI
+        # decides position count; only BuyHoldSPY (1) and the Randoms (5)
+        # keep fixed caps for the life of the experiment.
         "ai_confidence_threshold": 0.60,
     },
     {
@@ -145,7 +149,9 @@ PROFILES: List[Dict[str, Any]] = [
         "enable_short_selling": 1,
         "is_virtual": 1,
         "max_position_pct": 0.10,
-        "max_total_positions": 10,
+        "max_total_positions": 999,  # effectively uncapped (2026-06-11): the AI
+        # decides position count; only BuyHoldSPY (1) and the Randoms (5)
+        # keep fixed caps for the life of the experiment.
         "ai_confidence_threshold": 0.60,
     },
     {
@@ -160,7 +166,9 @@ PROFILES: List[Dict[str, Any]] = [
         "enable_short_selling": 1,
         "is_virtual": 1,
         "max_position_pct": 0.10,
-        "max_total_positions": 10,
+        "max_total_positions": 999,  # effectively uncapped (2026-06-11): the AI
+        # decides position count; only BuyHoldSPY (1) and the Randoms (5)
+        # keep fixed caps for the life of the experiment.
         "ai_confidence_threshold": 0.60,
     },
     {
@@ -175,7 +183,9 @@ PROFILES: List[Dict[str, Any]] = [
         "enable_short_selling": 1,
         "is_virtual": 1,
         "max_position_pct": 0.10,
-        "max_total_positions": 10,
+        "max_total_positions": 999,  # effectively uncapped (2026-06-11): the AI
+        # decides position count; only BuyHoldSPY (1) and the Randoms (5)
+        # keep fixed caps for the life of the experiment.
         "ai_confidence_threshold": 0.60,
     },
     {
@@ -192,7 +202,9 @@ PROFILES: List[Dict[str, Any]] = [
         "enable_short_selling": 1,
         "is_virtual": 1,
         "max_position_pct": 0.10,
-        "max_total_positions": 10,
+        "max_total_positions": 999,  # effectively uncapped (2026-06-11): the AI
+        # decides position count; only BuyHoldSPY (1) and the Randoms (5)
+        # keep fixed caps for the life of the experiment.
         "ai_confidence_threshold": 0.60,
     },
 
@@ -212,7 +224,9 @@ PROFILES: List[Dict[str, Any]] = [
         "enable_short_selling": 0,     # shorts tie up too much margin
         "is_virtual": 1,
         "max_position_pct": 0.20,      # up to 20% per pick — conviction
-        "max_total_positions": 5,      # concentrate over diversify
+        "max_total_positions": 999,  # effectively uncapped (2026-06-11): the AI
+        # decides position count; only BuyHoldSPY (1) and the Randoms (5)
+        # keep fixed caps for the life of the experiment.
         "ai_confidence_threshold": 0.65,  # slightly higher bar
     },
     {
@@ -229,7 +243,9 @@ PROFILES: List[Dict[str, Any]] = [
         "enable_short_selling": 0,
         "is_virtual": 1,
         "max_position_pct": 0.20,
-        "max_total_positions": 5,
+        "max_total_positions": 999,  # effectively uncapped (2026-06-11): the AI
+        # decides position count; only BuyHoldSPY (1) and the Randoms (5)
+        # keep fixed caps for the life of the experiment.
         "ai_confidence_threshold": 0.65,
     },
     {
@@ -245,7 +261,9 @@ PROFILES: List[Dict[str, Any]] = [
         "enable_short_selling": 0,
         "is_virtual": 1,
         "max_position_pct": 0.20,
-        "max_total_positions": 5,
+        "max_total_positions": 999,  # effectively uncapped (2026-06-11): the AI
+        # decides position count; only BuyHoldSPY (1) and the Randoms (5)
+        # keep fixed caps for the life of the experiment.
         "ai_confidence_threshold": 0.65,
     },
     {
@@ -264,7 +282,9 @@ PROFILES: List[Dict[str, Any]] = [
         "enable_short_selling": 1,     # shorts ON
         "is_virtual": 1,
         "max_position_pct": 0.08,      # smaller per-position to fit 15
-        "max_total_positions": 15,     # broader diversification
+        "max_total_positions": 999,  # effectively uncapped (2026-06-11): the AI
+        # decides position count; only BuyHoldSPY (1) and the Randoms (5)
+        # keep fixed caps for the life of the experiment.
         "ai_confidence_threshold": 0.55,  # lower bar — let it cook
     },
 ]

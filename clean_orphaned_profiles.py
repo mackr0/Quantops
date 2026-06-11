@@ -55,6 +55,7 @@ import logging
 import os
 import sqlite3
 import sys
+from contextlib import closing
 from datetime import datetime, timezone
 from typing import Dict, List
 
@@ -304,6 +305,86 @@ def _clear_audit_alerts(main_db: str, apply: bool) -> int:
         return 0
 
 
+def _report_manifest_drift(main_db: str) -> int:
+    """Print every live trading_profiles setting that differs from
+    the rebuild manifest, BEFORE anything is destroyed.
+
+    2026-06-11 — the max_total_positions=999 regression: the operator
+    set all 13 profiles to 999 on 2026-06-06 via a runtime DB change
+    that never landed in create_experiment_profiles.PROFILES. The
+    06-09 fresh-start silently reverted every profile to manifest
+    caps (1/5/10/15) and the experiment ran position-capped for two
+    days before anyone noticed. This report makes the destroy step
+    LOUD about what the rebuild will revert, so the operator can
+    fold intentional drift into the manifest first (or consciously
+    let it die). Report-only — never blocks; runs in dry-run AND
+    apply mode.
+
+    Returns the number of drifted (profile, field) pairs.
+    """
+    try:
+        from create_experiment_profiles import PROFILES
+    except ImportError:
+        log.warning("drift report: create_experiment_profiles not "
+                    "importable — skipping")
+        return 0
+    manifest_by_name = {p["name"]: p for p in PROFILES}
+    # Compare every scalar the manifest declares (manifest is the
+    # rebuild truth — fields it doesn't set keep schema defaults).
+    drifted = 0
+    try:
+        with closing(sqlite3.connect(main_db)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM trading_profiles WHERE enabled = 1"
+            ).fetchall()
+    except sqlite3.Error as exc:
+        log.warning("drift report: read failed (%s) — skipping", exc)
+        return 0
+    header_printed = False
+    for r in rows:
+        m = manifest_by_name.get(r["name"])
+        if not m:
+            continue
+        for field, mval in m.items():
+            if field == "name":
+                continue
+            try:
+                live = r[field]
+            except (KeyError, IndexError):
+                continue
+            # Numeric-tolerant comparison (REAL vs int literals)
+            try:
+                same = float(live) == float(mval)
+            except (TypeError, ValueError):
+                same = str(live) == str(mval)
+            if same:
+                continue
+            if not header_printed:
+                log.warning("=" * 70)
+                log.warning(
+                    "MANIFEST DRIFT — the rebuild will REVERT these "
+                    "live settings:")
+                header_printed = True
+            log.warning(
+                "  %-32s %-24s live=%r  -> manifest=%r",
+                r["name"], field, live, mval,
+            )
+            drifted += 1
+    if drifted:
+        log.warning(
+            "%d drifted setting(s). If any are INTENTIONAL, update "
+            "create_experiment_profiles.PROFILES before --apply, or "
+            "they will be lost (max_total_positions=999 was lost "
+            "this way at the 2026-06-09 reset).", drifted,
+        )
+        log.warning("=" * 70)
+    else:
+        log.info("drift report: live profile settings match the "
+                 "rebuild manifest — nothing will be reverted.")
+    return drifted
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--apply", action="store_true",
@@ -334,6 +415,9 @@ def main():
 
     main_db = _resolve_main_db()
     log.info("main db: %s", main_db)
+    # LOUD pre-destroy drift report — see _report_manifest_drift's
+    # docstring (the max_total_positions=999 lesson).
+    _report_manifest_drift(main_db)
     orphans = _find_orphans(
         main_db, args.user_id,
         remove_all=args.remove_all_alpaca_accounts,

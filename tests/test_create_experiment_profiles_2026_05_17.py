@@ -195,8 +195,15 @@ class TestAggressiveProfileLiftsConstraints:
                     if p["name"] == "EXP-A3-25K-Candidate")
         agg = next(p for p in manifest
                    if p["name"] == "EXP-A3-700K-AggressiveFree")
-        # Aggressive lifts: more positions, shorts on, smaller per-position
-        assert agg["max_total_positions"] > cand["max_total_positions"]
+        # Aggressive lifts: at-least-as-many positions, shorts on,
+        # smaller per-position. 2026-06-11 — strict > relaxed to >=:
+        # ALL AI-driven profiles now carry max_total_positions=999
+        # (operator contract: the AI decides position count; see
+        # test_manifest_position_caps_2026_06_11), so position count
+        # no longer differentiates Aggressive from Candidate. The
+        # remaining differentiators (shorts, per-position size) are
+        # still pinned strictly below.
+        assert agg["max_total_positions"] >= cand["max_total_positions"]
         assert agg["enable_short_selling"] == 1
         assert cand["enable_short_selling"] == 0
         # Same AI signal stack (all flags ON on both)

@@ -17,6 +17,22 @@ Rules going forward:
 
 ---
 
+## 2026-06-11 — Position caps restored to 999 on AI profiles + manifest-drift report at reset time. Severity: high (system was blocking trades; the regression ran unnoticed since the 06-09 reset).
+
+**What broke:** On 2026-06-06 the operator's intent — max_total_positions=999 ("the AI decides what's good and bad; don't cap it") — was applied to all 13 profiles as a runtime DB change. It was never folded into `create_experiment_profiles.PROFILES` and never changelogged (this entry is the first written record; the only evidence is the daily master-DB backups: 999 appears in the 06-07 backup, gone in the 06-10 backup). The 2026-06-09 fresh-start rebuilt profiles from the manifest and silently reverted every cap to 1/5/10/15. Both 06-10 resets preserved the regressed values. The experiment ran position-capped — actively blocking trades — for two days.
+
+**Root cause class:** runtime profile-setting changes that aren't reflected in the rebuild manifest are silently destroyed by every fresh-start reset. The reset only carries forward AI provider/model/key (snapshot-restore); everything else reverts to manifest with no warning.
+
+**Fix:**
+
+- **Manifest updated to the operator contract:** the 10 AI-driven profiles (`strategy_type='ai'`) get `max_total_positions=999`; `EXP-A1-BuyHoldSPY` keeps 1 and the two Randoms keep 5 for the life of the experiment (their caps ARE the arm design). Future resets now rebuild with the right values.
+- **Live prod rows updated** to match (10 profiles 10/5/15 → 999) so trading unblocks immediately, no reset needed.
+- **Class fix — manifest-drift report:** `clean_orphaned_profiles._report_manifest_drift` runs at the top of every fresh-start destroy (dry-run AND apply): compares every live profile setting against the manifest and WARNS loudly, field by field, about everything the rebuild will revert — so intentional drift gets folded into the manifest before `--apply`, or dies a conscious death. Report-only, never blocks.
+
+**Tests:** `tests/test_manifest_position_caps_2026_06_11.py` — manifest values pinned to the operator contract (999 on all 10 AI profiles, 1/5/5 on baselines); drift report flags a diverged cap and stays quiet on a match; the report is wired before orphan discovery in the destroy path.
+
+---
+
 ## 2026-06-11 — Outcome-badge explanations made visible (no more hover-only tooltips) + converted-to-close names the real symbol. Severity: medium (operator visibility) + low copy bug.
 
 **What was wrong:** Every execution-outcome badge on the AI Brain panel (REJECTED, EXECUTED AS …, BLOCKED, CANCELED, GATED) put its explanation in a `title=` hover tooltip only. The operator hit this live on the FRMI "EXECUTED AS LONG CLOSE" badge: nothing on the page said WHY a SHORT became a close — and the hover text was wrong anyway, hardcoded to "F was already held long" (an f-string that never got its prefix, so every conversion claimed Ford was the held position).
