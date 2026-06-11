@@ -1396,6 +1396,50 @@ def _task_update_fills(ctx):
                 slip = round((fill - dec) / dec * 100, 4)
             else:
                 slip = None
+            # 2026-06-11 — QTY truth on terminal orders. The journal
+            # writes qty at SUBMIT assuming a full fill; the broker
+            # sometimes fills less (DAY order partially filled then
+            # canceled at close, or a sell against bracket-reserved
+            # shares). The price was being trued here but never the
+            # quantity — the assume-full-fill drift produced 16,419
+            # phantom virtual BATL shares on A2 (virtual >> broker)
+            # and is the entry-side twin of the partial-sell class.
+            # Only correct on TERMINAL broker states (the number
+            # can't change again) and only for non-multileg rows
+            # (combo legs carry their own per-leg quantities).
+            try:
+                _ord_status = (getattr(order, "status", "") or "").lower()
+                _filled_qty = float(
+                    getattr(order, "filled_qty", 0) or 0)
+                _row_qty = float(trade["qty"] or 0)
+                if (trade["signal_type"] != "MULTILEG"
+                        and _ord_status in (
+                            "filled", "canceled", "expired",
+                            "done_for_day")
+                        and _filled_qty > 0
+                        and abs(_filled_qty - _row_qty) > 0.5):
+                    conn.execute(
+                        "UPDATE trades SET qty = ?, "
+                        "reason = COALESCE(reason || ' | ', '') || ? "
+                        "WHERE id = ?",
+                        (_filled_qty,
+                         f"update_fills: qty corrected "
+                         f"{_row_qty:.0f} -> {_filled_qty:.0f} "
+                         f"(broker {_ord_status})",
+                         trade["id"]),
+                    )
+                    logging.info(
+                        "[%s] update_fills: qty trued for trade #%d "
+                        "%s: %.0f -> %.0f (broker %s)",
+                        seg_label, trade["id"], trade["symbol"],
+                        _row_qty, _filled_qty, _ord_status,
+                    )
+            except Exception as _qt_exc:
+                logging.warning(
+                    "[%s] qty-truth check failed for trade #%d "
+                    "(price truing continues): %s",
+                    seg_label, trade["id"], _qt_exc,
+                )
             # Populate `price` when missing so dashboards reading
             # `t.price` (e.g. trades ledger) stop showing "$--".
             if trade["price"] is None or trade["price"] <= 0:

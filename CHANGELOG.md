@@ -17,6 +17,23 @@ Rules going forward:
 
 ---
 
+## 2026-06-11 — Poll-exit cascade: pre-entry trailing high-water + partial fills orphaning shares. Severity: CRITICAL (p97 lost $24.6K of book value in one session; A2 broker-vs-virtual drift in both directions).
+
+**Found via the per-symbol invariant audit** ((proceeds − costs) + open_mv = realized + unrealized): p97's −$24,578 gap decomposed exactly into PLUG −12,389 / SMCI −9,280 / NU −2,076 / IONZ −833, and the broker confirmed the orphans to the share (4,347 / 311 / 177 / 319 held with no virtual owner).
+
+**The cascade, four bugs deep:**
+
+1. **Trailing stop used the 5-day PRE-ENTRY high as its water mark.** For dip-buys (exactly what the AI favors) the trail sat ABOVE the current price from the moment of entry — SMCI: trail $39.70 on a $30.17 entry fifteen minutes old. Any +1¢ tick "triggered" it. Fix: water mark floored at entry price + the current day's range; never price history from before the position existed.
+2. **The poll exit fired on BRACKET-protected entries**, submitting a full-qty market sell against shares the bracket children had reserved → the broker filled only the available portion. Fix: `has_live_bracket_protection` — check_exits defers ALL poll exits (stop/TP/trailing) for symbols whose entry has live bracket children. One owner per protection; AI SELLs (which cancel protection first) and short-side time stops are unaffected.
+3. **`position_closed` flipped the entry closed at SUBMIT time**; when `fix_partial_sell` later corrected the SELL row's qty to the broker's partial fill, nothing reopened the entry — the remainder vanished from the book while staying at the broker. Fix: fix_partial_sell now reopens the matching entry; the FIFO nets entry − corrected sells = the true remainder; the protective sweep re-protects it.
+4. **Entry-side twin: journal assumes full fill at submit and only the PRICE was ever trued.** Partially-filled DAY entries left phantom virtual shares (BATL: virtual 35,422 vs broker 19,003). Fix: update_fills now corrects qty from broker `filled_qty` on TERMINAL orders (non-multileg; combo legs carry per-leg quantities).
+
+**Data repair:** `repair_partial_exit_drift_2026_06_11.py` — per profile/symbol computes should_hold (filled entries − confirmed sells) vs the FIFO book; a positive deficit matched by the latest closed buy entry identifies the partial-exit victim, which is reopened. Refuses non-matching shapes; idempotent. The opposite drift (phantom virtual shares) self-corrects via the new qty-truth at the broker's terminal states (EOD at the latest).
+
+**Tests:** `tests/test_poll_exit_cascade_2026_06_11.py` — water-mark floor pins (entry-floored, no pre-entry history), bracket-deferral wiring pin, fix_partial_sell reopen pin, qty-truth source pin.
+
+---
+
 ## 2026-06-11 — In-cycle cash race (negative virtual cash) + reconciler dedup-snapshot race (false halt). Severity: CRITICAL + HIGH. Both surfaced on p97 within minutes; the cash race was unmasked by the operator's 999-cap change, the reconcile race by the higher trade frequency that followed.
 
 **1. Negative cash (p97: −$6,132).** Every trade in a cycle sizes against the cycle-start account snapshot. `dollars = min(max_dollars, cash)` caps each BUY by cash — but three BUYs dispatched in one second each saw the SAME un-decremented balance and overdrew cumulatively. The COUNT side of this exact race was fixed in May (`_append_new_stock_position`); the CASH side never was. The old max_total_positions=10 cap masked it by bounding total deployment to ~100% of equity; with the operator's intended 999 the cap is no longer a capital governor and nothing else was.

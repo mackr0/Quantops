@@ -625,6 +625,39 @@ def check_exits(ctx=None):
 
         triggered.extend(trailing_triggered)
 
+    # 2026-06-11 — DEFER every poll exit (stop / TP / trailing) for
+    # symbols whose entry is protected by live BRACKET children. The
+    # broker manages those exits atomically; the poll firing in
+    # parallel sells against bracket-reserved shares → partial fill →
+    # entry flipped closed on a partial → remainder orphaned at the
+    # broker (p97 lost $24.6K of book to this in one session). Time
+    # stops are short-side only (shorts don't use brackets) and AI
+    # SELLs cancel protection first — both unaffected.
+    if db_path and triggered:
+        try:
+            from bracket_orders import has_live_bracket_protection
+            _kept = []
+            _deferred = []
+            for t in triggered:
+                if (not t.get("is_short")
+                        and has_live_bracket_protection(
+                            api, db_path, t.get("symbol"))):
+                    _deferred.append(t.get("symbol"))
+                else:
+                    _kept.append(t)
+            if _deferred:
+                logging.info(
+                    "Poll exits deferred to live bracket protection "
+                    "for %d symbol(s): %s",
+                    len(_deferred), ", ".join(_deferred),
+                )
+            triggered = _kept
+        except Exception as _exc:
+            logging.debug(
+                "Bracket-protection defer check failed (poll exits "
+                "proceed): %s", _exc,
+            )
+
     results = []
 
     # Build a lookup for unrealized P&L from positions

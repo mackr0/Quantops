@@ -126,9 +126,24 @@ def check_trailing_stops(positions, ctx=None):
 
             recent_bars = bars.tail(5)
 
+            # 2026-06-11 — the water mark must be POSITION-scoped.
+            # recent_bars covers the last 5 DAILY bars regardless of
+            # when the position opened; for dip-buys (exactly what
+            # the AI favors) the pre-entry high put the trail ABOVE
+            # the current price, so the stop "triggered" minutes
+            # after entry on any +1¢ tick (SMCI: trail $39.70 on a
+            # $30.17 entry 15 minutes old; PLUG: $3.07 on $2.84).
+            # Without per-position peak tracking, the correct
+            # conservative bound is the entry price and the CURRENT
+            # day's range — never history from before the position
+            # existed. Older multi-day positions trail off a lower
+            # peak than their true maximum, which fires LATER (less
+            # churn), never earlier.
+            today_bar = bars.tail(1)
             if is_short:
                 # Track the lowest price (best for short), trail upward
-                low_water = float(recent_bars["low"].min())
+                low_water = min(
+                    entry_price, float(today_bar["low"].min()))
                 trailing_stop = low_water + (atr * trailing_multiplier)
                 if current_price > trailing_stop:
                     abs_qty = abs(int(qty))
@@ -147,8 +162,10 @@ def check_trailing_stops(positions, ctx=None):
                         "is_short": True,
                     })
             else:
-                # Track the highest price, trail downward
-                high_water = float(recent_bars["high"].max())
+                # Track the highest price, trail downward — floored
+                # at entry (see 2026-06-11 note above).
+                high_water = max(
+                    entry_price, float(today_bar["high"].max()))
                 trailing_stop = high_water - (atr * trailing_multiplier)
                 if current_price < trailing_stop:
                     triggered.append({

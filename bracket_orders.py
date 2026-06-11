@@ -103,6 +103,66 @@ def _write_pending_protective_row(
         return False
 
 
+def has_live_bracket_protection(api, db_path, symbol) -> bool:
+    """True when `symbol`'s most-recent open stock entry in THIS
+    profile's journal is protected by live bracket children at the
+    broker.
+
+    2026-06-11 — used by check_exits to DEFER polling stop/TP/
+    trailing exits for bracket-protected entries. The broker already
+    manages the stop+TP atomically; the poll firing in parallel
+    submits a full-qty market sell against shares the bracket
+    children have reserved → partial fill → fix_partial_sell
+    truncates the SELL row while the entry is already flipped
+    closed → remainder orphaned at the broker (p97: 4,347 PLUG,
+    311 SMCI, 177 NU, 319 IONZ — a −$24.6K equity hole). One owner
+    per protection: bracket entries exit via their children or via
+    deliberate AI SELLs (which cancel protection first), never via
+    the poll."""
+    if not db_path:
+        return False
+    try:
+        with closing(sqlite3.connect(db_path)) as conn:
+            row = conn.execute(
+                "SELECT protective_stop_order_id, "
+                "       protective_tp_order_id "
+                "FROM trades "
+                "WHERE symbol = ? AND side IN ('buy', 'short') "
+                "  AND status = 'open' AND occ_symbol IS NULL "
+                "ORDER BY id DESC LIMIT 1",
+                ((symbol or "").upper(),),
+            ).fetchone()
+    except sqlite3.Error as exc:
+        logger.debug(
+            "bracket-protection check failed for %s (%s) — not "
+            "deferring", symbol, exc,
+        )
+        return False
+    if not row or not (row[0] or row[1]):
+        return False
+    # Stamps exist — confirm at least one child is still live at the
+    # broker (both terminal would mean protection is gone and the
+    # poll is legitimately the last line of defense).
+    for oid in (row[0], row[1]):
+        if not oid:
+            continue
+        try:
+            order = api.get_order(oid)
+            if (getattr(order, "status", "") or "").lower() in (
+                "new", "accepted", "held", "pending_new",
+                "accepted_for_bidding", "pending_replace", "replaced",
+                "partially_filled",
+            ):
+                return True
+        except Exception as exc:
+            logger.debug(
+                "bracket child %s lookup failed for %s: %s",
+                str(oid)[:8], symbol, exc,
+            )
+            continue
+    return False
+
+
 def _heal_bracket_child_tracking(
     conn,
     db_path: Optional[str],

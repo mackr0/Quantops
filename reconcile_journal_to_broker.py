@@ -1225,6 +1225,53 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
                      f"{a['journal_qty']:.0f} ({a['broker_status']}); "
                      f"qty corrected", a["trade_id"]),
                 )
+                # 2026-06-11 — REOPEN the matching entry. The SELL
+                # pipeline flips the entry to 'closed' at SUBMIT time
+                # (position_closed = sell_qty >= held_qty); when the
+                # broker then only fills part of the sell, the entry
+                # must come back so the FIFO book shows the remainder
+                # (entry_qty − filled_qty). Without this, the unsold
+                # shares vanish from the virtual book while staying
+                # at the broker — p97 lost $24.6K of book value to
+                # exactly this (PLUG 4,347 / SMCI 311 / NU 177 /
+                # IONZ 319 orphaned shares). The protective sweep
+                # re-protects the reopened remainder next cycle.
+                _reopen_reason = (
+                    f"reconcile: reopened — exit only filled "
+                    f"{new_qty:.0f} of {a['journal_qty']:.0f}, "
+                    f"remainder still held"
+                )
+                try:
+                    _reopened = conn.execute(
+                        "UPDATE trades SET status='open', "
+                        "reason=COALESCE(reason || ' | ', '') || ? "
+                        "WHERE id = ("
+                        "  SELECT id FROM trades WHERE symbol=? AND side=? "
+                        "  AND status='closed' AND occ_symbol IS NULL "
+                        "  ORDER BY timestamp DESC, id DESC LIMIT 1"
+                        ")",
+                        (_reopen_reason, a["symbol"], opener_side),
+                    ).rowcount
+                except sqlite3.OperationalError:
+                    # Minimal-schema fixtures without occ_symbol.
+                    _reopened = conn.execute(
+                        "UPDATE trades SET status='open', "
+                        "reason=COALESCE(reason || ' | ', '') || ? "
+                        "WHERE id = ("
+                        "  SELECT id FROM trades WHERE symbol=? AND side=? "
+                        "  AND status='closed' "
+                        "  ORDER BY timestamp DESC, id DESC LIMIT 1"
+                        ")",
+                        (_reopen_reason, a["symbol"], opener_side),
+                    ).rowcount
+                if _reopened:
+                    logger.info(
+                        "Reconcile: reopened %s %s entry — partial "
+                        "exit (%.0f of %.0f filled), remainder back "
+                        "on the book.",
+                        a["symbol"], opener_side, new_qty,
+                        a["journal_qty"],
+                    )
             for a in actions["uncancel_sell"]:
                 conn.execute(
                     "UPDATE trades SET status='canceled', pnl=NULL, "
