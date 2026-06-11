@@ -1398,10 +1398,21 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
                     # accounting depends on the closed SELL still
                     # consuming the open BUY lot).
                     "WHERE ("
+                    # 2026-06-11 — 'pending_protective' added to
+                    # the ENTRY-side exclusion too. Protectives
+                    # for SHORT positions are BUY orders; their
+                    # pending placeholder rows counted as real
+                    # long entry lots (the exit-side branch
+                    # below always excluded them; entry-side
+                    # was written when all protectives were
+                    # sell-side). Caught on p93: NU short's
+                    # stop+TP placeholders became 2130 phantom
+                    # long shares and inflated dashboard P&L
+                    # by ~$25K.
                     "    (side IN ('buy', 'short') AND "
                     "     COALESCE(status, 'open') NOT IN "
                     "     ('canceled', 'expired', 'rejected', "
-                    "      'done_for_day', 'closed', "
+                    "      'done_for_day', 'closed', 'pending_protective', "
                     "      'auto_reconciled_phantom_close'))"
                     "    OR "
                     "    (side IN ('sell', 'cover') AND "
@@ -1434,10 +1445,21 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
                     # accounting depends on the closed SELL still
                     # consuming the open BUY lot).
                     "WHERE ("
+                    # 2026-06-11 — 'pending_protective' added to
+                    # the ENTRY-side exclusion too. Protectives
+                    # for SHORT positions are BUY orders; their
+                    # pending placeholder rows counted as real
+                    # long entry lots (the exit-side branch
+                    # below always excluded them; entry-side
+                    # was written when all protectives were
+                    # sell-side). Caught on p93: NU short's
+                    # stop+TP placeholders became 2130 phantom
+                    # long shares and inflated dashboard P&L
+                    # by ~$25K.
                     "    (side IN ('buy', 'short') AND "
                     "     COALESCE(status, 'open') NOT IN "
                     "     ('canceled', 'expired', 'rejected', "
-                    "      'done_for_day', 'closed', "
+                    "      'done_for_day', 'closed', 'pending_protective', "
                     "      'auto_reconciled_phantom_close'))"
                     "    OR "
                     "    (side IN ('sell', 'cover') AND "

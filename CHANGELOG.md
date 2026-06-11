@@ -17,6 +17,20 @@ Rules going forward:
 
 ---
 
+## 2026-06-11 — Phantom P&L from short-side protective placeholders. Severity: CRITICAL (p93's dashboard showed +$22,091 profit on a book that was ~$3K down; the virtual position book also fed the trade pipeline a long where a short existed).
+
+**What broke:** The operator asked how p93's +8.84% was possible when neither the positions nor the trades supported it. Decomposition: `get_virtual_positions` rendered the NU SHORT (−1,065 @ $11.61) as a LONG (+1,065 @ $11.81). $11.81 = avg($12.82, $10.80) — the short's protective stop and TP. Protectives for shorts are BUY orders; their `pending_protective` placeholder rows were counted as real long entry lots. 2,130 phantom shares netted against the real 1,065 short → a ~$12.4K liability became a ~$12.6K asset → equity overstated by ~$25K.
+
+**Root cause:** side-asymmetric status filter in the FIFO query. The exit-side branch (sell/cover) excluded `pending_protective` from day one of the placeholder pattern (2026-06-04); the entry-side branch (buy/short) didn't — it predated short-side protectives, when every placeholder was a sell. Dormant until a profile actually held a short with journaled protectives.
+
+**Ruled out while diagnosing (operator's hypotheses):** cross-profile bleed — only p93 had buy-side placeholders, isolation held; options display — every leg valued correctly; cash math — `get_virtual_account_info` excludes placeholders on all sides and was never wrong.
+
+**Fix:** `pending_protective` added to the ENTRY-side exclusion in both query variants (modern + legacy-schema fallback) of `get_virtual_positions`. Cash math untouched. No data repair needed — the placeholder rows are correct journaling; only the read-side filter was wrong, so the dashboard self-corrects on the next render.
+
+**Tests:** `tests/test_short_protective_pending_not_position_2026_06_11.py` — the exact NU regression (short + 2 BUY placeholders must yield qty=−1065 @ 11.61), the symmetric long case, and the filled-protective-closes-the-lot contract (closed SELL still consumes the BUY lot).
+
+---
+
 ## 2026-06-11 — Position caps restored to 999 on AI profiles + manifest-drift report at reset time. Severity: high (system was blocking trades; the regression ran unnoticed since the 06-09 reset).
 
 **What broke:** On 2026-06-06 the operator's intent — max_total_positions=999 ("the AI decides what's good and bad; don't cap it") — was applied to all 13 profiles as a runtime DB change. It was never folded into `create_experiment_profiles.PROFILES` and never changelogged (this entry is the first written record; the only evidence is the daily master-DB backups: 999 appears in the 06-07 backup, gone in the 06-10 backup). The 2026-06-09 fresh-start rebuilt profiles from the manifest and silently reverted every cap to 1/5/10/15. Both 06-10 resets preserved the regressed values. The experiment ran position-capped — actively blocking trades — for two days.
