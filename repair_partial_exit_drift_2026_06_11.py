@@ -65,11 +65,18 @@ def repair_profile(pid: int, apply: bool) -> int:
             "SELECT DISTINCT symbol FROM trades WHERE occ_symbol IS NULL"
         ).fetchall()]
         for sym in syms:
+            # Net-SIGNED expectation: buys and covers add, sells and
+            # shorts subtract — so open shorts net out instead of
+            # producing a false positive deficit (p93's NU short
+            # showed as deficit 1065 under the buy/sell-only
+            # formula).
             should = conn.execute(
-                f"SELECT COALESCE(SUM(CASE WHEN side='buy' THEN qty "
-                f"  WHEN side='sell' THEN -qty ELSE 0 END), 0) "
+                f"SELECT COALESCE(SUM(CASE "
+                f"  WHEN side IN ('buy','cover') THEN qty "
+                f"  WHEN side IN ('sell','short') THEN -qty "
+                f"  ELSE 0 END), 0) "
                 f"FROM trades WHERE symbol=? AND occ_symbol IS NULL "
-                f"AND side IN ('buy','sell') "
+                f"AND side IN ('buy','sell','short','cover') "
                 f"AND COALESCE(status,'open') NOT IN ({_EXCLUDED})",
                 (sym,),
             ).fetchone()[0]
@@ -77,7 +84,7 @@ def repair_profile(pid: int, apply: bool) -> int:
             if deficit <= 0.5:
                 continue
             entry = conn.execute(
-                "SELECT id, qty, price FROM trades "
+                "SELECT id, qty, price, timestamp FROM trades "
                 "WHERE symbol=? AND side='buy' AND status='closed' "
                 "  AND occ_symbol IS NULL "
                 "ORDER BY timestamp DESC, id DESC LIMIT 1",
@@ -87,10 +94,24 @@ def repair_profile(pid: int, apply: bool) -> int:
                 print(f"  p{pid} {sym}: deficit {deficit:.0f} but no "
                       "closed buy entry — REFUSING (investigate)")
                 continue
-            if float(entry["qty"]) < deficit - 0.5:
-                print(f"  p{pid} {sym}: deficit {deficit:.0f} exceeds "
-                      f"latest closed entry qty {entry['qty']:.0f} — "
-                      "REFUSING (multi-entry shape, investigate)")
+            # The deficit must equal THIS entry's unsold remainder
+            # (entry qty − confirmed sells after it). Anything else
+            # is a different shape: reopening would inject phantom
+            # shares (p99 SMCI: deficit 2 vs entry qty 69 — blind
+            # reopen would have added 67 shares that don't exist).
+            sold_after = conn.execute(
+                f"SELECT COALESCE(SUM(qty), 0) FROM trades "
+                f"WHERE symbol=? AND side='sell' AND occ_symbol IS NULL "
+                f"AND timestamp >= ? "
+                f"AND COALESCE(status,'open') NOT IN ({_EXCLUDED})",
+                (sym, entry["timestamp"]),
+            ).fetchone()[0]
+            remainder = float(entry["qty"]) - float(sold_after or 0)
+            if abs(remainder - deficit) > 1.0:
+                print(f"  p{pid} {sym}: deficit {deficit:.0f} != "
+                      f"entry #{entry['id']} remainder {remainder:.0f} "
+                      f"(qty {entry['qty']:.0f} − sold {sold_after:.0f}) "
+                      "— REFUSING (shape mismatch, investigate)")
                 continue
             print(f"  p{pid} {sym}: deficit {deficit:.0f} — "
                   f"{'REOPEN' if apply else 'would reopen'} entry "
