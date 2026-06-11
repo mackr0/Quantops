@@ -242,6 +242,25 @@ def test_reconciler_exempts_bracket_children_before_halt():
     )
 
 
+def test_reconciler_exemption_performs_the_synthesis():
+    """Suppressing the halt is not enough — the exempted fill must
+    be APPLIED (exit row written, entry closed), or the journal
+    drifts long while the broker is flat. Caught live: WCT entry
+    still 'open' after the first exempted pass."""
+    src = (REPO / "reconcile_journal_to_broker.py").read_text()
+    pending_idx = src.index("status = 'pending_protective'")
+    check_idx = src.index("_is_bracket_child_fill(", pending_idx)
+    orphan_idx = src.index("still_orphan_protective.append", check_idx)
+    branch = src[check_idx:orphan_idx]
+    assert "INSERT INTO trades" in branch, (
+        "Bracket-child exemption no longer writes the exit row — "
+        "entry stays open forever and the virtual book drifts."
+    )
+    assert "status='closed'" in branch, (
+        "Bracket-child exemption must close the entry row."
+    )
+
+
 # ---------------------------------------------------------------------------
 # (D) clear_risk_halt missing-table noise
 # ---------------------------------------------------------------------------

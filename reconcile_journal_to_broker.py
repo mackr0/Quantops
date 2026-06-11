@@ -1271,11 +1271,57 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
                         if _is_bracket_child_fill(
                             api, conn, a, fill_oid,
                         ):
+                            # PERFORM the expected synthesis inline —
+                            # the equivalent of the pending-row UPDATE
+                            # path, minus the pre-existing row: write
+                            # the closed exit row from broker fill
+                            # data and close the entry. Without this
+                            # the exemption only suppresses the halt
+                            # and the entry stays open forever
+                            # (caught live: WCT entry still open
+                            # after the first exempted pass — broker
+                            # flat, journal long).
+                            _side = ("cover" if kind == "cover"
+                                     else "sell")
+                            _price = (a.get("sell_price")
+                                      or a.get("cover_price"))
+                            _fqty = (a.get("sell_qty")
+                                     or a.get("cover_qty"))
+                            _fat = (a.get("sell_filled_at")
+                                    or a.get("cover_filled_at"))
+                            conn.execute(
+                                "INSERT INTO trades "
+                                "(timestamp, symbol, side, qty, "
+                                " price, fill_price, order_id, "
+                                " signal_type, strategy, status, "
+                                " reason) "
+                                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                                "        'closed', ?)",
+                                (
+                                    _fat, a.get("symbol"), _side,
+                                    _fqty, _price, _price, fill_oid,
+                                    "PROTECTIVE_FILL",
+                                    "reconcile_backfill_bracket",
+                                    "bracket child fill confirmed "
+                                    f"@ ${float(_price or 0):.2f} "
+                                    "(reconciler; no pending row — "
+                                    "at-submit journaling raced "
+                                    "child materialization)",
+                                ),
+                            )
+                            if kind != "partial":
+                                conn.execute(
+                                    "UPDATE trades SET status='closed' "
+                                    "WHERE id=?",
+                                    (a["trade_id"],),
+                                )
+                            applied_protective += 1
                             logger.info(
                                 "Reconciler: %s fill %s is a bracket "
                                 "child of its entry's parent order — "
-                                "expected protective synthesis, no "
-                                "halt.",
+                                "expected protective synthesis "
+                                "applied (exit row written, entry "
+                                "closed), no halt.",
                                 a.get("symbol"), fill_oid[:8],
                             )
                             continue
