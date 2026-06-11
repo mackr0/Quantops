@@ -83,48 +83,76 @@ def repair_profile(pid: int, apply: bool) -> int:
             deficit = float(should or 0) - float(book.get(sym, 0.0))
             if deficit <= 0.5:
                 continue
-            entry = conn.execute(
-                "SELECT id, qty, price, timestamp FROM trades "
-                "WHERE symbol=? AND side='buy' AND status='closed' "
-                "  AND occ_symbol IS NULL "
-                "ORDER BY timestamp DESC, id DESC LIMIT 1",
+            # SIMULATE-AND-VERIFY. The virtual book's FIFO excludes
+            # CLOSED entries from lots entirely, so the repair goal
+            # is: reopen the closed buy entry whose restoration
+            # makes the simulated book equal `should` (the
+            # confirmed signed net, which matches the broker's
+            # per-profile expectation). Lot-identity replays
+            # mis-attribute when later round-trips traded the same
+            # symbol (p97 NU: the remainder "lives" in an open lot
+            # under full-history FIFO, but the BOOK can only be
+            # fixed by restoring the closed entry's capacity).
+            rows = conn.execute(
+                f"SELECT id, side, qty, status FROM trades "
+                f"WHERE symbol=? AND occ_symbol IS NULL "
+                f"AND side IN ('buy','sell') "
+                f"AND COALESCE(status,'open') NOT IN ({_EXCLUDED}) "
+                f"ORDER BY timestamp ASC, id ASC",
                 (sym,),
-            ).fetchone()
-            if not entry:
-                print(f"  p{pid} {sym}: deficit {deficit:.0f} but no "
-                      "closed buy entry — REFUSING (investigate)")
+            ).fetchall()
+
+            def _sim_book(reopened_id=None):
+                """Book-FIFO semantics: closed entries contribute no
+                lot (unless it's the candidate being reopened);
+                closed sells still consume."""
+                lots = []
+                for r in rows:
+                    q = float(r["qty"] or 0)
+                    if q <= 0:
+                        continue
+                    if r["side"] == "buy":
+                        if (r["status"] != "closed"
+                                or r["id"] == reopened_id):
+                            lots.append(q)
+                    else:
+                        remaining = q
+                        for i in range(len(lots)):
+                            if remaining <= 0:
+                                break
+                            consumed = min(lots[i], remaining)
+                            lots[i] -= consumed
+                            remaining -= consumed
+                return sum(lots)
+
+            candidates = [r for r in rows
+                          if r["side"] == "buy"
+                          and r["status"] == "closed"]
+            chosen = None
+            for cand in reversed(candidates):  # newest first
+                if abs(_sim_book(cand["id"])
+                       - float(should or 0)) <= 1.0:
+                    chosen = cand
+                    break
+            if chosen is None:
+                print(f"  p{pid} {sym}: deficit {deficit:.0f} — no "
+                      "single closed entry restores book==expected "
+                      "— REFUSING (investigate)")
                 continue
-            # The deficit must equal THIS entry's unsold remainder
-            # (entry qty − confirmed sells after it). Anything else
-            # is a different shape: reopening would inject phantom
-            # shares (p99 SMCI: deficit 2 vs entry qty 69 — blind
-            # reopen would have added 67 shares that don't exist).
-            sold_after = conn.execute(
-                f"SELECT COALESCE(SUM(qty), 0) FROM trades "
-                f"WHERE symbol=? AND side='sell' AND occ_symbol IS NULL "
-                f"AND timestamp >= ? "
-                f"AND COALESCE(status,'open') NOT IN ({_EXCLUDED})",
-                (sym, entry["timestamp"]),
-            ).fetchone()[0]
-            remainder = float(entry["qty"]) - float(sold_after or 0)
-            if abs(remainder - deficit) > 1.0:
-                print(f"  p{pid} {sym}: deficit {deficit:.0f} != "
-                      f"entry #{entry['id']} remainder {remainder:.0f} "
-                      f"(qty {entry['qty']:.0f} − sold {sold_after:.0f}) "
-                      "— REFUSING (shape mismatch, investigate)")
-                continue
-            print(f"  p{pid} {sym}: deficit {deficit:.0f} — "
+            print(f"  p{pid} {sym}: "
                   f"{'REOPEN' if apply else 'would reopen'} entry "
-                  f"#{entry['id']} (qty {entry['qty']:.0f})")
+                  f"#{chosen['id']} (qty {chosen['qty']:.0f}) — "
+                  f"book {float(book.get(sym, 0.0)):.0f} -> "
+                  f"{float(should or 0):.0f}")
             if apply:
                 conn.execute(
                     "UPDATE trades SET status='open', "
                     "reason=COALESCE(reason || ' | ', '') || ? "
                     "WHERE id=?",
-                    ("repair_partial_exit_drift_2026_06_11: reopened "
-                     f"— partial exit left {deficit:.0f} shares at "
-                     "the broker with no book entry",
-                     entry["id"]),
+                    ("repair_partial_exit_drift_2026_06_11: "
+                     f"reopened — partial exits left {deficit:.0f} "
+                     "shares at the broker with no book entry",
+                     chosen["id"]),
                 )
                 fixed += 1
         if apply:
