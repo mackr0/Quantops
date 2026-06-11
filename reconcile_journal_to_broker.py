@@ -1021,6 +1021,30 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
             prot_kind, prot_detail = _detect_protective_fill(
                 api, r, used_sell_ids,
             )
+            # 2026-06-11 — LIVE own-journal check (same race as the
+            # phantom path below): an exit journaled mid-pass is
+            # invisible to the task-start dedup snapshot. If a
+            # non-placeholder row already carries this order_id,
+            # the fill is journaled — processing it again would
+            # double-count (the bracket-child exemption would even
+            # INSERT a duplicate exit row). Placeholder rows
+            # (pending_protective) keep flowing through the
+            # established pending-UPDATE path below.
+            if prot_kind in ("backfill_full", "backfill_partial"):
+                _fresh_exit = conn.execute(
+                    "SELECT 1 FROM trades WHERE order_id = ? AND "
+                    "COALESCE(status, '') != 'pending_protective' "
+                    "LIMIT 1",
+                    (prot_detail["order_id"],),
+                ).fetchone()
+                if _fresh_exit:
+                    logger.info(
+                        "Reconcile: protective/exit fill %s for %s "
+                        "already journaled in this profile (landed "
+                        "after the dedup snapshot) — skipping.",
+                        str(prot_detail["order_id"])[:8], sym,
+                    )
+                    continue
             if prot_kind == "backfill_full":
                 used_sell_ids.add(prot_detail["order_id"])
                 entry_price = float(r["price"] or 0)
@@ -1114,6 +1138,28 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
                 # NOT in our journal previously. This IS the orphan-
                 # fill class the safety net is designed to halt on.
                 # Tagged source="phantom" so the counter knows.
+                #
+                # 2026-06-11 — LIVE own-journal check first. The
+                # cross-profile dedup set is snapshotted at task
+                # START; a sell journaled mid-pass is invisible to
+                # it (CPNG 93ecef03: sell journaled 16:45:22, p97's
+                # reconcile read the stale set at 16:46:45 → false
+                # orphan → false HALT). If THIS profile's journal
+                # already has a row for the order, it's not an
+                # orphan — the fill-confirmation state machine owns
+                # it; skip the action entirely.
+                _fresh = conn.execute(
+                    "SELECT 1 FROM trades WHERE order_id = ? LIMIT 1",
+                    (detail["order_id"],),
+                ).fetchone()
+                if _fresh:
+                    logger.info(
+                        "Reconcile: broker fill %s for %s is already "
+                        "journaled in this profile (landed after the "
+                        "dedup snapshot) — not an orphan, skipping.",
+                        str(detail["order_id"])[:8], sym,
+                    )
+                    continue
                 if is_short:
                     used_cover_ids.add(detail["order_id"])
                     actions["backfill_cover"].append({

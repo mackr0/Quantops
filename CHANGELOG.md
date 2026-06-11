@@ -17,6 +17,38 @@ Rules going forward:
 
 ---
 
+## 2026-06-11 — In-cycle cash race (negative virtual cash) + reconciler dedup-snapshot race (false halt). Severity: CRITICAL + HIGH. Both surfaced on p97 within minutes; the cash race was unmasked by the operator's 999-cap change, the reconcile race by the higher trade frequency that followed.
+
+**1. Negative cash (p97: −$6,132).** Every trade in a cycle sizes against the cycle-start account snapshot. `dollars = min(max_dollars, cash)` caps each BUY by cash — but three BUYs dispatched in one second each saw the SAME un-decremented balance and overdrew cumulatively. The COUNT side of this exact race was fixed in May (`_append_new_stock_position`); the CASH side never was. The old max_total_positions=10 cap masked it by bounding total deployment to ~100% of equity; with the operator's intended 999 the cap is no longer a capital governor and nothing else was.
+
+Fix: `_adjust_cycle_cash` — the money-side mirror of the position-count helpers. Debits BUY/COVER cost and credits SELL/SHORT proceeds on the shared account snapshot right after each executed trade, wired beside `_append_new_stock_position` in the dispatch loop. Plus a hard cash floor in BOTH sizing branches: without it, the drawdown/correlation `max(1, …)` reduce bumps would force a 1-share trade out of NEGATIVE dollars. Existing negative balance self-corrects as positions close (cash math itself is correct; the book is simply overallocated ~3%).
+
+**2. False reconciler halt (CPNG `93ecef03`).** The sell-order dedup set is snapshotted at reconcile-task START; p97's CPNG sell was journaled mid-pass (16:45:22) and its own reconcile read the stale set at 16:46:45 — its own journaled sell classified as an orphan broker fill → false "synthesis needed" halt (auto-cleared next pass, but the operator rightly treats every safety-net halt as an emergency). Worse: on the protective path the bracket-child exemption would have INSERTED a duplicate exit row for an already-journaled fill.
+
+Fix: live own-journal check before creating ANY backfill action, on both the phantom and protective paths — if a non-placeholder row already carries the order_id, the fill is journaled and the fill-confirmation state machine owns it. Placeholder (pending_protective) rows keep flowing through the established pending-UPDATE path.
+
+**Tests:** `tests/test_cycle_cash_and_reconcile_race_2026_06_11.py` (9) — debit/credit semantics per action, the three-BUYs-cannot-overdraw shape, dispatch-loop wiring pin, cash floor in both branches, and live-journal-check pins on both reconciler paths.
+
+---
+
+## 2026-06-11 — Fill-true money math: phantom cash from canceled protectives + decision-vs-fill drift + realized-P&L truing. Severity: CRITICAL (p94's entire +3.76% "profit" was one canceled row; every profile's cash/pnl carried slippage-sized error).
+
+**Found by the same operator-driven audit as the p93 phantom (decompose equity → realized + unrealized + cash; find the component that doesn't reconcile).** p94 reported +$7,516.83; realized was ≈−$3,014, unrealized +$60 → the excess lived in CASH.
+
+**Three classes fixed:**
+
+1. **Cash counted never-filled rows.** `get_virtual_account_info`'s only status exclusion was `pending_protective`. A protective row that transitions pending_protective → canceled KEEPS its trigger price, and the cash math counted it as real sale proceeds — p94's canceled BBAI take-profit (2,234 @ $4.4632) injected $9,970.79 of phantom cash. Fleet scan: exactly one such row existed; the class now excludes canceled / expired / rejected / done_for_day / auto_reconciled_phantom_close.
+
+2. **Decision price used where the broker reported a fill.** Cash flows and FIFO lot bases now use `COALESCE(NULLIF(fill_price,0), price)`. The drift is real money at size: WCT's 9,029 shares × $0.055 slippage = $497 of cash error from one trade. Position `avg_entry_price` is now the actual fill.
+
+3. **Realized P&L was a submit-time estimate, never trued.** Exit rows were stamped with prorated unrealized-at-decision-prices (PLUG: estimate +$77.83; both fills $2.89 → true $0.00), and reconciler-synthesized exits (WCT bracket stops) carried NULL pnl forever — silently missing losses from /trades and every trades.pnl consumer (self-tuning, kelly sizing, capital allocator, post-mortems). New `journal.recompute_realized_pnl`: idempotent fill-true FIFO pass mirroring get_virtual_positions' lot semantics exactly (OCC scoping, 100× option multiplier, sell-to-open recognition) plus short-side attribution ('buy' rows consume short lots first — protective covers are journaled side='buy'). Wired: end of `_task_update_fills` (after fills land) and inside `reconcile_trade_statuses` — replacing a FIFO loop there that computed per-lot pnl into a local and NEVER WROTE IT (dead since the "pnl belongs on the SELL row" migration).
+
+**Audit of remaining money-math sites:** `qty*price` occurrences in trader / trade_pipeline / portfolio_manager / notifications are pre-trade estimates (decision price is correct there). All `SUM(pnl)` consumers become accurate via the truing pass. Daily snapshots derive from the fixed equity path; existing snapshot rows predate both phantom rows (verified against backup timestamps), so no snapshot repair needed.
+
+**Tests:** `tests/test_fill_true_money_math_2026_06_11.py` (11) — the exact p94 canceled-row regression, every never-filled status, fill-preferred cash + lot basis, the PLUG estimate-overwrite, the WCT NULL-pnl stamp, short-closed-by-protective-buy, option multiplier, sell-to-open non-realization, idempotency.
+
+---
+
 ## 2026-06-11 — Phantom P&L from short-side protective placeholders. Severity: CRITICAL (p93's dashboard showed +$22,091 profit on a book that was ~$3K down; the virtual position book also fed the trade pipeline a long where a short existed).
 
 **What broke:** The operator asked how p93's +8.84% was possible when neither the positions nor the trades supported it. Decomposition: `get_virtual_positions` rendered the NU SHORT (−1,065 @ $11.61) as a LONG (+1,065 @ $11.81). $11.81 = avg($12.82, $10.80) — the short's protective stop and TP. Protectives for shorts are BUY orders; their `pending_protective` placeholder rows were counted as real long entry lots. 2,130 phantom shares netted against the real 1,065 short → a ~$12.4K liability became a ~$12.6K asset → equity overstated by ~$25K.

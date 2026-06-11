@@ -592,6 +592,56 @@ def ai_review(symbol, technical_signal, ctx=None, political_context=None):
 # Live position-count maintenance during the STEP 5 dispatch loop
 # ---------------------------------------------------------------------------
 
+def _adjust_cycle_cash(account, trade_result):
+    """Mid-cycle CASH adjustment on the shared account snapshot —
+    the money-side mirror of `_append_new_stock_position` /
+    `_decrement_closed_stock_position` (which fixed the COUNT side
+    of the same race in May).
+
+    Background (caught live 2026-06-11, p97 cash −$6,132): every
+    trade in a cycle sizes against the SAME cycle-start account
+    snapshot. `dollars = min(max_dollars, cash)` caps each BUY by
+    cash, but with 3 BUYs dispatched in one second each saw the
+    full un-decremented balance — cumulative overdraw. The old
+    max_total_positions=10 cap masked this by bounding deployment
+    to ~100% of equity; at the operator's 999 ("AI decides") the
+    mask is gone and the cash race is the only governor left.
+
+    Debits BUY/COVER cost, credits SELL/SHORT proceeds, on the
+    `account` dict the dispatch loop passes to every execute_trade
+    call. Mutates in place; returns the applied delta (0.0 when
+    not applicable). Stock actions only — options flow through
+    their own pipeline and their premiums don't feed this sizing
+    path."""
+    if not isinstance(trade_result, dict) or not isinstance(account, dict):
+        return 0.0
+    action = trade_result.get("action")
+    try:
+        qty = float(trade_result.get("qty") or 0)
+        price = float(trade_result.get("fill_price")
+                      or trade_result.get("price") or 0)
+        notional = float(
+            trade_result.get("estimated_cost")
+            or trade_result.get("estimated_proceeds")
+            or (qty * price)
+        )
+    except (TypeError, ValueError):
+        return 0.0
+    if notional <= 0:
+        return 0.0
+    if action in ("BUY", "COVER"):
+        delta = -notional
+    elif action in ("SELL", "SHORT"):
+        delta = notional
+    else:
+        return 0.0
+    try:
+        account["cash"] = float(account.get("cash") or 0) + delta
+    except (TypeError, ValueError):
+        return 0.0
+    return delta
+
+
 def _append_new_stock_position(positions_list, trade_result):
     """Symmetric mid-cycle increment for the position-cap snapshot.
 
@@ -1065,6 +1115,20 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
             result["action"] = "SKIP"
             result["reason"] = "Invalid price"
             logging.warning("Trade SKIPPED for %s: price is 0 after all fetch attempts", symbol)
+            return result
+
+        # 2026-06-11 — hard cash floor. With in-cycle cash debits
+        # (_adjust_cycle_cash) a later BUY in the same cycle can see
+        # cash ≤ 0 or below one share; without this guard the
+        # negative `dollars` flowed into qty and the drawdown/
+        # correlation max(1, …) bumps could force a 1-share buy on
+        # an overdrawn book.
+        if cash <= 0 or dollars < price:
+            result["action"] = "SKIP"
+            result["reason"] = (
+                f"Insufficient cash remaining this cycle "
+                f"(${cash:,.0f} available)"
+            )
             return result
 
         qty = int(dollars / price)
@@ -1608,6 +1672,16 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                 result["action"] = "SKIP"
                 result["reason"] = "Invalid price"
                 logging.warning("Short SKIPPED for %s: price is 0 after all fetch attempts", symbol)
+            elif cash <= 0 or dollars < price:
+                # 2026-06-11 — same hard cash floor as the BUY path:
+                # with in-cycle cash debits, an overdrawn snapshot
+                # must not size a short (the max(1, …) reduce bumps
+                # below would force qty=1 from a negative dollars).
+                result["action"] = "SKIP"
+                result["reason"] = (
+                    f"Insufficient cash remaining this cycle "
+                    f"(${cash:,.0f} available)"
+                )
             else:
                 qty = int(dollars / price)
 
@@ -2961,6 +3035,12 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
             # the same cycle-start snapshot and the position cap is
             # racy (caught on pid 48/49: open=6 with max_total=5).
             _append_new_stock_position(positions_list, trade_result)
+            # 2026-06-11 — the CASH side of the same race: debit/
+            # credit the shared account snapshot so the next trade
+            # in THIS cycle sizes against remaining cash, not the
+            # cycle-start balance (p97 went to −$6,132 when 3 BUYs
+            # in one second each saw the full balance).
+            _adjust_cycle_cash(account, trade_result)
             # Visibility: when the trade dict says SKIP / EXCLUDED /
             # ERROR / etc., surface it. The previous behavior was
             # silent — the user only saw "Executing: SHORT X" and

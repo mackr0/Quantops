@@ -1375,9 +1375,27 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
             # under the same "MSFT" key and produces nonsense valuations).
             # Fall back to the legacy stock-only query when occ_symbol
             # doesn't exist (older test fixtures with minimal schemas).
+            # 2026-06-11 — lots are valued at the broker's actual
+            # fill price when reported (decision price is the
+            # fallback for rows without fills). Same hyper-accuracy
+            # rule as the cash math: avg_entry_price and FIFO
+            # consumption must reflect what actually executed, not
+            # what was intended. Column-probed so minimal-schema
+            # fixtures (no fill_price) keep working without losing
+            # the occ_symbol option/stock separation.
+            try:
+                _vp_cols = {r[1] for r in conn.execute(
+                    "PRAGMA table_info(trades)").fetchall()}
+            except sqlite3.Error:
+                _vp_cols = set()
+            _vp_price = (
+                "COALESCE(NULLIF(fill_price, 0), price)"
+                if "fill_price" in _vp_cols else "price"
+            )
             try:
                 rows = conn.execute(
-                    "SELECT symbol, side, qty, price, timestamp, occ_symbol "
+                    f"SELECT symbol, side, qty, {_vp_price} AS price, "
+                    "timestamp, occ_symbol "
                     "FROM trades "
                     # Status-aware filter. Pre-2026-05-16 only
                     # 'canceled' was excluded, which left two leaks:
@@ -1721,31 +1739,52 @@ def get_virtual_account_info(db_path=None, initial_capital=100000.0,
                 "PRAGMA table_info(trades)"
             ).fetchall()}
             has_occ = "occ_symbol" in cols
+            has_fill = "fill_price" in cols
         except Exception:
             has_occ = False
+            has_fill = False
         try:
             # 2026-05-21 — exclude 'pending_protective' placeholder
-            # rows from the cash math. These are written at
-            # protective-order PLACEMENT time and carry the trigger
-            # price (stop/TP) in `price`, which would otherwise be
-            # counted as a real cash flow. No cash actually moves
-            # until the broker fires the order, at which point the
-            # reconciler flips the row to status='closed' and it
-            # participates in cash math correctly. (Trailing rows
-            # have price=NULL so they were already skipped by the
-            # qty/price>0 guard; stop/TP rows have a real trigger
-            # price and WOULD have inflated cash without this filter.)
+            # rows from the cash math (placement-time trigger prices
+            # are not cash flows).
+            #
+            # 2026-06-11 — TWO accuracy fixes:
+            # (a) Exclude EVERY never-filled terminal status, not
+            #     just 'pending_protective'. A protective row that
+            #     transitions pending_protective → canceled KEEPS its
+            #     trigger price; the old filter counted it as a real
+            #     cash flow (caught on p94: ONE canceled BBAI
+            #     take-profit row injected $9,970.79 phantom cash —
+            #     the entire +3.76% the dashboard showed).
+            #     auto_reconciled_phantom_close marks entries the
+            #     broker never filled — same rule: no money moved.
+            # (b) Prefer fill_price over the decision price when the
+            #     broker reported a real fill. Decision-vs-fill drift
+            #     is real money at size (WCT: 9,029 shares × $0.055
+            #     slippage = $497 cash error on a single trade).
+            _cash_excluded = (
+                "'pending_protective', 'canceled', 'expired', "
+                "'rejected', 'done_for_day', "
+                "'auto_reconciled_phantom_close'"
+            )
+            _price_expr = (
+                "COALESCE(NULLIF(fill_price, 0), price)"
+                if has_fill else "price"
+            )
             if has_occ:
                 rows = conn.execute(
-                    "SELECT side, qty, price, occ_symbol FROM trades "
-                    "WHERE COALESCE(status, 'open') != 'pending_protective'"
+                    f"SELECT side, qty, {_price_expr}, occ_symbol "
+                    "FROM trades "
+                    "WHERE COALESCE(status, 'open') NOT IN "
+                    f"({_cash_excluded})"
                 ).fetchall()
             else:
                 rows = [
                     (r[0], r[1], r[2], None)
                     for r in conn.execute(
-                        "SELECT side, qty, price FROM trades "
-                        "WHERE COALESCE(status, 'open') != 'pending_protective'"
+                        f"SELECT side, qty, {_price_expr} FROM trades "
+                        "WHERE COALESCE(status, 'open') NOT IN "
+                        f"({_cash_excluded})"
                     ).fetchall()
                 ]
         except Exception:
@@ -1822,6 +1861,139 @@ def get_virtual_account_info(db_path=None, initial_capital=100000.0,
     }
 
 
+def recompute_realized_pnl(db_path=None):
+    """Re-derive realized P&L on every exit row from fill-based FIFO
+    lot matching. Idempotent truing pass — overwrites estimates.
+
+    2026-06-11 (hyper-accuracy audit) — two gaps this closes:
+      * Exit-row pnl was stamped at SUBMIT time as a prorated copy
+        of the position's unrealized_pl (decision prices). The
+        broker's actual fill lands minutes later and nothing
+        corrected the estimate (PLUG: estimate +$77.83, fill-true
+        $0.00).
+      * Synthesized exits (reconciler bracket-child backfills, e.g.
+        the WCT stop fills) carried NULL pnl forever, silently
+        understating realized losses on /trades and in every
+        consumer of trades.pnl (self-tuning, kelly sizing,
+        post-mortems).
+
+    FIFO semantics mirror get_virtual_positions exactly (same key
+    scoping: OCC for options / symbol for stock; option multiplier
+    100×; sell-with-no-long-lot on an OCC = sell-to-open), PLUS
+    short-side attribution: 'buy' rows consume open short lots
+    first (protective covers are journaled side='buy') and realize
+    (short_entry − buy_px); leftovers open long lots.
+
+    Includes CLOSED entry rows (their consumed lots are the cost
+    basis) and excludes never-filled statuses + placeholder rows.
+    Writes pnl only when it differs > $0.005 from the stored value.
+
+    Returns the number of rows updated.
+    """
+    updated = 0
+    with closing(_get_conn(db_path)) as conn:
+        try:
+            cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(trades)").fetchall()}
+        except sqlite3.Error:
+            return 0
+        px_expr = ("COALESCE(NULLIF(fill_price, 0), price)"
+                   if "fill_price" in cols else "price")
+        occ_expr = "occ_symbol" if "occ_symbol" in cols else "NULL"
+        try:
+            rows = conn.execute(
+                f"SELECT id, symbol, side, qty, {px_expr}, "
+                f"{occ_expr}, pnl FROM trades "
+                "WHERE COALESCE(status, 'open') NOT IN "
+                "('pending_protective', 'canceled', 'expired', "
+                " 'rejected', 'done_for_day', "
+                " 'auto_reconciled_phantom_close') "
+                "ORDER BY timestamp ASC, id ASC"
+            ).fetchall()
+        except sqlite3.Error:
+            return 0
+        long_lots: Dict[str, list] = {}
+        short_lots: Dict[str, list] = {}
+        for tid, symbol, side, qty, pxv, occ, old_pnl in rows:
+            qty = float(qty or 0)
+            pxv = float(pxv or 0)
+            if qty <= 0 or pxv <= 0:
+                continue
+            key = occ if occ else symbol
+            mult = 100.0 if occ else 1.0
+            realized = None
+            if side == "buy":
+                # Cover-first: protective closes for SHORTS are
+                # journaled side='buy'. Consume open short lots and
+                # realize; any leftover opens a long lot.
+                sl = short_lots.setdefault(key, [])
+                remaining = qty
+                amt = 0.0
+                consumed_any = False
+                while remaining > 0 and sl:
+                    consumed = min(sl[0][0], remaining)
+                    amt += (sl[0][1] - pxv) * consumed * mult
+                    sl[0][0] -= consumed
+                    remaining -= consumed
+                    consumed_any = True
+                    if sl[0][0] <= 0.001:
+                        sl.pop(0)
+                if remaining > 0:
+                    long_lots.setdefault(key, []).append(
+                        [remaining, pxv])
+                if consumed_any:
+                    realized = amt
+            elif side == "short":
+                short_lots.setdefault(key, []).append([qty, pxv])
+            elif side == "sell":
+                ll = long_lots.setdefault(key, [])
+                remaining = qty
+                amt = 0.0
+                consumed_any = False
+                while remaining > 0 and ll:
+                    consumed = min(ll[0][0], remaining)
+                    amt += (pxv - ll[0][1]) * consumed * mult
+                    ll[0][0] -= consumed
+                    remaining -= consumed
+                    consumed_any = True
+                    if ll[0][0] <= 0.001:
+                        ll.pop(0)
+                if remaining > 0 and occ:
+                    # Option sell-to-open (multileg short leg) — a
+                    # new short lot, not a phantom close.
+                    short_lots.setdefault(key, []).append(
+                        [remaining, pxv])
+                if consumed_any:
+                    realized = amt
+            elif side == "cover":
+                sl = short_lots.setdefault(key, [])
+                remaining = qty
+                amt = 0.0
+                consumed_any = False
+                while remaining > 0 and sl:
+                    consumed = min(sl[0][0], remaining)
+                    amt += (sl[0][1] - pxv) * consumed * mult
+                    sl[0][0] -= consumed
+                    remaining -= consumed
+                    consumed_any = True
+                    if sl[0][0] <= 0.001:
+                        sl.pop(0)
+                if consumed_any:
+                    realized = amt
+            # 'dividend' and anything else: no lot interaction.
+            if realized is not None:
+                old = (float(old_pnl)
+                       if old_pnl is not None else None)
+                if old is None or abs(old - realized) > 0.005:
+                    conn.execute(
+                        "UPDATE trades SET pnl = ? WHERE id = ?",
+                        (round(realized, 2), tid),
+                    )
+                    updated += 1
+        conn.commit()
+    return updated
+
+
 def reconcile_trade_statuses(db_path=None, open_symbols=None):
     """Fix up `trades.status` AND compute realized P&L on BUY rows from
     their matching SELL exits, so the trades page shows a dollar value
@@ -1882,46 +2054,15 @@ def reconcile_trade_statuses(db_path=None, open_symbols=None):
         # positives.
         buys_fixed = 0
 
-        # 3. FIFO-match BUY lots to SELLs to compute realized pnl on BUY rows
-        pnl_computed = 0
-        symbols = [
-            r[0] for r in conn.execute(
-                "SELECT DISTINCT symbol FROM trades "
-                "WHERE side='buy' AND status='closed' AND pnl IS NULL"
-            ).fetchall()
-        ]
-        for symbol in symbols:
-            rows = conn.execute(
-                "SELECT id, side, qty, price, pnl, timestamp "
-                "FROM trades WHERE symbol=? "
-                "ORDER BY timestamp ASC, id ASC",
-                (symbol,),
-            ).fetchall()
-            # Lots: list of [buy_id, qty_remaining, entry_price, realized_pnl]
-            lots = []
-            for r in rows:
-                tid, side, qty, price, row_pnl, ts = r
-                qty = float(qty or 0)
-                price = float(price or 0)
-                if side == "buy":
-                    lots.append([tid, qty, price, 0.0])
-                elif side == "sell" and qty > 0 and price > 0:
-                    remaining = qty
-                    for lot in lots:
-                        if remaining <= 0:
-                            break
-                        if lot[1] <= 0:
-                            continue
-                        consumed = min(lot[1], remaining)
-                        # Realized for this slice: (exit - entry) × qty
-                        lot[3] += (price - lot[2]) * consumed
-                        lot[1] -= consumed
-                        remaining -= consumed
-            # BUY rows no longer get pnl backfilled — realized P&L belongs
-            # on the SELL row only. The UI now has separate Unrealized and
-            # Realized columns so there's no need to duplicate the number.
-
         conn.commit()
+    # 3. Fill-true realized-P&L pass on exit rows. 2026-06-11 — the
+    # previous in-line FIFO here was DEAD CODE: it computed per-lot
+    # realized amounts into a local list and never wrote them
+    # anywhere (a leftover from the "pnl belongs on the SELL row"
+    # migration). Replaced by recompute_realized_pnl, which actually
+    # stamps exit rows, prefers broker fill prices, handles shorts,
+    # covers, and the option multiplier, and is idempotent.
+    pnl_computed = recompute_realized_pnl(db_path)
     return {
         "sells_fixed": sells_fixed,
         "buys_fixed": buys_fixed,

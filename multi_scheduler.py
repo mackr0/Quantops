@@ -1565,6 +1565,27 @@ def _task_update_fills(ctx):
                     f"{orphan_rollbacks} orphan multileg leg(s) closed"
                 )
             logging.info(f"[{seg_label}] update_fills: " + "; ".join(parts))
+
+        # 2026-06-11 — fill-true realized-P&L pass. Exit rows are
+        # stamped with a submit-time ESTIMATE (prorated unrealized at
+        # decision prices); now that this cycle's broker fills are
+        # recorded, re-derive pnl from actual fills so trades.pnl
+        # converges to broker truth (feeds /trades, self-tuning,
+        # kelly sizing, post-mortems). Idempotent; cheap no-op when
+        # nothing changed.
+        if updated > 0 or confirmed_closes > 0:
+            try:
+                from journal import recompute_realized_pnl
+                n_trued = recompute_realized_pnl(ctx.db_path)
+                if n_trued:
+                    logging.info(
+                        f"[{seg_label}] update_fills: {n_trued} "
+                        "exit pnl value(s) trued to broker fills"
+                    )
+            except Exception:
+                logging.exception(
+                    f"[{seg_label}] realized-pnl truing failed"
+                )
     except Exception:
         logging.exception(f"[{seg_label}] Failed to update fill prices")
     finally:
