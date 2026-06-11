@@ -102,6 +102,19 @@ def test_fix_partial_sell_reopens_entry():
 # (4) update_fills trues qty on terminal orders
 # ---------------------------------------------------------------------------
 
+def test_update_fills_repolls_recent_open_entries():
+    """Qty-truth is useless if the row is never revisited: the
+    original selection only pulled `fill_price IS NULL` rows, so a
+    partial fill whose price stamped on pass one kept its wrong
+    quantity forever. The 48h open-entry re-poll arm must stay."""
+    src = (REPO / "multi_scheduler.py").read_text()
+    assert "datetime('now', '-2 days')" in src, (
+        "update_fills no longer re-polls recent OPEN entries — "
+        "partial fills with an early price stamp keep phantom "
+        "quantities forever (BATL class, second variant)."
+    )
+
+
 def test_update_fills_trues_qty_on_terminal_orders():
     src = (REPO / "multi_scheduler.py").read_text()
     assert "qty corrected" in src and "_filled_qty" in src, (

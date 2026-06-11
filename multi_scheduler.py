@@ -1219,6 +1219,14 @@ def _task_update_fills(ctx):
         # — see the MULTILEG branch below. This makes the bug
         # self-heal on the next cycle once the per-leg fix ships,
         # rather than needing a one-shot backfill script.
+        # 2026-06-11 — third arm: OPEN entry rows from the last 48h
+        # are re-polled even when fill_price is already stamped, so
+        # the qty-truth check below can catch partial fills whose
+        # price landed on the first pass (price was stamped while
+        # the DAY order was still working; qty was never revisited
+        # once fill_price was non-NULL — the BATL phantom-shares
+        # hole). Bounded to 48h so this never becomes a full-table
+        # broker poll.
         unfilled = conn.execute(
             "SELECT id, order_id, price, decision_price, side, "
             "       symbol, status, signal_type, option_strategy, "
@@ -1227,6 +1235,9 @@ def _task_update_fills(ctx):
             "WHERE ("
             "      fill_price IS NULL"
             "      OR (signal_type = 'MULTILEG' AND fill_price <= 0)"
+            "      OR (COALESCE(status, 'open') = 'open' "
+            "          AND side IN ('buy', 'short') "
+            "          AND timestamp >= datetime('now', '-2 days'))"
             ") "
             "  AND order_id IS NOT NULL "
             "  AND COALESCE(status, 'open') NOT IN "

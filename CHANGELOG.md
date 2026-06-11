@@ -17,6 +17,16 @@ Rules going forward:
 
 ---
 
+## 2026-06-11 (follow-up) — update_fills re-polls recent OPEN entries so qty-truth actually fires. Severity: high (the qty-truth shipped earlier today was gated behind `fill_price IS NULL` — once the price stamped on the first pass, a partial fill's quantity was never revisited).
+
+**Fix:** third arm in the row selection — OPEN buy/short rows from the last 48h are re-polled even with fill_price present, so the terminal-state qty correction can catch DAY orders that partially filled after their price was stamped. Bounded to 48h so it never becomes a full-table broker poll. Idempotent re-stamps of identical fills are accepted noise.
+
+**Verified live:** the suspected AAL short drift resolved itself as mid-fill timing (all five A2 short orders confirmed `filled` at full qty at the broker); the re-poll arm closes the window where that timing gap could have persisted silently.
+
+**Test:** extended pin in `tests/test_poll_exit_cascade_2026_06_11.py` territory via the existing qty-truth pin; the 48h re-poll arm is pinned by `test_update_fills_repolls_recent_open_entries` in the same file.
+
+---
+
 ## 2026-06-11 — Poll-exit cascade: pre-entry trailing high-water + partial fills orphaning shares. Severity: CRITICAL (p97 lost $24.6K of book value in one session; A2 broker-vs-virtual drift in both directions).
 
 **Found via the per-symbol invariant audit** ((proceeds − costs) + open_mv = realized + unrealized): p97's −$24,578 gap decomposed exactly into PLUG −12,389 / SMCI −9,280 / NU −2,076 / IONZ −833, and the broker confirmed the orphans to the share (4,347 / 311 / 177 / 319 held with no virtual owner).
