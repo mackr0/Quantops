@@ -102,13 +102,11 @@ def check_decomposition(tolerance: float = 100.0) -> list:
                   for p in get_positions(ctx=ctx))
         with closing(sqlite3.connect(
                 f"quantopsai_profile_{pid}.db")) as c:
-            cols = {r[1] for r in c.execute(
-                "PRAGMA table_info(trades)").fetchall()}
-            dq = ("AND data_quality IS NULL "
-                  if "data_quality" in cols else "")
+            from journal import data_quality_clause
+            dq = data_quality_clause(c)
             realized = c.execute(
                 "SELECT COALESCE(SUM(pnl), 0) FROM trades "
-                f"WHERE pnl IS NOT NULL {dq}").fetchone()[0]
+                f"WHERE pnl IS NOT NULL{dq}").fetchone()[0]
         gap = (eq - init) - (float(realized) + upl)
         if abs(gap) > tolerance:
             findings.append(

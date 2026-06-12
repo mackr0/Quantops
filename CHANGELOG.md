@@ -19,7 +19,9 @@ at the top.
 
 **Reset instructions amended:** after old-account cleanup at Alpaca (and again the morning of the first session), re-verify the new accounts' funding — the key gate proves funding at script time only.
 
-**Tests:** `tests/test_account_funding_guard_2026_06_12.py` (9) — shortfall flagged / P&L swings pass / unreachable defers; halt + self-clear semantics (and never clearing someone else's halt); wiring pins on the scan task (guard before baseline dispatch), the smoke registry, and certify ordering. Each entry includes the problem, root cause, fix, and any
+**Tests:** `tests/test_account_funding_guard_2026_06_12.py` (9) — shortfall flagged / P&L swings pass / unreachable defers; halt + self-clear semantics (and never clearing someone else's halt); wiring pins on the scan task (guard before baseline dispatch), the smoke registry, and certify ordering.
+
+**Same-day follow-up:** certify_books' decomposition sum now uses `journal.data_quality_clause` so voided/reattributed rows (`data_quality`-tagged, e.g. the oversell repairs) can never pollute the realized-P&L side of the check — caught by the data-quality-filter guardrail, which also exposed that a `pytest | tail` pipeline had masked the failing exit code into one deploy; suite gates now capture the real exit status. Each entry includes the problem, root cause, fix, and any
 follow-up work tracked separately.
 
 **Format**: YYYY-MM-DD — short title. Severity: critical / high / medium / low.

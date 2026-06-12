@@ -85,9 +85,9 @@ scale-tests). Operator must paste the three new keys into NEW_KEYS
 below before running. The script's step1_verify_keys gate refuses
 to proceed if any key fails auth, equity != $1M, or n_positions != 0.
 
-  A1 = TODO
-  A2 = TODO
-  A3 = TODO
+  A1 = 6-15-acct-1 (PK4JY7TE...) verified $1M, mult=4
+  A2 = 6-15-acct-2 (PKRKBFOG...) verified $1M, mult=4
+  A3 = 6-15-acct-3 (PKJC2CTY...) verified $1M, mult=4
 
 Run:
     cd /opt/quantopsai
@@ -121,12 +121,12 @@ NEW_KEYS = [
     # per-cycle funding guard now re-verifies broker equity every
     # cycle after this gate — script-time verification alone
     # demonstrably isn't enough (see 2026-06-12 CHANGELOG).
-    ("A1", "TODO_LABEL", "TODO_PASTE_KEY_HERE",
-        "TODO_PASTE_SECRET_HERE"),
-    ("A2", "TODO_LABEL", "TODO_PASTE_KEY_HERE",
-        "TODO_PASTE_SECRET_HERE"),
-    ("A3", "TODO_LABEL", "TODO_PASTE_KEY_HERE",
-        "TODO_PASTE_SECRET_HERE"),
+    ("A1", "6-15-acct-1", "PK4JY7TELSWJHYPQSKCDB3BZ3I",
+        "3Rbce44SkBm7obAx8F3GCRKHoquotjhdzrckrKaSF4JV"),
+    ("A2", "6-15-acct-2", "PKRKBFOGBQH6IKR75VBDKXEGMY",
+        "4KPQ9ziEsb8cWcNmCBiBrJbykv2wEXU9EoWHcv3GwBVK"),
+    ("A3", "6-15-acct-3", "PKJC2CTYXABABAAOGL2WFQCQVO",
+        "h5YvonmTQsY5tS9YJkSkzbRHrfdgozQMhgadCfXLFJu"),
 ]
 
 
