@@ -157,3 +157,29 @@ def sample_df():
     df["low_5"] = df["low"].rolling(5).min()
 
     return df
+
+
+@pytest.fixture(autouse=True)
+def _clear_market_data_bars_cache():
+    """2026-06-11 — kill the order-dependent flake family.
+
+    market_data._bars_cache is process-scope with a 5-minute TTL,
+    keyed (symbol, limit). Under pytest-randomly, any test that
+    fetches e.g. ("AAPL", 30) poisons every later test that
+    monkeypatches the Alpaca client and expects ITS fake data back
+    (test_alpaca_data_migration failed 3 separate full-suite runs
+    today this way, each time passing in isolation). Clear before
+    and after every test; production behavior is untouched."""
+    try:
+        import market_data
+        with market_data._bars_cache_lock:
+            market_data._bars_cache.clear()
+    except Exception:
+        pass
+    yield
+    try:
+        import market_data
+        with market_data._bars_cache_lock:
+            market_data._bars_cache.clear()
+    except Exception:
+        pass
