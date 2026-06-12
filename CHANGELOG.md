@@ -17,6 +17,12 @@ Rules going forward:
 
 ---
 
+## 2026-06-11 — certify_books.py: one-command book certification. Severity: tooling (codifies the day's audit so it never has to be re-derived).
+
+Four checks, exit 0 only when all pass: (1) broker-vs-virtual drift per execution account (groups derived from `trading_profiles.alpaca_account_id`, never hardcoded pids), (2) reconcile dry-run must produce zero actions, (3) per-profile P&L decomposition gap ≤ $100, (4) issues page empty over `--since-hours`. Standard post-reset invocation: `venv/bin/python certify_books.py --since-hours 168`. Test: `tests/test_certify_books_2026_06_11.py`.
+
+---
+
 ## 2026-06-11 — Cross-profile oversell: exit raced its own protective fill and sold a sibling's shares. Severity: CRITICAL (the one genuine cross-profile contamination event of the experiment; bounded to 5,145 BATL shares, fully attributed via broker order history).
 
 **The event (A2 account, broker order history):** p97's BATL protective stop filled at 17:52:59. Its next exit fired at 17:55:23 — before the fill confirmation reached the journal — and `cancel_for_symbol` returned void on "cancel failed (already filled)", so the SELL proceeded: 5,145 shares sold out of p94's freshly-filled 11,274-share position. p94's books claimed 11,274 while the broker held 6,129; p97's books credited ~$7.6K of proceeds for shares it never owned (its reconciliation gap to the dollar).
