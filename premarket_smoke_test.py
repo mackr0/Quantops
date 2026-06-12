@@ -208,9 +208,34 @@ def check_scheduler_alive() -> Tuple[bool, str]:
     return True, "quantopsai.service is active"
 
 
+def check_broker_accounts_funded() -> Tuple[bool, str]:
+    """2026-06-12 — every execution account's live broker equity
+    must cover its enabled profiles' combined capital. The 6-12
+    accounts were $1M at reset time and $0 by the open; this check
+    would have failed the pre-market smoke loudly instead of the
+    day dying in silence."""
+    from models import get_active_profiles, build_user_context_from_profile
+    from account_funding_guard import funding_status
+    seen = set()
+    failures = []
+    for prof in get_active_profiles():
+        aid = prof.get("alpaca_account_id")
+        if aid in seen or aid is None:
+            continue
+        seen.add(aid)
+        ctx = build_user_context_from_profile(prof["id"])
+        funded, detail = funding_status(ctx)
+        if not funded:
+            failures.append(detail)
+    if failures:
+        return False, "; ".join(failures)
+    return True, f"{len(seen)} account(s) funded vs combined capital"
+
+
 CHECKS: List[Tuple[str, Callable[[], Tuple[bool, str]]]] = [
     ("alpaca_keys_load",          check_alpaca_keys_load),
     ("alpaca_account_endpoint",   check_alpaca_account_endpoint),
+    ("broker_accounts_funded",    check_broker_accounts_funded),
     ("alpaca_bars_live",          check_alpaca_bars_live),
     ("alpaca_options",            check_alpaca_options),
     ("alpaca_news",               check_alpaca_news),

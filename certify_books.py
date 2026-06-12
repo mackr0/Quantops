@@ -102,9 +102,13 @@ def check_decomposition(tolerance: float = 100.0) -> list:
                   for p in get_positions(ctx=ctx))
         with closing(sqlite3.connect(
                 f"quantopsai_profile_{pid}.db")) as c:
+            cols = {r[1] for r in c.execute(
+                "PRAGMA table_info(trades)").fetchall()}
+            dq = ("AND data_quality IS NULL "
+                  if "data_quality" in cols else "")
             realized = c.execute(
                 "SELECT COALESCE(SUM(pnl), 0) FROM trades "
-                "WHERE pnl IS NOT NULL").fetchone()[0]
+                f"WHERE pnl IS NOT NULL {dq}").fetchone()[0]
         gap = (eq - init) - (float(realized) + upl)
         if abs(gap) > tolerance:
             findings.append(
@@ -123,6 +127,27 @@ def check_issues(since_hours: int) -> list:
     return []
 
 
+def check_funding() -> list:
+    """2026-06-12 — each execution account's broker equity must
+    cover its profiles' combined capital. The 6-12 accounts passed
+    every book check at 03:20 and were $0 by the open; books that
+    reconcile over an unfunded account certify nothing."""
+    from models import get_active_profiles, build_user_context_from_profile
+    from account_funding_guard import funding_status
+    findings = []
+    seen = set()
+    for prof in get_active_profiles():
+        aid = prof.get("alpaca_account_id")
+        if aid in seen or aid is None:
+            continue
+        seen.add(aid)
+        ctx = build_user_context_from_profile(prof["id"])
+        funded, detail = funding_status(ctx)
+        if not funded:
+            findings.append(detail)
+    return findings
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--since-hours", type=int, default=24,
@@ -133,6 +158,7 @@ def main() -> int:
 
     all_clean = True
     for name, findings in (
+        ("0. BROKER FUNDING", check_funding()),
         ("1. BROKER DRIFT", check_broker_drift()),
         ("2. RECONCILE", check_reconcile()),
         ("3. DECOMPOSITION", check_decomposition(args.gap_tolerance)),

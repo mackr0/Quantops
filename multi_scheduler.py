@@ -917,6 +917,19 @@ def _task_scan_and_trade(ctx):
     is_crypto = seg.get("is_crypto", False)
     _pid = getattr(ctx, "profile_id", 0)
 
+    # 2026-06-12 — BROKER FUNDING GUARD, before anything trades
+    # (including the non-AI baselines). The 6-12 accounts went from
+    # a verified $1M to $0 at the broker between the reset and the
+    # open; every order was rejected for six hours with no
+    # escalation. One cycle of missing funding now halts the
+    # profile onto the dashboard banner; the halt self-clears when
+    # funding returns.
+    from account_funding_guard import enforce_funding
+    if not enforce_funding(ctx):
+        from scan_status import clear_status as _cs
+        _cs(_pid)
+        return
+
     # Strategy dispatch: non-AI baselines short-circuit the screener
     # + AI pipeline entirely.
     from simple_strategies import dispatch as _simple_dispatch

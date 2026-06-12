@@ -1,7 +1,25 @@
 # Changelog
 
 Every bug fix, behavior change, and known-issue resolution. Newest entries
-at the top. Each entry includes the problem, root cause, fix, and any
+at the top.
+
+---
+
+## 2026-06-12 — Broker-funding guard: the silent dead day can't repeat. Severity: CRITICAL (operator paid for a full trading day of zero fills with zero escalation).
+
+**What happened:** The 6-12 paper accounts were verified at $1,000,000 each by the reset's key gate at 03:15 UTC. By the 13:30 open they were $0 at the broker — equity, cash, buying power all zero, ZERO fills ever (funding vanished at the Alpaca dashboard level; the paper trading API has no endpoint that can move funding, so the cause is outside this system). The scheduler ran all day and submitted orders every cycle; Alpaca rejected every one with `insufficient buying power`. The rejections went to logs and ERROR badges only — no halt, no dashboard banner. The operator discovered the dead day after the close.
+
+**What we own:** not the vanished funding — the SILENCE. Every monitoring layer (broker_health = connectivity, drift checks = positions, certify_books = books) trivially passed because zero-vs-zero reconciles. Nothing compared "money the broker actually has" against "money the experiment believes it deploys."
+
+**Fix — `account_funding_guard`, three layers:**
+
+1. **Per-cycle (the teeth):** `enforce_funding(ctx)` runs at the top of every scan cycle, before even the non-AI baselines dispatch. Broker equity below 50% of the account's enabled profiles' combined initial capital (a level P&L can't plausibly produce, vanished funding always does) → `halt_and_alert` → dashboard TRADING HALTED banner within one cycle. Self-heals: the halt clears automatically on the first funded cycle. Broker-unreachable defers to broker_health rather than blocking on a blip. Equity fetch cached 60s per account.
+2. **Pre-market:** `broker_accounts_funded` added to the smoke-test checks, right after the account-endpoint check.
+3. **Certification:** `certify_books` now runs `0. BROKER FUNDING` before all other checks — books that reconcile over an unfunded account certify nothing.
+
+**Reset instructions amended:** after old-account cleanup at Alpaca (and again the morning of the first session), re-verify the new accounts' funding — the key gate proves funding at script time only.
+
+**Tests:** `tests/test_account_funding_guard_2026_06_12.py` (9) — shortfall flagged / P&L swings pass / unreachable defers; halt + self-clear semantics (and never clearing someone else's halt); wiring pins on the scan task (guard before baseline dispatch), the smoke registry, and certify ordering. Each entry includes the problem, root cause, fix, and any
 follow-up work tracked separately.
 
 **Format**: YYYY-MM-DD — short title. Severity: critical / high / medium / low.
