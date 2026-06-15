@@ -708,6 +708,11 @@ _CROSS_CUTTING_DROP_CODES = frozenset({
     "KILL_SWITCH", "DRAWDOWN_PAUSE", "BOOK_CONCENTRATION_CAP",
     "BROKER_DISCONNECTED", "CATASTROPHIC_SINGLE_TRADE",
     "SCHEDULE_WINDOW",
+    # 2026-06-15 — meta-model suppression is a per-candidate verdict
+    # carried with no surface hint in the reason text; mark it
+    # cross-cutting so the badge matches the suppressed entry
+    # whatever its action class.
+    "META_SUPPRESSED",
 })
 
 
@@ -6180,15 +6185,43 @@ def api_cycle_data(profile_id):
         # cycle's outcomes, not historical ones. Buffer of 60s back
         # absorbs any clock-skew or drops written just before the
         # cycle file landed.
-        cycle_ts_epoch = data.get("timestamp")
+        # 2026-06-15 — EXACT cycle_id match when available. The old
+        # path read drops within a 2-hour window and filtered by the
+        # cycle's wall-clock start. After market close the last
+        # cycle's drops aged past 2h and disappeared, so the
+        # end-of-day badges fell through to the vague "Not
+        # submitted — most likely …" catch-all even though every
+        # drop had a specific recorded reason. cycle_id is exact and
+        # never ages out (same join the history endpoint uses).
+        # Falls back to the 2h window for legacy JSON files written
+        # before cycle_id was carried in cycle_data.
+        cycle_id = data.get("cycle_id")
         cycle_cutoff_iso = None
-        if isinstance(cycle_ts_epoch, (int, float)) and cycle_ts_epoch > 0:
-            from datetime import datetime as _dt, timezone as _tz, timedelta as _td
-            cycle_cutoff_iso = (
-                _dt.fromtimestamp(cycle_ts_epoch, tz=_tz.utc)
-                - _td(seconds=60)
-            ).strftime("%Y-%m-%d %H:%M:%S")
-        drops = get_recent_trade_drops(db_path, hours=2)
+        if cycle_id:
+            import sqlite3 as _sql_d
+            from contextlib import closing as _cl_d
+            drops = []
+            try:
+                with _cl_d(_sql_d.connect(db_path)) as _dconn:
+                    _dconn.row_factory = _sql_d.Row
+                    drops = [dict(r) for r in _dconn.execute(
+                        "SELECT timestamp, symbol, side, drop_code, "
+                        "drop_reason FROM trade_drops WHERE cycle_id = ?",
+                        (cycle_id,),
+                    ).fetchall()]
+            except _sql_d.Error as _de:
+                logger.debug("cycle-id drop fetch failed (%s) — "
+                             "falling back to window", _de)
+                drops = get_recent_trade_drops(db_path, hours=2)
+        else:
+            cycle_ts_epoch = data.get("timestamp")
+            if isinstance(cycle_ts_epoch, (int, float)) and cycle_ts_epoch > 0:
+                from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+                cycle_cutoff_iso = (
+                    _dt.fromtimestamp(cycle_ts_epoch, tz=_tz.utc)
+                    - _td(seconds=60)
+                ).strftime("%Y-%m-%d %H:%M:%S")
+            drops = get_recent_trade_drops(db_path, hours=2)
         # 2026-06-09 (post-reset) — key drops by (symbol, action_class)
         # instead of symbol alone. Pre-fix: one drop on NU contaminated
         # ALL trades_selected entries on NU — BUY, MULTILEG_OPEN,

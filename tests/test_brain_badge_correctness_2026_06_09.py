@@ -274,24 +274,37 @@ class TestApiCycleDataScopesDropsToCycle:
 # ---------------------------------------------------------------------------
 
 
-def test_view_uses_cycle_timestamp_to_filter_drops():
+def test_view_scopes_drops_to_the_current_cycle():
     """Source-code pin on views.py — the drop-enrichment block must
-    derive a cutoff from `data["timestamp"]`. A refactor that drops
-    the cutoff silently restores the stale-drop bug."""
+    scope drops to THIS cycle so a prior cycle's drop can't badge
+    the current one (the 2026-06-09 stale-drop bleed-through).
+
+    2026-06-15: the primary mechanism is now EXACT cycle_id match
+    (stronger than the old wall-clock cutoff — a different cycle's
+    drop has a different cycle_id and can never match, and the
+    reason never ages out of a time window). The timestamp cutoff
+    survives as the fallback for legacy cycle_data JSON written
+    before cycle_id was carried; pin both so neither defense is
+    silently removed."""
     src = (REPO_ROOT / "views.py").read_text()
-    # Find the drops enrichment anchor comment
-    anchor = src.find("scope drops to the CURRENT cycle")
+    anchor = src.find("EXACT cycle_id match when available")
     assert anchor > 0, (
-        "Source pin failed — couldn't locate the scope-drops-to-"
-        "cycle anchor comment in views.py"
+        "Source pin failed — couldn't locate the cycle_id drop-"
+        "matching block in views.py"
     )
-    window = src[anchor:anchor + 2000]
-    assert 'data.get("timestamp")' in window, (
-        "Drop enrichment must read the cycle timestamp from "
-        "`data.get(\"timestamp\")` so stale drops can be filtered."
+    window = src[anchor:anchor + 1600]
+    # Primary defense: match drops by cycle_id.
+    assert 'data.get("cycle_id")' in window, (
+        "Drop enrichment must read cycle_id from cycle_data and "
+        "match drops by it — without this end-of-day badges go "
+        "vague (>2h staleness) AND cross-cycle bleed can return."
     )
-    assert "cycle_cutoff_iso" in window, (
-        "Drop enrichment must compute a cycle_cutoff_iso and use it "
-        "to skip drops with d_ts < cycle_cutoff_iso. Without this "
-        "the stale-drop bleed-through bug returns."
+    assert "WHERE cycle_id = ?" in window, (
+        "Drops must be fetched by exact cycle_id."
+    )
+    # Fallback defense for legacy JSON: the wall-clock cutoff.
+    assert "cycle_cutoff_iso" in window and 'data.get("timestamp")' in window, (
+        "The legacy-JSON fallback (cycle_cutoff_iso from the cycle "
+        "timestamp) must remain for cycle_data files without "
+        "cycle_id."
     )

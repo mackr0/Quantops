@@ -2595,6 +2595,37 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                         meta_stats["suppressed"] += 1
                         logging.info(f"  Meta-model SUPPRESS {sym}: meta_prob={meta_prob:.3f} < "
                                      f"{meta_model.SUPPRESSION_THRESHOLD}")
+                        # 2026-06-15 — record a drop so the AI-Brain
+                        # badge shows the SPECIFIC reason instead of
+                        # the vague "most likely … meta-model
+                        # suppression" catch-all. This was the one
+                        # genuinely silent skip path (it only logged
+                        # + continued).
+                        if ctx is not None and getattr(ctx, "db_path", None):
+                            try:
+                                from journal import record_trade_drop
+                                record_trade_drop(
+                                    db_path=ctx.db_path,
+                                    symbol=sym,
+                                    side=(t.get("action") or "").lower() or None,
+                                    drop_code="META_SUPPRESSED",
+                                    drop_reason=(
+                                        f"Meta-model suppressed: edge "
+                                        f"probability {meta_prob:.0%} below "
+                                        f"the {meta_model.SUPPRESSION_THRESHOLD:.0%} "
+                                        f"threshold — the pre-trade model "
+                                        f"judged this candidate's expected "
+                                        f"edge too low to trade."
+                                    ),
+                                    cycle_id=cycle_id,
+                                    ai_confidence=t.get("confidence"),
+                                    ai_reasoning=t.get("reasoning"),
+                                )
+                            except Exception as _ms_exc:
+                                logging.debug(
+                                    "meta-suppress drop record failed for "
+                                    "%s: %s", sym, _ms_exc,
+                                )
                         continue
                     # Blend confidences
                     original_conf = t.get("confidence", 50)
@@ -3320,6 +3351,14 @@ def _save_cycle_data(ctx, candidates_data, shortlist, ai_trades,
             "profile_id": profile_id,
             "profile_name": getattr(ctx, "display_name", ""),
             "timestamp": _time.time(),
+            # 2026-06-15 — carry cycle_id into the JSON so the live
+            # AI-Brain endpoint can match this cycle's drops by
+            # cycle_id (exact), not a 2-hour time window. The window
+            # aged out after market close and left the end-of-day
+            # badges showing the vague "Not submitted — most likely
+            # …" catch-all even though every drop had a specific
+            # recorded reason.
+            "cycle_id": cycle_id,
             "ai_reasoning": portfolio_reasoning or "No candidates shortlisted",
             "trades_selected": [
                 {

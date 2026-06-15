@@ -5,6 +5,20 @@ at the top.
 
 ---
 
+## 2026-06-15 — AI-Brain BLOCKED badge shows the real reason, not the vague catch-all. Severity: medium (display; operator-reported, traced to no silent-drop bug).
+
+Operator saw end-of-day badges read "Not submitted — most likely already-positioned dedup, pre-broker safety gate, or post-AI meta-model suppression. No trades row was created." across most profiles. **Investigation: not a silent drop or critical bug** — every blocked trade had a SPECIFIC recorded `trade_drop` (`outside market_hours window`, `Insufficient cash remaining`, `Duplicate-position guard`, specialist veto). The trades were correctly blocked; the badge just couldn't reach the reason.
+
+**Root cause (display staleness):** the live `/api/cycle-data` endpoint matched drops within a **2-hour window** keyed off the cycle's wall-clock start. The last cycle ran ~20:02 (just after the 20:00 close); viewing the end-of-day brain hours later, those drops were >2h old, got filtered out, and the badge fell through to the generic guess. The new history endpoint already avoided this (it joins by `cycle_id`).
+
+**Fixes:**
+- `cycle_data` now carries `cycle_id`; the live endpoint matches drops by `cycle_id` (exact, never ages out), falling back to the 2h window only for legacy JSON without it.
+- Meta-model suppression — the one genuinely silent skip path (it only logged + `continue`d) — now records a `META_SUPPRESSED` drop with the edge-probability reason, so that class can never be vague either. `META_SUPPRESSED` is cross-cutting so the badge always matches.
+
+**Tests:** `tests/test_blocked_badge_cycle_id_2026_06_15.py` — a drop timestamped 5 hours ago but sharing the cycle_id still badges with its real reason (the staleness fix), plus pins for cycle_id in cycle_data, the suppression drop, and the cross-cutting classification.
+
+---
+
 ## 2026-06-15 — Spread legs show their own P&L instead of repeating the spread total. Severity: low (display clarity; operator-reported opacity).
 
 A multileg spread rendered the spread-level −$63 on the header AND on every leg row — reading as triple-counting and making options opaque vs stocks. Now matches the industry-standard view: the spread header carries the one net number (`Net debit $105 · Unrealized −$63 (−60%)`), and each leg shows its OWN dollar contribution (`−$50` long, `−$13` short) that decomposes the total. `views._enriched_positions` and the trades-page enrichment stamp each leg's `leg_pnl` (`Position.unrealized_pl`) alongside the spread fields; the template renders dollars-only on legs — **no per-leg percent**, which was the misleading −10100% from stale OTM marks (the 2026-05-11 reason this column originally fell back to the capped spread number). The spread header keeps the meaningful net %. **Tests:** `tests/test_spread_per_leg_pnl_2026_06_15.py` — legs show own P&L not the spread total, and graceful fallback when leg_pnl is absent.
