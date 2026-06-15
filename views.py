@@ -344,11 +344,13 @@ def _enriched_positions(ctx, profile_id):
             spreads, _ungrouped = group_into_spreads(
                 option_legs_for_grouping, journal_rows,
             )
-            # Build OCC -> spread lookup
+            # Build OCC -> spread + OCC -> leg lookups
             spread_by_occ = {}
+            leg_by_occ = {}
             for sp in spreads:
                 for leg in sp.legs:
                     spread_by_occ[leg.occ_symbol] = sp
+                    leg_by_occ[leg.occ_symbol] = leg
             # Stamp spread-level fields onto matching out-rows
             for row in out:
                 occ = row.get("occ_symbol")
@@ -359,6 +361,15 @@ def _enriched_positions(ctx, profile_id):
                 row["spread_pnl_pct"] = sp.display_unrealized_pl_pct
                 row["spread_max_loss"] = sp.structural_max_loss
                 row["spread_strategy"] = sp.strategy_name
+                # 2026-06-15 — each leg's OWN dollar P&L so the
+                # spread total decomposes per leg (long -$50 + short
+                # -$13 = -$63 header) instead of repeating the spread
+                # total on every leg. Dollars only in the template —
+                # per-leg % was the misleading -10100% number (stale
+                # marks); the header carries the meaningful %.
+                _leg = leg_by_occ.get(occ)
+                if _leg is not None:
+                    row["leg_pnl"] = _leg.unrealized_pl
                 row["spread_group_key"] = (
                     f"{sp.strategy_name}/{sp.underlying}/"
                     f"{sp.earliest_entry_ts}"
@@ -625,9 +636,11 @@ def _enrich_trade_history_with_live_pnl(trades, ctx):
                 option_legs_for_grouping, journal_rows,
             )
             spread_by_occ = {}
+            leg_by_occ = {}
             for sp in spreads:
                 for leg in sp.legs:
                     spread_by_occ[leg.occ_symbol] = sp
+                    leg_by_occ[leg.occ_symbol] = leg
             for t in trades:
                 occ = t.get("occ_symbol")
                 if not occ or occ not in spread_by_occ:
@@ -637,6 +650,12 @@ def _enrich_trade_history_with_live_pnl(trades, ctx):
                 t["spread_pnl_pct"] = sp.display_unrealized_pl_pct
                 t["spread_max_loss"] = sp.structural_max_loss
                 t["spread_strategy"] = sp.strategy_name
+                # 2026-06-15 — per-leg dollar P&L (see _enriched_
+                # positions for the rationale): legs decompose the
+                # spread total instead of repeating it.
+                _leg = leg_by_occ.get(occ)
+                if _leg is not None:
+                    t["leg_pnl"] = _leg.unrealized_pl
                 t["spread_group_key"] = (
                     f"{sp.strategy_name}/{sp.underlying}/"
                     f"{sp.earliest_entry_ts}"

@@ -280,9 +280,24 @@
                        Caught 2026-05-11. #}
                     <td>
                         {% if t.spread_pnl is defined and t.spread_pnl is not none %}
-                            {# Multileg spread — show capped spread-level P&L #}
-                            <span class="{{ 'pnl-pos' if t.spread_pnl >= 0 else 'pnl-neg' }}">{% if t.spread_pnl >= 0 %}+${{ "{:,.2f}".format(t.spread_pnl) }}{% else %}-${{ "{:,.2f}".format(-t.spread_pnl) }}{% endif %}{% if t.spread_pnl_pct is not none %} ({{ "{:+.1f}%".format(t.spread_pnl_pct) }}){% endif %}</span>
-                            <br><small class="muted" style="font-size:0.7rem;">spread {{ t.spread_strategy|humanize if t.spread_strategy else 'leg' }}</small>
+                            {# 2026-06-15 — show THIS LEG's own dollar P&L so
+                               the spread decomposes per leg (long -$50 +
+                               short -$13 = the -$63 on the spread header
+                               above) instead of repeating the spread total
+                               on every leg, which read as triple-counting.
+                               DOLLARS ONLY — no per-leg %: a credit short
+                               leg's premium can mark 50x its sale price and
+                               show an absurd -10100% even though the
+                               spread's loss is structurally bounded (the
+                               2026-05-11 reason this column used to show the
+                               capped spread number). The spread header
+                               carries the meaningful net %. #}
+                            {% if t.leg_pnl is defined and t.leg_pnl is not none %}
+                            <span class="{{ 'pnl-pos' if t.leg_pnl >= 0 else 'pnl-neg' }}">{% if t.leg_pnl >= 0 %}+${{ "{:,.2f}".format(t.leg_pnl) }}{% else %}-${{ "{:,.2f}".format(-t.leg_pnl) }}{% endif %}</span>
+                            <br><small class="muted" style="font-size:0.7rem;">this leg</small>
+                            {% else %}
+                            <span class="muted">--</span>
+                            {% endif %}
                         {% elif t.side in ('sell', 'cover') and t.pnl is not none %}
                             {% if t.price and t.qty %}
                                 {% set cost_basis = t.price * t.qty * option_mult - t.pnl %}

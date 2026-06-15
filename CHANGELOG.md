@@ -5,6 +5,12 @@ at the top.
 
 ---
 
+## 2026-06-15 — Spread legs show their own P&L instead of repeating the spread total. Severity: low (display clarity; operator-reported opacity).
+
+A multileg spread rendered the spread-level −$63 on the header AND on every leg row — reading as triple-counting and making options opaque vs stocks. Now matches the industry-standard view: the spread header carries the one net number (`Net debit $105 · Unrealized −$63 (−60%)`), and each leg shows its OWN dollar contribution (`−$50` long, `−$13` short) that decomposes the total. `views._enriched_positions` and the trades-page enrichment stamp each leg's `leg_pnl` (`Position.unrealized_pl`) alongside the spread fields; the template renders dollars-only on legs — **no per-leg percent**, which was the misleading −10100% from stale OTM marks (the 2026-05-11 reason this column originally fell back to the capped spread number). The spread header keeps the meaningful net %. **Tests:** `tests/test_spread_per_leg_pnl_2026_06_15.py` — legs show own P&L not the spread total, and graceful fallback when leg_pnl is absent.
+
+---
+
 ## 2026-06-15 — AI-Brain history: arrow back through the day's cycles. Severity: feature (operator visibility).
 
 The AI-Brain panel showed only the current cycle (overwritten each cycle). Operators can now ◀ ▶ back through every recorded cycle per profile — reasoning, candidates, and the trades/errors that fired — like the activity ticker.
