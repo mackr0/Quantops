@@ -359,25 +359,25 @@
     <!-- AI Brain Panel -->
     <article id="ai-panel-{{ prof.id }}" style="margin-bottom:0.5rem;">
         <header style="padding:0.5rem 0.75rem;">
+            {# 2026-06-15 — AI-Brain history nav, mirroring the
+               activity ticker exactly: index 0 = Live (now); ←
+               steps toward Live (newer), → steps to older cycles.
+               Cycles are cached client-side and paged in memory so
+               the arrows are instant (no per-click server round
+               trip). #}
             <div style="display:flex; justify-content:space-between; align-items:center;">
                 <h4 style="margin:0;">AI Brain: {{ prof.name }}{% if prof.is_virtual %} <small style="font-size:0.6em; color:#888; font-weight:normal;">(Virtual)</small>{% endif %}</h4>
-                <small class="muted" id="ai-time-{{ prof.id }}">Loading...</small>
-            </div>
-            {# 2026-06-15 — AI-Brain history nav. Arrow back through
-               the day's cycles (errors, trades, reasoning) like the
-               activity ticker. Index 0 = live; ◀ steps older, ▶
-               newer. #}
-            <div style="display:flex; align-items:center; gap:0.4rem; margin-top:0.3rem;">
-                <button type="button" class="outline secondary brain-older"
-                        data-pid="{{ prof.id }}"
-                        style="padding:0.1rem 0.5rem; font-size:0.85rem;"
-                        title="Older cycle">&larr;</button>
-                <span class="muted brain-navlabel" id="brain-navlabel-{{ prof.id }}"
-                      style="font-size:0.8rem; min-width:7rem; text-align:center;">Live</span>
-                <button type="button" class="outline secondary brain-newer"
-                        data-pid="{{ prof.id }}"
-                        style="padding:0.1rem 0.5rem; font-size:0.85rem;"
-                        title="Newer cycle" disabled>&rarr;</button>
+                <div style="display:flex; gap:0.5rem; align-items:center;">
+                    <small class="muted" id="ai-time-{{ prof.id }}">Loading...</small>
+                    <button type="button" id="brain-prev-{{ prof.id }}" class="outline secondary"
+                            data-pid="{{ prof.id }}"
+                            style="padding:0.25rem 0.5rem;" title="Newer (toward Live)" disabled>&larr;</button>
+                    <span id="brain-navlabel-{{ prof.id }}" class="muted"
+                          style="font-size:0.85rem; min-width:5.5rem; text-align:center;">Live</span>
+                    <button type="button" id="brain-next-{{ prof.id }}" class="outline secondary"
+                            data-pid="{{ prof.id }}"
+                            style="padding:0.25rem 0.5rem;" title="Older cycle">&rarr;</button>
+                </div>
             </div>
         </header>
         <div style="padding:0 0.75rem 0.5rem;">
@@ -888,6 +888,7 @@ function showOpTab(event, profileId, which) {
     // so past cycles replay through the exact same renderer.
     var brainIndex = {};
     var brainTotal = {};
+    var brainLive = {};   // pid -> last live cycle-data (for idx 0)
     function renderBrain(pid, data) {
             var reasonEl = document.getElementById('ai-reasoning-' + pid);
             var listEl = document.getElementById('ai-shortlist-' + pid);
@@ -1115,60 +1116,89 @@ function showOpTab(event, profileId, which) {
             } else if (listEl) { listEl.innerHTML = '<em>No candidates met threshold this cycle</em>'; }
     }
 
+    // Mirrors the activity ticker exactly: idx 0 = Live (now), ←
+    // steps toward Live (newer), → steps to older cycles. History
+    // is cached client-side and paged in memory so arrows are
+    // instant (no per-click server round trip). brainHist[pid] is
+    // the raw newest-first ai_cycles list; its [0] is the same
+    // cycle as Live, so the viewable older cycles start at index 1.
+    var HIST_PAGE = 12;
+    var brainHist = {};   // pid -> [entry,...] newest-first (cached)
+
+    function olderTotal(pid) { return Math.max(0, (brainTotal[pid] || 0) - 1); }
+
     function setNav(pid) {
-        var idx = brainIndex[pid] || 0, total = brainTotal[pid];
+        var idx = brainIndex[pid] || 0, ot = olderTotal(pid);
         var label = document.getElementById('brain-navlabel-' + pid);
-        var older = document.querySelector('.brain-older[data-pid="' + pid + '"]');
-        var newer = document.querySelector('.brain-newer[data-pid="' + pid + '"]');
-        if (label) label.textContent = (idx === 0) ? 'Live'
-            : ('Cycle −' + idx + (total ? (' of ' + total) : ''));
-        if (newer) newer.disabled = (idx === 0);
-        // older stays enabled until we KNOW we're at the oldest cycle
-        if (older) older.disabled = (total != null && idx >= total);
+        var prev = document.getElementById('brain-prev-' + pid);  // ← newer
+        var next = document.getElementById('brain-next-' + pid);  // → older
+        if (label) label.textContent = (idx === 0) ? 'Live' : (idx + ' of ' + ot);
+        if (prev) prev.disabled = (idx === 0);
+        if (next) next.disabled = (idx >= ot);
+    }
+
+    function renderAt(pid) {
+        var idx = brainIndex[pid] || 0;
+        var timeEl = document.getElementById('ai-time-' + pid);
+        if (idx === 0) {
+            var d = brainLive[pid];
+            if (d) {
+                if (timeEl && d.timestamp) timeEl.textContent = timeAgo(d.timestamp);
+                renderBrain(pid, d);
+            }
+        } else {
+            var e = (brainHist[pid] || [])[idx];   // [0] duplicates Live; idx>=1 is older
+            if (e) {
+                if (timeEl) timeEl.textContent = (e.timestamp_friendly || '');
+                renderBrain(pid, e);
+            }
+        }
+        setNav(pid);
+    }
+
+    function ensureLen(pid, needLen) {
+        var have = (brainHist[pid] || []).length;
+        if (have >= needLen) return Promise.resolve();
+        if (brainTotal[pid] != null && have >= brainTotal[pid]) return Promise.resolve();
+        return fetch('/api/cycle-history/' + pid + '?offset=' + have + '&limit=' + HIST_PAGE)
+            .then(function(r){ return r.json(); })
+            .then(function(resp){
+                brainTotal[pid] = resp.total || 0;
+                brainHist[pid] = (brainHist[pid] || []).concat(resp.entries || []);
+            }).catch(function(){});
     }
 
     function fetchLive(pid) {
-        fetch('/api/cycle-data/' + pid).then(function(r){return r.json();}).then(function(data){
+        return fetch('/api/cycle-data/' + pid).then(function(r){ return r.json(); }).then(function(data){
             if (data.error) return;
-            var timeEl = document.getElementById('ai-time-' + pid);
-            if (timeEl && data.timestamp) timeEl.textContent = timeAgo(data.timestamp);
-            renderBrain(pid, data);
+            brainLive[pid] = data;
+            if ((brainIndex[pid] || 0) === 0) renderAt(pid);
         }).catch(function(){});
     }
 
-    function fetchHistory(pid) {
-        var off = (brainIndex[pid] || 1) - 1;
-        fetch('/api/cycle-history/' + pid + '?offset=' + off).then(function(r){return r.json();}).then(function(resp){
-            brainTotal[pid] = resp.total || 0;
-            var e = (resp.entries || [])[0];
-            if (!e) {                       // walked past the oldest — clamp to live
-                brainIndex[pid] = 0; setNav(pid); fetchLive(pid); return;
-            }
-            var timeEl = document.getElementById('ai-time-' + pid);
-            if (timeEl) timeEl.textContent = (e.timestamp_friendly || '') + ' · history';
-            renderBrain(pid, e);
-            setNav(pid);
-        }).catch(function(){});
+    function goNewer(pid) {            // ← toward Live (instant, in-memory)
+        if ((brainIndex[pid] || 0) <= 0) return;
+        brainIndex[pid] = (brainIndex[pid] || 0) - 1;
+        renderAt(pid);
+    }
+    function goOlder(pid) {            // → previous cycle
+        var target = (brainIndex[pid] || 0) + 1;
+        if (target > olderTotal(pid) && brainTotal[pid] != null) return;
+        ensureLen(pid, target + 1).then(function(){
+            if (target > olderTotal(pid)) target = olderTotal(pid);
+            if (target >= 1 && (brainHist[pid] || [])[target]) brainIndex[pid] = target;
+            renderAt(pid);
+        });
     }
 
-    function refreshBrain(pid) {
-        if ((brainIndex[pid] || 0) === 0) { fetchLive(pid); } else { fetchHistory(pid); }
-    }
-
-    function stepBrain(pid, delta) {   // delta +1 = older, -1 = newer
-        var idx = (brainIndex[pid] || 0) + delta;
-        if (idx < 0) idx = 0;
-        if (brainTotal[pid] != null && idx > brainTotal[pid]) idx = brainTotal[pid];
-        brainIndex[pid] = idx;
-        setNav(pid);
-        refreshBrain(pid);
-    }
-
-    document.querySelectorAll('.brain-older').forEach(function(b){
-        b.addEventListener('click', function(){ stepBrain(parseInt(b.dataset.pid, 10), +1); });
-    });
-    document.querySelectorAll('.brain-newer').forEach(function(b){
-        b.addEventListener('click', function(){ stepBrain(parseInt(b.dataset.pid, 10), -1); });
+    profileIds.forEach(function(pid){
+        var prev = document.getElementById('brain-prev-' + pid);
+        var next = document.getElementById('brain-next-' + pid);
+        if (prev) prev.addEventListener('click', function(){ goNewer(pid); });
+        if (next) next.addEventListener('click', function(){ goOlder(pid); });
+        // Prime the total + first older cycle so the counter shows
+        // immediately and the first → is instant.
+        ensureLen(pid, 2).then(function(){ setNav(pid); });
     });
 
     // Auto-refresh only LIVE panels — never yank the operator off a

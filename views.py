@@ -6294,11 +6294,16 @@ def api_cycle_history(profile_id):
     from contextlib import closing
     from display_names import humanize
 
-    PAGE = 1  # one cycle per arrow press, like the activity ticker
+    # Batch like the activity ticker so the client caches and pages
+    # in memory (instant arrows) instead of a round-trip per click.
     try:
         offset = max(0, int(request.args.get("offset", 0)))
     except (TypeError, ValueError):
         offset = 0
+    try:
+        PAGE = min(50, max(1, int(request.args.get("limit", 12))))
+    except (TypeError, ValueError):
+        PAGE = 12
 
     db_path = f"quantopsai_profile_{profile_id}.db"
     try:

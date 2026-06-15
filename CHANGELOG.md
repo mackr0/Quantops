@@ -15,6 +15,8 @@ The AI-Brain panel showed only the current cycle (overwritten each cycle). Opera
 
 No trading-loop changes — read-side plus one append-only column. **Tests:** `tests/test_ai_brain_history_2026_06_15.py` — pagination newest-first, offset walk-back, per-cycle error stamping, pre-history synthesis, static wiring pins, and migration coverage.
 
+**Follow-up (operator feedback) — made it actually match the activity ticker.** The first cut diverged: arrows reversed, nav in a full-width second row instead of inline-right, a server round-trip per click (felt like a slow page refresh), and a `Cycle −N` label. Rebuilt to mirror the ticker exactly: `←` steps toward Live (newer), `→` to older; nav inline on the header's right (`time ← Live → `); `Live` / `k of M` counter between the arrows; **history cached client-side and paged in memory** (batch of 12) so arrows are instant. The older list skips the duplicate of the live cycle so the first `→` shows the genuinely previous cycle.
+
 **Caught on prod verification before users saw it:** the `trades_selected_json` column landed only on freshly-created DBs — `journal._migrate_all_columns` didn't cover the `ai_cycles` table, so every existing profile DB would have `no such column`-errored on the history SELECT. Fixed by adding `ai_cycles` to the migration's expected-columns map (ALTER-adds it to existing DBs) and making the endpoint defensive (selects `NULL` for the column if still absent). Pinned by `test_migration_adds_column_to_existing_db`. Lesson reinforced: a CREATE-TABLE-IF-NOT-EXISTS change is invisible to existing DBs — schema additions must go in the migration map too.
 
 ---

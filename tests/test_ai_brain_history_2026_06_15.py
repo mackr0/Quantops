@@ -127,7 +127,8 @@ def test_dashboard_wires_history_controls():
     from pathlib import Path
     src = (Path(__file__).resolve().parent.parent
            / "templates/dashboard.html").read_text()
-    assert "brain-older" in src and "brain-newer" in src, (
+    # Ticker-consistent nav: ← (prev) toward Live, → (next) older.
+    assert "brain-prev-" in src and "brain-next-" in src, (
         "AI-Brain history arrows missing from the panel header."
     )
     assert "/api/cycle-history/" in src, (
@@ -137,6 +138,11 @@ def test_dashboard_wires_history_controls():
         "Shared renderBrain refactor gone — live and history would "
         "diverge."
     )
+    # ← steps toward Live (goNewer), → steps older (goOlder) —
+    # matching the activity ticker's direction.
+    assert "function goNewer(pid)" in src and "function goOlder(pid)" in src
+    # Cached client-side paging (no per-click server round trip).
+    assert "var brainHist = {}" in src and "function ensureLen(pid, needLen)" in src
     # Auto-refresh must not yank the operator off a historical cycle.
     assert "if ((brainIndex[pid] || 0) === 0) fetchLive(pid)" in src
 
