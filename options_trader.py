@@ -146,9 +146,15 @@ def format_occ_symbol(
     r = right.upper()
     if r not in ("C", "P"):
         raise ValueError(f"right must be 'C' or 'P', got {right!r}")
-    # OCC root is 6 chars left-justified, padded with spaces. Some
-    # systems strip the spaces — Alpaca accepts both. We use the
-    # space-padded canonical form.
+    # OCC root is 6 chars left-justified, padded with spaces (the OSI
+    # canonical form). NOTE (2026-06-15): Alpaca's API does NOT accept
+    # this padded form — it returns 422 "asset not found" and wants
+    # the compact "BMNR260724..." form. Every submit path therefore
+    # SNAPS this output to the listed contract's own symbol before
+    # sending (single-leg: execute_option_strategy; multileg: the
+    # snap loop). This builder stays OSI-canonical so parse_occ_symbol
+    # round-trips and so non-broker callers have a stable form; the
+    # snap is what makes it broker-resolvable.
     root = underlying.upper().ljust(6)
     yymmdd = expiry.strftime("%y%m%d")
     # Strike × 1000, padded to 8 digits. $150.00 → 00150000.
@@ -158,15 +164,40 @@ def format_occ_symbol(
 
 
 def parse_occ_symbol(occ: str) -> Dict[str, Any]:
-    """Inverse of format_occ_symbol — extract underlying, expiry, strike, right."""
-    if not occ or len(occ) < 21:
+    """Inverse of format_occ_symbol — extract underlying, expiry,
+    strike, right. FORMAT-AGNOSTIC.
+
+    Handles BOTH the OSI space-padded root (`AAPL  250516C00150000`)
+    AND Alpaca's compact form (`BMNR260724C00018000`). The trailing
+    structure is fixed — the last 8 chars are strike×1000, the char
+    before is C/P, the 6 before that are YYMMDD — so we parse from
+    the RIGHT and whatever remains is the root.
+
+    2026-06-15: the old fixed-offset parse assumed a padded 6-char
+    root (`occ[6:12]` for the date, etc.). Fed a compact symbol it
+    raised ValueError, which every caller catches into a dropped
+    result — silently blinding the Greeks gate (`_parse_option_
+    position` → None → leg excluded from book delta/theta/vega) and
+    the options-exit timing (`_days_to_expiry` → None) to multileg
+    legs, which are STORED compact via the snap step. Confirmed live
+    on BMNR260724C00018000 (A1 held it; the parser dropped it)."""
+    if not occ:
+        raise ValueError(f"empty OCC symbol: {occ!r}")
+    s = occ.strip()
+    # Fixed right-anchored tail: <YYMMDD(6)><C|P(1)><strike(8)>.
+    # Minimum viable symbol is root(>=1) + 15 = 16 chars.
+    if len(s) < 16:
         raise ValueError(f"OCC symbol too short: {occ!r}")
-    # 6-char root (may have trailing spaces), 6-char date, 1 char C/P,
-    # 8-char strike × 1000.
-    root = occ[:6].strip()
-    yymmdd = occ[6:12]
-    right = occ[12]
-    strike_str = occ[13:21]
+    strike_str = s[-8:]
+    right = s[-9]
+    yymmdd = s[-15:-9]
+    root = s[:-15].strip()
+    if not root:
+        raise ValueError(f"OCC symbol missing root: {occ!r}")
+    if right not in ("C", "P"):
+        raise ValueError(f"OCC right must be 'C'/'P', got {right!r}: {occ!r}")
+    if not (strike_str.isdigit() and yymmdd.isdigit()):
+        raise ValueError(f"OCC malformed date/strike: {occ!r}")
     expiry = datetime.strptime(yymmdd, "%y%m%d").date()
     strike = int(strike_str) / 1000.0
     return {
@@ -476,6 +507,31 @@ def execute_option_strategy(
 
     # Build OCC + submit
     occ = format_occ_symbol(underlying, expiry, strike, right)
+
+    # 2026-06-15 — SNAP to Alpaca's listed contract symbol, exactly
+    # as the multileg path does. format_occ_symbol emits the OSI
+    # space-padded root ("BMNR  260724C00018000"); Alpaca's API uses
+    # the compact form ("BMNR260724C00018000") and rejects the padded
+    # one with 422 "asset not found" — so single-leg options were
+    # 100% rejected at submit (confirmed live on BMNR, which A1 held
+    # via the multileg path the same cycle). The parse-layer RC11
+    # snap only fixed the STRIKE; the executor rebuilt the symbol
+    # string here and lost Alpaca's form. Carrying the snapped
+    # contract's own symbol forward makes every downstream use (dup
+    # guard, Greeks mock, submit, journal) consistent and
+    # broker-resolvable. Best-effort: if the chain is unavailable we
+    # keep the built symbol (graceful degradation, same as multileg).
+    try:
+        from options_chain_alpaca import snap_to_listed_contract as _snap
+        _snapped = _snap(underlying, expiry.isoformat(), float(strike),
+                         right)
+        if _snapped and _snapped.get("symbol"):
+            occ = _snapped["symbol"]
+    except Exception as _snap_exc:
+        logger.debug(
+            "single-leg OCC snap failed for %s (using built symbol "
+            "%s): %s", underlying, occ, _snap_exc,
+        )
 
     # Duplicate-position guard — same shape as the multileg dup guard
     # added 2026-05-06. Without this, a strategy that proposes the

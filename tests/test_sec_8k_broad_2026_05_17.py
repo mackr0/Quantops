@@ -157,16 +157,28 @@ class TestPersistence:
 class TestGetRecentEvents:
     def test_returns_only_target_symbol(self, temp_db):
         """get_recent_8k_events(symbol) filters by ticker."""
+        # 2026-06-15 — RELATIVE dates. These were hardcoded
+        # 2026-05-15/16 at authoring; once "today" passed
+        # authoring+30d the filings aged out of the default 30-day
+        # window and this asserted count==0 (caught live 2026-06-15,
+        # exactly 31 days after the 05-15 filing). Mirror
+        # test_date_window_filter's relative-date pattern so the
+        # fixture never drifts out of the window again.
+        from datetime import datetime, timedelta, timezone
+        recent = (datetime.now(tz=timezone.utc)
+                  - timedelta(days=2)).date().isoformat()
+        recent2 = (datetime.now(tz=timezone.utc)
+                   - timedelta(days=1)).date().isoformat()
         with sqlite3.connect(temp_db) as conn:
             conn.executemany(
                 "INSERT INTO recent_8k_filings "
                 "(accession, filing_date, company_name, cik, ticker, "
                 " items_json, source_url) VALUES (?,?,?,?,?,?,?)",
                 [
-                    ("acc-1", "2026-05-15", "Apple Inc",
+                    ("acc-1", recent, "Apple Inc",
                      "0000320193", "AAPL", "2.02,9.01",
                      "https://x"),
-                    ("acc-2", "2026-05-16", "Tesla Inc",
+                    ("acc-2", recent2, "Tesla Inc",
                      "0001318605", "TSLA", "1.01",
                      "https://y"),
                 ],
@@ -179,12 +191,18 @@ class TestGetRecentEvents:
     def test_high_signal_tagging(self, temp_db):
         """Items 1.01/2.02/5.02/4.02 etc. get tagged with semantic
         names so the AI prompt can summarize."""
+        # 2026-06-15 — relative date (see test_returns_only_target_
+        # symbol): hardcoded 2026-05-17 would age out of the 30-day
+        # window and silently start returning 0 events.
+        from datetime import datetime, timedelta, timezone
+        recent = (datetime.now(tz=timezone.utc)
+                  - timedelta(days=2)).date().isoformat()
         with sqlite3.connect(temp_db) as conn:
             conn.execute(
                 "INSERT INTO recent_8k_filings "
                 "(accession, filing_date, ticker, items_json, source_url) "
                 "VALUES (?,?,?,?,?)",
-                ("acc-test", "2026-05-17", "MSFT", "1.01,5.02",
+                ("acc-test", recent, "MSFT", "1.01,5.02",
                  "https://z"),
             )
         from sec_8k_broad import get_recent_8k_events

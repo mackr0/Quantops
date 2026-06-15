@@ -5,6 +5,29 @@ at the top.
 
 ---
 
+## 2026-06-15 — OCC symbol format mismatch: single-leg options 100% rejected + Greeks gate silently blind. Severity: CRITICAL (silent risk-control gap) + HIGH (single-leg never executed).
+
+**Operator caught it:** EXP-A2 showed `BUY BMNR GATED · ERROR — asset "BMNR  260724C00018000" not found` while EXP-A1 held that exact contract from the same cycle. "How can both be true?"
+
+**Root cause — two symbol conventions:** `format_occ_symbol` emits the OSI **space-padded** root (`BMNR  260724C00018000`); Alpaca's API uses the **compact** form (`BMNR260724C00018000`) and 422-rejects the padded one (confirmed directly against `/v2/options/contracts`). Three symptoms from this one cause:
+
+1. **Single-leg OPTIONS — 100% rejected at submit.** The executor rebuilt the OCC via `format_occ_symbol` (padded) and never snapped the symbol string; Alpaca rejected every one. The RC11 parse-layer snap fixed only the *strike*, not the symbol. Multileg worked because its snap step replaces the padded symbol with Alpaca's compact one before submit.
+
+2. **Greeks risk gate silently blind (live).** Multileg legs are STORED compact (via the snap). `parse_occ_symbol` used fixed offsets assuming a padded 6-char root, so it raised `ValueError` on every compact symbol — which `_parse_option_position` catches into `None`, **dropping the leg from book delta/theta/vega**. The caps under-counted real option exposure (too permissive). Confirmed: `BMNR260724C00018000` dropped pre-fix, counted post-fix. (Correction to an earlier characterization: this is a silent *drop*, not a silent wrong-value — the parse fails loudly and the caller swallows it.)
+
+3. **Options-exit timing blind.** `_days_to_expiry` has the same parse→except→None pattern; near-expiry exits couldn't see compact legs.
+
+**Fix (three coordinated, no data migration):**
+- `parse_occ_symbol` made **format-agnostic** — parses from the right (last 8 = strike, prev = C/P, 6 before = YYMMDD, remainder = root), with strict validation so garbage still raises. Decodes BOTH forms, so it un-blinds the Greeks gate and exit timing for ALL existing (compact) positions with zero migration. This is the load-bearing, purely-additive change.
+- Single-leg executor **snaps the OCC to the listed contract** before submit (mirrors multileg) — Alpaca-resolvable symbol flows through dup-guard, Greeks, submit, and journal consistently.
+- `format_occ_symbol` comment corrected (it claimed "Alpaca accepts both" — it does not).
+
+**Tests:** `tests/test_occ_symbol_format_agnostic_2026_06_15.py` — parser round-trips both formats + rejects garbage; Greeks counts a compact leg; exit timing decodes compact; source pin that the single-leg executor snaps.
+
+**Also (test hygiene):** `tests/test_sec_8k_broad_2026_05_17.py` had two tests with hardcoded 2026-05-15/17 filing dates that aged out of the production 30-day window — they passed near authoring and started failing exactly 31 days later (caught by today's gate). Converted to relative dates (today − 2d) matching the file's own `test_date_window_filter` pattern; production code was correct.
+
+---
+
 ## 2026-06-12 — Broker-funding guard: the silent dead day can't repeat. Severity: CRITICAL (operator paid for a full trading day of zero fills with zero escalation).
 
 **What happened:** The 6-12 paper accounts were verified at $1,000,000 each by the reset's key gate at 03:15 UTC. By the 13:30 open they were $0 at the broker — equity, cash, buying power all zero, ZERO fills ever (funding vanished at the Alpaca dashboard level; the paper trading API has no endpoint that can move funding, so the cause is outside this system). The scheduler ran all day and submitted orders every cycle; Alpaca rejected every one with `insufficient buying power`. The rejections went to logs and ERROR badges only — no halt, no dashboard banner. The operator discovered the dead day after the close.
