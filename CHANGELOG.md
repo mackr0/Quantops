@@ -5,6 +5,14 @@ at the top.
 
 ---
 
+## 2026-06-15 — Public self-registration disabled. Severity: medium (access control).
+
+Single-operator system: accounts are created manually by the operator (`models.create_user` via migrate.py / script / DB), never through the web. Removed the "Create one" link from the login page and replaced the `/register` route body with `abort(404)` for both GET and POST — so a direct POST can't bypass the removed link, and the 404 (vs 403) leaks no hint that registration ever existed. The route is kept as an explicit, commented stub (not deleted) so the intent is documented and a casual re-add is obvious. `create_user` and the admin/manual path are untouched. Unused imports trimmed from auth.py.
+
+**Tests:** `tests/test_registration_disabled_2026_06_15.py` — GET/POST /register both 404, POST creates no user, login page has no /register link, manual `create_user` still works.
+
+---
+
 ## 2026-06-15 — OCC symbol format mismatch: single-leg options 100% rejected + Greeks gate silently blind. Severity: CRITICAL (silent risk-control gap) + HIGH (single-leg never executed).
 
 **Operator caught it:** EXP-A2 showed `BUY BMNR GATED · ERROR — asset "BMNR  260724C00018000" not found` while EXP-A1 held that exact contract from the same cycle. "How can both be true?"

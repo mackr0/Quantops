@@ -3,12 +3,13 @@
 from contextlib import closing
 from datetime import datetime
 
-from flask import Blueprint, render_template, request, redirect, url_for, flash
+from flask import (
+    Blueprint, render_template, request, redirect, url_for, flash, abort,
+)
 from flask_login import login_user, logout_user, login_required
 
 from models import (
-    get_user_by_email, verify_password, create_user,
-    create_default_segment_configs, _get_conn,
+    get_user_by_email, verify_password, _get_conn,
 )
 from app import User
 
@@ -48,43 +49,18 @@ def login():
     return render_template("auth/login.html")
 
 
+# 2026-06-15 — PUBLIC SELF-REGISTRATION DISABLED. This is a
+# single-operator system; accounts are created manually by the
+# operator (models.create_user, via migrate.py / a script / direct
+# DB), never through the web. The route is kept as an explicit
+# abort(404) — rather than deleted — so the intent is documented in
+# code and pinned by a guardrail test, and so a casual re-add is
+# obvious. abort(404) (not 403) leaks no information that a
+# registration endpoint ever existed. Both GET and POST 404, so a
+# direct POST can't bypass the removed login-page link.
 @auth_bp.route("/register", methods=["GET", "POST"])
 def register():
-    if request.method == "POST":
-        email = request.form.get("email", "").strip()
-        password = request.form.get("password", "")
-        confirm = request.form.get("confirm_password", "")
-        display_name = request.form.get("display_name", "").strip()
-
-        if not email or not password:
-            flash("Email and password are required.", "error")
-            return render_template("auth/register.html")
-
-        if password != confirm:
-            flash("Passwords do not match.", "error")
-            return render_template("auth/register.html")
-
-        if len(password) < 8:
-            flash("Password must be at least 8 characters.", "error")
-            return render_template("auth/register.html")
-
-        existing = get_user_by_email(email)
-        if existing:
-            flash("An account with that email already exists.", "error")
-            return render_template("auth/register.html")
-
-        try:
-            user_id = create_user(email, password, display_name=display_name, role="viewer")
-            create_default_segment_configs(user_id)
-            user = get_user_by_email(email)
-            login_user(User(user), remember=True)
-            flash("Account created successfully. You have view-only access.", "success")
-            return redirect(url_for("views.dashboard"))
-        except Exception as exc:
-            flash(f"Registration failed: {exc}", "error")
-            return render_template("auth/register.html")
-
-    return render_template("auth/register.html")
+    abort(404)
 
 
 @auth_bp.route("/logout")
