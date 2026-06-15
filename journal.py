@@ -510,7 +510,14 @@ def init_db(db_path=None):
                 meta_model_stats_json TEXT,
                 ensemble_summary_json TEXT,
                 n_trades_selected INTEGER NOT NULL DEFAULT 0,
-                n_candidates_in_shortlist INTEGER NOT NULL DEFAULT 0
+                n_candidates_in_shortlist INTEGER NOT NULL DEFAULT 0,
+                -- 2026-06-15 — full per-trade decision list so the
+                -- dashboard's AI-Brain history can replay each past
+                -- cycle's TRADES SELECTED panel verbatim (badges,
+                -- confidence, per-trade reasoning). Pre-existing rows
+                -- have NULL here; the history view falls back to the
+                -- count + cycle reasoning + trade_drops for those.
+                trades_selected_json TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_ai_cycles_ts
                 ON ai_cycles(timestamp DESC);

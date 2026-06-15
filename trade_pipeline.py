@@ -3390,8 +3390,9 @@ def _save_cycle_data(ctx, candidates_data, shortlist, ai_trades,
                             market_context_json, sector_rotation_json,
                             learned_patterns_json, meta_model_stats_json,
                             ensemble_summary_json, n_trades_selected,
-                            n_candidates_in_shortlist)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            n_candidates_in_shortlist,
+                            trades_selected_json)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
                             cycle_id,
                             profile_id,
@@ -3406,6 +3407,10 @@ def _save_cycle_data(ctx, candidates_data, shortlist, ai_trades,
                             _json.dumps(cycle_data["ensemble"]),
                             len(cycle_data["trades_selected"]),
                             len(cycle_data["shortlist"]),
+                            # 2026-06-15 — persist the full decision list
+                            # for the AI-Brain history view (verbatim
+                            # replay of past cycles).
+                            _json.dumps(cycle_data["trades_selected"]),
                         ),
                     )
                     conn.commit()

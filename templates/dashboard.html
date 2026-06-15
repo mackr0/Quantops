@@ -363,6 +363,22 @@
                 <h4 style="margin:0;">AI Brain: {{ prof.name }}{% if prof.is_virtual %} <small style="font-size:0.6em; color:#888; font-weight:normal;">(Virtual)</small>{% endif %}</h4>
                 <small class="muted" id="ai-time-{{ prof.id }}">Loading...</small>
             </div>
+            {# 2026-06-15 — AI-Brain history nav. Arrow back through
+               the day's cycles (errors, trades, reasoning) like the
+               activity ticker. Index 0 = live; ◀ steps older, ▶
+               newer. #}
+            <div style="display:flex; align-items:center; gap:0.4rem; margin-top:0.3rem;">
+                <button type="button" class="outline secondary brain-older"
+                        data-pid="{{ prof.id }}"
+                        style="padding:0.1rem 0.5rem; font-size:0.85rem;"
+                        title="Older cycle">&larr;</button>
+                <span class="muted brain-navlabel" id="brain-navlabel-{{ prof.id }}"
+                      style="font-size:0.8rem; min-width:7rem; text-align:center;">Live</span>
+                <button type="button" class="outline secondary brain-newer"
+                        data-pid="{{ prof.id }}"
+                        style="padding:0.1rem 0.5rem; font-size:0.85rem;"
+                        title="Newer cycle" disabled>&rarr;</button>
+            </div>
         </header>
         <div style="padding:0 0.75rem 0.5rem;">
             {# 2026-05-12 — profit-taking metrics inline. Surfaces
@@ -865,13 +881,16 @@ function showOpTab(event, profileId, which) {
                 .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
                 .replace(/'/g, '&#39;');
     }
-    function fetchCycleData(pid) {
-        fetch('/api/cycle-data/' + pid).then(function(r){return r.json();}).then(function(data) {
-            if (data.error) return;
-            var timeEl = document.getElementById('ai-time-' + pid);
+    // 2026-06-15 — AI-Brain history. brainIndex[pid]: 0 = live,
+    // N>=1 = N cycles back (history offset N-1). brainTotal[pid] =
+    // known count of historical cycles (learned on first history
+    // fetch). renderBrain is shared by the live and history paths
+    // so past cycles replay through the exact same renderer.
+    var brainIndex = {};
+    var brainTotal = {};
+    function renderBrain(pid, data) {
             var reasonEl = document.getElementById('ai-reasoning-' + pid);
             var listEl = document.getElementById('ai-shortlist-' + pid);
-            if (timeEl && data.timestamp) timeEl.textContent = timeAgo(data.timestamp);
             // 2026-05-12 — profit-taking metrics line. Shows
             // stop-to-tp ratio + MFE capture so the operator can
             // see whether the AI tuner is converged.
@@ -1094,9 +1113,69 @@ function showOpTab(event, profileId, which) {
                 tbl += '</tbody></table>';
                 listEl.innerHTML = tbl;
             } else if (listEl) { listEl.innerHTML = '<em>No candidates met threshold this cycle</em>'; }
+    }
+
+    function setNav(pid) {
+        var idx = brainIndex[pid] || 0, total = brainTotal[pid];
+        var label = document.getElementById('brain-navlabel-' + pid);
+        var older = document.querySelector('.brain-older[data-pid="' + pid + '"]');
+        var newer = document.querySelector('.brain-newer[data-pid="' + pid + '"]');
+        if (label) label.textContent = (idx === 0) ? 'Live'
+            : ('Cycle −' + idx + (total ? (' of ' + total) : ''));
+        if (newer) newer.disabled = (idx === 0);
+        // older stays enabled until we KNOW we're at the oldest cycle
+        if (older) older.disabled = (total != null && idx >= total);
+    }
+
+    function fetchLive(pid) {
+        fetch('/api/cycle-data/' + pid).then(function(r){return r.json();}).then(function(data){
+            if (data.error) return;
+            var timeEl = document.getElementById('ai-time-' + pid);
+            if (timeEl && data.timestamp) timeEl.textContent = timeAgo(data.timestamp);
+            renderBrain(pid, data);
         }).catch(function(){});
     }
-    function fetchAll() { profileIds.forEach(fetchCycleData); }
+
+    function fetchHistory(pid) {
+        var off = (brainIndex[pid] || 1) - 1;
+        fetch('/api/cycle-history/' + pid + '?offset=' + off).then(function(r){return r.json();}).then(function(resp){
+            brainTotal[pid] = resp.total || 0;
+            var e = (resp.entries || [])[0];
+            if (!e) {                       // walked past the oldest — clamp to live
+                brainIndex[pid] = 0; setNav(pid); fetchLive(pid); return;
+            }
+            var timeEl = document.getElementById('ai-time-' + pid);
+            if (timeEl) timeEl.textContent = (e.timestamp_friendly || '') + ' · history';
+            renderBrain(pid, e);
+            setNav(pid);
+        }).catch(function(){});
+    }
+
+    function refreshBrain(pid) {
+        if ((brainIndex[pid] || 0) === 0) { fetchLive(pid); } else { fetchHistory(pid); }
+    }
+
+    function stepBrain(pid, delta) {   // delta +1 = older, -1 = newer
+        var idx = (brainIndex[pid] || 0) + delta;
+        if (idx < 0) idx = 0;
+        if (brainTotal[pid] != null && idx > brainTotal[pid]) idx = brainTotal[pid];
+        brainIndex[pid] = idx;
+        setNav(pid);
+        refreshBrain(pid);
+    }
+
+    document.querySelectorAll('.brain-older').forEach(function(b){
+        b.addEventListener('click', function(){ stepBrain(parseInt(b.dataset.pid, 10), +1); });
+    });
+    document.querySelectorAll('.brain-newer').forEach(function(b){
+        b.addEventListener('click', function(){ stepBrain(parseInt(b.dataset.pid, 10), -1); });
+    });
+
+    // Auto-refresh only LIVE panels — never yank the operator off a
+    // historical cycle they're inspecting.
+    function fetchAll() {
+        profileIds.forEach(function(pid){ if ((brainIndex[pid] || 0) === 0) fetchLive(pid); });
+    }
     fetchAll(); setInterval(fetchAll, 30000);
 })();
 </script>

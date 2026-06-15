@@ -6268,6 +6268,162 @@ def api_cycle_data(profile_id):
     return jsonify(data)
 
 
+@views_bp.route("/api/cycle-history/<int:profile_id>")
+@login_required
+def api_cycle_history(profile_id):
+    """Paged AI-Brain history for a profile — one entry per past
+    cycle, newest first, so the dashboard can arrow back through the
+    day (2026-06-15).
+
+    Index 0 in the UI is the LIVE cycle (served by /api/cycle-data);
+    this endpoint serves the cycles BEHIND it. `offset` is 0-based
+    into the historical list (offset 0 = the most recent completed
+    cycle). Returns the SAME per-cycle shape the brain renderer
+    already consumes (ai_reasoning, trades_selected, shortlist),
+    plus a friendly timestamp, so one renderer drives both live and
+    history.
+
+    Per-trade error/outcome badges are stamped from THIS cycle's
+    trade_drops (joined by cycle_id — exact, unlike the live 4h
+    window match). Cycles written before 2026-06-15 have no
+    trades_selected_json; for those we return the cycle reasoning +
+    counts + the drops list, and the UI notes the decision list
+    wasn't recorded.
+    """
+    import sqlite3 as _sql
+    from contextlib import closing
+    from display_names import humanize
+
+    PAGE = 1  # one cycle per arrow press, like the activity ticker
+    try:
+        offset = max(0, int(request.args.get("offset", 0)))
+    except (TypeError, ValueError):
+        offset = 0
+
+    db_path = f"quantopsai_profile_{profile_id}.db"
+    try:
+        with closing(_sql.connect(db_path)) as conn:
+            conn.row_factory = _sql.Row
+            total = conn.execute(
+                "SELECT COUNT(*) FROM ai_cycles WHERE profile_id = ?",
+                (profile_id,),
+            ).fetchone()[0]
+            rows = conn.execute(
+                "SELECT cycle_id, timestamp, ai_reasoning, "
+                "       shortlist_json, trades_selected_json, regime, "
+                "       vix, n_trades_selected, n_candidates_in_shortlist "
+                "FROM ai_cycles WHERE profile_id = ? "
+                "ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+                (profile_id, PAGE, offset),
+            ).fetchall()
+            entries = []
+            for r in rows:
+                # Drops for THIS cycle (exact join on cycle_id) →
+                # {symbol: (drop_code, drop_reason)}.
+                drops = {}
+                try:
+                    for d in conn.execute(
+                        "SELECT symbol, drop_code, drop_reason "
+                        "FROM trade_drops WHERE cycle_id = ?",
+                        (r["cycle_id"],),
+                    ).fetchall():
+                        sym = (d["symbol"] or "").upper()
+                        if sym and sym not in drops:
+                            drops[sym] = (d["drop_code"], d["drop_reason"])
+                except _sql.Error as _drop_exc:
+                    # Older profile DB without trade_drops / cycle_id —
+                    # the cycle still renders, just without per-trade
+                    # error badges. Log, don't swallow silently.
+                    logger.debug(
+                        "cycle-history: drops lookup failed for cycle "
+                        "%s (profile %s): %s",
+                        r["cycle_id"], profile_id, _drop_exc,
+                    )
+
+                trades = []
+                if r["trades_selected_json"]:
+                    try:
+                        trades = json.loads(r["trades_selected_json"])
+                    except (ValueError, TypeError):
+                        trades = []
+                for t in trades:
+                    if isinstance(t.get("reasoning"), str):
+                        t["reasoning"] = humanize(t["reasoning"])
+                    if isinstance(t.get("action"), str):
+                        t["action"] = humanize(t["action"])
+                    # Stamp the cycle's own drop onto the matching
+                    # selected trade — exact by cycle_id. ERROR →
+                    # the red rejected badge; everything else (SKIP /
+                    # GATED / BLOCKED / catastrophic codes) → the
+                    # purple gated badge. Mirrors the live vocabulary
+                    # so the same renderer shows the same badges.
+                    drop = drops.get((t.get("symbol") or "").upper())
+                    if drop:
+                        code, reason = drop
+                        if (code or "").upper() == "ERROR":
+                            t["execution_outcome"] = "rejected"
+                            t["rejection_code_display"] = "ERROR"
+                            t["rejection_message"] = (reason or "")[:240]
+                        else:
+                            t["execution_outcome"] = "gated"
+                            t["gate_code_display"] = humanize(code or "Gate")
+                            t["gate_message"] = (reason or "")[:240]
+
+                # Pre-2026-06-15 cycles have no stored decision list.
+                # Synthesize one from this cycle's drops so the errors
+                # the operator wants to review still render through the
+                # same brain renderer (as rejected/gated badges).
+                if not trades and drops:
+                    for sym, (code, reason) in drops.items():
+                        t = {"symbol": sym,
+                             "reasoning": humanize(reason or "")}
+                        if (code or "").upper() == "ERROR":
+                            t["execution_outcome"] = "rejected"
+                            t["rejection_code_display"] = "ERROR"
+                            t["rejection_message"] = (reason or "")[:240]
+                        else:
+                            t["execution_outcome"] = "gated"
+                            t["gate_code_display"] = humanize(code or "Gate")
+                            t["gate_message"] = (reason or "")[:240]
+                        trades.append(t)
+
+                shortlist = []
+                if r["shortlist_json"]:
+                    try:
+                        shortlist = json.loads(r["shortlist_json"])
+                    except (ValueError, TypeError):
+                        shortlist = []
+                for c in shortlist:
+                    if isinstance(c.get("signal"), str):
+                        c["signal"] = humanize(c["signal"])
+                    if isinstance(c.get("track_record"), str):
+                        c["track_record"] = humanize(c["track_record"])
+
+                entries.append({
+                    "cycle_id": r["cycle_id"],
+                    "timestamp_friendly": r["timestamp"],
+                    "ai_reasoning": humanize(r["ai_reasoning"] or ""),
+                    "trades_selected": trades,
+                    "shortlist": shortlist,
+                    "regime": r["regime"],
+                    "vix": r["vix"],
+                    "n_trades_selected": r["n_trades_selected"],
+                    "n_candidates": r["n_candidates_in_shortlist"],
+                    # True when this cycle predates trades_selected_json
+                    # persistence — the UI shows a "decision list not
+                    # recorded" note plus the cycle's drops.
+                    "decisions_recorded": bool(r["trades_selected_json"]),
+                    "drops": [
+                        {"symbol": s, "code": c, "reason": (rsn or "")[:240]}
+                        for s, (c, rsn) in drops.items()
+                    ],
+                })
+    except _sql.Error as exc:
+        return jsonify({"error": str(exc), "entries": [], "total": 0})
+
+    return jsonify({"entries": entries, "total": total, "offset": offset})
+
+
 @views_bp.route("/api/sector-rotation")
 @login_required
 def api_sector_rotation():

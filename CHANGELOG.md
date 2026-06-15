@@ -5,6 +5,18 @@ at the top.
 
 ---
 
+## 2026-06-15 — AI-Brain history: arrow back through the day's cycles. Severity: feature (operator visibility).
+
+The AI-Brain panel showed only the current cycle (overwritten each cycle). Operators can now ◀ ▶ back through every recorded cycle per profile — reasoning, candidates, and the trades/errors that fired — like the activity ticker.
+
+- **Data:** each cycle already appended to `ai_cycles`; added a `trades_selected_json` column so the full decision list (badges, confidence, per-trade reasoning) replays verbatim going forward. Universal schema migration backfills the column on existing profile DBs.
+- **API:** `/api/cycle-history/<pid>?offset=N` pages `ai_cycles` newest-first, stamps each cycle's errors from `trade_drops` joined **exactly by cycle_id** (vs the live panel's fuzzy 4h window). Cycles predating the new column synthesize error entries from their drops so past errors still show.
+- **UI:** brain panel header gains ◀ `Live / Cycle −N of M` ▶. Index 0 = live; the 30s auto-refresh only touches live panels, never yanking the operator off a cycle they're inspecting. The renderer was refactored into a shared `renderBrain(pid, data)` so live and history render identically.
+
+No trading-loop changes — read-side plus one append-only column. **Tests:** `tests/test_ai_brain_history_2026_06_15.py` (5) — pagination newest-first, offset walk-back, per-cycle error stamping, pre-history synthesis, and static wiring pins.
+
+---
+
 ## 2026-06-15 — Public self-registration disabled. Severity: medium (access control).
 
 Single-operator system: accounts are created manually by the operator (`models.create_user` via migrate.py / script / DB), never through the web. Removed the "Create one" link from the login page and replaced the `/register` route body with `abort(404)` for both GET and POST — so a direct POST can't bypass the removed link, and the 404 (vs 403) leaks no hint that registration ever existed. The route is kept as an explicit, commented stub (not deleted) so the intent is documented and a casual re-add is obvious. `create_user` and the admin/manual path are untouched. Unused imports trimmed from auth.py.
