@@ -13,7 +13,9 @@ The AI-Brain panel showed only the current cycle (overwritten each cycle). Opera
 - **API:** `/api/cycle-history/<pid>?offset=N` pages `ai_cycles` newest-first, stamps each cycle's errors from `trade_drops` joined **exactly by cycle_id** (vs the live panel's fuzzy 4h window). Cycles predating the new column synthesize error entries from their drops so past errors still show.
 - **UI:** brain panel header gains ◀ `Live / Cycle −N of M` ▶. Index 0 = live; the 30s auto-refresh only touches live panels, never yanking the operator off a cycle they're inspecting. The renderer was refactored into a shared `renderBrain(pid, data)` so live and history render identically.
 
-No trading-loop changes — read-side plus one append-only column. **Tests:** `tests/test_ai_brain_history_2026_06_15.py` (5) — pagination newest-first, offset walk-back, per-cycle error stamping, pre-history synthesis, and static wiring pins.
+No trading-loop changes — read-side plus one append-only column. **Tests:** `tests/test_ai_brain_history_2026_06_15.py` — pagination newest-first, offset walk-back, per-cycle error stamping, pre-history synthesis, static wiring pins, and migration coverage.
+
+**Caught on prod verification before users saw it:** the `trades_selected_json` column landed only on freshly-created DBs — `journal._migrate_all_columns` didn't cover the `ai_cycles` table, so every existing profile DB would have `no such column`-errored on the history SELECT. Fixed by adding `ai_cycles` to the migration's expected-columns map (ALTER-adds it to existing DBs) and making the endpoint defensive (selects `NULL` for the column if still absent). Pinned by `test_migration_adds_column_to_existing_db`. Lesson reinforced: a CREATE-TABLE-IF-NOT-EXISTS change is invisible to existing DBs — schema additions must go in the migration map too.
 
 ---
 

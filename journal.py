@@ -832,6 +832,15 @@ def _migrate_all_columns(conn):
         "ai_cost_ledger": [
             ("call_id", "TEXT"),
         ],
+        # 2026-06-15 — full per-cycle decision list for the AI-Brain
+        # history view. CREATE TABLE only adds it to fresh DBs; this
+        # entry ALTER-adds it to every EXISTING profile DB so the
+        # /api/cycle-history endpoint can SELECT it (without this the
+        # column lands only on post-change DBs and the endpoint
+        # 'no such column'-errors on all current profiles).
+        "ai_cycles": [
+            ("trades_selected_json", "TEXT"),
+        ],
     }
 
     for table, columns in _EXPECTED_COLUMNS.items():

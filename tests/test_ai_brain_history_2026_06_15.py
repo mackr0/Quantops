@@ -139,3 +139,26 @@ def test_dashboard_wires_history_controls():
     )
     # Auto-refresh must not yank the operator off a historical cycle.
     assert "if ((brainIndex[pid] || 0) === 0) fetchLive(pid)" in src
+
+
+def test_migration_adds_column_to_existing_db(tmp_path):
+    """The bug that nearly shipped: trades_selected_json landed only
+    on fresh DBs. _migrate_all_columns must ALTER-add it to an
+    EXISTING ai_cycles table or every current profile errors on the
+    history SELECT."""
+    import journal
+    db = str(tmp_path / "old.db")
+    with closing(sqlite3.connect(db)) as c:
+        # ai_cycles WITHOUT the new column (simulates a pre-change DB)
+        c.execute(
+            "CREATE TABLE ai_cycles (cycle_id TEXT PRIMARY KEY, "
+            "timestamp TEXT, profile_id INTEGER, ai_reasoning TEXT, "
+            "n_trades_selected INTEGER)")
+        c.commit()
+    journal.init_db(db)
+    with closing(sqlite3.connect(db)) as c:
+        cols = {r[1] for r in c.execute("PRAGMA table_info(ai_cycles)")}
+    assert "trades_selected_json" in cols, (
+        "_migrate_all_columns does not cover ai_cycles — existing "
+        "profile DBs would 'no such column'-error on cycle-history."
+    )

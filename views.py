@@ -6308,9 +6308,19 @@ def api_cycle_history(profile_id):
                 "SELECT COUNT(*) FROM ai_cycles WHERE profile_id = ?",
                 (profile_id,),
             ).fetchone()[0]
+            # Defensive: a profile DB that hasn't run the schema
+            # migration yet (brand-new, or read before the scheduler
+            # opened it) may lack trades_selected_json. Select NULL
+            # for it rather than 'no such column'-erroring; those
+            # cycles fall back to the drop-synthesized decision list.
+            _ac_cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(ai_cycles)").fetchall()}
+            _tsj = ("trades_selected_json"
+                    if "trades_selected_json" in _ac_cols
+                    else "NULL AS trades_selected_json")
             rows = conn.execute(
                 "SELECT cycle_id, timestamp, ai_reasoning, "
-                "       shortlist_json, trades_selected_json, regime, "
+                f"       shortlist_json, {_tsj}, regime, "
                 "       vix, n_trades_selected, n_candidates_in_shortlist "
                 "FROM ai_cycles WHERE profile_id = ? "
                 "ORDER BY timestamp DESC LIMIT ? OFFSET ?",
