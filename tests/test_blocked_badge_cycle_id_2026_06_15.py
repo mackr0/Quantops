@@ -116,3 +116,44 @@ def test_meta_suppression_records_drop():
 def test_meta_suppressed_is_cross_cutting():
     from views import _drop_action_class
     assert _drop_action_class("META_SUPPRESSED", "") == "any"
+
+
+def test_legacy_json_without_cycle_id_recovers_via_timestamp(logged_in):
+    """The end-of-day case the operator actually hit: cycle_data JSON
+    written BEFORE cycle_id was carried (cycle_id absent) must still
+    badge by recovering the cycle_id from the nearest ai_cycles row,
+    even when the drop is hours old."""
+    client, pid, cwd = logged_in
+    import time
+    now = time.time()
+    cid = "cyc-legacy-eod"
+    # JSON has NO cycle_id (legacy), timestamp = the cycle's time.
+    cycle = {
+        "profile_id": pid, "timestamp": now,
+        "ai_reasoning": "eod", "shortlist": [],
+        "trades_selected": [
+            {"symbol": "BITO", "action": "BUY", "size_pct": 7.5,
+             "confidence": 75, "reasoning": "x"}],
+    }
+    with open(Path(cwd) / f"cycle_data_{pid}.json", "w") as f:
+        json.dump(cycle, f)
+    with closing(sqlite3.connect(
+            Path(cwd) / f"quantopsai_profile_{pid}.db")) as c:
+        # ai_cycles row at ~the same timestamp carries the cycle_id.
+        c.execute(
+            "INSERT INTO ai_cycles (cycle_id, timestamp, profile_id, "
+            " ai_reasoning, n_trades_selected) "
+            "VALUES (?, datetime('now'), ?, 'eod', 1)", (cid, pid))
+        # Drop is 4 hours old (outside any 2h window) but keyed to cid.
+        c.execute(
+            "INSERT INTO trade_drops (timestamp, symbol, side, "
+            " drop_code, drop_reason, cycle_id) VALUES "
+            " (datetime('now','-4 hours'), 'BITO', 'buy', 'SKIP', "
+            " 'Insufficient cash remaining this cycle', ?)", (cid,))
+        c.commit()
+    t = client.get(f"/api/cycle-data/{pid}").get_json()["trades_selected"][0]
+    assert t.get("execution_outcome") == "gated", (
+        "legacy JSON (no cycle_id) did not recover the cycle_id — the "
+        "operator's end-of-day vague-badge case is unfixed"
+    )
+    assert "cash" in (t.get("gate_message") or "")

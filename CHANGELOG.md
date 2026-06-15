@@ -15,7 +15,9 @@ Operator saw end-of-day badges read "Not submitted — most likely already-posit
 - `cycle_data` now carries `cycle_id`; the live endpoint matches drops by `cycle_id` (exact, never ages out), falling back to the 2h window only for legacy JSON without it.
 - Meta-model suppression — the one genuinely silent skip path (it only logged + `continue`d) — now records a `META_SUPPRESSED` drop with the edge-probability reason, so that class can never be vague either. `META_SUPPRESSED` is cross-cutting so the badge always matches.
 
-**Tests:** `tests/test_blocked_badge_cycle_id_2026_06_15.py` — a drop timestamped 5 hours ago but sharing the cycle_id still badges with its real reason (the staleness fix), plus pins for cycle_id in cycle_data, the suppression drop, and the cross-cutting classification.
+**Follow-up — the frozen end-of-day cycle still showed vague.** The first fix only helped cycles written AFTER deploy (they carry cycle_id in the JSON). The cycle the operator was actually viewing was written before the deploy (cycle_id absent) and would never gain one, so it stayed on the stale 2h window. Added cycle_id RECOVERY: when the JSON lacks cycle_id, match the cycle_data timestamp to the nearest `ai_cycles` row (10-min tolerance) and use its cycle_id for the exact drop join. Verified against the real prod JSONs — all three sampled profiles' frozen end-of-day cycles resolved from vague to specific (`outside market_hours window`, `risk_assessor VETO`, `Insufficient cash remaining`).
+
+**Tests:** `tests/test_blocked_badge_cycle_id_2026_06_15.py` — a drop 5h old but sharing the cycle_id still badges (staleness fix); a LEGACY JSON with no cycle_id recovers it from the nearest ai_cycles row and badges a 4h-old drop (the operator's actual case); plus pins for cycle_id in cycle_data, the suppression drop, and the cross-cutting classification.
 
 ---
 

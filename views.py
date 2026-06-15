@@ -6196,6 +6196,36 @@ def api_cycle_data(profile_id):
         # Falls back to the 2h window for legacy JSON files written
         # before cycle_id was carried in cycle_data.
         cycle_id = data.get("cycle_id")
+        # 2026-06-15 — RECOVER cycle_id for legacy cycle_data JSON
+        # written before cycle_id was carried (every frozen pre-fix
+        # cycle, including the current end-of-day one). Match the
+        # cycle_data timestamp to the nearest ai_cycles row — the
+        # cycle that wrote this JSON. Without this, those JSON files
+        # never gain a cycle_id and stay on the stale 2h window
+        # (vague badges) forever. 10-minute tolerance so we only
+        # accept the actual matching cycle, not an unrelated one.
+        if not cycle_id:
+            _cts = data.get("timestamp")
+            if isinstance(_cts, (int, float)) and _cts > 0:
+                from datetime import datetime as _dtr, timezone as _tzr
+                import sqlite3 as _sql_r
+                from contextlib import closing as _cl_r
+                _cts_iso = _dtr.fromtimestamp(
+                    _cts, tz=_tzr.utc).strftime("%Y-%m-%d %H:%M:%S")
+                try:
+                    with _cl_r(_sql_r.connect(db_path)) as _rconn:
+                        _rr = _rconn.execute(
+                            "SELECT cycle_id, "
+                            "  ABS(julianday(timestamp)-julianday(?)) AS dt "
+                            "FROM ai_cycles WHERE profile_id = ? "
+                            "ORDER BY dt ASC LIMIT 1",
+                            (_cts_iso, profile_id),
+                        ).fetchone()
+                    # 10 min = 0.00694 days
+                    if _rr and _rr[0] and _rr[1] is not None and _rr[1] < 0.00694:
+                        cycle_id = _rr[0]
+                except _sql_r.Error as _re:
+                    logger.debug("cycle_id recovery failed: %s", _re)
         cycle_cutoff_iso = None
         if cycle_id:
             import sqlite3 as _sql_d

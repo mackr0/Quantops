@@ -292,7 +292,9 @@ def test_view_scopes_drops_to_the_current_cycle():
         "Source pin failed — couldn't locate the cycle_id drop-"
         "matching block in views.py"
     )
-    window = src[anchor:anchor + 1600]
+    # Window covers the cycle_id block + recovery + exact-join +
+    # legacy fallback (the recovery block widened this span).
+    window = src[anchor:anchor + 3200]
     # Primary defense: match drops by cycle_id.
     assert 'data.get("cycle_id")' in window, (
         "Drop enrichment must read cycle_id from cycle_data and "
