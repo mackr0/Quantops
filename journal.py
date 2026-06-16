@@ -1574,24 +1574,33 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
             # Closes a long. FIFO-consume from long_lots first.
             remaining = qty
             ll = long_lots.setdefault(key, [])
+            consumed_any = False
             while remaining > 0 and ll:
                 consumed = min(ll[0][0], remaining)
                 ll[0][0] -= consumed
                 remaining -= consumed
+                consumed_any = True
                 if ll[0][0] <= 0.001:
                     ll.pop(0)
-            # OPTION SELL-TO-OPEN: a multileg short leg writes
-            # side='sell' (not 'short') because OptionLeg.side is
-            # 'buy'/'sell' — the same overloaded vocabulary stocks
-            # use for close-a-long. For options specifically, a
-            # `side='sell'` row with no long lot to consume is a
-            # sell-to-open (short option position), not a phantom
-            # close. Without this branch, every multileg short leg
-            # silently produces zero position state and the AI
-            # thinks the spread is just the long leg.
-            # Caught 2026-05-11 (same incident that surfaced the
-            # combo-net price bug).
-            if remaining > 0 and occ_symbol:
+            # A leftover after consuming becomes a SHORT lot when:
+            #   • OPTION SELL-TO-OPEN: a multileg short leg writes
+            #     side='sell' (OptionLeg.side is 'buy'/'sell'), so a
+            #     `sell` with no long lot is a sell-to-open short, not
+            #     a phantom close. (Caught 2026-05-11.)
+            #   • STOCK OVERSELL: a stock `sell` that consumed some
+            #     long and then went PAST it really opened a broker
+            #     short (you sold more shares than you held). The old
+            #     code DROPPED that remainder, hiding the short — which
+            #     made the delta-hedge runaway invisible and let
+            #     certify(book) disagree with the order-id truth
+            #     (p128 SOUN: a 3772 sell oversold a 3672 long by 100;
+            #     the 100-share short vanished). 2026-06-16.
+            #
+            # A stock `sell` that matched NO open long (consumed_any
+            # False) is an orphan/closed-round-trip artifact — the
+            # entry was excluded as 'closed' — and is still dropped, so
+            # completed round-trips never flash a phantom short.
+            if remaining > 0 and (occ_symbol or consumed_any):
                 short_lots.setdefault(key, []).append(
                     [remaining, price]
                 )

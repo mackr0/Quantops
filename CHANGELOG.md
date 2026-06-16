@@ -5,6 +5,18 @@ at the top.
 
 ---
 
+## 2026-06-16 — Stock oversells are now visible as real shorts in the virtual book (resolves SOUN drift + the book-vs-order-id disagreement). Severity: HIGH (hidden broker shorts; book disagreed with the order-id truth).
+
+`get_virtual_positions` DROPPED the portion of a stock `sell` that exceeded the available long (it only formed short lots for options). That silently hid genuine broker shorts created by overselling — the mechanism that made the delta-hedge runaway invisible, and that left p128's SOUN book at −100 when the order-id truth was −200 (a 3772-share sell oversold a 3672 long by 100; the 100-share short vanished). It also made certify's book total disagree with the broker.
+
+**Proof (the operator's invariant):** reconstructing each account-36 profile's SOUN from the broker fills of its OWN order_ids reconciles EXACTLY to the broker — p125 +30, p126 +181, p127 0, p128 −200, sum = 11 = broker. Only p128's book was wrong, purely because the 100-share oversell short was dropped.
+
+**Fix:** a stock `sell` remainder becomes a short lot IFF it consumed some open long first (a true oversell = a real broker short). A `sell` that matched NO open long is a closed-round-trip/orphan artifact (its entry was excluded as `closed`) and is still dropped — so completed round-trips and pending exits never flash a phantom short. With this, p128 SOUN reads −200 from its existing rows (no data mutation), and account-36 SOUN certifies clean (30 + 181 − 200 = 11). Full suite: 5,254 passed.
+
+**Tests:** `tests/test_stock_oversell_visible_2026_06_16.py` — oversell→short, the exact p128 SOUN −200 shape, and the safety cases (completed round-trip and pending exit stay flat, never phantom-short).
+
+---
+
 ## 2026-06-16 — Delta-hedge runaway: hedge shorts now journaled as real `short`/`cover` so the hedger sees its own hedge. Severity: HIGH (single-profile; p128 oversold JOBY into a −125 share short over 25 cycles).
 
 certify_books surfaced p128 holding a real broker short of −125 JOBY against a virtual book of 0. Root cause (proven, single-profile — NOT cross-profile bleed): p128 holds 5 JOBY long calls (positive delta); the delta hedger correctly wants to short ~5 JOBY shares to neutralize, but **journaled its short hedge as `side='sell'`**. For a stock, `get_virtual_positions` DROPS a `sell` that has no long lot to consume (it only forms short lots for options) — so the hedge short was **invisible in the profile's own book**. The hedger reads its existing hedge (`current_stock`) from that book, always saw 0, and re-shorted the full delta every ~10 min → −125.
