@@ -5,6 +5,18 @@ at the top.
 
 ---
 
+## 2026-06-16 — Delta-hedge runaway: hedge shorts now journaled as real `short`/`cover` so the hedger sees its own hedge. Severity: HIGH (single-profile; p128 oversold JOBY into a −125 share short over 25 cycles).
+
+certify_books surfaced p128 holding a real broker short of −125 JOBY against a virtual book of 0. Root cause (proven, single-profile — NOT cross-profile bleed): p128 holds 5 JOBY long calls (positive delta); the delta hedger correctly wants to short ~5 JOBY shares to neutralize, but **journaled its short hedge as `side='sell'`**. For a stock, `get_virtual_positions` DROPS a `sell` that has no long lot to consume (it only forms short lots for options) — so the hedge short was **invisible in the profile's own book**. The hedger reads its existing hedge (`current_stock`) from that book, always saw 0, and re-shorted the full delta every ~10 min → −125.
+
+**Fix:** the hedger now journals a short-opening hedge as `side='short'` and a buy-back as `side='cover'` (broker side stays buy/sell), so the hedge is an order-id-tracked position the book faithfully reflects. Next cycle reads the true hedge and settles instead of re-shorting; an over-short position (the −125 state) now UNWINDS via `cover` instead of compounding. This embodies the operator's invariant — a profile's position is the signed sum of its own order_ids' fills, including stock shorts. (We deliberately did NOT make `get_virtual_positions` treat a bare stock `sell` as a short: the exit pipeline pre-closes the entry at submit and writes a `pending_fill` sell, which would then flash as a phantom short — the unambiguous fix is journaling genuine shorts with the `short` side.)
+
+**Tests:** `tests/test_options_delta_hedger.py` — root-cause pin (a stock `sell`-with-no-long is dropped while a `short` is tracked at −qty), hedge opening a short is journaled `side='short'`, the hedger SEES its own short and does not re-short (anti-runaway), and an over-short position unwinds via `cover` (buy). Full suite: 5,254 passed.
+
+**Follow-up (open):** the EXISTING legacy divergence is data, not code — the −125 JOBY (old `sell` rows still invisible), SOUN phantom `open` rows (broker 11 vs thousands of journal longs from unfilled/odd-priced rows), and p121/p128 decomposition gaps. These need a per-order-id reconciliation to broker truth (live-journal mutation) and are being handled separately with operator sign-off.
+
+---
+
 ## 2026-06-16 — Rigorous per-profile order isolation everywhere (A0–A3). Severity: HIGH (cross-profile order cancellation + fill mis-attribution on shared Alpaca accounts; operator-reported over months).
 
 13 profiles share 3 Alpaca accounts. Several code paths reached for **account-wide** broker order lists and then cancelled or attributed orders from them — so on a shared account one profile's action touched a sibling's orders/fills. Symptoms: SPCX's take-profit sell cancelled by a sibling's exit (position blew past target), BATL/PPCB oversells, SOUN journal/broker drift (1,356 vs 11), and recurring reconciler synthesis halts. Root cause was **incomplete 1:1 order-id bookkeeping on our side**, NOT the shared accounts — Alpaca assigns every order a unique id; a profile's orders are fully attributable by id. The complete fix, not instance patches:

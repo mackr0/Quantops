@@ -206,13 +206,38 @@ def rebalance_hedges(
         drift = int(info["drift_shares"])
         if drift == 0:
             continue
-        # Drift > 0 → need MORE long stock → BUY |drift| shares
-        # Drift < 0 → need to reduce long stock (or go short) → SELL
-        side = "buy" if drift > 0 else "sell"
+        current = int(info["current_stock_qty"])
         qty = abs(drift)
+        # Broker side is buy/sell. The JOURNAL side must reflect
+        # whether we are opening/closing a LONG or a SHORT so
+        # get_virtual_positions tracks the hedge faithfully.
+        #
+        # 2026-06-16 RUNAWAY-HEDGE FIX. The pre-fix code journaled a
+        # short-opening hedge as side='sell'. For a stock, a 'sell'
+        # with no long lot to consume is DROPPED by
+        # get_virtual_positions (it only forms short lots for
+        # options) — so the hedge short was INVISIBLE in the
+        # profile's own book. `current_stock` (read from that book)
+        # therefore stayed 0 every cycle, drift never shrank, and the
+        # hedger re-shorted the full delta indefinitely (p128 JOBY
+        # ran to a −125 share short over 25 cycles). Journaling the
+        # short as side='short' (and a cover as side='cover') makes
+        # the hedge a real, order-id-tracked position the book can
+        # see — so the next cycle reads the true hedge and settles.
+        # See PROFILE_ORDER_ISOLATION.md / the delta-hedge section.
+        #
+        # Cross-zero (a single rebalance that flips long↔short) is
+        # rare for a hedge and self-corrects next cycle; we label by
+        # the pre-trade sign of `current`, which is exact for the
+        # dominant same-sign and from-flat cases.
+        broker_side = "buy" if drift > 0 else "sell"
+        if broker_side == "buy":
+            journal_side = "cover" if current < 0 else "buy"
+        else:
+            journal_side = "sell" if current > 0 else "short"
         try:
             order = api.submit_order(
-                symbol=underlying, qty=qty, side=side,
+                symbol=underlying, qty=qty, side=broker_side,
                 type="market", time_in_force="day",
             )
             order_id = getattr(order, "id", None)
@@ -227,7 +252,8 @@ def rebalance_hedges(
             continue
         summary["rebalanced"] += 1
         summary["details"].append({
-            "underlying": underlying, "action": side, "qty": qty,
+            "underlying": underlying, "action": journal_side,
+            "broker_side": broker_side, "qty": qty,
             "order_id": order_id,
             "options_delta_before": info["options_delta"],
             "current_stock_before": info["current_stock_qty"],
@@ -236,7 +262,7 @@ def rebalance_hedges(
             try:
                 from journal import log_trade
                 log_trade(
-                    symbol=underlying, side=side, qty=qty,
+                    symbol=underlying, side=journal_side, qty=qty,
                     order_id=order_id, signal_type="DELTA_HEDGE",
                     strategy="delta_neutralization",
                     reason=(
@@ -244,15 +270,18 @@ def rebalance_hedges(
                         f"{info['options_delta']:+.0f}, "
                         f"current stock {info['current_stock_qty']}, "
                         f"target {info['target_stock_qty']}. "
-                        f"Submit {side} {qty}."
+                        f"Submit {broker_side} {qty} "
+                        f"(journal {journal_side})."
                     ),
                     db_path=db_path,
                 )
             except Exception as exc:
                 logger.warning("Hedge log_trade failed: %s", exc)
         logger.info(
-            "Delta hedge: %s %d %s (Δ %+.1f → target %d, current %d)",
-            side, qty, underlying, info["options_delta"],
+            "Delta hedge: %s %d %s [journal %s] (Δ %+.1f → target %d, "
+            "current %d)",
+            broker_side, qty, underlying, journal_side,
+            info["options_delta"],
             info["target_stock_qty"], info["current_stock_qty"],
         )
     return summary
