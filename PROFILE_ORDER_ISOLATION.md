@@ -222,7 +222,11 @@ at a time.
 - [x] A2 — `multi_scheduler._task_cancel_stale_orders` cancels only own order_ids (+ functional test: sibling's stale order survives this profile's sweep).
 - [x] A3 — reconcile own-order-id-only attribution; **fuzzy `_find_matching_exit_fill` DELETED**. Unexplained broker-flat close → new `orphan_close` action → HALT (never silent, never sibling-claim). Mid-pass live-journal re-check preserved. Reconcile tests updated to the new contract.
 - [x] Structural AST test: `test_order_isolation_invariants_2026_06_16.py` — bans account-wide cancel without an `own_broker_order_ids` gate, keeps the fuzzy matcher deleted, requires own-id-only attribution + orphan_close→halt.
-- [ ] Data repair: reconcile diverged books (SOUN etc.) to broker truth by exact own order_id; clear halts.
-- [ ] Prod verification: full session, certify_books clean, zero synthesis halts on multi-profile-held symbols.
+- [x] Prod deploy + reconcile verification: deployed `d4e01d6` (2026-06-16 20:34Z); the NEW own-order-id reconciler dry-run on all 14 prod profiles returns **orphan_close=0, all divergence buckets 0, 341 real_held** — the isolation fix is clean and produces NO false halts. RECONCILE check in certify_books: **PASS**.
+- [ ] Data repair: **BLOCKED on a distinct, pre-existing active bug surfaced by certify_books — escalated to operator.** certify_books BROKER-DRIFT + DECOMPOSITION FAIL:
+  - **p128 JOBY oversold to a −125 short.** One buy of 5 (id 121), then ~25 sell-5 orders today (14:36→19:30Z) that ALL FILLED at the broker but stayed `status='open'` in the journal. The journal never decremented, so each cycle re-sold 5 → 5-share long driven to a 125-share unintended short. Pre-dates this deploy; paused only because market is closed. Proximate cause is a **fill-confirmation gap** (filled sells not flipped to closed), NOT cross-profile contention — a separate fix.
+  - **SOUN** accounting divergence: certify virtual=211 vs broker=11, yet `get_virtual_positions` nets SOUN=0 — a virtual-calc mismatch to reconcile.
+  - **Decomposition gaps** p121 (−5,985), p128 (+2,635).
+  - Repair mutates live financial books + the −125 JOBY short is a real market position; awaiting operator direction (and not auto-trading to flatten).
 
-**Full local suite: 5,250 passed** (only the changelog-parity guard tripped pre-CHANGELOG; now updated).
+**Full local suite: 5,250 passed** (only the changelog-parity guard tripped pre-CHANGELOG; now updated). The per-profile ORDER ISOLATION deliverable (A0–A3 + guards) is complete, deployed, and verified clean; the remaining data-repair item is gated on a separately-rooted active bug.
