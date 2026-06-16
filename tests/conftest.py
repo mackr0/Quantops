@@ -183,3 +183,35 @@ def _clear_market_data_bars_cache():
             market_data._bars_cache.clear()
     except Exception:
         pass
+
+
+@pytest.fixture(autouse=True)
+def _block_real_email_in_tests():
+    """2026-06-16 — HARD BLOCK on real email sends during tests.
+
+    config.py calls load_dotenv() at import, which loads the repo's
+    local .env (real RESEND_API_KEY + the operator's address) into
+    the process. So ANY test that reaches notify_error / send_email
+    (reconciler-halt, funding-guard, data-source-health, etc.) sent
+    the operator a REAL email — every full-suite run flooded the
+    inbox (2026-06-15 incident: ~15 suite runs × several halt alerts
+    each).
+
+    send_email() returns early when no api_key is configured, so
+    clearing config.RESEND_API_KEY (the attribute it reads at call
+    time) makes every send a no-op. Tests that exercise email LOGIC
+    (test_email_subject_sanitizer sets its own 'test-key' + mocks
+    urlopen; test_email_spam_defenses patches send_email) re-provide
+    what they need, so this doesn't weaken them. Autouse +
+    function-scoped so it can never be forgotten.
+    """
+    import config
+    saved_key = getattr(config, "RESEND_API_KEY", None)
+    saved_email = getattr(config, "NOTIFICATION_EMAIL", None)
+    config.RESEND_API_KEY = None
+    config.NOTIFICATION_EMAIL = None
+    try:
+        yield
+    finally:
+        config.RESEND_API_KEY = saved_key
+        config.NOTIFICATION_EMAIL = saved_email
