@@ -235,10 +235,10 @@ at a time.
 
 certify_books surfaced p128 holding a real −125 JOBY broker short vs virtual 0. Root cause (proven, NOT cross-profile): the delta hedger journaled its stock short hedge as `side='sell'`; `get_virtual_positions` drops a stock `sell` with no long lot (forms short lots only for options), so the hedge was invisible in the profile's own book → `current_stock` read 0 every cycle → it re-shorted the full delta forever → −125. Fixed (`f2e14f6`): hedger journals short-opening hedges as `side='short'` / buy-backs as `side='cover'`; over-shorts now unwind via cover. Tests in `tests/test_options_delta_hedger.py`. Data repaired (`decb110` + `scripts/repair_open_rows_to_broker_2026_06_16.py --apply`): 26 filled DELTA_HEDGE sells re-tagged to `short` (p128 JOBY now reads −125 = broker truth; hedger will self-cover to ~−5 at next open), 1 expired phantom SPY buy canceled (p126).
 
-### STILL OPEN (separate "book accounting integrity" class — NOT order isolation, NOT delta hedge)
+### Book-accounting integrity class — ALL FIXED, certify_books CERTIFIED CLEAN
 
-- **SOUN account-36 over-claim** (~100–200 shares; virtual 111–213 vs broker 11). NOT fixable by per-profile reconcile: each profile sees the shared account's 11 as `>0` → calls its position "real" → the aggregate over-claim is invisible to per-profile logic. Needs per-order-id forensics on each SOUN buy (did this profile's buy fill AND is it still held?), which the shared account makes non-trivial.
-- **Two position calcs disagree**: certify computes account-36 SOUN = 111 while `get_virtual_positions` = 213. A real code defect to reconcile.
-- **Decomposition gaps**: p121 (−5,985, unchanged), p128 (+733, improved from +2,635).
+- **SOUN account-36 over-claim** — root cause: `get_virtual_positions` DROPPED a stock `sell`'s remainder beyond the long (formed short lots only for options), hiding p128's 100-share oversell short (3772 sell vs 3672 long). Proven by reconstructing each profile's SOUN from broker fills of its own order_ids: p125 +30, p126 +181, p127 0, p128 −200, **sum = 11 = broker exactly**. Fixed: a stock `sell` remainder becomes a short IFF it consumed some open long (a real oversell); a sell matching no open long stays an orphan/round-trip drop. No data mutation — p128 now reads −200 from its existing rows. (`d204b8f`, `tests/test_stock_oversell_visible_2026_06_16.py`)
+- **Two position calcs disagreeing** (certify vs get_virtual) — same root cause; resolved by the fix.
+- **Decomposition gaps** — p121 −5,985 was three **canceled** SELL rows retaining speculative pnl (counted as realized). Fixed the invariant: cancel UPDATEs clear `pnl`; certify excludes non-executed statuses; existing phantom pnls cleared (one-time). p128 gap resolved by the SOUN fix. (`4adacc1`, `tests/test_canceled_rows_no_pnl_2026_06_16.py`)
 
-These are a distinct investigation; deliberately NOT mutated tonight (irreversible live-book writes that need forensics first, per "diagnose before fixing").
+**FINAL: certify_books CERTIFIED CLEAN** (funding / broker-drift / reconcile / decomposition / issues all PASS). Full suite 5,266 passed. Everything deployed to prod (`4adacc1`).
