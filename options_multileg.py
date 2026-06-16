@@ -1954,7 +1954,7 @@ def _mark_legs_canceled(
     with closing(sqlite3.connect(db_path)) as conn:
         placeholders = ",".join("?" * len(journal_row_ids))
         conn.execute(
-            f"UPDATE trades SET status='canceled' "
+            f"UPDATE trades SET status='canceled', pnl=NULL "
             f"WHERE id IN ({placeholders})",
             list(journal_row_ids),
         )

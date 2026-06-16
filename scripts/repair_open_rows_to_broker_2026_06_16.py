@@ -97,7 +97,7 @@ def repair_profile(profile_id: int, apply: bool):
                     (r["id"], r["symbol"], r["side"], r["qty"], bstatus))
                 if apply:
                     conn.execute(
-                        "UPDATE trades SET status='canceled', "
+                        "UPDATE trades SET status='canceled', pnl=NULL, "
                         "reason=COALESCE(reason||' | ','')||? WHERE id=?",
                         ("repair: broker order %s with 0 fill — phantom "
                          "unfilled entry" % bstatus, r["id"]))

@@ -5,6 +5,18 @@ at the top.
 
 ---
 
+## 2026-06-16 — Canceled trades no longer carry P&L (resolves the p121 −5,985 decomposition gap). Severity: HIGH (inflated realized P&L pollutes equity decomposition, the dashboard, and self-tuning).
+
+certify_books' DECOMPOSITION check ((equity − initial) vs (realized + unrealized P&L)) flagged p121 at −5,985. Root cause: three **canceled** SELL rows kept their speculative pnl (VSME +3,463, SOUN −521, SPCX +3,042 = +5,985 net), and every `SUM(pnl)` realized-P&L reader counted them as if the trades had executed. A canceled/expired/rejected trade realized nothing.
+
+**Fix (the invariant):** any UPDATE that marks a row canceled/expired/rejected now also clears `pnl` (`pnl = NULL`). Fixed the live cancel sites that didn't — `reconcile_journal_to_broker.py:1233`, `trader.py:358` (phantom option cancel), `options_multileg.py:1957` (multileg rollback), `bracket_orders.py:1519` (pending-protective sync). With the invariant held, `SUM(pnl)` is automatically correct everywhere (NULL doesn't sum). certify's decomposition reader also now defensively excludes those statuses. Structural test bans a terminal-cancel UPDATE without `pnl = NULL` in the live loop.
+
+**Tests:** `tests/test_canceled_rows_no_pnl_2026_06_16.py` — the cancel-clears-pnl structural pin across the live cancel sites, a functional pin that realized-P&L excludes a canceled row's stray pnl, and the certify-reader pin. Full suite: 5,266 passed.
+
+**Data repair:** existing phantom pnls on canceled/expired/rejected rows cleared across all profiles (one-time).
+
+---
+
 ## 2026-06-16 — Stock oversells are now visible as real shorts in the virtual book (resolves SOUN drift + the book-vs-order-id disagreement). Severity: HIGH (hidden broker shorts; book disagreed with the order-id truth).
 
 `get_virtual_positions` DROPPED the portion of a stock `sell` that exceeded the available long (it only formed short lots for options). That silently hid genuine broker shorts created by overselling — the mechanism that made the delta-hedge runaway invisible, and that left p128's SOUN book at −100 when the order-id truth was −200 (a 3772-share sell oversold a 3672 long by 100; the 100-share short vanished). It also made certify's book total disagree with the broker.

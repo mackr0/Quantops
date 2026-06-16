@@ -1229,8 +1229,12 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
                          f"{a['side'].upper()} undone", opener[0]),
                     )
             for a in actions["cancel"]:
+                # pnl=NULL: a canceled trade realized nothing. Leaving a
+                # speculative pnl on a canceled row inflates realized
+                # P&L (the p121 −5,985 decomposition gap). Invariant:
+                # canceled/expired/rejected rows carry no pnl. 2026-06-16.
                 conn.execute(
-                    "UPDATE trades SET status='canceled' WHERE id=?",
+                    "UPDATE trades SET status='canceled', pnl=NULL WHERE id=?",
                     (a["trade_id"],),
                 )
             for a in actions["fix_partial_entry"]:

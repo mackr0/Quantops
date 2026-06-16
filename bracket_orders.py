@@ -1516,7 +1516,7 @@ def sync_pending_protective_order_ids(api, db_path: str) -> dict:
             if status in ("canceled", "expired", "rejected"):
                 try:
                     conn.execute(
-                        "UPDATE trades SET status = 'canceled', "
+                        "UPDATE trades SET status = 'canceled', pnl = NULL, "
                         "reason = COALESCE(reason || ' | ', '') || ? "
                         "WHERE id = ?",
                         (f"sync 2026-06-04: broker order {current_oid[:8]} "

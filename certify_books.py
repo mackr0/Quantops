@@ -104,9 +104,15 @@ def check_decomposition(tolerance: float = 100.0) -> list:
                 f"quantopsai_profile_{pid}.db")) as c:
             from journal import data_quality_clause
             dq = data_quality_clause(c)
+            # Exclude non-executed rows: a canceled/expired/rejected
+            # trade realized nothing. A speculative pnl left on such a
+            # row inflates realized P&L (the p121 −5,985 gap). 2026-06-16.
             realized = c.execute(
                 "SELECT COALESCE(SUM(pnl), 0) FROM trades "
-                f"WHERE pnl IS NOT NULL{dq}").fetchone()[0]
+                "WHERE pnl IS NOT NULL "
+                "AND COALESCE(status,'') NOT IN "
+                "    ('canceled', 'expired', 'rejected')"
+                f"{dq}").fetchone()[0]
         gap = (eq - init) - (float(realized) + upl)
         if abs(gap) > tolerance:
             findings.append(

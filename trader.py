@@ -355,7 +355,7 @@ def _handle_phantom_option_close(
         from contextlib import closing
         with closing(_sql.connect(db_path)) as conn:
             cur = conn.execute(
-                "UPDATE trades SET status='canceled', "
+                "UPDATE trades SET status='canceled', pnl=NULL, "
                 "reason=COALESCE(reason || ' | ', '') || ? "
                 "WHERE occ_symbol = ? AND status = 'open'",
                 (

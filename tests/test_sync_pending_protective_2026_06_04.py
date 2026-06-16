@@ -52,6 +52,7 @@ def journal_db(tmp_path):
             signal_type TEXT,
             status TEXT,
             reason TEXT,
+            pnl REAL,
             protective_stop_order_id TEXT,
             protective_tp_order_id TEXT,
             protective_trailing_order_id TEXT
