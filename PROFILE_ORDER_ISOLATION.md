@@ -229,4 +229,16 @@ at a time.
   - **Decomposition gaps** p121 (−5,985), p128 (+2,635).
   - Repair mutates live financial books + the −125 JOBY short is a real market position; awaiting operator direction (and not auto-trading to flatten).
 
-**Full local suite: 5,250 passed** (only the changelog-parity guard tripped pre-CHANGELOG; now updated). The per-profile ORDER ISOLATION deliverable (A0–A3 + guards) is complete, deployed, and verified clean; the remaining data-repair item is gated on a separately-rooted active bug.
+**Full local suite: 5,250 passed** (only the changelog-parity guard tripped pre-CHANGELOG; now updated). The per-profile ORDER ISOLATION deliverable (A0–A3 + guards) is complete, deployed, and verified clean.
+
+### Follow-on: delta-hedge runaway (separate single-profile bug, FIXED + deployed)
+
+certify_books surfaced p128 holding a real −125 JOBY broker short vs virtual 0. Root cause (proven, NOT cross-profile): the delta hedger journaled its stock short hedge as `side='sell'`; `get_virtual_positions` drops a stock `sell` with no long lot (forms short lots only for options), so the hedge was invisible in the profile's own book → `current_stock` read 0 every cycle → it re-shorted the full delta forever → −125. Fixed (`f2e14f6`): hedger journals short-opening hedges as `side='short'` / buy-backs as `side='cover'`; over-shorts now unwind via cover. Tests in `tests/test_options_delta_hedger.py`. Data repaired (`decb110` + `scripts/repair_open_rows_to_broker_2026_06_16.py --apply`): 26 filled DELTA_HEDGE sells re-tagged to `short` (p128 JOBY now reads −125 = broker truth; hedger will self-cover to ~−5 at next open), 1 expired phantom SPY buy canceled (p126).
+
+### STILL OPEN (separate "book accounting integrity" class — NOT order isolation, NOT delta hedge)
+
+- **SOUN account-36 over-claim** (~100–200 shares; virtual 111–213 vs broker 11). NOT fixable by per-profile reconcile: each profile sees the shared account's 11 as `>0` → calls its position "real" → the aggregate over-claim is invisible to per-profile logic. Needs per-order-id forensics on each SOUN buy (did this profile's buy fill AND is it still held?), which the shared account makes non-trivial.
+- **Two position calcs disagree**: certify computes account-36 SOUN = 111 while `get_virtual_positions` = 213. A real code defect to reconcile.
+- **Decomposition gaps**: p121 (−5,985, unchanged), p128 (+733, improved from +2,635).
+
+These are a distinct investigation; deliberately NOT mutated tonight (irreversible live-book writes that need forensics first, per "diagnose before fixing").
