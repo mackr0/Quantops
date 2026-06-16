@@ -965,7 +965,7 @@ def execute_multileg_strategy(
                         rev_side = (
                             "sell" if sub["leg"].side == "buy" else "buy"
                         )
-                        _submit_alpaca_order_raw(api, {
+                        _rev = _submit_alpaca_order_raw(api, {
                             "symbol": sub["leg"].occ_symbol,
                             "qty": sub["leg"].qty,
                             "side": rev_side,
@@ -975,6 +975,14 @@ def execute_multileg_strategy(
                                 rev_side, "sell_to_close",
                             ),
                         })
+                        # A0 — journal both the open and rollback-close
+                        # so neither fill orphans (position-intent skip).
+                        if log:
+                            _journal_rolled_back_leg(
+                                db_path, sub["leg"], sub.get("order_id"),
+                                getattr(_rev, "id", None),
+                                "position-intent skip",
+                            )
                     except Exception as _rb_exc:
                         logger.warning(
                             "Rollback of leg %d failed during position-"
@@ -1017,6 +1025,13 @@ def execute_multileg_strategy(
                         "leg_index": sub["leg_index"],
                         "rollback_order_id": getattr(rev, "id", None),
                     })
+                    # A0 — journal both the open and rollback-close so
+                    # neither async fill orphans (leg-failure rollback).
+                    if log:
+                        _journal_rolled_back_leg(
+                            db_path, sub["leg"], sub.get("order_id"),
+                            getattr(rev, "id", None), "leg-failure rollback",
+                        )
                 except Exception as rb_exc:
                     rollback_results.append({
                         "leg_index": sub["leg_index"],
@@ -1809,6 +1824,52 @@ class _AtomicPlacementBreach(Exception):
     failure (e.g., combo path 5xx → fall through to sequential).
     """
     pass
+
+
+def _journal_rolled_back_leg(db_path, leg, open_order_id, close_order_id,
+                             reason):
+    """A0 ATOMIC JOURNALING (2026-06-16) — when a sequential multileg
+    open fails mid-spread and we roll back already-opened legs, BOTH
+    the open and the rollback-close are live broker orders. Their
+    order_ids MUST be journaled or their async fills become
+    unattributable orphans → reconciler synthesis halt. We write an
+    OPEN row and a CLOSE row (both pending_fill) that net the leg flat;
+    update_fills/reconcile confirm them by order_id. See
+    PROFILE_ORDER_ISOLATION.md (A0) and feedback_no_orphan_broker_fills.
+    """
+    if not db_path:
+        return
+    from journal import log_trade
+    for _side, _oid, _label in (
+        (leg.side, open_order_id, "open"),
+        ("sell" if leg.side == "buy" else "buy", close_order_id, "rollback"),
+    ):
+        if not _oid:
+            continue
+        try:
+            log_trade(
+                symbol=leg.underlying,
+                side=_side,
+                qty=leg.qty,
+                price=None,
+                order_id=_oid,
+                signal_type="MULTILEG",
+                strategy="multileg_rollback",
+                reason=f"multileg {_label}: {reason}",
+                status="pending_fill",
+                occ_symbol=leg.occ_symbol,
+                expiry=getattr(leg, "expiry", None),
+                strike=float(leg.strike) if getattr(leg, "strike", None)
+                is not None else None,
+                db_path=db_path,
+            )
+        except Exception as _jrb_exc:
+            logger.error(
+                "Failed to journal multileg %s leg %s order %s: %s: %s "
+                "— fill may orphan; reconciler will flag",
+                _label, leg.occ_symbol, _oid,
+                type(_jrb_exc).__name__, _jrb_exc,
+            )
 
 
 def _rollback_multileg_broker_orders(

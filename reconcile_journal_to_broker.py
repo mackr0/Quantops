@@ -208,75 +208,17 @@ def _retrying_call(func, *args, **kwargs):
     return None, last_exc
 
 
-def _find_matching_exit_fill(api, symbol: str, qty: float, after_ts: datetime,
-                              broker_exit_side: str,
-                              already_used_order_ids: set) -> Optional[dict]:
-    """Find a broker order on `broker_exit_side` (sell|buy) that filled
-    `qty` shares of `symbol` after `after_ts`.
-
-    Long exit → broker_exit_side='sell' (we sell to close).
-    Short cover → broker_exit_side='buy' (we buy to cover).
-
-    Multi-profile sharing means one Alpaca account hosts multiple
-    profiles' positions. Each profile's BUY/SHORT has its own
-    protective orders, so each profile's exit is a separate broker
-    order — match by qty (filled_qty == journal qty). Across profiles
-    with the same qty (rare), pick the oldest unused fill so a
-    multi-profile pass attributes uniquely.
-
-    Returns dict with order_id, filled_at, filled_qty, filled_avg_price,
-    order_type — or None if no match.
-    """
-    orders, exc = _retrying_call(
-        api.list_orders, status="all", symbols=[symbol], limit=200,
-    )
-    if orders is None:
-        return None
-    candidates = []
-    for o in orders:
-        if getattr(o, "side", "") != broker_exit_side:
-            continue
-        if getattr(o, "status", "") != "filled":
-            continue
-        oid = getattr(o, "id", None)
-        if oid in already_used_order_ids:
-            continue
-        try:
-            filled_qty = float(getattr(o, "filled_qty", 0) or 0)
-        except (ValueError, TypeError, AttributeError) as _q_exc:
-            # Per-order filled_qty parse loop; skip orders with
-            # malformed broker response. Surface for follow-up.
-            logger.debug(
-                "reconcile filled_qty parse failed: %s: %s",
-                type(_q_exc).__name__, _q_exc,
-            )
-            continue
-        if abs(filled_qty - qty) > 0.001:
-            continue
-        filled_at = getattr(o, "filled_at", None)
-        if hasattr(filled_at, "isoformat"):
-            fa_dt = filled_at if filled_at.tzinfo else filled_at.replace(tzinfo=timezone.utc)
-        else:
-            fa_dt = _to_utc_iso(filled_at)
-        if fa_dt is None or fa_dt < after_ts:
-            continue
-        try:
-            fill_price = float(getattr(o, "filled_avg_price", 0) or 0)
-        except Exception:
-            fill_price = 0
-        if fill_price <= 0:
-            continue
-        candidates.append({
-            "order_id": oid,
-            "filled_at": fa_dt,
-            "filled_qty": filled_qty,
-            "filled_avg_price": fill_price,
-            "order_type": getattr(o, "order_type", "?"),
-        })
-    if not candidates:
-        return None
-    candidates.sort(key=lambda c: c["filled_at"])
-    return candidates[0]
+# A3 PROFILE ISOLATION (2026-06-16) — `_find_matching_exit_fill` was
+# DELETED. It searched the SHARED Alpaca account's order history for
+# ANY exit on a symbol matching qty + timing, which on a shared
+# account attributed siblings' SELLs/BUYs to the wrong profile (the
+# BATL/PPCB oversells, SOUN drift, and the recurring reconciler
+# synthesis halts). All fill attribution is now own-order-id-only:
+# a close is recognized solely via THIS profile's own
+# protective_*_order_id (and the replace-chain walk on those ids) in
+# `_detect_protective_fill`. Anything unexplained is ambiguous and
+# halts for operator review rather than silently consuming a
+# sibling's fill. See PROFILE_ORDER_ISOLATION.md.
 
 
 def _classify_long_phantom(api, row, broker_qty, used_sell_ids):
@@ -313,17 +255,22 @@ def _classify_long_phantom(api, row, broker_qty, used_sell_ids):
         }
     if entry_status == "filled":
         # Broker filled the BUY at some point. Now broker has 0 shares,
-        # so a SELL must have happened.
-        sell_fill = _find_matching_exit_fill(
-            api, sym, qty, ts or datetime.now(timezone.utc),
-            broker_exit_side="sell",
-            already_used_order_ids=used_sell_ids,
-        )
-        if sell_fill is None:
-            return "ambiguous", {
-                "reason": "entry filled but no matching broker SELL fill found",
-            }
-        return "backfill", sell_fill
+        # so a SELL must have happened — but A3 (2026-06-16): we no
+        # longer FUZZY-search broker history for it. On a shared
+        # account that grabbed siblings' SELLs (BATL/PPCB oversells).
+        # A legitimate exit is explained by THIS profile's OWN
+        # protective_*_order_id in _detect_protective_fill (checked
+        # before we reach here). If nothing own explained it, the
+        # close is unexplained — surface it as an orphan_close so the
+        # safety net HALTs for review instead of consuming a sibling's
+        # fill OR silently leaving the position diverged.
+        return "orphan_close", {
+            "reason": (
+                "entry filled, broker flat, but no OWN journaled exit "
+                "order_id explains the close (fuzzy cross-profile "
+                "match removed — see PROFILE_ORDER_ISOLATION.md)"
+            ),
+        }
     return "ambiguous", {
         "reason": f"entry status={entry_status} filled_qty={entry_filled}",
     }
@@ -361,16 +308,18 @@ def _classify_short_phantom(api, row, broker_qty, used_cover_ids):
             "entry_avg_fill_price": float(getattr(entry_order, "filled_avg_price", 0) or 0),
         }
     if entry_status == "filled":
-        cover_fill = _find_matching_exit_fill(
-            api, sym, qty, ts or datetime.now(timezone.utc),
-            broker_exit_side="buy",  # buying to cover
-            already_used_order_ids=used_cover_ids,
-        )
-        if cover_fill is None:
-            return "ambiguous", {
-                "reason": "entry filled but no matching broker BUY (cover) fill found",
-            }
-        return "backfill", cover_fill
+        # A3 (2026-06-16) — fuzzy cover-fill search removed (same
+        # cross-profile theft as the long path). A legitimate cover
+        # is explained by THIS short's OWN protective_*_order_id in
+        # _detect_protective_fill. If nothing own explained it, the
+        # cover is unexplained → orphan_close → safety net halts.
+        return "orphan_close", {
+            "reason": (
+                "short entry filled, broker flat, but no OWN journaled "
+                "cover order_id explains the close (fuzzy cross-profile "
+                "match removed — see PROFILE_ORDER_ISOLATION.md)"
+            ),
+        }
     return "ambiguous", {
         "reason": f"entry status={entry_status} filled_qty={entry_filled}",
     }
@@ -771,23 +720,20 @@ def _detect_protective_fill(api, row, used_sell_ids):
             return "backfill_partial", detail
         # filled_qty > journal_qty shouldn't happen for a single
         # profile's protective order — fall through and skip.
-    # FALLBACK: no protective_*_order_id matched. Older trades may
-    # not have recorded the protective ID, but the exit may still
-    # have fired. Search broker order history for an unused SELL/BUY
-    # that matches the journal qty after the BUY's timestamp.
-    side = (row["side"] or "").lower()
-    expected_exit_side = "buy" if side == "short" else "sell"
-    sym = _lookup_symbol_for_row(row)
-    ts = _to_utc_iso(row["timestamp"]) or datetime.now(timezone.utc)
-    fill = _find_matching_exit_fill(
-        api, sym, journal_qty, ts,
-        broker_exit_side=expected_exit_side,
-        already_used_order_ids=used_sell_ids,
-    )
-    if fill is not None:
-        # Treat as full closure — _find_matching_exit_fill required
-        # filled_qty == journal_qty, so this is a complete exit.
-        return "backfill_full", fill
+    #
+    # A3 PROFILE ISOLATION (2026-06-16) — the fuzzy symbol/qty/time
+    # fallback (`_find_matching_exit_fill`) is DELETED. On a SHARED
+    # Alpaca account that search returned ANY profile's SELL/BUY for
+    # the symbol matching qty + timing, so a sibling's exit was
+    # attributed to THIS profile (BATL/PPCB oversells, SOUN drift).
+    # Now A0 guarantees every exit's order_id is journaled, so a
+    # legitimate close is ALWAYS explained by one of THIS profile's
+    # OWN protective_*_order_id values handled above (or the
+    # backward-walk on those same ids). If none matched, the close
+    # is NOT ours to claim — return (None, None). The caller's
+    # phantom path then treats it as ambiguous → the reconciler
+    # safety net halts for operator review rather than silently
+    # consuming a sibling's fill. See PROFILE_ORDER_ISOLATION.md.
     return None, None
 
 
@@ -873,7 +819,7 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
             "skipped": "no alpaca_account_id (archived/disabled profile)",
             "cancel": [], "backfill_sell": [], "backfill_cover": [],
             "backfill_partial_sell": [], "fix_partial_entry": [],
-            "ambiguous": [], "real_held": 0,
+            "ambiguous": [], "orphan_close": [], "real_held": 0,
             "profile": name,
             "profile_id": getattr(ctx, "profile_id", None),
         }
@@ -887,6 +833,10 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
         "uncancel_sell": [],          # phantom SELL (broker fully canceled): undo
         "fix_partial_sell": [],       # partial-fill SELL: adjust journal qty
         "ambiguous": [],
+        # A3 (2026-06-16): broker-flat position with NO own order_id
+        # explaining the close. Halts (never fuzzy-claims a sibling's
+        # fill, never silently diverges). See PROFILE_ORDER_ISOLATION.md.
+        "orphan_close": [],
         "real_held": 0,
     }
 
@@ -1130,60 +1080,43 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
                     "original_qty": qty,
                     **detail,
                 })
-            elif kind == "backfill":
-                # 2026-05-21 — these enter via _classify_long_phantom
-                # / _classify_short_phantom — the FUZZY-match path
-                # (search broker order history for any unattributed
-                # exit matching symbol/qty/time). The order_id was
-                # NOT in our journal previously. This IS the orphan-
-                # fill class the safety net is designed to halt on.
-                # Tagged source="phantom" so the counter knows.
+            elif kind == "orphan_close":
+                # A3 PROFILE ISOLATION (2026-06-16) — the position is
+                # gone at the broker but NO order_id in THIS profile's
+                # own journal explains the close. The fuzzy
+                # symbol/qty/time matcher that used to "explain" these
+                # was DELETED because on a shared account it attributed
+                # siblings' fills to this profile. An unexplained close
+                # is a genuine divergence (external/manual close, a
+                # legacy NULL protective id, or — pre-A1/A2 — a sibling
+                # that touched our order). HALT for operator review;
+                # never silently leave it diverged and never fuzzy-
+                # claim a sibling's fill. See PROFILE_ORDER_ISOLATION.md.
                 #
-                # 2026-06-11 — LIVE own-journal check first. The
-                # cross-profile dedup set is snapshotted at task
-                # START; a sell journaled mid-pass is invisible to
-                # it (CPNG 93ecef03: sell journaled 16:45:22, p97's
-                # reconcile read the stale set at 16:46:45 → false
-                # orphan → false HALT). If THIS profile's journal
-                # already has a row for the order, it's not an
-                # orphan — the fill-confirmation state machine owns
-                # it; skip the action entirely.
-                _fresh = conn.execute(
-                    "SELECT 1 FROM trades WHERE order_id = ? LIMIT 1",
-                    (detail["order_id"],),
-                ).fetchone()
-                if _fresh:
+                # LIVE own-journal re-check (CPNG 93ecef03 race class):
+                # the open-rows set was snapshotted at task start. If
+                # the fill-confirmation state machine journaled the
+                # exit and flipped THIS entry row to a terminal status
+                # mid-pass, the "phantom" is stale — skip it so we
+                # don't false-HALT a position that just closed cleanly.
+                _oc_oid = r["order_id"]
+                _live_status = conn.execute(
+                    "SELECT 1 FROM trades WHERE order_id = ? "
+                    "AND COALESCE(status,'open') = 'open' LIMIT 1",
+                    (_oc_oid,),
+                ).fetchone() if _oc_oid else None
+                if _oc_oid and not _live_status:
                     logger.info(
-                        "Reconcile: broker fill %s for %s is already "
-                        "journaled in this profile (landed after the "
-                        "dedup snapshot) — not an orphan, skipping.",
-                        str(detail["order_id"])[:8], sym,
+                        "Reconcile: %s entry %s no longer open in the "
+                        "live journal (closed after the snapshot) — "
+                        "not an orphan, skipping.",
+                        sym, str(_oc_oid)[:8],
                     )
                     continue
-                if is_short:
-                    used_cover_ids.add(detail["order_id"])
-                    actions["backfill_cover"].append({
-                        "trade_id": r["id"], "symbol": sym, "qty": qty,
-                        "short_price": float(r["price"] or 0),
-                        "cover_order_id": detail["order_id"],
-                        "cover_price": detail["filled_avg_price"],
-                        "cover_qty": detail["filled_qty"],
-                        "cover_filled_at": detail["filled_at"].isoformat(),
-                        "cover_order_type": detail["order_type"],
-                        "source": "phantom",
-                    })
-                else:
-                    used_sell_ids.add(detail["order_id"])
-                    actions["backfill_sell"].append({
-                        "trade_id": r["id"], "symbol": sym, "qty": qty,
-                        "buy_price": float(r["price"] or 0),
-                        "sell_order_id": detail["order_id"],
-                        "sell_price": detail["filled_avg_price"],
-                        "sell_qty": detail["filled_qty"],
-                        "sell_filled_at": detail["filled_at"].isoformat(),
-                        "sell_order_type": detail["order_type"],
-                        "source": "phantom",
-                    })
+                actions["orphan_close"].append({
+                    "trade_id": r["id"], "symbol": sym, "qty": qty,
+                    "side": side, **detail,
+                })
             elif kind == "ambiguous":
                 actions["ambiguous"].append({
                     "trade_id": r["id"], "symbol": sym, "qty": qty,
@@ -1493,6 +1426,10 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
                 _halt_count(actions["backfill_sell"])
                 + _halt_count(actions["backfill_cover"])
                 + _halt_count(actions["backfill_partial_sell"])
+                # A3 (2026-06-16): an unexplained broker-flat close is
+                # a divergence the operator must see — count it toward
+                # the halt so the position can't silently rot.
+                + len(actions["orphan_close"])
             )
             if synthesis_actions:
                 from halt_helpers import halt_and_alert
@@ -1516,6 +1453,12 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
                         f"  backfill_partial_sell: {a['symbol']} "
                         f"qty={a['sell_qty']}/{a['journal_qty']} "
                         f"sell_order={a['sell_order_id'][:8]}"
+                    )
+                for a in actions["orphan_close"]:
+                    detail_lines.append(
+                        f"  orphan_close: {a['symbol']} qty={a['qty']} "
+                        f"({a['side']}) — broker flat, no OWN order_id "
+                        f"explains the close"
                     )
                 pid = getattr(ctx, "profile_id", None)
                 if pid is not None:
@@ -1610,7 +1553,8 @@ def main():
 
     grand = {"cancel": 0, "backfill_sell": 0, "backfill_cover": 0,
              "backfill_partial_sell": 0, "fix_partial_entry": 0,
-             "ambiguous": 0, "real_held": 0, "errored": 0}
+             "ambiguous": 0, "orphan_close": 0, "real_held": 0,
+             "errored": 0}
 
     if not args.quiet:
         print(f"=== Reconcile {'APPLY' if args.apply else 'DRY-RUN'} ===\n")
@@ -1638,12 +1582,14 @@ def main():
         n_bps = len(res["backfill_partial_sell"])
         n_fp = len(res["fix_partial_entry"])
         n_a = len(res["ambiguous"])
+        n_oc = len(res.get("orphan_close", []))
         n_r = res["real_held"]
 
-        if not args.quiet or (n_c + n_bs + n_bc + n_bps + n_fp + n_a) > 0:
+        if not args.quiet or (n_c + n_bs + n_bc + n_bps + n_fp + n_a + n_oc) > 0:
             print(f"p{p_id:>2} {res['profile'][:30]:<30s}  "
                   f"real={n_r:>3}  cancel={n_c:>2}  bs={n_bs:>2}  "
-                  f"bc={n_bc:>2}  bps={n_bps:>2}  fp={n_fp:>2}  amb={n_a:>2}")
+                  f"bc={n_bc:>2}  bps={n_bps:>2}  fp={n_fp:>2}  amb={n_a:>2}  "
+                  f"orphan={n_oc:>2}")
         if not args.quiet:
             for a in res["cancel"]:
                 print(f"     CANCEL    #{a['trade_id']:<4} {a['symbol']:>5} {a.get('side',''):>5} "
@@ -1674,6 +1620,9 @@ def main():
             for a in res["ambiguous"]:
                 print(f"     AMBIGUOUS #{a['trade_id']:<4} {a['symbol']:>5} {a.get('side',''):>5} "
                       f"qty={a['qty']:>6.0f}  reason: {a['reason']}")
+            for a in res.get("orphan_close", []):
+                print(f"     ORPHAN    #{a['trade_id']:<4} {a['symbol']:>5} {a.get('side',''):>5} "
+                      f"qty={a['qty']:>6.0f}  reason: {a['reason']}")
 
         grand["cancel"] += n_c
         grand["backfill_sell"] += n_bs
@@ -1681,6 +1630,7 @@ def main():
         grand["backfill_partial_sell"] += n_bps
         grand["fix_partial_entry"] += n_fp
         grand["ambiguous"] += n_a
+        grand["orphan_close"] += n_oc
         grand["real_held"] += n_r
 
     print(f"\n=== TOTALS ===")
@@ -1688,7 +1638,7 @@ def main():
         print(f"  {k:<24s}: {v:>3}")
     if not args.apply:
         print(f"\nDry-run only. Re-run with --apply to write changes.")
-    if grand["ambiguous"] > 0 or grand["errored"] > 0:
+    if grand["ambiguous"] > 0 or grand["orphan_close"] > 0 or grand["errored"] > 0:
         return 1
     return 0
 

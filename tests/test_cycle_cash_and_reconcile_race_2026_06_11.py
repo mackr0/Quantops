@@ -126,14 +126,18 @@ def test_both_sizing_branches_have_cash_floor():
 # ---------------------------------------------------------------------------
 
 def test_phantom_path_checks_live_journal_before_action():
+    """A3 (2026-06-16): the fuzzy "backfill" dispatch was deleted and
+    replaced by the own-order-id-only "orphan_close" halt. The same
+    mid-pass race protection must live on the new path — a position
+    that closed after the open-rows snapshot must NOT false-HALT."""
     src = (REPO / "reconcile_journal_to_broker.py").read_text()
-    kind_idx = src.index('elif kind == "backfill":')
-    append_idx = src.index('actions["backfill_cover"].append', kind_idx)
+    kind_idx = src.index('elif kind == "orphan_close":')
+    append_idx = src.index('actions["orphan_close"].append', kind_idx)
     guard = src[kind_idx:append_idx]
     assert "SELECT 1 FROM trades WHERE order_id" in guard, (
-        "Phantom backfill no longer live-checks the own journal — "
-        "a sell journaled after the dedup snapshot becomes a false "
-        "orphan + false HALT (CPNG 93ecef03 class)."
+        "orphan_close no longer live-checks the own journal — an exit "
+        "journaled after the snapshot becomes a false orphan + false "
+        "HALT (CPNG 93ecef03 class)."
     )
 
 

@@ -1158,6 +1158,14 @@ def _task_cancel_stale_orders(ctx):
 
     try:
         api = get_api(ctx)
+        # PROFILE ISOLATION (2026-06-16) — `list_orders(status="open")`
+        # on a SHARED Alpaca account returns EVERY sibling profile's
+        # open orders. This task runs once per profile; the pre-fix
+        # code therefore had each profile cancel ALL siblings' stale
+        # limit orders too. Restrict cancellation to order_ids THIS
+        # profile's own journal recorded. See PROFILE_ORDER_ISOLATION.md.
+        from order_guard import own_broker_order_ids
+        own_ids = own_broker_order_ids(getattr(ctx, "db_path", None))
         open_orders = api.list_orders(status="open")
         now = datetime.now(timezone.utc)
         stale_cutoff = timedelta(minutes=5)
@@ -1165,6 +1173,10 @@ def _task_cancel_stale_orders(ctx):
 
         for order in open_orders:
             if order.type != "limit":
+                continue
+            if order.id not in own_ids:
+                # A sibling profile's order on the shared account —
+                # NEVER cancel it.
                 continue
             # Parse order creation time
             created_at = order.created_at

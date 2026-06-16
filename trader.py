@@ -269,6 +269,54 @@ def _entry_order_filled_at_broker(api, db_path, broker_symbol, is_short):
     return False
 
 
+def _journal_exit_order_id_minimal(db_path, symbol, side, qty, price,
+                                   order_id, status, pnl):
+    """Last-resort guaranteed journal of a live exit order's order_id.
+
+    Used only when the rich ``log_trade`` raised after the broker exit
+    was already submitted. We write ONLY the load-bearing columns (the
+    order_id is what lets the reconciler attribute the fill to THIS
+    profile) using a bare INSERT that can't fail for rich-field
+    reasons. Returns True on success. See PROFILE_ORDER_ISOLATION.md
+    (A0) and feedback_no_orphan_broker_fills.
+    """
+    import sqlite3 as _sql
+    from contextlib import closing
+    try:
+        with closing(_sql.connect(db_path)) as conn:
+            cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(trades)").fetchall()}
+            fields = ["symbol", "side", "qty", "price", "order_id",
+                      "signal_type", "status"]
+            values = [symbol, side, qty, price, order_id, "SELL", status]
+            if "pnl" in cols and pnl is not None:
+                fields.append("pnl")
+                values.append(pnl)
+            if "reason" in cols:
+                fields.append("reason")
+                values.append("reconcile: minimal order_id journal "
+                               "(rich log_trade failed)")
+            placeholders = ", ".join(["?"] * len(fields))
+            conn.execute(
+                f"INSERT INTO trades ({', '.join(fields)}) "
+                f"VALUES ({placeholders})",
+                values,
+            )
+            conn.commit()
+        logging.warning(
+            "Exit order %s for %s journaled via minimal fallback "
+            "(order_id preserved; reconciler can attribute the fill)",
+            order_id, symbol,
+        )
+        return True
+    except Exception as _min_exc:
+        logging.error(
+            "Minimal exit journal ALSO failed for %s order %s: %s: %s",
+            symbol, order_id, type(_min_exc).__name__, _min_exc,
+        )
+        return False
+
+
 # OCC patterns indicating Alpaca disagrees with the journal about
 # whether we hold the option position. Both translate to "the
 # journal is phantom-ing this position; the broker has nothing to
@@ -727,19 +775,37 @@ def _process_exit_trigger(trigger_signal, api, ctx, db_path, positions,
         )
         return
 
-    # Cancel any open orders for this symbol before submitting the exit.
-    # Alpaca rejects sells when a buy limit order is still open.
+    # Cancel any of THIS PROFILE'S OWN open orders for this symbol
+    # before submitting the exit (Alpaca rejects a sell while this
+    # profile's own buy-limit is still open).
+    #
+    # 2026-06-16 — PROFILE ISOLATION. The pre-fix code canceled
+    # `api.list_orders(symbols=[symbol])`, which on a SHARED Alpaca
+    # account returns EVERY profile's open orders for the symbol —
+    # so one profile's exit canceled a sibling's pending sell.
+    # Confirmed live: SPCX p121's take-profit sell (4cec6ff7) was
+    # canceled by a sibling's exit. We now cancel ONLY order_ids
+    # this profile's own journal recorded; a sibling's order id is
+    # never in this profile's journal, so it can never be touched.
+    # See PROFILE_ORDER_ISOLATION.md.
     try:
+        from order_guard import own_broker_order_ids
+        own_ids = own_broker_order_ids(db_path, symbol)
         open_orders = api.list_orders(status="open", symbols=[symbol])
         for oo in open_orders:
+            if oo.id not in own_ids:
+                # A sibling profile's order on the shared account —
+                # NEVER cancel it.
+                continue
             try:
                 api.cancel_order(oo.id)
-                logging.info(f"Cancelled conflicting order {oo.id} for {symbol} before exit")
+                logging.info(
+                    "Cancelled own conflicting order %s for %s before exit",
+                    oo.id, symbol,
+                )
             except Exception as exc:
-                # Per-order cancel failure logged at debug — the
-                # subsequent submit will surface the real conflict.
                 logging.debug(
-                    "Failed to cancel conflicting order %s for %s: %s",
+                    "Failed to cancel own order %s for %s: %s",
                     oo.id, symbol, exc,
                 )
     except Exception as exc:
@@ -883,26 +949,70 @@ def _process_exit_trigger(trigger_signal, api, ctx, db_path, positions,
         )
         entry_meta = {"ai_confidence": None, "ai_reasoning": None}
 
-    log_trade(
-        symbol=symbol,
-        side=side_label,
-        qty=qty,
-        price=trigger_signal["price"],
-        order_id=order.id,
-        signal_type="SELL",
-        strategy=trigger_signal["trigger"],
-        reason=trigger_signal["reason"],
-        ai_confidence=entry_meta["ai_confidence"],
-        ai_reasoning=entry_meta["ai_reasoning"],
-        pnl=pnl,
-        # NEW (2026-05-07): write 'pending_fill' until broker
-        # confirms. _task_update_fills flips to 'closed' + flips
-        # matching BUY rows when fill_price populates. Avoids the
-        # phantom-SELL window if Alpaca async-cancels.
-        status="pending_fill" if pnl is not None else "open",
-        decision_price=trigger_signal["price"],
-        db_path=db_path,
-    )
+    # A0 ATOMIC JOURNALING (2026-06-16) — the exit order is LIVE at
+    # the broker (submitted at line ~814/855). Its order_id MUST land
+    # in this profile's journal before we return, or the fill becomes
+    # an unattributable orphan → reconciler synthesis halt. A market
+    # exit may already have filled, so we do NOT cancel on failure
+    # (unlike the entry path); instead we fall back to a guaranteed
+    # minimal INSERT of the load-bearing order_id, and only halt if
+    # even that fails. See PROFILE_ORDER_ISOLATION.md (A0) and
+    # feedback_no_orphan_broker_fills.
+    _exit_status = "pending_fill" if pnl is not None else "open"
+    try:
+        log_trade(
+            symbol=symbol,
+            side=side_label,
+            qty=qty,
+            price=trigger_signal["price"],
+            order_id=order.id,
+            signal_type="SELL",
+            strategy=trigger_signal["trigger"],
+            reason=trigger_signal["reason"],
+            ai_confidence=entry_meta["ai_confidence"],
+            ai_reasoning=entry_meta["ai_reasoning"],
+            pnl=pnl,
+            # NEW (2026-05-07): write 'pending_fill' until broker
+            # confirms. _task_update_fills flips to 'closed' + flips
+            # matching BUY rows when fill_price populates. Avoids the
+            # phantom-SELL window if Alpaca async-cancels.
+            status=_exit_status,
+            decision_price=trigger_signal["price"],
+            db_path=db_path,
+        )
+    except Exception as _lt_exc:
+        logging.error(
+            "Exit log_trade failed for %s order %s (%s: %s) — order "
+            "is LIVE at broker; attempting minimal order_id journal "
+            "to avoid an orphan fill",
+            symbol, order.id, type(_lt_exc).__name__, _lt_exc,
+        )
+        _journaled = _journal_exit_order_id_minimal(
+            db_path, symbol, side_label, qty,
+            trigger_signal["price"], order.id, _exit_status, pnl,
+        )
+        if not _journaled:
+            # The order_id could not be persisted by ANY path — this
+            # is a true orphan-fill risk. Halt the profile so the
+            # operator reconciles before more trades compound it.
+            try:
+                from halt_helpers import halt_and_alert
+                halt_and_alert(
+                    profile_id=getattr(ctx, "profile_id", None),
+                    db_path=db_path,
+                    alert_type="exit_journal_breach",
+                    title=f"{symbol} exit journal-write breach",
+                    detail=(
+                        f"Broker exit order {order.id} for {symbol} "
+                        f"({side_label} {qty}) is live but could not "
+                        f"be journaled — orphan-fill risk."
+                    ),
+                )
+            except Exception as _halt_exc:
+                logging.error(
+                    "halt_and_alert failed after exit journal breach "
+                    "for %s: %s", symbol, _halt_exc,
+                )
     # BUY-rows-closed UPDATE deferred to _task_update_fills.
 
     results.append({

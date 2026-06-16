@@ -22,6 +22,66 @@ logger = logging.getLogger(__name__)
 _ET = ZoneInfo("America/New_York")
 
 
+def own_broker_order_ids(db_path: Optional[str],
+                         symbol: Optional[str] = None) -> set:
+    """Return the set of Alpaca order_ids THIS profile's journal has
+    recorded — from the `order_id` column and every
+    `protective_*_order_id` column. Optionally restricted to one
+    `symbol`.
+
+    2026-06-16 — the cornerstone of profile order isolation on a
+    SHARED Alpaca account. Any broker order whose id is in this set
+    was created by THIS profile; any id NOT in this set belongs to a
+    sibling and must never be canceled/consumed. Callers cancel only
+    the intersection of (broker open orders) ∩ (this set). See
+    PROFILE_ORDER_ISOLATION.md.
+    """
+    import sqlite3
+    from contextlib import closing
+    ids: set = set()
+    if not db_path:
+        return ids
+    try:
+        with closing(sqlite3.connect(db_path)) as conn:
+            cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(trades)").fetchall()}
+            id_cols = [c for c in (
+                "order_id", "protective_stop_order_id",
+                "protective_tp_order_id", "protective_trailing_order_id",
+            ) if c in cols]
+            if not id_cols:
+                return ids
+            where = "WHERE UPPER(symbol) = ?" if symbol else ""
+            params = ((symbol.upper(),) if symbol else ())
+            sql = f"SELECT {', '.join(id_cols)} FROM trades {where}"
+            for row in conn.execute(sql, params):
+                for v in row:
+                    if v:
+                        ids.add(v)
+            # Long-vol hedge orders live in their own table, not
+            # `trades` — include them so hedge order_ids are also
+            # recognized as THIS profile's own. The feature is gated
+            # off by default, but the helper must be complete.
+            has_hv = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name='long_vol_hedges'").fetchone()
+            if has_hv:
+                hv = {r[1] for r in conn.execute(
+                    "PRAGMA table_info(long_vol_hedges)").fetchall()}
+                hv_cols = [c for c in ("order_id", "close_order_id")
+                           if c in hv]
+                if hv_cols:
+                    for row in conn.execute(
+                            f"SELECT {', '.join(hv_cols)} "
+                            f"FROM long_vol_hedges"):
+                        for v in row:
+                            if v:
+                                ids.add(v)
+    except sqlite3.Error as exc:
+        logger.debug("own_broker_order_ids(%s) failed: %s", symbol, exc)
+    return ids
+
+
 def check_can_submit(ctx, symbol: str, side: str) -> bool:
     """Return True if the profile's schedule allows an order right now.
 

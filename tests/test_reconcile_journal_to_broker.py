@@ -155,26 +155,29 @@ def test_broker_sold_via_stop_categorizes_but_halts_not_synthesizes(tmp_path):
     ]
     ctx = _ctx(api, db)
     res = reconcile_with_ctx(ctx, apply_changes=True)
-    # Categorization still works (the operator can see what would
-    # have been synthesized)
+    # A3 (2026-06-16): with no protective_*_order_id stored on the BUY,
+    # the reconciler can NOT safely attribute the broker SELL (on a
+    # shared account it could be a sibling's). The fuzzy symbol/qty/time
+    # match is DELETED. The close is unexplained → orphan_close → HALT.
     assert len(res["cancel"]) == 0
-    assert len(res["backfill_sell"]) == 1
-    backfill = res["backfill_sell"][0]
-    assert backfill["symbol"] == "BMY"
-    assert backfill["sell_price"] == 57.90
+    assert len(res["backfill_sell"]) == 0, (
+        "fuzzy cross-profile match is removed — no auto-backfill"
+    )
+    assert len(res["orphan_close"]) == 1
+    oc = res["orphan_close"][0]
+    assert oc["symbol"] == "BMY"
     assert res.get("halted_synthesis_count") == 1
-    # But the journal is NOT mutated — no synthesis fired
+    # The journal is NOT mutated — the position is HALTED for review,
+    # never silently closed and never claiming a sibling's fill.
     conn = sqlite3.connect(db)
     buy_status = conn.execute("SELECT status FROM trades WHERE id=88").fetchone()[0]
     assert buy_status == "open", (
         "BUY row must stay 'open' — the reconciler must HALT, not "
-        "silently close the row. If this fails, the synthesis "
-        "INSERT/UPDATE was re-added."
+        "silently close the row."
     )
     sell_rows = conn.execute("SELECT side FROM trades WHERE id != 88").fetchall()
     assert sell_rows == [], (
-        "No SELL row may be synthesized. If this fails, the silent "
-        "INSERT was re-added — the safety net is gone."
+        "No SELL row may be synthesized from a fuzzy cross-profile match."
     )
     conn.close()
 
@@ -221,10 +224,15 @@ def test_dry_run_does_not_write(tmp_path):
 
 
 def test_multiple_profiles_with_same_qty_attribution(tmp_path):
-    """Two profiles each have a BUY for the same symbol+qty. The
-    broker has TWO matching SELL fills (one per profile's stop). Each
-    profile's reconcile should pick a different SELL fill so we don't
-    double-attribute."""
+    """A3 (2026-06-16) — the cross-profile mis-attribution case. Two
+    profiles each have a BUY for the same symbol+qty; the shared broker
+    account has two matching SELL fills. The OLD code FUZZY-matched by
+    symbol/qty/time and tried to hand each profile a different fill —
+    the exact mechanism that attributed one profile's exit to another
+    (BATL/PPCB oversells). That fuzzy matcher is DELETED. With no
+    protective_*_order_id stored on either BUY, NEITHER fill can be
+    safely attributed, so each profile reports orphan_close and HALTS
+    for review instead of guessing. No sibling fill is ever claimed."""
     from reconcile_journal_to_broker import reconcile_with_ctx
     # Profile A: BMY 71 BUY filled
     (tmp_path / "a").mkdir()
@@ -261,18 +269,21 @@ def test_multiple_profiles_with_same_qty_attribution(tmp_path):
     ctx_a = _ctx(api, db_a, name="A", profile_id=1)
     ctx_b = _ctx(api, db_b, name="B", profile_id=2)
     res_a = reconcile_with_ctx(ctx_a, apply_changes=True)
-    # BEHAVIOR CHANGE 2026-05-19: first pass categorizes the
-    # would-be backfill but HALTS instead of synthesizing. Re-running
-    # is no longer idempotent in the "second pass sees nothing to do"
-    # sense — the journal is unchanged, so the SAME drift is detected
-    # again, and HALT is refreshed (no-op state-wise but the action
-    # list re-populates).
-    res_a2 = reconcile_with_ctx(ctx_a, apply_changes=True)
-    assert len(res_a["backfill_sell"]) == 1
-    # Second pass still detects the SAME drift (because we didn't
-    # synthesize — the drift persists). This is the new contract:
-    # halt persists until the upstream leak is fixed.
-    assert len(res_a2["backfill_sell"]) == 1
+    res_b = reconcile_with_ctx(ctx_b, apply_changes=True)
+    # Neither profile FUZZY-claims a fill — both halt as orphan_close.
+    assert len(res_a["backfill_sell"]) == 0
+    assert len(res_b["backfill_sell"]) == 0
+    assert len(res_a["orphan_close"]) == 1
+    assert len(res_b["orphan_close"]) == 1
+    assert res_a.get("halted_synthesis_count") == 1
+    assert res_b.get("halted_synthesis_count") == 1
+    # The journals are unchanged — no cross-profile attribution.
+    for db in (db_a, db_b):
+        conn = sqlite3.connect(db)
+        assert conn.execute(
+            "SELECT status FROM trades WHERE id=1"
+        ).fetchone()[0] == "open"
+        conn.close()
 
 
 def test_no_order_id_is_ambiguous(tmp_path):
@@ -380,10 +391,11 @@ def test_short_covered_by_broker_categorizes_but_halts(tmp_path):
     ]
     ctx = _ctx(api, db)
     res = reconcile_with_ctx(ctx, apply_changes=True)
-    assert len(res["backfill_cover"]) == 1
-    backfill = res["backfill_cover"][0]
-    assert backfill["symbol"] == "MSFT"
-    assert backfill["cover_price"] == 395.00
+    # A3 (2026-06-16): no protective_*_order_id stored → the fuzzy
+    # cover-fill match is gone → unexplained close → orphan_close → HALT.
+    assert len(res["backfill_cover"]) == 0
+    assert len(res["orphan_close"]) == 1
+    assert res["orphan_close"][0]["symbol"] == "MSFT"
     assert res.get("halted_synthesis_count") == 1
     # Journal NOT mutated
     conn = sqlite3.connect(db)
@@ -637,15 +649,23 @@ def test_cross_profile_dedup_prevents_double_attribution(tmp_path):
     assert res["real_held"] == 1
 
 
-def test_protective_fill_fallback_finds_exit_without_stored_id(tmp_path):
-    """The MBLY case from prod 2026-05-06: profile_9's BUY had NO
-    protective_*_order_id stored (the BUY happened on a code path
-    that didn't record the id). But a 492-share sell DID fire at the
-    broker. The fallback path should find it via list_orders search
-    even when no protective ID is recorded.
+def test_no_stored_id_with_sibling_holding_does_not_steal_fill(tmp_path):
+    """A3 (2026-06-16) — the MBLY case, re-pinned to the new contract.
 
-    Without the fallback: profile_9 MBLY 492 stayed phantom-claim
-    indefinitely while the broker had already closed it weeks ago."""
+    profile_9's BUY has NO protective_*_order_id stored, and a SIBLING
+    profile still holds 491 MBLY on the shared account. A 492-share
+    SELL also exists in broker history. The OLD fuzzy fallback would
+    search broker history and attribute that SELL to profile_9 — but
+    on a shared account that SELL could belong to ANY profile, which
+    is exactly the cross-profile theft we are eliminating.
+
+    With the fuzzy fallback DELETED: the reconciler will NOT claim the
+    unattributable SELL. Because the account still shows MBLY shares
+    (the sibling's 491), the position is treated as real_held and left
+    untouched — no sibling fill is consumed, no journal mutated. Legacy
+    no-stored-id divergence is resolved by the data-repair pass that
+    matches THIS profile's OWN broker order history, not by guessing.
+    See PROFILE_ORDER_ISOLATION.md."""
     p = tmp_path / "journal.db"
     conn = sqlite3.connect(str(p))
     conn.execute("""
@@ -688,13 +708,14 @@ def test_protective_fill_fallback_finds_exit_without_stored_id(tmp_path):
     ]
     ctx = _ctx(api, str(p))
     res = reconcile_with_ctx(ctx, apply_changes=True)
-    # Fallback path catches it (categorization works)
-    assert len(res["backfill_sell"]) == 1
-    assert res["backfill_sell"][0]["sell_qty"] == 492
-    assert res.get("halted_synthesis_count") == 1
-    # BEHAVIOR CHANGE 2026-05-19: HALT instead of close. Journal
-    # is NOT mutated; the operator has to fix the upstream leak
-    # (the original missing protective_*_order_id store).
+    # The unattributable broker SELL is NOT claimed — the fuzzy match
+    # is gone. The account still shows MBLY (the sibling's 491), so the
+    # position is left as real_held; nothing is synthesized or stolen.
+    assert len(res["backfill_sell"]) == 0, (
+        "must NOT fuzzy-attribute a broker SELL that could be a "
+        "sibling's — the cross-profile theft vector is removed"
+    )
+    assert res["real_held"] == 1
     conn = sqlite3.connect(str(p))
     status = conn.execute("SELECT status FROM trades WHERE id=48").fetchone()[0]
     conn.close()

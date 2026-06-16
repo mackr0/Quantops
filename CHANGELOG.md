@@ -5,6 +5,19 @@ at the top.
 
 ---
 
+## 2026-06-16 — Rigorous per-profile order isolation everywhere (A0–A3). Severity: HIGH (cross-profile order cancellation + fill mis-attribution on shared Alpaca accounts; operator-reported over months).
+
+13 profiles share 3 Alpaca accounts. Several code paths reached for **account-wide** broker order lists and then cancelled or attributed orders from them — so on a shared account one profile's action touched a sibling's orders/fills. Symptoms: SPCX's take-profit sell cancelled by a sibling's exit (position blew past target), BATL/PPCB oversells, SOUN journal/broker drift (1,356 vs 11), and recurring reconciler synthesis halts. Root cause was **incomplete 1:1 order-id bookkeeping on our side**, NOT the shared accounts — Alpaca assigns every order a unique id; a profile's orders are fully attributable by id. The complete fix, not instance patches:
+
+- **A0 — atomic order-id journaling (foundation).** New `order_guard.own_broker_order_ids(db_path, symbol)` returns the set of order_ids THIS profile's own journal recorded (entry `order_id` + every `protective_*_order_id`, plus `long_vol_hedges`). Closed the remaining journaling gaps so that set is complete: trader.py exit `log_trade` now has a guaranteed minimal order-id fallback + halt-on-failure (no orphan exit fills); multileg sequential-open rollbacks now journal both the open and the rollback-close (no orphan rollback fills).
+- **A1 — `trader.py` exit cancel** now intersects the broker's open orders with `own_broker_order_ids` and cancels ONLY this profile's own — a sibling's same-symbol order is never touched (the SPCX bug).
+- **A2 — `multi_scheduler` stale-limit-order sweep** (runs once per profile against the shared account) likewise cancels only this profile's own stale orders.
+- **A3 — reconciler attribution is own-order-id-only.** Deleted the fuzzy `_find_matching_exit_fill` (it searched the shared account's history by symbol/qty/time and handed siblings' fills to the wrong profile). A close is now recognized solely via THIS profile's own `protective_*_order_id` (+ the replace-chain walk on those ids). An unexplained broker-flat close becomes the new `orphan_close` action which HALTs for operator review — never silently diverges, never claims a sibling's fill. Kept the mid-pass live-journal re-check on the new path (CPNG race class).
+
+**Structural guardrails (so the class can't return):** `tests/test_order_isolation_invariants_2026_06_16.py` — AST tests ban an account-wide cancel without an `own_broker_order_ids` gate in trader/scheduler, keep the fuzzy matcher deleted, and require own-order-id-only attribution in the reconciler with `orphan_close` counted toward the halt. Plus `tests/test_profile_order_isolation_2026_06_16.py` (the primitive + functional sibling-survives-cancel + minimal-journal fallback) and updated reconcile tests pinning the new orphan_close contract. See `PROFILE_ORDER_ISOLATION.md`.
+
+---
+
 ## 2026-06-15 — AI-Brain BLOCKED badge shows the real reason, not the vague catch-all. Severity: medium (display; operator-reported, traced to no silent-drop bug).
 
 Operator saw end-of-day badges read "Not submitted — most likely already-positioned dedup, pre-broker safety gate, or post-AI meta-model suppression. No trades row was created." across most profiles. **Investigation: not a silent drop or critical bug** — every blocked trade had a SPECIFIC recorded `trade_drop` (`outside market_hours window`, `Insufficient cash remaining`, `Duplicate-position guard`, specialist veto). The trades were correctly blocked; the badge just couldn't reach the reason.
