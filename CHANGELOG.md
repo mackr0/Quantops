@@ -5,6 +5,18 @@ at the top.
 
 ---
 
+## 2026-06-17 — Universe aligned to the institutional benchmark: exclude hard-to-borrow names. Severity: HIGH (un-protectable positions; experiment contamination).
+
+Within 15 minutes of a clean reset, ICCM — an ~$8 hard-to-borrow micro-cap — broke the stock path: Alpaca rejected the GTC protective bracket (`only day orders are allowed for hard-to-borrow asset "ICCM"`) so the long rode **naked**; the entry itself was rejected as the price cratered below the decision-time stop (`stop_loss.stop_price must be <= base_price - 0.01`); and the protective stops that did fire tripped the reconciler safety-net **halt** on three profiles. A `list_assets` audit gives a clean, broker-defined discriminator: `easy_to_borrow=False` (≡ `shortable=False`) flags exactly this class — ICCM, SUGP, NEOV, SOUN, TSLG all False; AAPL/MSFT/NVDA/OPEN all True. These are the names systematic institutional capital screens out (can't borrow/short, order-type-restricted, can't protect), so trading them is both un-executable for us and off-benchmark.
+
+- **`tradability.is_experiment_tradable` / `filter_tradable`.** A name is tradable iff the broker reports it `easy_to_borrow` AND `tradable` AND `active`. The easy-to-borrow set is pulled ONCE from `list_assets` and cached (12 h TTL; asset flags are ~daily-stable), so the per-entry gate is a set lookup, not an API call. **Fail-open** (allow) only when the set can't be built and there's no stale cache to fall back on — a broker blip must never halt all entries; a stale-but-good set is preferred over failing open.
+- **Universe filter (`run_full_screen_for_segment`).** Hard-to-borrow names are dropped from the candidate set before any strategy or the AI sees them, and the dropped count + symbols are logged. They're never proposed.
+- **Entry gate (`execute_trade`, long AND short).** Backstop that also catches **AI-proposed** names — which bypass the screener entirely (ICCM came from an AI pick, not the screen). A short on a hard-to-borrow name is doubly blocked (it isn't shortable). Exits of existing positions are unaffected (the gate sits in the new-entry branches only).
+
+**Tests** (`tests/test_tradability_gate_2026_06_17.py`): HTB excluded / ETB included, case-insensitive, not-tradable excluded, one-broker-call caching, fail-open with no cache, stale-cache reuse on refresh failure; structural pins that `execute_trade` gates both longs and shorts and that the screen filters the universe. Full suite: 5,316 passed.
+
+---
+
 ## 2026-06-17 — Every option CLOSE books realized P&L (the multileg-decomposition gap). Severity: HIGH (silent realized-P&L understatement; per-profile decomposition gap that rebuilt on every spread close).
 
 A profile-book certification surfaced a +$23,727 decomposition gap on p120: ~48 multileg legs ALL carried `pnl=NULL`, so the profile's multileg realized P&L summed to $0. Root cause is a single mis-route in the fill state-machine, not the spread logic.

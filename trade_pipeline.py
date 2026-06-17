@@ -1092,6 +1092,28 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                 "entry blacklist check failed for %s: %s: %s",
                 symbol, type(_bl_exc).__name__, _bl_exc,
             )
+        # 2026-06-17 — universe alignment. Refuse new entries on
+        # hard-to-borrow / non-shortable names (easy_to_borrow=False):
+        # the broker rejects GTC protective brackets on them so the long
+        # rides naked (the ICCM incident), and they're the class
+        # systematic funds screen out. The screener filter drops most
+        # upstream; this gate also catches AI-PROPOSED names, which
+        # bypass the screen entirely (ICCM came from an AI pick).
+        try:
+            from tradability import is_experiment_tradable
+            if not is_experiment_tradable(api, symbol):
+                result["action"] = "SKIP"
+                result["reason"] = (
+                    f"{symbol} is hard-to-borrow (easy_to_borrow=False) — "
+                    f"outside the tradable universe; the broker won't "
+                    f"accept a GTC protective stop on it"
+                )
+                return result
+        except Exception as _etb_exc:
+            logger.debug(
+                "easy-to-borrow gate failed for %s: %s: %s",
+                symbol, type(_etb_exc).__name__, _etb_exc,
+            )
         if action == "STRONG_BUY":
             alloc_pct = max_position_pct
         else:
@@ -1623,6 +1645,24 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
             logger.debug(
                 "short-side entry blacklist check failed for %s: %s: %s",
                 symbol, type(_bl_exc).__name__, _bl_exc,
+            )
+        # 2026-06-17 — universe alignment (short side). A hard-to-borrow
+        # name (easy_to_borrow=False) is also NOT shortable, so opening a
+        # short would be rejected by the broker anyway — skip it cleanly
+        # rather than churn a doomed submit.
+        try:
+            from tradability import is_experiment_tradable
+            if not is_experiment_tradable(api, symbol):
+                result["action"] = "SKIP"
+                result["reason"] = (
+                    f"{symbol} is hard-to-borrow / not shortable "
+                    f"(easy_to_borrow=False) — outside the tradable universe"
+                )
+                return result
+        except Exception as _etb_exc:
+            logger.debug(
+                "easy-to-borrow short gate failed for %s: %s: %s",
+                symbol, type(_etb_exc).__name__, _etb_exc,
             )
         # Only if short selling is enabled for this profile
         enable_shorts = ctx.enable_short_selling if ctx is not None else False

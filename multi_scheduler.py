@@ -641,6 +641,27 @@ def run_full_screen_for_segment(ctx, seg):
         limit=50,
         universe=universe,
     )
+    # 2026-06-17 — align the universe with the institutional benchmark:
+    # drop hard-to-borrow / non-shortable names (easy_to_borrow=False)
+    # before any strategy or the AI sees them, so they're never even
+    # proposed. The broker won't GTC-protect them and systematic funds
+    # screen them out (ICCM/SUGP/NEOV/SOUN/TSLG class). execute_trade has
+    # the same gate as a backstop for AI-proposed names.
+    try:
+        from tradability import filter_tradable
+        _api = ctx.get_alpaca_api()
+        _keep = set(filter_tradable(_api, [c["symbol"] for c in candidates]))
+        _dropped = [c["symbol"] for c in candidates if c["symbol"] not in _keep]
+        if _dropped:
+            logging.info(
+                "[%s] universe filter: dropped %d hard-to-borrow name(s): %s",
+                ctx.display_name or ctx.segment, len(_dropped),
+                ", ".join(_dropped[:20]))
+        candidates = [c for c in candidates if c["symbol"] in _keep]
+    except Exception as _uf_exc:
+        logging.warning(
+            "universe easy-to-borrow filter failed (%s) — proceeding "
+            "unfiltered; execute_trade gate still applies", _uf_exc)
     sym_list = [c["symbol"] for c in candidates]
     volume_surges = find_volume_surges(
         sym_list, volume_multiplier=ctx.volume_surge_multiplier)
