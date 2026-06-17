@@ -51,7 +51,8 @@ def find_near_expiry_options(db_path: str,
         cur = conn.execute(
             """SELECT id, symbol, side, qty, occ_symbol, option_strategy,
                       expiry, strike, price, decision_price,
-                      ai_confidence, ai_reasoning, signal_type, timestamp
+                      ai_confidence, ai_reasoning, signal_type, timestamp,
+                      order_id
                FROM trades
                WHERE signal_type IN ('OPTIONS', 'MULTILEG')
                  AND status='open'
@@ -230,30 +231,60 @@ def render_roll_recommendations_for_prompt(
     )
 
 
+def _combo_sibling_legs(conn, closed_row):
+    """Return the open, filled sibling leg(s) of the SAME multileg combo
+    as `closed_row`. Pairing is EXACT when possible: a combo's legs all
+    carry the SAME entry order_id (the combo/parent id; distinguished by
+    occ_symbol — see the dup-order_id invariant), so we pair by that id.
+    Only sequential (non-combo) multileg fills lack a shared id; for
+    those we fall back to the option_strategy + underlying + 60s-window
+    heuristic. `closed_row` is the pre-close snapshot, so its order_id is
+    still the original combo id even though the DB row was just
+    overwritten with the close id.
+    """
+    combo_oid = closed_row.get("order_id")
+    occ = closed_row.get("occ_symbol")
+    # EXACT path — pair by the shared combo order_id.
+    if combo_oid:
+        siblings = conn.execute(
+            "SELECT id, side, qty, occ_symbol FROM trades "
+            "WHERE order_id = ? AND signal_type='MULTILEG' "
+            "  AND COALESCE(occ_symbol,'') != ? "
+            "  AND COALESCE(status,'open')='open' "
+            "  AND fill_price IS NOT NULL",
+            (combo_oid, occ or ""),
+        ).fetchall()
+        if siblings:
+            return siblings
+    # FALLBACK — sequential legs (distinct per-leg order_ids) have no
+    # shared id; pair by option_strategy + underlying + 60s window.
+    return conn.execute(
+        "SELECT id, side, qty, occ_symbol FROM trades "
+        "WHERE signal_type='MULTILEG' AND option_strategy=? "
+        "  AND symbol=? AND id != ? "
+        "  AND COALESCE(occ_symbol,'') != ? "
+        "  AND COALESCE(status,'open')='open' "
+        "  AND fill_price IS NOT NULL "
+        "  AND ABS(strftime('%s', timestamp) - strftime('%s', ?)) < 60",
+        (closed_row.get("option_strategy"), closed_row.get("symbol"),
+         closed_row["id"], occ or "", closed_row.get("timestamp")),
+    ).fetchall()
+
+
 def _close_combo_partner_legs(api, conn, closed_row, summary) -> int:
     """O6 — close the surviving sibling leg(s) of the SAME multileg
-    combo as `closed_row` (a credit leg just auto-closed). Pairing
-    predicate mirrors multi_scheduler._rollback_orphaned_multileg_partners:
-    same option_strategy + underlying symbol, status='open', actually
-    filled (fill_price NOT NULL), a different row id, opened within 60s.
-    Each sibling is closed by ITS OWN OCC + qty and stamped with ITS OWN
-    close order_id — never by broker position qty, never reusing the
-    credit leg's id — so every leg stays profile-attributable on the
-    shared Alpaca conduit. Returns the count closed. A submit failure is
-    logged loudly (never silent) and leaves the sibling open.
+    combo as `closed_row` (a credit leg just auto-closed). Siblings are
+    paired EXACTLY by the shared combo order_id (heuristic only for
+    sequential legs — see _combo_sibling_legs). Each sibling is closed
+    by ITS OWN OCC + qty and stamped with ITS OWN close order_id — never
+    by broker position qty, never reusing the credit leg's id — so every
+    leg stays profile-attributable on the shared Alpaca conduit. Returns
+    the count closed. A submit failure is logged loudly (never silent)
+    and leaves the sibling open.
     """
     swept = 0
     try:
-        siblings = conn.execute(
-            "SELECT id, side, qty, occ_symbol FROM trades "
-            "WHERE signal_type='MULTILEG' AND option_strategy=? "
-            "  AND symbol=? AND id != ? "
-            "  AND COALESCE(status,'open')='open' "
-            "  AND fill_price IS NOT NULL "
-            "  AND ABS(strftime('%s', timestamp) - strftime('%s', ?)) < 60",
-            (closed_row.get("option_strategy"), closed_row.get("symbol"),
-             closed_row["id"], closed_row.get("timestamp")),
-        ).fetchall()
+        siblings = _combo_sibling_legs(conn, closed_row)
     except Exception as exc:
         logger.warning("O6 partner-sweep query failed for combo %s: %s",
                        closed_row.get("option_strategy"), exc)

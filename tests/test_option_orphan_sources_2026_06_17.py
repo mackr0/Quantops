@@ -83,6 +83,54 @@ class TestO6PartnerSweep:
         )
         assert res.get("partner_legs_closed", 0) == 1
 
+    def test_partner_pairing_is_exact_by_combo_order_id(self, db):
+        """Combo legs share ONE entry order_id (the combo id). The
+        partner sweep must pair by that id — exact, not the 60s
+        heuristic — so it can't mispair two distinct spreads. Here a
+        DECOY spread on the same underlying/strategy has a DIFFERENT
+        combo id and must NOT be touched."""
+        from journal import log_trade
+        from options_roll_manager import auto_close_high_profit_credits
+
+        def _combo_leg(side, occ, oid, premium):
+            log_trade(symbol="SMR", side=side, qty=1, price=premium,
+                      order_id=oid, signal_type="MULTILEG",
+                      strategy="bull_put_spread", decision_price=premium,
+                      occ_symbol=occ, option_strategy="bull_put_spread",
+                      expiry=(date.today() + timedelta(days=3)).isoformat(),
+                      strike=12.0, fill_price=premium, db_path=db)
+
+        # Combo A (the one being auto-closed): shared order_id 'comboA'
+        _combo_leg("sell", "SMR260724P00012000", "comboA", 1.50)
+        _combo_leg("buy", "SMR260724P00011000", "comboA", 0.50)
+        # Combo B (decoy): same underlying + strategy, DIFFERENT combo id
+        _combo_leg("sell", "SMR260724P00013000", "comboB", 1.50)
+        _combo_leg("buy", "SMR260724P00010000", "comboB", 0.40)
+
+        api = MagicMock()
+        api.submit_order.side_effect = [
+            MagicMock(id=f"c{i}") for i in range(6)]
+        # only combo A's short OCC is deep-profit → AUTO_CLOSE A's legs;
+        # B's legs evaluate but must not be partner-swept by A.
+        def _q(occ):
+            return 0.05 if occ in ("SMR260724P00012000",
+                                   "SMR260724P00011000") else 1.55
+        auto_close_high_profit_credits(api, db, quote_lookup=_q,
+                                       today=date.today())
+        with closing(sqlite3.connect(db)) as c:
+            a = [r[0] for r in c.execute(
+                "SELECT status FROM trades WHERE order_id IN "
+                "('comboA') OR occ_symbol IN "
+                "('SMR260724P00012000','SMR260724P00011000')")]
+            b = [r[0] for r in c.execute(
+                "SELECT status FROM trades WHERE occ_symbol IN "
+                "('SMR260724P00013000','SMR260724P00010000')")]
+        assert all(s == "pending_fill" for s in a), a
+        assert all(s == "open" for s in b), (
+            "the decoy combo B (different combo id) must NOT be "
+            "partner-swept — pairing is exact by combo order_id"
+        )
+
     def test_single_leg_not_partner_swept(self, db):
         """A single-leg covered_call (one OPTIONS row) is auto-closed
         once; no partner query/extra submit."""
