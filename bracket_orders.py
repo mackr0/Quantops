@@ -25,6 +25,16 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# Broker order statuses that mean a protective/bracket child is still
+# working (will fire). Anything else (canceled/expired/rejected/filled/
+# done_for_day) means the protection is GONE and the position needs a
+# fresh stop. Shared by has_live_bracket_protection and the sweep's
+# naked-bracket re-arm (2026-06-16).
+_LIVE_PROTECTIVE_STATUSES = frozenset({
+    "new", "accepted", "held", "pending_new", "accepted_for_bidding",
+    "pending_replace", "replaced", "partially_filled",
+})
+
 
 # 2026-05-21 — Per `feedback_no_orphan_broker_fills`: every api.submit_order
 # MUST write a journal row in the same code path. Protective orders
@@ -149,9 +159,7 @@ def has_live_bracket_protection(api, db_path, symbol) -> bool:
         try:
             order = api.get_order(oid)
             if (getattr(order, "status", "") or "").lower() in (
-                "new", "accepted", "held", "pending_new",
-                "accepted_for_bidding", "pending_replace", "replaced",
-                "partially_filled",
+                _LIVE_PROTECTIVE_STATUSES
             ):
                 return True
         except Exception as exc:
@@ -841,13 +849,42 @@ def ensure_protective_stops(api, positions, ctx, db_path,
                                 conn, db_path, row, _parent, symbol,
                                 close_side, abs_qty,
                             )
-                            logger.debug(
-                                "ensure_protective_stops: skip entry "
-                                "#%s (%s) — parent order_class=bracket; "
-                                "broker is managing stop+TP atomically.",
+                            # 2026-06-16 — NAKED-BRACKET FIX. Deferring
+                            # to "the broker is managing stop+TP" is only
+                            # safe if a child is ACTUALLY LIVE. When the
+                            # children were canceled (OCO/stale-cancel/
+                            # cross-profile) or never materialized, the
+                            # position is NAKED and the old code skipped
+                            # forever — leaving SUGP −35%, SMR/SNAP with
+                            # zero protection. Only defer when a child is
+                            # live; otherwise fall through and place a
+                            # fresh protective stop. The downstream
+                            # broker_coverage/pending dedup prevents a
+                            # double-placement if a live child does exist.
+                            _live_child = any(
+                                (getattr(_leg, "status", "") or "").lower()
+                                in _LIVE_PROTECTIVE_STATUSES
+                                for _leg in (getattr(_parent, "legs", None)
+                                             or [])
+                            )
+                            if _live_child:
+                                logger.debug(
+                                    "ensure_protective_stops: skip entry "
+                                    "#%s (%s) — parent order_class=bracket "
+                                    "with a LIVE child; broker managing "
+                                    "stop+TP atomically.",
+                                    row["id"], symbol,
+                                )
+                                continue
+                            logger.warning(
+                                "ensure_protective_stops: entry #%s (%s) "
+                                "was a bracket but has NO live child "
+                                "(canceled/never materialized) — position "
+                                "is NAKED; placing a fresh protective stop "
+                                "instead of deferring to a dead bracket.",
                                 row["id"], symbol,
                             )
-                            continue
+                            # fall through to placement below
                     except Exception as _bc_exc:
                         logger.debug(
                             "Bracket-class check for entry #%s failed "

@@ -5,6 +5,18 @@ at the top.
 
 ---
 
+## 2026-06-16 — Restore stop-loss protection (three bugs had quietly disabled it). Severity: CRITICAL (152 positions with no live broker stop; SUGP ran to −35% across 5 profiles).
+
+A cross-profile stop-loss audit found the 5%-stop rule was not holding the line: 20 long positions past their stop and still open, **152 of ~206 with no live broker stop**, worst being SUGP −35–40% across five profiles. Every blown position followed the same chain — entry placed as a bracket, its stop/TP children later canceled or never materialized, and **nothing re-armed the protection.** (Not caused by the day's other fixes: all deploys landed after the 20:00 UTC close; these drawdowns happened intraday under the prior code.) Three compounding bugs, now fixed:
+
+- **The protective sweep deferred to dead brackets.** `bracket_orders.ensure_protective_stops` skipped placement for ANY entry whose parent was `order_class='bracket'`, assuming "the broker manages stop+TP" — without checking a child was actually live. When the children died, the position stayed naked forever. Now it only defers when a bracket child is genuinely live (`_LIVE_PROTECTIVE_STATUSES`); otherwise it places a fresh protective stop.
+- **The stale-limit canceller was eating bracket take-profits.** `_task_cancel_stale_orders` cancels limit orders older than 5 min; a bracket's TP child is a limit that lives for the whole position, and it was in `own_ids` (via `protective_tp_order_id`), so the task canceled it — and the OCO link killed the paired stop too (SUGP's stamped children went exactly this way). Now protective order_ids (new `order_guard.own_protective_order_ids`) are excluded; only stale UNFILLED entry limits are canceled.
+- **The polling stop-loss skipped every sub-$2 stock.** `portfolio_manager.check_stop_loss_take_profit` treated any position under $2 with a >5% drop as a "stranded option leg" and skipped it — which also skipped legitimate penny stocks, so SUGP was never stop-lossed. The skip is now JOURNAL-GATED: a position with a real open stock BUY row (occ_symbol NULL, non-option signal_type) fires the stop; only a sub-$2 position with no journaled stock holding (the genuine 2026-05-11 stranded-option-leg shape) is skipped. `check_stop_loss_take_profit` now takes `db_path`; `trader.check_exits` passes it.
+
+**Tests:** `tests/test_stop_loss_protection_restored_2026_06_16.py` (sub-$2 REAL stock fires; stranded option leg still skipped; stale-cancel spares bracket TPs but still cancels stale entry limits) + updated `test_bracket_skip_sweep_2026_06_10.py` (skip gated on a live child) + the original 2026-05-11 backstop tests still green. Full suite: 5,273 passed.
+
+---
+
 ## 2026-06-16 — Canceled trades no longer carry P&L (resolves the p121 −5,985 decomposition gap). Severity: HIGH (inflated realized P&L pollutes equity decomposition, the dashboard, and self-tuning).
 
 certify_books' DECOMPOSITION check ((equity − initial) vs (realized + unrealized P&L)) flagged p121 at −5,985. Root cause: three **canceled** SELL rows kept their speculative pnl (VSME +3,463, SOUN −521, SPCX +3,042 = +5,985 net), and every `SUM(pnl)` realized-P&L reader counted them as if the trades had executed. A canceled/expired/rejected trade realized nothing.

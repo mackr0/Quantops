@@ -72,6 +72,16 @@ def test_ensure_protective_stops_skips_bracket_parent_orders():
         "to skip placement. Without `continue`, the cancel + place "
         "logic still runs and destroys the bracket."
     )
+    # 2026-06-16 NAKED-BRACKET FIX: the skip must be gated on a LIVE
+    # child. A bracket whose children were canceled / never
+    # materialized leaves the position naked; the sweep must fall
+    # through and place a fresh stop instead of deferring forever.
+    assert "_live_child" in bracket_section and "NO live child" in bracket_section, (
+        "The bracket-skip must only defer when a child is actually "
+        "LIVE. Without this, a dead bracket (canceled/never "
+        "materialized children) leaves the position unprotected "
+        "forever — the SUGP −35% / SMR / SNAP naked-position class."
+    )
 
 
 def test_submit_path_uses_nested_true_for_legs():

@@ -322,9 +322,32 @@ def check_portfolio_constraints(symbol, proposed_trade, current_positions, accou
     return True, "Trade passes all portfolio constraints"
 
 
+def _is_real_stock_holding(db_path, symbol) -> bool:
+    """True iff the profile's journal has an OPEN stock BUY for `symbol`
+    (occ_symbol NULL, non-option signal_type). Used to tell a real
+    sub-$2 penny stock apart from a stranded option leg whose
+    occ_symbol came through null (the 2026-05-11 bug shape). No db_path
+    → cannot confirm → False (conservative). 2026-06-16."""
+    if not db_path or not symbol:
+        return False
+    import sqlite3
+    from contextlib import closing
+    try:
+        with closing(sqlite3.connect(db_path)) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM trades WHERE UPPER(symbol)=? "
+                "AND side IN ('buy','short') AND occ_symbol IS NULL "
+                "AND COALESCE(signal_type,'') NOT IN ('OPTIONS','MULTILEG') "
+                "AND COALESCE(status,'open') IN ('open','pending_fill') "
+                "LIMIT 1", (symbol.upper(),)).fetchone()
+            return row is not None
+    except sqlite3.Error:
+        return False
+
+
 def check_stop_loss_take_profit(positions, stop_loss_pct=None, take_profit_pct=None,
                                 short_stop_loss_pct=None, short_take_profit_pct=None,
-                                conviction_tp_skip=None):
+                                conviction_tp_skip=None, db_path=None):
     """Check all open positions against stop-loss and take-profit thresholds.
 
     Args:
@@ -375,47 +398,36 @@ def check_stop_loss_take_profit(positions, stop_loss_pct=None, take_profit_pct=N
         if entry_price <= 0 or current_price <= 0:
             continue
 
-        # 2026-05-15 — defensive guardrail against the bug class that
-        # produced 37 corrupt SELL rows on 2026-05-11. A multileg
-        # option leg with `occ_symbol` accidentally null fell through
-        # the option-skip above, then this function calculated a
-        # massive pct_change against the option premium and fired a
-        # stop-loss "stock SELL" on the underlying. The orders went
-        # to the broker. The Phase 5e commits later that day fixed
-        # the upstream propagation, but if a future regression
-        # produces the same shape we want to catch it here too.
-        #
-        # Heuristic: a position with BOTH prices under $2 AND a >5%
-        # drop is almost certainly an option premium evaporating,
-        # not a stock. Real stocks above $1 (the system's min_price
-        # default) rarely sit at $0.20 entry. The system's screener
-        # is configured to filter them out at intake, so any
-        # position that survives there with sub-$2 pricing is much
-        # more likely to be a stranded option leg than a real
-        # penny-stock holding. Operator can review the warning log
-        # and manually exit if the bug class re-emerges.
-        _suspect_option_leg = (
-            current_price < 2.0
-            and entry_price < 2.0
-            and (current_price - entry_price) / entry_price < -0.05
-        )
-        if _suspect_option_leg:
+        pct_change = (current_price - entry_price) / entry_price
+
+        # 2026-06-16 — sub-$2 "suspected option leg" guard, now JOURNAL-
+        # GATED. The old version skipped EVERY sub-$2 position with a
+        # >5% drop as a stranded option premium — which also skipped
+        # LEGITIMATE penny stocks, so SUGP (entry $1.71 → $1.11, −35%)
+        # was never stop-lossed across 5 profiles while it cratered.
+        # The 2026-05-11 bug it guards against is a multileg leg whose
+        # `occ_symbol` came through null → processed as a stock. We now
+        # distinguish the two via the journal: a REAL stock holding has
+        # an open stock BUY row (occ_symbol NULL, non-option
+        # signal_type); a stranded option leg does not. Skip ONLY when
+        # we cannot confirm a real stock holding — otherwise the stop
+        # MUST fire. (No db_path → can't confirm → conservative skip,
+        # preserving the original backstop for callers that don't pass
+        # one.)
+        if (current_price < 2.0 and entry_price < 2.0
+                and pct_change < -0.05
+                and not _is_real_stock_holding(db_path, symbol)):
             logger.warning(
-                "check_stop_loss_take_profit: skipping suspected "
-                "option leg masquerading as stock — symbol=%s, "
-                "entry=$%.4f, current=$%.4f, drop=%.1f%%. The "
-                "occ_symbol field on the upstream position dict was "
-                "missing; treating as option to prevent the "
-                "2026-05-11 bug class from firing real stock orders. "
-                "If %s is a legitimate penny-stock crash, manually "
-                "trigger the exit.",
-                symbol, entry_price, current_price,
-                ((current_price - entry_price) / entry_price) * 100,
+                "check_stop_loss_take_profit: skipping suspected option "
+                "leg masquerading as stock — symbol=%s, entry=$%.4f, "
+                "current=$%.4f, drop=%.1f%%. No confirmed open stock "
+                "position in the journal (occ_symbol was null). If %s "
+                "is a legitimate sub-$2 stock, ensure its entry row is "
+                "journaled so the stop can fire.",
+                symbol, entry_price, current_price, pct_change * 100,
                 symbol,
             )
             continue
-
-        pct_change = (current_price - entry_price) / entry_price
 
         # 2026-05-12 — per-trade PRICE thresholds win over profile
         # PERCENT thresholds. UNH bug: AI set a $379 target on a

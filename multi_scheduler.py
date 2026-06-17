@@ -1164,8 +1164,19 @@ def _task_cancel_stale_orders(ctx):
         # code therefore had each profile cancel ALL siblings' stale
         # limit orders too. Restrict cancellation to order_ids THIS
         # profile's own journal recorded. See PROFILE_ORDER_ISOLATION.md.
-        from order_guard import own_broker_order_ids
+        from order_guard import own_broker_order_ids, own_protective_order_ids
         own_ids = own_broker_order_ids(getattr(ctx, "db_path", None))
+        # PROTECTIVE-ORDER EXCLUSION (2026-06-16) — a bracket's
+        # take-profit child is a LIMIT order that lives for the whole
+        # position (always >5min old). Because own_ids includes the
+        # protective_tp_order_id column, the pre-fix code canceled
+        # these "stale" TP limits — and the OCO link then canceled the
+        # paired STOP too, leaving the position NAKED (SUGP's stamped
+        # children were canceled exactly this way). This task must
+        # cancel only stale UNFILLED ENTRY limits, never protective
+        # orders. Build the protective-id set and skip them.
+        protective_ids = own_protective_order_ids(
+            getattr(ctx, "db_path", None))
         open_orders = api.list_orders(status="open")
         now = datetime.now(timezone.utc)
         stale_cutoff = timedelta(minutes=5)
@@ -1177,6 +1188,10 @@ def _task_cancel_stale_orders(ctx):
             if order.id not in own_ids:
                 # A sibling profile's order on the shared account —
                 # NEVER cancel it.
+                continue
+            if order.id in protective_ids:
+                # A protective (stop/TP/trailing) order — canceling it
+                # strips the position's protection. Never touch it.
                 continue
             # Parse order creation time
             created_at = order.created_at

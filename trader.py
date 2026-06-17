@@ -534,6 +534,7 @@ def check_exits(ctx=None):
         short_stop_loss_pct=short_stop_loss_pct,
         short_take_profit_pct=short_take_profit_pct,
         conviction_tp_skip=conviction_tp_skip,
+        db_path=db_path,
     )
 
     # TODO #7 (2026-05-11): single-leg long option exit logic.

@@ -82,6 +82,52 @@ def own_broker_order_ids(db_path: Optional[str],
     return ids
 
 
+def own_protective_order_ids(db_path: Optional[str]) -> set:
+    """Return the set of order_ids that are PROTECTIVE orders (stop /
+    take-profit / trailing, incl. bracket children) for this profile —
+    from the `protective_*_order_id` columns and from rows that are
+    themselves protective placements (`status='pending_protective'` or
+    a `PROTECTIVE_*` signal_type).
+
+    2026-06-16 — used to EXCLUDE protective orders from the stale-limit
+    canceller. A bracket take-profit is a limit order that lives for
+    the whole position; canceling it as "stale" strips protection (and
+    the OCO cancels the paired stop too). See PROFILE_ORDER_ISOLATION.md.
+    """
+    import sqlite3
+    from contextlib import closing
+    ids: set = set()
+    if not db_path:
+        return ids
+    try:
+        with closing(sqlite3.connect(db_path)) as conn:
+            cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(trades)").fetchall()}
+            for col in ("protective_stop_order_id", "protective_tp_order_id",
+                        "protective_trailing_order_id"):
+                if col not in cols:
+                    continue
+                for r in conn.execute(
+                        f"SELECT {col} FROM trades WHERE {col} IS NOT NULL"):
+                    if r[0]:
+                        ids.add(r[0])
+            # Rows that ARE protective placements.
+            where = []
+            if "status" in cols:
+                where.append("COALESCE(status,'') = 'pending_protective'")
+            if "signal_type" in cols:
+                where.append("signal_type LIKE 'PROTECTIVE%'")
+            if "order_id" in cols and where:
+                for r in conn.execute(
+                        "SELECT order_id FROM trades WHERE order_id IS NOT NULL "
+                        "AND (" + " OR ".join(where) + ")"):
+                    if r[0]:
+                        ids.add(r[0])
+    except sqlite3.Error as exc:
+        logger.debug("own_protective_order_ids failed: %s", exc)
+    return ids
+
+
 def check_can_submit(ctx, symbol: str, side: str) -> bool:
     """Return True if the profile's schedule allows an order right now.
 

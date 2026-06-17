@@ -275,9 +275,14 @@ class TestStaleCancelOnlyOwn:
         src = (REPO_ROOT / "multi_scheduler.py").read_text()
         idx = src.find("def _task_cancel_stale_orders")
         assert idx > 0
-        body = src[idx:idx + 1600]
+        body = src[idx:idx + 2800]
         assert "own_broker_order_ids" in body
         assert "if order.id not in own_ids" in body
+        # 2026-06-16 — must also EXCLUDE protective orders (a bracket TP
+        # is a stale limit that protects the position; canceling it
+        # strips the bracket).
+        assert "own_protective_order_ids" in body
+        assert "if order.id in protective_ids" in body
 
 
 # ---------------------------------------------------------------------------
