@@ -4,7 +4,7 @@ import logging
 import sqlite3
 import json
 from contextlib import closing
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 import config
 
@@ -1545,22 +1545,44 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
     short_lots: Dict[str, list] = {}
     pos_meta: Dict[str, Dict[str, Any]] = {}  # key -> {symbol, occ_symbol}
     skipped_bad_price = 0
+    # A freshly-opened multileg leg writes price=NULL BY DESIGN
+    # (options_multileg._log_strategy_legs refuses a non-positive price
+    # and leaves the column NULL) until _task_update_fills backfills the
+    # per-leg fill on a later cycle — paper fills lag and the combo's
+    # per-leg prices aren't known at submit. That transient price<=0 is
+    # EXPECTED and self-heals, so warning on it cries wolf on every
+    # just-entered spread leg. Only surface rows that have STAYED
+    # price<=0 PAST the backfill window — genuinely stuck data (e.g. a
+    # real combo-net write that never backfilled).
+    _stuck_cutoff = datetime.utcnow() - timedelta(minutes=20)
     for row in rows:
         symbol = row[0]
         side = row[1]
         qty = float(row[2] or 0)
         price = float(row[3] or 0)
+        row_ts = row[4] if len(row) > 4 else None
         occ_symbol = row[5] if len(row) > 5 else None
         row_status = (row[6] if len(row) > 6 else None) or "open"
         if qty <= 0 or price <= 0:
-            # Defense-in-depth: a row that gets here with qty<=0 or
-            # price<=0 has bad data upstream (e.g. multileg combo
-            # writing the signed net premium as the per-leg price —
-            # caught 2026-05-11). The row's position is silently
-            # invisible to the AI; surface it so the bug class is
-            # observable.
-            if qty > 0 and price <= 0:
+            # A NEGATIVE price is unambiguously bad data (the combo-net-
+            # as-per-leg-price artifact) — never a pending leg, which
+            # writes NULL (->0). Surface it immediately, any age. A price
+            # of exactly 0/NULL is the shape of a just-entered leg
+            # awaiting its fill; only surface THAT if it stayed so past
+            # the backfill window (genuinely stuck, not self-healing).
+            if qty > 0 and price < 0:
                 skipped_bad_price += 1
+            elif qty > 0 and price <= 0:
+                _stuck = True
+                if row_ts:
+                    try:
+                        _t = datetime.fromisoformat(
+                            str(row_ts).replace("Z", "").split("+")[0].strip())
+                        _stuck = _t < _stuck_cutoff
+                    except Exception:
+                        _stuck = True  # unparseable ts → surface it
+                if _stuck:
+                    skipped_bad_price += 1
             continue
         # Position key: OCC for options, underlying symbol for stock.
         key = occ_symbol if occ_symbol else symbol
@@ -1739,11 +1761,12 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
     if skipped_bad_price > 0:
         import logging as _logging
         _logging.warning(
-            "get_virtual_positions(%s): skipped %d row(s) with qty>0 "
-            "but price<=0 — these positions are invisible to the AI's "
-            "portfolio view. Likely the multileg combo writing the "
-            "signed net premium as the per-leg price (caught "
-            "2026-05-11). Run the backfill to fix existing rows.",
+            "get_virtual_positions(%s): skipped %d row(s) with qty>0 / "
+            "price<=0 that are NOT just-entered legs awaiting a fill — "
+            "either a negative per-leg price (combo-net artifact) or a "
+            "row stuck price<=0 past the >20min backfill window. "
+            "Invisible to the AI's portfolio view; run the backfill to "
+            "repair.",
             db_path, skipped_bad_price,
         )
 

@@ -5,6 +5,17 @@ at the top.
 
 ---
 
+## 2026-06-17 — Stop false "qty>0 but price<=0" warnings on freshly-entered spread legs. Severity: LOW (log/alert noise — no behavior change).
+
+`get_virtual_positions` warned `skipped N row(s) with qty>0 but price<=0 — likely the multileg combo writing the signed net premium as the per-leg price ... run the backfill` on **every just-entered multileg leg**. That's a false alarm: `options_multileg._log_strategy_legs` writes the per-leg `price` as NULL **by design** when the per-leg fill isn't known yet (paper fills lag 50-500ms; the combo's per-leg prices land on a later cycle), and `_task_update_fills` backfills it within a cycle. The entry-write was never the bug the message implied — it explicitly refuses to store the signed combo-net and leaves NULL for the backfill.
+
+- **Age-gate the warning.** The skip still happens (a price-less row can't be valued), but it now only counts toward the warning if the row has stayed `price<=0` for **>20 min** — past the backfill window, i.e. genuinely stuck data rather than a leg awaiting its first fill. Uses the row's `timestamp` (already selected at `row[4]`); unparseable timestamps are surfaced conservatively. Position accounting (the FIFO) is unchanged — only the warning's trigger.
+- **Honest message.** Reworded to "STUCK at qty>0 / price<=0 for >20min — past the backfill window" instead of asserting a combo-net bug.
+
+**Tests** (`tests/test_pending_leg_no_false_warn_2026_06_17.py`): a recent NULL-price leg does NOT warn; a 45-min-old one still does; a negative price still warns immediately (combo-net artifact); structural pin that the warning is age-gated. Full suite: 5,319 passed.
+
+---
+
 ## 2026-06-17 — Universe aligned to the institutional benchmark: exclude hard-to-borrow names. Severity: HIGH (un-protectable positions; experiment contamination).
 
 Within 15 minutes of a clean reset, ICCM — an ~$8 hard-to-borrow micro-cap — broke the stock path: Alpaca rejected the GTC protective bracket (`only day orders are allowed for hard-to-borrow asset "ICCM"`) so the long rode **naked**; the entry itself was rejected as the price cratered below the decision-time stop (`stop_loss.stop_price must be <= base_price - 0.01`); and the protective stops that did fire tripped the reconciler safety-net **halt** on three profiles. A `list_assets` audit gives a clean, broker-defined discriminator: `easy_to_borrow=False` (≡ `shortable=False`) flags exactly this class — ICCM, SUGP, NEOV, SOUN, TSLG all False; AAPL/MSFT/NVDA/OPEN all True. These are the names systematic institutional capital screens out (can't borrow/short, order-type-restricted, can't protect), so trading them is both un-executable for us and off-benchmark.
