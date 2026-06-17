@@ -778,6 +778,64 @@ def execute_multileg_strategy(
                 "Duplicate-position check failed (continuing): %s", exc,
             )
 
+    # Account-level position-intent guard (2026-06-17). Alpaca enforces
+    # position_intent across the WHOLE account, not per-profile. On the
+    # shared conduit a SIBLING profile's leg can leave the account
+    # net-opposite at a strike this spread wants to OPEN — a buy-to-open
+    # where the account is net-short reads as buy-to-close (and the
+    # reverse), and Alpaca rejects the combo (422 "position intent
+    # mismatch"). The journal guard above can't see that (it's another
+    # profile's order_id). Check the BROKER's account-level option
+    # positions and SKIP before the doomed submit, with an accurate
+    # reason. This is the shared-conduit constraint, not journal drift —
+    # the books reconcile. (We never submit the inferred close: that
+    # would touch another profile's position, violating order-id
+    # isolation.)
+    if strategy.legs:
+        try:
+            _net_by_occ = {}
+            for _p in (api.list_positions() or []):
+                try:
+                    _net_by_occ[(_p.symbol or "").upper()] = float(_p.qty)
+                except (TypeError, ValueError):
+                    pass
+            for leg in strategy.legs:
+                occ = (getattr(leg, "occ_symbol", None) or "").upper()
+                if not occ:
+                    continue
+                net = _net_by_occ.get(occ, 0.0)
+                side = (getattr(leg, "side", "") or "").lower()
+                # buy-to-open collides with a net-short; sell-to-open
+                # collides with a net-long.
+                if (side == "buy" and net < -1e-9) or \
+                        (side == "sell" and net > 1e-9):
+                    result["action"] = "SKIP"
+                    result["reason"] = (
+                        f"Shared-account strike collision on {occ}: the "
+                        f"Alpaca account is net-"
+                        f"{'short' if net < 0 else 'long'} {abs(net):.0f} "
+                        f"there (a sibling profile's leg or this profile's "
+                        f"other spread), so {strategy.name}'s "
+                        f"{'buy' if side == 'buy' else 'sell'}-to-open "
+                        f"would be read as a close and rejected. Skipped "
+                        f"pre-submit (no broker round-trip). NOT journal "
+                        f"drift — position_intent is enforced account-wide "
+                        f"on the shared conduit; the books reconcile."
+                    )
+                    logger.info(
+                        "[multileg] %s SKIPPED pre-submit (account-level "
+                        "position-intent collision) — %s",
+                        strategy.name, result["reason"],
+                    )
+                    return result
+        except Exception as exc:
+            # Fail-open: if the broker check errs, fall through — the
+            # combo submit's 422-catch is the backstop.
+            logger.debug(
+                "account-level position-intent pre-check failed "
+                "(continuing to submit): %s", exc,
+            )
+
     combo_id: Optional[str] = None
     if use_combo:
         try:
@@ -870,10 +928,17 @@ def execute_multileg_strategy(
                 result.update({
                     "action": "SKIP",
                     "reason": (
-                        f"Already-positioned at broker on one of "
-                        f"{strategy.name}'s legs (Alpaca position-"
-                        f"intent mismatch — local journal drifted "
-                        f"from broker state). Not a system error."
+                        f"Shared-account strike collision on "
+                        f"{strategy.name} ({strategy.underlying}): a leg's "
+                        f"strike is already held with the OPPOSITE intent "
+                        f"on this Alpaca account. Alpaca enforces "
+                        f"position_intent account-wide (it can't see our "
+                        f"per-profile virtual accounting), so a "
+                        f"buy-to-open at a strike the account is net-short "
+                        f"(or sell-to-open where it's net-long) reads as a "
+                        f"close and is rejected. NOT journal drift and not "
+                        f"a system error — the books reconcile; this is "
+                        f"the shared-conduit constraint."
                     ),
                 })
                 return result
@@ -993,11 +1058,14 @@ def execute_multileg_strategy(
                     "action": "SKIP",
                     "leg_order_ids": [s["order_id"] for s in submitted],
                     "reason": (
-                        f"Already-positioned at broker on "
-                        f"{leg.occ_symbol} (Alpaca position-intent "
-                        f"mismatch — local journal drifted from broker "
-                        f"state). Not a system error; the spread was "
-                        f"declined to avoid stacking a conflicting "
+                        f"Shared-account strike collision on "
+                        f"{leg.occ_symbol}: this exact contract is already "
+                        f"held with the OPPOSITE intent on the Alpaca "
+                        f"account. Alpaca enforces position_intent "
+                        f"account-wide (across our profiles), so this "
+                        f"open reads as a close and is rejected. NOT "
+                        f"journal drift — the books reconcile; the spread "
+                        f"was declined to avoid stacking a conflicting "
                         f"position."
                     ),
                 })

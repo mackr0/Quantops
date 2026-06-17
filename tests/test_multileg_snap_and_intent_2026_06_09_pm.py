@@ -194,9 +194,12 @@ class TestPositionIntentMismatchIsSkip:
             "again and produce an ERROR badge."
         )
         assert result["action"] == "SKIP"
-        assert "already-positioned" in result["reason"].lower() or \
-            "position-intent" in result["reason"].lower() or \
-            "broker" in result["reason"].lower()
+        # 2026-06-17 — reason reworded from "already-positioned / journal
+        # drifted" to the accurate shared-account position-intent cause.
+        _r = result["reason"].lower()
+        assert ("collision" in _r or "position_intent" in _r
+                or "shared-account" in _r or "position-intent" in _r), \
+            result["reason"]
 
     def test_sequential_position_intent_returns_skip(self):
         """When sequential leg N fails with position-intent-mismatch,

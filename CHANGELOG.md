@@ -5,6 +5,17 @@ at the top.
 
 ---
 
+## 2026-06-17 — Multileg position-intent gate: accurate reason + pre-submit account-collision guard. Severity: LOW-MED (misleading "journal drift" alarm; wasted doomed submits).
+
+When the AI proposed a spread (e.g. ONDS bull_call_spread) whose leg's strike the **account** already holds with the opposite intent, Alpaca rejected the combo (422 `position intent mismatch, inferred: buy_to_close, specified: buy_to_open`) and the SKIP reason blamed "local journal drifted from broker state." That's wrong: the books reconcile (certify CLEAN). The real cause is the **shared-conduit constraint** — 13 virtual-account profiles share 3 Alpaca options accounts, and Alpaca enforces `position_intent` **account-wide**, so a sibling profile's short leg makes this profile's buy-to-open at that strike read as a close.
+
+- **Accurate SKIP reason (both combo + sequential paths, `options_multileg.py`).** Reworded from "already-positioned / journal drifted" to: shared-account strike collision — the account is net-opposite at that strike (a sibling's leg or this profile's other spread); `position_intent` is enforced account-wide; **not journal drift**, the books reconcile.
+- **Pre-submit account-collision guard.** `execute_multileg_strategy` now checks the broker's account-level option positions before submitting: a buy-to-open where the account is net-short (or sell-to-open where net-long) is SKIPped **pre-submit** with the accurate reason — no doomed broker round-trip. It does NOT over-block a legitimate add (buy-to-open into an existing long). The inferred close is never submitted (that would touch a sibling's position, violating order-id isolation). **Deliberately not** auto-shifting strikes: that would be risky across every strategy's geometry AND silently execute a different spread than the AI analyzed.
+
+**Tests** (`tests/test_multileg_account_collision_2026_06_17.py`): buy-into-account-short and sell-into-account-long skip pre-submit; add-to-existing-long is NOT blocked; structural pin. (Existing intent test reworded to the new reason.) Full suite: 5,323 passed.
+
+---
+
 ## 2026-06-17 — Stop false "qty>0 but price<=0" warnings on freshly-entered spread legs. Severity: LOW (log/alert noise — no behavior change).
 
 `get_virtual_positions` warned `skipped N row(s) with qty>0 but price<=0 — likely the multileg combo writing the signed net premium as the per-leg price ... run the backfill` on **every just-entered multileg leg**. That's a false alarm: `options_multileg._log_strategy_legs` writes the per-leg `price` as NULL **by design** when the per-leg fill isn't known yet (paper fills lag 50-500ms; the combo's per-leg prices land on a later cycle), and `_task_update_fills` backfills it within a cycle. The entry-write was never the bug the message implied — it explicitly refuses to store the signed combo-net and leaves NULL for the backfill.
