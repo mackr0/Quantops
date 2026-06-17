@@ -1897,6 +1897,38 @@ def get_virtual_account_info(db_path=None, initial_capital=100000.0,
     }
 
 
+def realized_option_close_pnl(entry_px, close_px, qty, entry_side):
+    """Signed realized P&L for closing ONE option leg — the single
+    source of the sign convention, kept next to the FIFO in
+    recompute_realized_pnl that mirrors it.
+
+    entry_side is the side of the OPENING leg: 'buy' for a long
+    (sell-to-close), 'sell' for a short (buy-to-close). Premium is
+    per-contract; the 100× multiplier is applied here.
+
+    Returns None when any input is missing / non-positive / non-sane
+    (legacy or not-yet-filled rows) so callers leave pnl NULL and let
+    the fill-true recompute pass book it later — never fabricate P&L
+    from a price we don't have.
+    """
+    try:
+        qty = int(qty)
+        entry_px = float(entry_px) if entry_px is not None else None
+        close_px = float(close_px) if close_px is not None else None
+    except (TypeError, ValueError):
+        return None
+    if (entry_px is None or entry_px <= 0
+            or close_px is None or close_px <= 0
+            or qty <= 0):
+        return None
+    side = (entry_side or "").lower()
+    if side == "buy":          # long leg: profit when it rises
+        return round((close_px - entry_px) * qty * 100.0, 2)
+    if side == "sell":         # short leg: profit when it falls
+        return round((entry_px - close_px) * qty * 100.0, 2)
+    return None
+
+
 def recompute_realized_pnl(db_path=None):
     """Re-derive realized P&L on every exit row from fill-based FIFO
     lot matching. Idempotent truing pass — overwrites estimates.

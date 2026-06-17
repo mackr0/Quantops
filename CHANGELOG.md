@@ -5,6 +5,21 @@ at the top.
 
 ---
 
+## 2026-06-17 — Every option CLOSE books realized P&L (the multileg-decomposition gap). Severity: HIGH (silent realized-P&L understatement; per-profile decomposition gap that rebuilt on every spread close).
+
+A profile-book certification surfaced a +$23,727 decomposition gap on p120: ~48 multileg legs ALL carried `pnl=NULL`, so the profile's multileg realized P&L summed to $0. Root cause is a single mis-route in the fill state-machine, not the spread logic.
+
+A short option leg is **sell-to-open** (`side='sell'`); its close is **buy-to-close** (`side='buy'`, occ set). At fill-confirmation in `multi_scheduler._task_update_fills`, that confirmed close matched **neither** the `side IN ('sell','cover')` branch **nor** the `occ AND pnl IS NOT NULL` branch, so it fell to the default and was **re-OPENED** (`status='open'`) — re-opening a close order. The short entry then never FIFO-closed and `recompute_realized_pnl` (which skips `px<=0` rows) never booked its realized P&L. Every closed multileg short leg rotted at `pnl=NULL`; the sum was the decomposition gap, and it rebuilt on each new spread close.
+
+- **Class fix at the choke point — `_task_update_fills`.** A confirmed-filled **BUY on an OCC whose net position is SHORT** now routes through the SAME close+FIFO machinery as a sell/cover (`opp_side='sell'`): it terminalizes the close row, FIFO-consumes the short entry, and lets `recompute_realized_pnl` (same cycle, after `fill_price` was just backfilled) book the realized P&L via its existing buy-consumes-short FIFO — no fabricated price. This is one fix at the universal fill state-machine, so it covers **every** buy-to-close path at once: single-leg covered-call / cash-secured-put exits, multileg short legs, the orphan-rollback short sibling, and any future close path.
+- **Reuse- and status-robust discriminator (`_occ_net_position`).** "Is this buy a buy-to-close?" is decided by the OCC's net signed position (this row excluded), counting closed rows too — so it stays correct when a source path pre-closed the entry (the rollback flips the entry to `closed` before its buy confirms) and when an OCC is reused (a long fully closed, then shorted later). A long buy-to-OPEN has net ≥0 and is never mistaken for a close.
+- **Single sign source — `journal.realized_option_close_pnl`.** One helper holds the long/short sign convention (premium delta × qty × 100), returning `None` on any missing/non-positive price so callers leave `pnl` NULL for the fill-true recompute rather than fabricating P&L.
+- **O6 in-place partner close stamps the estimate (`options_roll_manager`).** The auto-closed credit spread's surviving LONG partner is an in-place close (net ≥0, can't be FIFO'd or trued), so it must carry a realized-P&L stamp or it re-opens (the default branch) and orphans. It now stamps the close-time estimate from the entry premium and a fresh quote — exactly like the proven credit-leg stamp — so it routes via the pnl branch; the orphan backstop remains the safety net for the no-quote edge.
+
+**Tests** (`tests/test_multileg_close_books_pnl_2026_06_17.py`): functional through the real fill state-machine — single-leg short close books profit AND loss, multileg short leg books pnl, multileg long leg still books (regression), a long buy-to-OPEN is NOT mistaken for a close; O6 partner stamps pnl; plus structural pins on the buy-to-close routing, the net-position discriminator, and the single-sign helper. Full suite: 5,307 passed.
+
+---
+
 ## 2026-06-17 — Option orphans impossible from ANY cause (O5–O8): per-cycle broker-truth backstop + source fixes. Severity: HIGH (operator's "no orphans" invariant).
 
 A multi-agent audit found four remaining option-orphan classes beyond expiry. The guarantee is a per-cycle **broker-truth backstop**; the source fixes are defense-in-depth.

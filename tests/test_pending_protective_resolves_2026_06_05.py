@@ -304,8 +304,15 @@ def test_state_machine_branch_includes_pending_protective():
     from pathlib import Path
     src = (Path(__file__).resolve().parent.parent
            / "multi_scheduler.py").read_text()
+    # Tolerant of extra wrapping parens — the 2026-06-17 buy-to-close
+    # fix OR's an option-close clause into this branch:
+    #   if ((trade["status"] in ("pending_fill", "pending_protective")
+    #           and trade["side"] in ("sell", "cover"))
+    #           or _opt_buy_to_close):
+    # The pinned invariant is the status tuple itself, not the paren
+    # nesting.
     pattern = re.compile(
-        r'if\s*\(\s*trade\["status"\]\s+in\s+\(\s*'
+        r'if\s*\(+\s*trade\["status"\]\s+in\s+\(\s*'
         r'"pending_fill"\s*,\s*"pending_protective"\s*\)',
         re.MULTILINE,
     )

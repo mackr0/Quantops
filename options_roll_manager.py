@@ -244,10 +244,15 @@ def _combo_sibling_legs(conn, closed_row):
     """
     combo_oid = closed_row.get("order_id")
     occ = closed_row.get("occ_symbol")
+    # price/fill_price/decision_price let _close_combo_partner_legs
+    # compute the sibling's entry premium so it can stamp realized P&L
+    # at close time (else the in-place close row rots at pnl=NULL).
+    _cols = ("id, side, qty, occ_symbol, price, fill_price, "
+             "decision_price")
     # EXACT path — pair by the shared combo order_id.
     if combo_oid:
         siblings = conn.execute(
-            "SELECT id, side, qty, occ_symbol FROM trades "
+            f"SELECT {_cols} FROM trades "
             "WHERE order_id = ? AND signal_type='MULTILEG' "
             "  AND COALESCE(occ_symbol,'') != ? "
             "  AND COALESCE(status,'open')='open' "
@@ -259,7 +264,7 @@ def _combo_sibling_legs(conn, closed_row):
     # FALLBACK — sequential legs (distinct per-leg order_ids) have no
     # shared id; pair by option_strategy + underlying + 60s window.
     return conn.execute(
-        "SELECT id, side, qty, occ_symbol FROM trades "
+        f"SELECT {_cols} FROM trades "
         "WHERE signal_type='MULTILEG' AND option_strategy=? "
         "  AND symbol=? AND id != ? "
         "  AND COALESCE(occ_symbol,'') != ? "
@@ -271,7 +276,8 @@ def _combo_sibling_legs(conn, closed_row):
     ).fetchall()
 
 
-def _close_combo_partner_legs(api, conn, closed_row, summary) -> int:
+def _close_combo_partner_legs(api, conn, closed_row, summary,
+                              quote_lookup=None) -> int:
     """O6 — close the surviving sibling leg(s) of the SAME multileg
     combo as `closed_row` (a credit leg just auto-closed). Siblings are
     paired EXACTLY by the shared combo order_id (heuristic only for
@@ -281,7 +287,18 @@ def _close_combo_partner_legs(api, conn, closed_row, summary) -> int:
     leg stays profile-attributable on the shared Alpaca conduit. Returns
     the count closed. A submit failure is logged loudly (never silent)
     and leaves the sibling open.
+
+    Each sibling is an IN-PLACE close (status→pending_fill on the entry
+    row, keeping its entry side). A LONG partner (side='buy') has net
+    position ≥0, so the fill state-machine routes it through the
+    `pnl IS NOT NULL` branch — it MUST carry a realized-P&L stamp or it
+    re-opens (branch C) and orphans. So we stamp the close-time estimate
+    from the entry premium and a fresh quote, exactly like the credit
+    leg (recompute can't true an in-place row, so this estimate is its
+    final value). A SHORT partner (side='sell') routes through the
+    sell/cover FIFO branch regardless.
     """
+    from journal import realized_option_close_pnl
     swept = 0
     try:
         siblings = _combo_sibling_legs(conn, closed_row)
@@ -292,6 +309,9 @@ def _close_combo_partner_legs(api, conn, closed_row, summary) -> int:
     for sib in siblings:
         sib_id, sib_side, sib_qty_raw, sib_occ = (
             sib[0], sib[1], sib[2], sib[3])
+        sib_price = sib[4] if len(sib) > 4 else None
+        sib_fill = sib[5] if len(sib) > 5 else None
+        sib_dp = sib[6] if len(sib) > 6 else None
         try:
             sib_qty = int(sib_qty_raw or 0)
         except (TypeError, ValueError):
@@ -316,11 +336,35 @@ def _close_combo_partner_legs(api, conn, closed_row, summary) -> int:
                 sib_id, sib_occ, exc,
             )
             continue
+        # Close-time realized-P&L estimate (entry premium vs fresh
+        # quote). entry_px prefers the actual fill, then submit price,
+        # then decision price. close_px from the quote; None when no
+        # quote → est stays None and we leave pnl NULL (the orphan
+        # backstop is the safety net), never fabricating a price.
+        entry_px = next(
+            (float(v) for v in (sib_fill, sib_price, sib_dp)
+             if v is not None and float(v) > 0), None)
+        close_px = None
+        if quote_lookup is not None:
+            try:
+                _q = quote_lookup(sib_occ)
+                close_px = float(_q) if _q is not None else None
+            except Exception:
+                close_px = None
+        est = realized_option_close_pnl(entry_px, close_px, sib_qty,
+                                        sib_side)
+        if est is None:
+            logger.info(
+                "O6: partner leg %s (%s) closing with pnl NULL pending "
+                "fill-true recompute (entry_px=%s close_px=%s)",
+                sib_id, sib_occ, entry_px, close_px,
+            )
         try:
             conn.execute(
                 "UPDATE trades SET status='pending_fill', order_id=?, "
+                "pnl = COALESCE(pnl, ?), "
                 "reason = COALESCE(reason || ' | ', '') || ? WHERE id=?",
-                (sib_close_id,
+                (sib_close_id, est,
                  "Auto-close partner: combo %s leg closed alongside its "
                  "credit leg (#%s)" % (
                      closed_row.get("option_strategy"), closed_row["id"]),
@@ -469,7 +513,7 @@ def auto_close_high_profit_credits(
                 if (row.get("signal_type") == "MULTILEG"
                         and row.get("timestamp")):
                     _swept = _close_combo_partner_legs(
-                        api, conn, row, summary,
+                        api, conn, row, summary, quote_lookup=quote_lookup,
                     )
                     summary.setdefault("partner_legs_closed", 0)
                     summary["partner_legs_closed"] += _swept

@@ -1548,14 +1548,46 @@ def _task_update_fills(ctx):
             # close the row, FIFO-consume entry lots of the same
             # instrument scope (occ_symbol-aware per the 2026-06-05
             # FIFO scope fix).
-            if (trade["status"] in ("pending_fill", "pending_protective")
-                    and trade["side"] in ("sell", "cover")):
+            # 2026-06-17 — option BUY-TO-CLOSE of a SHORT leg. A short
+            # option leg is sell-to-open (side='sell'); its close is
+            # buy-to-close (side='buy', occ set). That confirmed close
+            # matched NEITHER the sell/cover branch below NOR the
+            # pnl-stamped option branch, so it fell through to the
+            # default and was re-OPENED (status='open') — re-opening a
+            # CLOSE order. The short entry then never FIFO-closed and
+            # its realized P&L was never booked: every closed multileg
+            # short leg rotted at pnl=NULL, summing to the +$23,727
+            # multileg-decomposition gap that rebuilt on each spread
+            # close. Route it through the SAME close+FIFO machinery as a
+            # sell/cover. The discriminator is the OCC's net position
+            # (this row excluded): net SHORT ⇒ this buy is a
+            # buy-to-close. Net counts closed rows too, so it is robust
+            # to a source path that pre-closed the entry and to OCC
+            # reuse. recompute_realized_pnl (runs this same cycle, after
+            # fill_price was just backfilled) then books the realized
+            # P&L via its buy-consumes-short FIFO — no fabricated px.
+            _opt_buy_to_close = bool(
+                trade["status"] == "pending_fill"
+                and (trade["side"] or "").lower() == "buy"
+                and trade["occ_symbol"]
+                and _occ_net_position(
+                    conn, trade["occ_symbol"], trade["id"]) < -1e-6
+            )
+            if ((trade["status"] in ("pending_fill", "pending_protective")
+                    and trade["side"] in ("sell", "cover"))
+                    or _opt_buy_to_close):
                 conn.execute(
                     "UPDATE trades SET status = 'closed' WHERE id = ?",
                     (trade["id"],),
                 )
-                opp_side = "buy" if trade["side"] == "sell" else "short"
-                exit_side = trade["side"]  # 'sell' or 'cover'
+                _close_side = (trade["side"] or "").lower()
+                if _close_side == "sell":
+                    opp_side = "buy"
+                elif _close_side == "cover":
+                    opp_side = "short"
+                else:  # buy-to-close: consume the sell-to-open short lot
+                    opp_side = "sell"
+                exit_side = trade["side"]  # 'sell' / 'cover' / 'buy'
                 # FIFO-walk MUST filter by occ_symbol so an option SELL
                 # only consumes option lots of the same contract, and
                 # a stock SELL only consumes stock lots. Without this
@@ -1686,6 +1718,36 @@ def _task_update_fills(ctx):
     finally:
         if conn is not None:
             conn.close()
+
+
+def _occ_net_position(conn, occ_symbol, exclude_id):
+    """Net signed contracts for one OCC across the profile's own book,
+    EXCLUDING row `exclude_id`. Buys/covers add, sells/shorts subtract.
+    Counts every live + closed row (only canceled/rejected/expired are
+    dropped) so the sign is robust to a source path that pre-closed the
+    entry (e.g. the orphan rollback flips the entry to 'closed' before
+    its buy-to-close confirms) and to OCC reuse (long fully closed, then
+    shorted later). A negative result means the leg is net SHORT, so a
+    confirmed-filled BUY on it is a buy-to-close, not a buy-to-open.
+    """
+    try:
+        row = conn.execute(
+            "SELECT "
+            " COALESCE(SUM(CASE WHEN LOWER(side) IN ('buy','cover') "
+            "   THEN qty ELSE 0 END), 0) "
+            " - COALESCE(SUM(CASE WHEN LOWER(side) IN ('sell','short') "
+            "   THEN qty ELSE 0 END), 0) "
+            "FROM trades WHERE occ_symbol = ? AND id != ? "
+            "  AND COALESCE(status, 'open') NOT IN "
+            "      ('canceled', 'rejected', 'expired', 'done_for_day', "
+            "       'auto_reconciled_phantom_close')",
+            (occ_symbol, exclude_id),
+        ).fetchone()
+        return float(row[0] or 0) if row else 0.0
+    except Exception:
+        # Discriminator is best-effort; on any DB error fall back to
+        # 0 (treat as NOT a buy-to-close) so we never mis-close a row.
+        return 0.0
 
 
 def _rollback_orphaned_multileg_partners(conn, api, expired_leg,
