@@ -566,9 +566,18 @@ def test_options_held_at_broker_is_real(tmp_path):
     ]
     ctx = _ctx(api, db)
     res = reconcile_with_ctx(ctx, apply_changes=True)
-    assert res["real_held"] == 1
+    # 2026-06-17 — option legs are now owned by the option-orphan
+    # backstop, which LEAVES a leg the broker still holds untouched
+    # (broker OCC qty != 0). It is not closed, not canceled, not
+    # ambiguous, and not auto-orphaned — it stays open.
     assert len(res["ambiguous"]) == 0
     assert len(res["cancel"]) == 0
+    assert len(res.get("option_orphan_close", [])) == 0
+    conn = sqlite3.connect(db)
+    status = conn.execute(
+        "SELECT status FROM trades WHERE id=134").fetchone()[0]
+    conn.close()
+    assert status == "open", "a held option leg must be left open"
 
 
 def test_options_phantom_canceled_entry(tmp_path):

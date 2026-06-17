@@ -1610,7 +1610,8 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
             # oversell shorts come through consumed_any and are
             # unaffected; an OPEN option short still creates its lot.)
             if (remaining > 0 and (occ_symbol or consumed_any)
-                    and not (occ_symbol and row_status == "closed")):
+                    and not (occ_symbol and row_status in (
+                        "closed", "auto_reconciled_phantom_close"))):
                 short_lots.setdefault(key, []).append(
                     [remaining, price]
                 )

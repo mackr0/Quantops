@@ -567,6 +567,44 @@ def check_exits(ctx=None):
                         sig["trigger"], sig["reason"],
                         result.get("status"),
                     )
+                    # O5 (2026-06-17) — journal the close on SUCCESS so
+                    # the OPTIONS entry row flips to 'closed' through the
+                    # normal fill state-machine (occ-scoped FIFO
+                    # consume). Pre-fix, a successful sell_to_close wrote
+                    # NO journal row (only the failure path did), so the
+                    # entry rotted at status='open' until a sweep /
+                    # reconcile backstop backfilled it. Mirror
+                    # options_proactive_exits: pending_fill + the REAL
+                    # broker order_id so own-id attribution stays clean.
+                    if result.get("status") == "submitted" and db_path:
+                        try:
+                            from journal import log_trade
+                            _u = sig.get("symbol")
+                            if not _u:
+                                from position import _underlying_from_occ
+                                _u = _underlying_from_occ(sig["occ_symbol"])
+                            log_trade(
+                                symbol=_u,
+                                side=sig.get("side_to_close", "sell"),
+                                qty=int(sig["qty"]),
+                                price=None,
+                                order_id=result.get("order_id"),
+                                signal_type="OPTIONS",
+                                occ_symbol=sig["occ_symbol"],
+                                status="pending_fill",
+                                reason=(
+                                    f"single_leg_exit: {sig.get('trigger','')}"
+                                    f" — {sig.get('reason','')}"
+                                ),
+                                db_path=db_path,
+                            )
+                        except Exception as _jx:
+                            logging.warning(
+                                "Option close journaling failed for %s "
+                                "(broker order still fills; the orphan "
+                                "backstop picks it up next cycle): %s",
+                                sig["occ_symbol"], _jx,
+                            )
                     # 2026-05-14 — phantom-journal detection. When
                     # Alpaca rejects with 403 "uncovered" or 422
                     # "position intent mismatch", the journal thinks

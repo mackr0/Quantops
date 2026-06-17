@@ -5,6 +5,18 @@ at the top.
 
 ---
 
+## 2026-06-17 — Option orphans impossible from ANY cause (O5–O8): per-cycle broker-truth backstop + source fixes. Severity: HIGH (operator's "no orphans" invariant).
+
+A multi-agent audit found four remaining option-orphan classes beyond expiry. The guarantee is a per-cycle **broker-truth backstop**; the source fixes are defense-in-depth.
+
+- **Backstop (O7 + O8) — `reconcile_journal_to_broker.reconcile_option_orphans`.** Runs every reconcile cycle, BEFORE the stock loop, over BOTH long and short option legs (the stock loop's `if side=='sell': continue` skipped short legs entirely — O8). It closes any open option leg the broker no longer holds — early assignment/exercise, manual/external close, or a missed close-journaling — so the orphan leaves the book next cycle regardless of cause. **Shared-account safe:** acts ONLY when the account-level OCC qty is ZERO (flat for everyone ⇒ flat for us, unambiguous); a non-zero OCC qty may be a sibling's identical contract on the shared conduit, so it is left to fill-confirmation / the expiry sweep — never consuming a sibling's contract. **Expiry handoff:** defers `expiry<=today` to `sweep_expired_options` (acts only on `expiry>today`/NULL — the exact inverse). Distinguishes a never-filled entry (→`canceled`) from a filled-then-vanished position (→`auto_reconciled_phantom_close`, pnl=0; realized cash via the idempotent activities pass — no fabricated premium). Journal-side only (never cancels/submits a broker order). These closes are EXPECTED reconciles — **NOT** counted toward the synthesis HALT (an option legitimately vanishes at every assignment/exercise). `get_virtual_positions` now excludes `auto_reconciled_phantom_close` option sells (a resolved short spawns no lot).
+- **O5 source — single-leg option exit journaling (`trader.check_exits`).** A successful `sell_to_close` wrote NO journal close row (only the failure path did), so the entry rotted `open`. Now journals a `pending_fill` close row with the REAL broker order_id (own-id attribution intact), so it confirms through the normal fill state-machine.
+- **O6 source — roll-manager partner sweep (`options_roll_manager`).** Auto-closing a credit SPREAD only closed the short/credit leg, leaving the long partner naked. Now closes the surviving sibling leg(s) of the same combo (paired by option_strategy + underlying + 60s window, each by its OWN OCC/qty + own close order_id — never broker qty, never reusing the credit leg's id). Added a live status re-check at the loop top so a partner-swept leg is never double-closed.
+
+**Tests:** `tests/test_option_orphan_reconcile_backstop_2026_06_17.py` (short/long broker-flat closes, held-option untouched, expiry handoff, canceled-entry, no-halt integration, unconditional-invocation pin), `tests/test_option_orphan_sources_2026_06_17.py` (O6 closes both legs, single-leg not swept, partner-close failure is loud, O5 journaling pin). Full suite: 5,291 passed.
+
+---
+
 ## 2026-06-17 — Expired multileg option legs no longer orphan (journal open vs broker flat). Severity: HIGH (silent permanent orphans; operator's "no orphans" invariant).
 
 A multi-agent audit of every option-orphan vector found the expiry sweep was the live one and several adjacent traps. `options_lifecycle.find_expired_open_options` matched only `signal_type='OPTIONS'`, so every MULTILEG / MULTILEG_OPEN spread leg was never swept: after expiry the broker zeroes the contract but the leg stayed `status='open'` forever and `get_virtual_positions` kept reporting its OCC as held — a permanent orphan. Fixes:

@@ -797,6 +797,161 @@ def _lookup_symbol_for_row(row) -> str:
     return (row["symbol"] or "").upper()
 
 
+def reconcile_option_orphans(api, conn, positions, today,
+                             apply_changes) -> list:
+    """OPTION-ORPHAN BACKSTOP (2026-06-17). Per-cycle broker-truth pass
+    that closes any OPEN option leg — LONG or SHORT, single-leg or
+    multileg — that the broker no longer holds, regardless of cause:
+    early assignment, early/auto exercise, manual/external close, or a
+    close that never got journaled (O5/O6). This is the operator's
+    "orphans are impossible" guarantee for options: even if every source
+    path misses, the orphan is removed from the book next cycle.
+
+    Why a DEDICATED pass (not the stock loop): the stock loop at the top
+    of reconcile_with_ctx does `if side == 'sell': continue`, so it
+    SKIPS every open short option leg entirely (O8) — short legs had no
+    backstop at all. This pass covers both sides.
+
+    SHARED-ACCOUNT SAFE — never consume a sibling's identical OCC:
+    `api.list_positions()` returns ONE aggregated qty per OCC across all
+    profiles sharing the Alpaca conduit. So this pass acts ONLY when the
+    account-level OCC qty is ZERO — flat for EVERYONE implies flat for
+    us, which is unambiguous. A non-zero OCC qty may be a sibling's
+    contract, so those legs are LEFT to the fill-confirmation state
+    machine (which closes a journaled own-close when it fills) and the
+    expiry sweep. We never close a leg on a non-zero OCC, so we can
+    never attribute a sibling's contract (the BATL/PPCB/SOUN
+    cross-profile bug class on the option surface).
+
+    EXPIRY HANDOFF: defers expiry<=today to
+    options_lifecycle.sweep_expired_options (which owns ITM/OTM
+    intrinsic value + assignment/exercise synthetic equity legs). Acts
+    only on expiry>today or NULL — the exact inverse of the sweep — so
+    the two never touch the same leg.
+
+    Journal-side ONLY: never cancels or submits a broker order. P&L is
+    NOT fabricated — the leg is flipped to 'auto_reconciled_phantom_close'
+    (pnl=0), a status get_virtual_positions already excludes, so the
+    orphan leaves the book immediately; the real assignment/exercise
+    cash is booked idempotently by the broker-activities pass.
+
+    Returns the list of closed legs (for the summary). These are
+    EXPECTED reconciles — an option leg legitimately vanishes at the
+    broker on every assignment/exercise — and must NOT count toward the
+    synthesis HALT.
+    """
+    from datetime import date as _date
+    closed: list = []
+    try:
+        _cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(trades)").fetchall()}
+    except sqlite3.Error:
+        _cols = set()
+    if "occ_symbol" not in _cols:
+        return closed  # no options on this (legacy/minimal) schema
+    _sel = ["id", "symbol", "side", "qty", "occ_symbol"]
+    _sel += [c for c in ("expiry", "order_id") if c in _cols]
+    try:
+        legs = conn.execute(
+            f"SELECT {', '.join(_sel)} FROM trades "
+            "WHERE occ_symbol IS NOT NULL "
+            "AND COALESCE(status, 'open') = 'open'"
+        ).fetchall()
+    except sqlite3.Error as exc:
+        logger.debug("reconcile_option_orphans select failed: %s", exc)
+        return closed
+
+    def _g(row, key):
+        try:
+            return row[key]
+        except (KeyError, IndexError):
+            return None
+
+    for leg in legs:
+        occ = _g(leg, "occ_symbol")
+        # EXPIRY HANDOFF — expiry<=today belongs to the expiry sweep.
+        exp = _g(leg, "expiry")
+        if exp:
+            try:
+                if _date.fromisoformat(str(exp)[:10]) <= today:
+                    continue
+            except (ValueError, TypeError):
+                pass  # unparseable expiry → treat as live, handle here
+        # BROKER TRUTH — only act when the OCC is flat for EVERYONE.
+        if abs(_broker_qty_for(positions, occ)) >= 0.001:
+            # Broker still holds this OCC (ours or a sibling's on the
+            # shared conduit) — not a confirmable orphan. Leave it for
+            # fill-confirmation / the expiry sweep; never consume a
+            # sibling's contract.
+            continue
+        # LIVE RE-CHECK — the fill-confirmation state machine may have
+        # flipped this row terminal mid-pass (it closed cleanly).
+        try:
+            still_open = conn.execute(
+                "SELECT 1 FROM trades WHERE id = ? "
+                "AND COALESCE(status, 'open') = 'open'",
+                (_g(leg, "id"),),
+            ).fetchone()
+        except sqlite3.Error:
+            still_open = True
+        if not still_open:
+            continue
+        # Distinguish a NEVER-OPENED entry (order canceled/expired/
+        # rejected with 0 fill → 'canceled') from a filled-then-vanished
+        # position (early close / assignment / exercise → auto-closed).
+        # The entry-order fetch happens ONLY for the few account-flat
+        # legs, never for held ones (the qty check above short-circuits).
+        new_status = "auto_reconciled_phantom_close"
+        new_pnl = 0.0
+        kind = "auto_closed"
+        reason = ("reconcile: broker flat for this OCC (early close / "
+                  "assignment / exercise) — option leg auto-closed; "
+                  "realized cash via activities capture")
+        oid = _g(leg, "order_id")
+        if oid:
+            entry_order, _exc = _retrying_call(api.get_order, oid)
+            if entry_order is not None:
+                est = (getattr(entry_order, "status", "") or "").lower()
+                try:
+                    efilled = float(getattr(entry_order, "filled_qty", 0) or 0)
+                except (TypeError, ValueError):
+                    efilled = 0.0
+                if (est in ("canceled", "expired", "rejected")
+                        and efilled == 0):
+                    new_status = "canceled"
+                    new_pnl = None
+                    kind = "canceled"
+                    reason = ("reconcile: option entry order %s — "
+                              "never filled; canceled." % est)
+        detail = {
+            "trade_id": _g(leg, "id"), "occ_symbol": occ,
+            "symbol": _g(leg, "symbol"), "side": (_g(leg, "side") or ""),
+            "qty": float(_g(leg, "qty") or 0), "kind": kind,
+            "new_status": new_status,
+        }
+        if apply_changes:
+            try:
+                conn.execute(
+                    "UPDATE trades SET status = ?, pnl = ?, "
+                    "reason = COALESCE(reason || ' | ', '') || ? "
+                    "WHERE id = ?",
+                    (new_status, new_pnl, reason, _g(leg, "id")),
+                )
+                conn.commit()
+            except sqlite3.Error as exc:
+                logger.warning(
+                    "reconcile_option_orphans: failed to close leg %s "
+                    "(%s): %s", _g(leg, "id"), occ, exc,
+                )
+                continue
+        logger.info(
+            "Reconcile: option leg #%s %s broker-flat — %s (orphan "
+            "removed; not a halt).", _g(leg, "id"), occ, kind,
+        )
+        closed.append(detail)
+    return closed
+
+
 def reconcile_with_ctx(ctx, apply_changes: bool = False,
                        cross_profile_used_ids: Optional[set] = None) -> Dict[str, list]:
     """Reconcile one profile from an already-built UserContext.
@@ -819,7 +974,8 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
             "skipped": "no alpaca_account_id (archived/disabled profile)",
             "cancel": [], "backfill_sell": [], "backfill_cover": [],
             "backfill_partial_sell": [], "fix_partial_entry": [],
-            "ambiguous": [], "orphan_close": [], "real_held": 0,
+            "ambiguous": [], "orphan_close": [],
+            "option_orphan_close": [], "real_held": 0,
             "profile": name,
             "profile_id": getattr(ctx, "profile_id", None),
         }
@@ -837,6 +993,9 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
         # explaining the close. Halts (never fuzzy-claims a sibling's
         # fill, never silently diverges). See PROFILE_ORDER_ISOLATION.md.
         "orphan_close": [],
+        # 2026-06-17: option legs the broker no longer holds, auto-closed
+        # by the option-orphan backstop. EXPECTED reconciles — NOT a halt.
+        "option_orphan_close": [],
         "real_held": 0,
     }
 
@@ -911,6 +1070,29 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
 
     conn = _open_journal_conn(db_path)
     try:
+        # OPTION-ORPHAN BACKSTOP (2026-06-17) — close any option leg the
+        # broker no longer holds (LONG or SHORT), before the stock loop.
+        # The stock loop below skips option rows (now owned by this
+        # pass); the pass covers short legs the loop's `side=='sell'`
+        # skip dropped entirely (O8). See reconcile_option_orphans.
+        _opt_orphans = reconcile_option_orphans(
+            api, conn, positions,
+            today=datetime.now(timezone.utc).date(),
+            apply_changes=apply_changes,
+        )
+        actions["option_orphan_close"] = [
+            d for d in _opt_orphans if d.get("kind") == "auto_closed"]
+        # A never-filled option entry is a plain cancel — surface it in
+        # the existing cancel bucket (the backstop already wrote the
+        # status; this is for the summary/idempotent apply).
+        for d in _opt_orphans:
+            if d.get("kind") == "canceled":
+                actions["cancel"].append({
+                    "trade_id": d["trade_id"], "symbol": d["symbol"],
+                    "qty": d["qty"], "side": d["side"],
+                    "entry_status": "canceled",
+                })
+
         rows = _select_open_rows(conn)
 
         # Seed the dedup set with order_ids already attributed by sibling
@@ -920,6 +1102,17 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
         used_cover_ids: set = set(cross_profile_used_ids or set())
 
         for r in rows:
+            # Option legs are owned by reconcile_option_orphans (above)
+            # + the expiry sweep + fill-confirmation — skip them here so
+            # the stock loop's account-level-qty logic never touches an
+            # option leg (and never halts a held option). Safe accessor:
+            # minimal-schema fixtures may omit occ_symbol.
+            try:
+                _row_occ = r["occ_symbol"]
+            except (KeyError, IndexError):
+                _row_occ = None
+            if _row_occ:
+                continue
             # For options: look up by OCC symbol; for stocks: by underlying.
             broker_lookup_sym = _lookup_symbol_for_row(r)
             sym = (r["symbol"] or "").upper()
@@ -1557,8 +1750,8 @@ def main():
 
     grand = {"cancel": 0, "backfill_sell": 0, "backfill_cover": 0,
              "backfill_partial_sell": 0, "fix_partial_entry": 0,
-             "ambiguous": 0, "orphan_close": 0, "real_held": 0,
-             "errored": 0}
+             "ambiguous": 0, "orphan_close": 0, "option_orphan_close": 0,
+             "real_held": 0, "errored": 0}
 
     if not args.quiet:
         print(f"=== Reconcile {'APPLY' if args.apply else 'DRY-RUN'} ===\n")
@@ -1587,13 +1780,14 @@ def main():
         n_fp = len(res["fix_partial_entry"])
         n_a = len(res["ambiguous"])
         n_oc = len(res.get("orphan_close", []))
+        n_ooc = len(res.get("option_orphan_close", []))
         n_r = res["real_held"]
 
-        if not args.quiet or (n_c + n_bs + n_bc + n_bps + n_fp + n_a + n_oc) > 0:
+        if not args.quiet or (n_c + n_bs + n_bc + n_bps + n_fp + n_a + n_oc + n_ooc) > 0:
             print(f"p{p_id:>2} {res['profile'][:30]:<30s}  "
                   f"real={n_r:>3}  cancel={n_c:>2}  bs={n_bs:>2}  "
                   f"bc={n_bc:>2}  bps={n_bps:>2}  fp={n_fp:>2}  amb={n_a:>2}  "
-                  f"orphan={n_oc:>2}")
+                  f"orphan={n_oc:>2}  opt_orphan={n_ooc:>2}")
         if not args.quiet:
             for a in res["cancel"]:
                 print(f"     CANCEL    #{a['trade_id']:<4} {a['symbol']:>5} {a.get('side',''):>5} "
@@ -1635,6 +1829,7 @@ def main():
         grand["fix_partial_entry"] += n_fp
         grand["ambiguous"] += n_a
         grand["orphan_close"] += n_oc
+        grand["option_orphan_close"] += n_ooc
         grand["real_held"] += n_r
 
     print(f"\n=== TOTALS ===")
