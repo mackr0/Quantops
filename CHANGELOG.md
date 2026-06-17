@@ -5,6 +5,20 @@ at the top.
 
 ---
 
+## 2026-06-17 — AI ranked-alternate substitution: a trade blocked by a shared-account conflict backfills with the next AI-vetted alternate. Severity: MED (recovers lost trade slots on the shared conduit).
+
+13 virtual-account profiles share 3 Alpaca accounts, so a trade a profile wants is sometimes rejected because a SIBLING profile holds a conflicting position (Alpaca enforces position_intent / cross-direction account-wide). The slot was simply lost — even though the AI shortlisted ~10 similar vetted candidates. Now a blocked trade gives its slot to the next AI-vetted, **AI-sized** alternate (no fabricated sizing — each alternate carries its own size_pct/conviction). Stocks and option spreads, one pass.
+
+- **AI returns `alternates` (`ai_analyst`).** `_build_batch_prompt` asks the AI for a conviction-ranked `alternates` list (same schema as `trades`, stocks + spreads), to be used ONLY when a primary is blocked by a shared-account conflict, each sized on its own merit. `_validate_ai_trades` validates them with the IDENTICAL rules (extracted into one `_validate_list` closure — zero rule drift); `ai_select_trades` returns `alternates` (cap 20 vs the 3-pick primary cap, so the bench is actually available).
+- **Dispatch backfill (`trade_pipeline.run_trade_cycle`).** Alternates are tagged and **merged through the same risk gates** (meta-model, crisis, blacklist, intraday/sector-halt) as primaries, then split into a rank-preserving pool right before the execution loop. `_is_cross_profile_conflict` matches ONLY the real conflict reasons — stock cross-direction ("cannot open a long buy while a short sell order" / vice-versa) and option ("shared-account strike collision" / "position intent mismatch") — and explicitly NOT insufficient-buying-power / blacklist / halt. On such a drop, `_select_backfill_alternate` pulls the next eligible alternate (skipping traded / already-attempted / held symbols) and the loop executes it. Each alternate is attempted at most once; the chain is bounded by the pool; per-trade position/cash/greek caps still bind every trade; no symbol trades twice; order-id isolation untouched.
+- **Fixed a pre-existing gap surfaced by adversarial review:** `_SUCCESS_ACTIONS` was missing `OPTIONS_OPEN`, so a successful single-leg option was spuriously recorded as a "drop" (BLOCKED badge) and never claimed its symbol in the no-double-trade set. Added.
+
+**Tests** (`tests/test_ai_alternate_substitution_2026_06_17.py`, 38 cases): `_is_cross_profile_conflict` true/false matrix; `_select_backfill_alternate` skip rules; a dispatch backfill simulation (blocked primary → alternate trades; success → no substitute; duplicate-symbol not double-traded; non-conflict drop does NOT substitute); alternates parsed/validated/returned like trades; structural pins. Full suite: 5,361 passed.
+
+**Honest residuals (LOW, analytics/ordering — not trade-safety):** a backfilled alternate is recorded as a HOLD prediction rather than its directional signal (AI-tracker attribution skew, low volume); a SELL in `alternates` would run after the SELL-first sort (the AI returns opens in alternates, so theoretical); option alternates aren't pre-filtered by the stock-level held set (the multileg journal duplicate-guard still covers it).
+
+---
+
 ## 2026-06-17 — Multileg position-intent gate: accurate reason + pre-submit account-collision guard. Severity: LOW-MED (misleading "journal drift" alarm; wasted doomed submits).
 
 When the AI proposed a spread (e.g. ONDS bull_call_spread) whose leg's strike the **account** already holds with the opposite intent, Alpaca rejected the combo (422 `position intent mismatch, inferred: buy_to_close, specified: buy_to_open`) and the SKIP reason blamed "local journal drifted from broker state." That's wrong: the books reconcile (certify CLEAN). The real cause is the **shared-conduit constraint** — 13 virtual-account profiles share 3 Alpaca options accounts, and Alpaca enforces `position_intent` **account-wide**, so a sibling profile's short leg makes this profile's buy-to-open at that strike read as a close.

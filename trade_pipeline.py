@@ -15,6 +15,7 @@ All per-profile position sizing and risk parameters come from UserContext.
 See ROADMAP.md for the broader quant fund evolution context.
 """
 
+import collections
 import json
 import logging
 import sqlite3
@@ -591,6 +592,80 @@ def ai_review(symbol, technical_signal, ctx=None, political_context=None):
 # ---------------------------------------------------------------------------
 # Live position-count maintenance during the STEP 5 dispatch loop
 # ---------------------------------------------------------------------------
+
+# Cross-profile conflict signal phrases (2026-06-17, ranked-alternate
+# substitution). 13 virtual-account profiles share 3 Alpaca accounts, so
+# a trade one profile wants can be rejected because a SIBLING profile
+# already holds a conflicting position on the same symbol/strike — Alpaca
+# enforces cross-direction / position_intent at the ACCOUNT level. These
+# are the ONLY drops that warrant substituting the next AI alternate. A
+# blacklist / risk-gate / sector-halt / insufficient-buying-power drop is
+# an INTENTIONAL block and must NOT trigger substitution.
+#   STOCK  → Alpaca cross-direction rejection (caught in the execution
+#            loop's except block; SKIP reason starts "Alpaca rejected:"
+#            and contains one of these phrases).
+#   OPTION → the multileg pre-submit account-collision guard / 422
+#            position-intent mismatch (SKIP reason from options_multileg).
+_CROSS_PROFILE_CONFLICT_PHRASES = (
+    "cannot open a long buy while a short sell order",
+    "cannot open a short sell while a long buy order",
+    "shared-account strike collision",
+    "position intent mismatch",
+    "position-intent",
+)
+
+
+def _is_cross_profile_conflict(trade_result):
+    """True iff a trade dropped because a SIBLING profile holds a
+    conflicting position on the shared Alpaca account (cross-direction
+    stock rejection or multileg position-intent collision).
+
+    Detection is by reason string, case-insensitive. Deliberately does
+    NOT match "insufficient buying power" or any risk-gate / blacklist /
+    sector-halt reason — those are intentional blocks, not shared-account
+    conflicts, and must never trigger alternate substitution.
+    """
+    if not isinstance(trade_result, dict):
+        return False
+    # Only SKIP-shaped drops are candidates; a SUCCESS action never is.
+    action = (trade_result.get("action") or "").upper()
+    if action not in ("SKIP", "ERROR", "REJECTED"):
+        return False
+    reason = (trade_result.get("reason") or "").lower()
+    if not reason:
+        return False
+    if "insufficient buying power" in reason:
+        return False
+    return any(phrase in reason for phrase in _CROSS_PROFILE_CONFLICT_PHRASES)
+
+
+def _select_backfill_alternate(alt_pool, traded_syms, attempted_syms,
+                               held_symbols):
+    """Pop the next eligible ranked alternate off the bench, or None.
+
+    Pure decision helper for the ranked-alternate backfill (2026-06-17).
+    `alt_pool` is a deque ordered by AI conviction (highest first). Pops
+    from the FRONT until it finds an alternate whose symbol is NOT:
+      - already traded this cycle (traded_syms),
+      - already attempted as a primary or earlier alternate (attempted_syms),
+      - already held in the book (held_symbols).
+    Symbols that fail the check are discarded from the pool (each alternate
+    is attempted at most once → bounded). Returns the chosen alternate dict
+    (the caller adds its symbol to attempted_syms and appends it to the
+    execution list) or None when the pool is exhausted with no eligible
+    candidate. Does NOT mutate traded_syms / attempted_syms / held_symbols.
+    """
+    while alt_pool:
+        alt = alt_pool.popleft()
+        sym = alt.get("symbol") if isinstance(alt, dict) else None
+        if (not sym
+                or sym in traded_syms
+                or sym in attempted_syms
+                or sym in held_symbols):
+            continue
+        return alt
+    return None
+
 
 def _adjust_cycle_cash(account, trade_result):
     """Mid-cycle CASH adjustment on the shared account snapshot —
@@ -2343,8 +2418,30 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     )
 
     ai_trades = ai_response.get("trades", [])
+    # 2026-06-17 — ranked-alternate substitution. The AI also returns an
+    # "alternates" bench (extra vetted trades, ranked by conviction) used
+    # ONLY when a primary is blocked by a shared-account cross-profile
+    # conflict. Tag each trade with _is_alt and MERGE the bench into
+    # ai_trades NOW so the post-selection risk gates (meta-model, crisis,
+    # blacklist, intraday-halt) vet alternates by the IDENTICAL rules —
+    # zero gate-code duplication. They're split back out into _alt_pool
+    # right before the execution loop.
+    alternates = ai_response.get("alternates", []) or []
+    for _t in ai_trades:
+        if isinstance(_t, dict):
+            _t["_is_alt"] = False
+    _tagged_alternates = []
+    for _t in alternates:
+        if isinstance(_t, dict):
+            _t["_is_alt"] = True
+            _tagged_alternates.append(_t)
+    ai_trades = list(ai_trades) + _tagged_alternates
     portfolio_reasoning = ai_response.get("portfolio_reasoning", "")
-    logging.info(f"AI selected {len(ai_trades)} trades: {portfolio_reasoning[:200]}")
+    logging.info(
+        f"AI selected {len([t for t in ai_trades if not t.get('_is_alt')])} "
+        f"trades (+{len(_tagged_alternates)} ranked alternates): "
+        f"{portfolio_reasoning[:200]}"
+    )
 
     if ai_response.get("pass_this_cycle"):
         print(f"  AI passed this cycle: {portfolio_reasoning[:100]}")
@@ -2361,8 +2458,18 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
             votes = c.get("votes", {})
             strategy = next((k for k, v in votes.items() if v != "HOLD"), "batch_ai")
 
-            # Was this symbol selected for a trade by the AI?
-            selected = next((t for t in ai_trades if t.get("symbol") == sym), None)
+            # Was this symbol selected as a PRIMARY trade by the AI?
+            # Ranked alternates (the conflict-substitution bench) are
+            # excluded here — a prediction records the AI's primary
+            # conviction, and most alternates never execute. Without this
+            # guard, an alternate-only symbol would be recorded as if it
+            # were a primary pick and skew the prediction-resolution
+            # win-rate.
+            selected = next(
+                (t for t in ai_trades
+                 if t.get("symbol") == sym and not t.get("_is_alt")),
+                None,
+            )
 
             if selected:
                 pred_signal = selected["action"]
@@ -2935,6 +3042,27 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                         ),
                     })
 
+    # ── Ranked-alternate SPLIT (2026-06-17) ──────────────────────────
+    # The risk gates above have now vetted primaries AND alternates by
+    # the identical rules. Split them back apart: primaries execute in
+    # the loop below; the surviving alternates go into _alt_pool, a FIFO
+    # deque that preserves the AI's conviction rank (highest first), to
+    # backfill a slot when a primary is dropped by a shared-account
+    # cross-profile conflict. The split happens BEFORE the SELL-first
+    # sort so the bench keeps rank order rather than being reordered by
+    # action class.
+    _alt_pool = collections.deque(
+        [t for t in ai_trades if t.get("_is_alt")]
+    )
+    ai_trades = [t for t in ai_trades if not t.get("_is_alt")]
+    # _attempted_syms blocks an alternate that duplicates a primary
+    # symbol (or another already-attempted alternate); _traded_syms
+    # blocks backfilling onto a symbol that already traded this cycle.
+    _attempted_syms = {
+        t.get("symbol") for t in ai_trades if isinstance(t, dict)
+    }
+    _traded_syms: set = set()
+
     update_status(_pid, "Executing trades", "%d selected" % len(ai_trades))
     # ── STEP 5: Execute AI-selected trades ───────────────────────────
     # 2026-05-20 (docs/23 / #195 Phase 1): order SELL/STRONG_SELL
@@ -2950,14 +3078,22 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     # (BUY/STRONG_BUY/SHORT/OPTIONS/MULTILEG_OPEN/PAIR_TRADE) consumes
     # cash or margin and goes second.
     _CLOSE_ACTIONS = {"SELL", "STRONG_SELL"}
-    ai_trades = sorted(
+    # list() so the loop can append backfill alternates DURING iteration
+    # (CPython for-loop sees items appended to the list it iterates).
+    ai_trades = list(sorted(
         ai_trades,
         key=lambda t: 0 if (t.get("action") or "").upper() in _CLOSE_ACTIONS else 1,
-    )
+    ))
 
     for ai_trade in ai_trades:
         symbol = ai_trade["symbol"]
         action = ai_trade["action"]
+        # Per-iteration outcome captured for the ranked-alternate
+        # backfill decision at the END of the loop body. Set in BOTH the
+        # try path (trade_result) and the except path (the inline SKIP /
+        # ERROR detail dict), so _is_cross_profile_conflict sees the
+        # actual outcome regardless of which path produced it.
+        _iter_result = None
         # OPTIONS / PAIR_TRADE proposals don't carry size_pct (their
         # sizing is contract-based / dollar-neutral). Default safely.
         size_pct = float(ai_trade.get("size_pct") or 0) / 100.0
@@ -3109,6 +3245,7 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                     _dd=dd,
                 )
             details.append(trade_result)
+            _iter_result = trade_result
             # 2026-05-21 (#195 follow-up) — keep the in-memory stock
             # positions_list LIVE as closes execute, so a later
             # same-cycle BUY's position cap sees the freed slot.
@@ -3143,7 +3280,19 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
             _SUCCESS_ACTIONS = (
                 "BUY", "SELL", "SHORT", "COVER",
                 "MULTILEG_OPEN", "MULTILEG_CLOSE",
+                # 2026-06-17 — single-leg option entry succeeds with
+                # OPTIONS_OPEN (options_trader.submit_option_strategy).
+                # It was missing here, so a successful single-leg option
+                # was spuriously badged a "drop" AND never claimed its
+                # symbol in _traded_syms (latent double-trade seam for
+                # the ranked-alternate backfill).
+                "OPTIONS_OPEN",
             )
+            # Ranked-alternate bookkeeping: a successful trade claims its
+            # symbol so no later alternate can backfill onto the same
+            # name (the no-double-trade invariant).
+            if ta in _SUCCESS_ACTIONS:
+                _traded_syms.add(symbol)
             if ta and ta not in _SUCCESS_ACTIONS:
                 drop_reason = (trade_result or {}).get(
                     "reason", "no reason given"
@@ -3211,11 +3360,12 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                         "wash-trade rejection persist failed for %s: %s",
                         symbol, _rec_exc,
                     )
-                details.append({
+                _iter_result = {
                     "symbol": symbol, "action": "SKIP",
                     "reason": "Alpaca rejected: potential wash trade — "
                               "deferring re-attempt for 30 days",
-                })
+                }
+                details.append(_iter_result)
                 logging.warning(
                     "Wash-trade detected on %s — recording cooldown, "
                     "will retry after 30 days. (%s)",
@@ -3230,10 +3380,15 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 # (can't open opposite-direction orders on the same
                 # symbol simultaneously); usually fixes itself within
                 # a cycle once the conflicting order fills or cancels.
-                details.append({
+                # NOTE: the two cross-direction phrases here are exactly
+                # the STOCK shared-account-conflict signal that
+                # _is_cross_profile_conflict matches — this is the drop
+                # that triggers ranked-alternate backfill below.
+                _iter_result = {
                     "symbol": symbol, "action": "SKIP",
                     "reason": f"Alpaca rejected: {exc}",
-                })
+                }
+                details.append(_iter_result)
                 logging.warning(
                     "Broker rejected order for %s (%s): %s",
                     symbol, action, exc,
@@ -3267,10 +3422,40 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 # Genuine error — keep the noisy traceback for
                 # diagnosis.
                 errors.append({"symbol": symbol, "error": str(exc)})
-                details.append({"symbol": symbol, "action": "ERROR", "reason": str(exc)})
+                _iter_result = {
+                    "symbol": symbol, "action": "ERROR", "reason": str(exc),
+                }
+                details.append(_iter_result)
                 logging.error(
                     "Trade execution raised for %s (%s): %s",
                     symbol, action, exc, exc_info=True,
+                )
+
+        # ── Ranked-alternate BACKFILL (2026-06-17) ───────────────────
+        # End of the loop body. If THIS trade dropped on a shared-account
+        # cross-profile conflict (a sibling profile holds a conflicting
+        # position on the same symbol/strike — NOT a risk gate, blacklist,
+        # buying-power, or sector halt), pull the next AI-vetted, AI-SIZED
+        # alternate off the bench and append it to the list we're
+        # iterating. CPython's for-loop picks up items appended to the
+        # list it is iterating, so the alternate executes on the next
+        # turn of THIS loop with its own AI sizing. Only ONE alternate is
+        # appended per conflict; if that alternate ALSO conflicts, it
+        # appends the next — natural, bounded chaining (each alternate is
+        # attempted at most once; the pool is finite).
+        if _is_cross_profile_conflict(_iter_result) and _alt_pool:
+            _alt = _select_backfill_alternate(
+                _alt_pool, _traded_syms, _attempted_syms, held_symbols,
+            )
+            if _alt is not None:
+                _alt_sym = _alt.get("symbol")
+                _attempted_syms.add(_alt_sym)
+                ai_trades.append(_alt)  # for-loop picks it up next
+                logging.info(
+                    "Cross-profile conflict on %s — backfilling slot "
+                    "with AI alternate %s (conf=%s)",
+                    symbol, _alt_sym,
+                    _alt.get("confidence") if isinstance(_alt, dict) else "?",
                 )
 
     # Build summary

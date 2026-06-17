@@ -529,7 +529,11 @@ def ai_select_trades(candidates_data, portfolio_state, market_context, ctx=None)
     picture (candidates + portfolio + regime) and picks the best 0-3 trades.
 
     Returns dict with keys:
-        trades: list[dict] — each has symbol, action, size_pct, confidence, reasoning
+        trades: list[dict] — the primary picks; each has symbol, action,
+            size_pct, confidence, reasoning (+ option/pair fields when applicable)
+        alternates: list[dict] — additional conviction-ranked trades, each
+            self-sized with the SAME schema, used by the dispatch loop ONLY to
+            backfill a primary blocked by a shared-account cross-profile conflict
         portfolio_reasoning: str
         pass_this_cycle: bool
     """
@@ -561,6 +565,7 @@ def ai_select_trades(candidates_data, portfolio_state, market_context, ctx=None)
             logger.warning("Cost cap blocked batch_select: %s", exc)
             return {
                 "trades": [],
+                "alternates": [],
                 "portfolio_reasoning": (
                     "Cost cap reached — no new trades this cycle. "
                     f"{exc}"
@@ -572,6 +577,7 @@ def ai_select_trades(candidates_data, portfolio_state, market_context, ctx=None)
                      exc, (raw if 'raw' in locals() else '')[:300])
         return {
             "trades": [],
+            "alternates": [],
             "portfolio_reasoning": f"AI call failed: {exc}",
             "pass_this_cycle": True,
         }
@@ -2428,7 +2434,21 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         f"{stock_recs_note}"
         f"{options_note}"
         f"{pair_note}"
-        f"{multileg_note}\n\n"
+        f"{multileg_note}\n"
+        # Ranked-alternate substitution (2026-06-17). 13 virtual-account
+        # profiles share 3 Alpaca accounts, so a primary pick can be
+        # blocked by a SIBLING profile already holding a conflicting
+        # position on the same symbol/strike. The "alternates" array is
+        # the fallback bench: extra vetted trades, used ONLY when a
+        # primary is blocked by such a shared-account conflict.
+        f"- Also return an \"alternates\" array: additional trades you "
+        f"would ALSO make, RANKED by conviction (highest first), to be "
+        f"used ONLY if a primary trade is blocked by a shared-account "
+        f"conflict on a sibling profile. Each alternate is a full trade "
+        f"with the SAME schema as a primary (stock entries and option "
+        f"spreads both allowed). Size each alternate on its OWN merit — "
+        f"never copy a primary's size. Leave it empty ([]) if you have "
+        f"no further conviction trades.\n\n"
         f"Respond ONLY with valid JSON (no markdown, no commentary):\n"
         f'{{"trades": [{{"symbol": "TICKER", "action": "BUY", '
         f'"size_pct": 7.5, "confidence": 75, '
@@ -2437,6 +2457,10 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         f'{options_example}'
         f'{pair_example}'
         f'{multileg_example}], '
+        f'"alternates": [{{"symbol": "TICKER", "action": "BUY", '
+        f'"size_pct": 5.0, "confidence": 65, '
+        f'"stop_loss_pct": 3.0, "take_profit_pct": 10.0, '
+        f'"reasoning": "fallback if a primary is blocked"}}], '
         f'"portfolio_reasoning": "Why this combination or why pass", '
         f'"pass_this_cycle": false}}'
     )
@@ -2524,7 +2548,8 @@ def _validate_ai_trades(result, candidates_data, ctx=None,
 
     # Ensure structure
     if not isinstance(result, dict):
-        return {"trades": [], "portfolio_reasoning": "Invalid response format",
+        return {"trades": [], "alternates": [],
+                "portfolio_reasoning": "Invalid response format",
                 "pass_this_cycle": True}
 
     trades = result.get("trades", [])
@@ -2535,349 +2560,374 @@ def _validate_ai_trades(result, candidates_data, ctx=None,
     reasoning = result.get("portfolio_reasoning", "")
 
     if pass_cycle:
-        return {"trades": [], "portfolio_reasoning": reasoning,
+        return {"trades": [], "alternates": [],
+                "portfolio_reasoning": reasoning,
                 "pass_this_cycle": True}
 
     # Valid symbols from candidates
     valid_symbols = {c["symbol"] for c in candidates_data}
 
-    validated = []
-    for t in trades[:3]:  # Max 3
-        if not isinstance(t, dict):
-            continue
+    # 2026-06-17 — ranked-alternate substitution. The same per-trade
+    # validation (symbol-in-candidates, sizing caps, balance/neutrality
+    # gates, OPTIONS/MULTILEG/PAIR snap-checks) must apply identically to
+    # the AI's "alternates" bench as to its primary "trades". Wrapping the
+    # loop body in _validate_list keeps a SINGLE source of truth — there
+    # is no second, drifting copy of the validation rules. All gate state
+    # (valid_symbols, balance_gate_state, borrow_cost_by_sym, the
+    # neutrality vars, the asymmetric caps) is read from the enclosing
+    # scope, so primaries and alternates are validated by the exact same
+    # rules.
+    def _validate_list(raw_list, limit):
+        validated = []
+        for t in raw_list[:limit]:
+            if not isinstance(t, dict):
+                continue
 
-        action = t.get("action", "").upper()
+            action = t.get("action", "").upper()
 
-        # PAIR_TRADE proposals are validated before the candidate-symbol
-        # check because their "symbol" is a pair label and the legs are
-        # in symbol_a / symbol_b. The pair must be in this profile's
-        # active stat-arb book; otherwise the AI is inventing pairs we
-        # haven't validated.
-        # MULTILEG_OPEN — Phase B4. Multi-leg strategies (verticals,
-        # condors, butterflies, straddles, strangles, calendars,
-        # diagonals) routed via options_multileg.execute_multileg_strategy.
-        # The proposal must specify strategy_name + strikes + expiry.
-        # Strategy must be in ALL_MULTILEG_BUILDERS or it's rejected.
-        if action == "MULTILEG_OPEN":
-            try:
-                from options_multileg import ALL_MULTILEG_BUILDERS
-            except Exception:
-                logger.warning("MULTILEG_OPEN module unavailable — skipped")
-                continue
-            strategy_name = (t.get("strategy_name") or "").lower()
-            if strategy_name not in ALL_MULTILEG_BUILDERS:
-                logger.warning(
-                    "MULTILEG_OPEN unknown strategy_name=%r — skipped",
-                    strategy_name,
-                )
-                continue
-            ml_underlying = (t.get("symbol") or "").upper()
-            if not ml_underlying:
-                logger.warning("MULTILEG_OPEN missing symbol — skipped")
-                continue
-            strikes = t.get("strikes") or {}
-            expiry = t.get("expiry")
-            contracts = int(t.get("contracts") or 0)
-            if not strikes or not expiry or contracts <= 0:
-                logger.warning(
-                    "MULTILEG_OPEN missing strikes/expiry/contracts — skipped"
-                )
-                continue
-            # 2026-06-10 — PARSE-LAYER strike validation for multileg,
-            # mirroring the single-leg OPTIONS snap below. Without it,
-            # AI strikes that don't resolve to DISTINCT listed
-            # contracts only failed at execution (the strike-snap
-            # collision refusal) and badged GATED · ERROR on every
-            # profile that received the same proposal (AAL
-            # bear_call_spread 14/14.5 on a $1 grid hit 3 profiles in
-            # one cycle). Snap + repair here so the proposal is
-            # executable exactly as validated, or never reaches the
-            # brain.
-            try:
-                from options_multileg import (
-                    validate_and_snap_multileg_strikes,
-                )
-                _ml_snapped = validate_and_snap_multileg_strikes(
-                    ml_underlying, strategy_name, strikes, expiry,
-                )
-                if _ml_snapped is None:
+            # PAIR_TRADE proposals are validated before the candidate-symbol
+            # check because their "symbol" is a pair label and the legs are
+            # in symbol_a / symbol_b. The pair must be in this profile's
+            # active stat-arb book; otherwise the AI is inventing pairs we
+            # haven't validated.
+            # MULTILEG_OPEN — Phase B4. Multi-leg strategies (verticals,
+            # condors, butterflies, straddles, strangles, calendars,
+            # diagonals) routed via options_multileg.execute_multileg_strategy.
+            # The proposal must specify strategy_name + strikes + expiry.
+            # Strategy must be in ALL_MULTILEG_BUILDERS or it's rejected.
+            if action == "MULTILEG_OPEN":
+                try:
+                    from options_multileg import ALL_MULTILEG_BUILDERS
+                except Exception:
+                    logger.warning("MULTILEG_OPEN module unavailable — skipped")
+                    continue
+                strategy_name = (t.get("strategy_name") or "").lower()
+                if strategy_name not in ALL_MULTILEG_BUILDERS:
                     logger.warning(
-                        "MULTILEG_OPEN %s %s: strikes %s exp %s don't "
-                        "resolve to distinct listed contracts — "
-                        "rejected at parse layer (would have produced "
-                        "a zero-width or unbuildable spread at "
-                        "execution).",
-                        ml_underlying, strategy_name, strikes, expiry,
+                        "MULTILEG_OPEN unknown strategy_name=%r — skipped",
+                        strategy_name,
                     )
                     continue
-                strikes, expiry = _ml_snapped
-            except ImportError:
-                logger.debug(
-                    "Multileg snap check unavailable — proposal "
-                    "proceeds to executor without contract validation"
-                )
-            except Exception as _ml_snap_exc:
-                logger.debug(
-                    "MULTILEG_OPEN %s snap check failed (non-fatal): "
-                    "%s: %s",
-                    ml_underlying, type(_ml_snap_exc).__name__,
-                    _ml_snap_exc,
-                )
-            validated.append({
-                "symbol": ml_underlying,
-                "action": "MULTILEG_OPEN",
-                "strategy_name": strategy_name,
-                "strikes": strikes,
-                "expiry": expiry,
-                "contracts": contracts,
-                "limit_price": t.get("limit_price"),
-                "confidence": int(t.get("confidence", 50)),
-                "reasoning": t.get("reasoning", ""),
-            })
-            continue
-
-        if action == "PAIR_TRADE":
-            sym_a = (t.get("symbol_a") or "").upper()
-            sym_b = (t.get("symbol_b") or "").upper()
-            pair_action = (t.get("pair_action") or "").upper()
-            if not sym_a or not sym_b:
-                logger.warning(
-                    "PAIR_TRADE missing symbol_a/symbol_b — skipped"
-                )
-                continue
-            if pair_action not in ("ENTER_LONG_A_SHORT_B",
-                                       "ENTER_SHORT_A_LONG_B", "EXIT"):
-                logger.warning(
-                    "PAIR_TRADE unsupported pair_action=%r — skipped",
-                    pair_action,
-                )
-                continue
-            db_path = getattr(ctx, "db_path", None) if ctx else None
-            if not db_path:
-                logger.warning("PAIR_TRADE: no ctx.db_path — skipped")
-                continue
-            # Pair must exist in active book
-            try:
-                from stat_arb_pair_book import _lookup_active_pair
-                pair = _lookup_active_pair(db_path, sym_a, sym_b)
-            except Exception:
-                pair = None
-            if pair is None:
-                logger.warning(
-                    "PAIR_TRADE %s/%s not in active pair book — skipped",
-                    sym_a, sym_b,
-                )
-                continue
-
-            validated.append({
-                "symbol": pair.label,  # for logging visibility
-                "action": "PAIR_TRADE",
-                "pair_action": pair_action,
-                "symbol_a": sym_a, "symbol_b": sym_b,
-                "dollars_per_leg": float(t.get("dollars_per_leg") or 0),
-                "confidence": int(t.get("confidence", 50)),
-                "reasoning": t.get("reasoning", ""),
-            })
-            continue
-
-        sym = t.get("symbol", "")
-        if sym not in valid_symbols:
-            logger.warning("AI suggested symbol %s not in candidates — skipped", sym)
-            continue
-
-        if action == "SHORT" and not enable_shorts:
-            logger.warning("AI suggested SHORT on %s but shorts disabled — skipped", sym)
-            continue
-        # OPTIONS proposals follow a different path — they bypass the
-        # equity-position gates (balance, asymmetric-cap, neutrality)
-        # because options sizing is defined-risk and doesn't affect
-        # book beta the same way. Validation happens in
-        # options_trader.execute_option_strategy.
-        if action == "OPTIONS":
-            # 2026-06-10 — PROPOSAL-LEVEL VALIDATION. Bad OPTIONS
-            # proposals reaching the executor produced two distinct
-            # bug classes in this morning's brain:
-            #   (a) AI proposed a multileg strategy (bull_put_spread,
-            #       etc.) under action='OPTIONS', which is single-leg
-            #       only. Execution returned ERROR badge. Fix: reject
-            #       at this layer with a routing message.
-            #   (b) AI proposed strikes that don't exist on Alpaca's
-            #       chain (INTC 260717C00115000 — Alpaca returned
-            #       "asset not found"). Single-leg has no upstream
-            #       snap-to-listed-contract. Fix: validate strike +
-            #       expiry against Alpaca's listed contracts here.
-            _SINGLE_LEG = {
-                "covered_call", "protective_put",
-                "long_call", "long_put", "cash_secured_put",
-            }
-            _MULTILEG_NAMES = {
-                "bull_put_spread", "bull_call_spread",
-                "bear_put_spread", "bear_call_spread",
-                "iron_condor", "iron_butterfly",
-                "long_straddle", "short_straddle",
-                "long_strangle",
-            }
-            opt_strategy = (t.get("option_strategy") or "").lower()
-            if opt_strategy in _MULTILEG_NAMES:
-                logger.warning(
-                    "OPTIONS %s: AI proposed multileg strategy %r — "
-                    "rejected at parse layer. Spreads require "
-                    "action='MULTILEG_OPEN'.",
-                    sym, opt_strategy,
-                )
-                continue
-            if opt_strategy not in _SINGLE_LEG:
-                logger.warning(
-                    "OPTIONS %s: unsupported single-leg strategy %r — "
-                    "rejected. Supported: %s",
-                    sym, opt_strategy, sorted(_SINGLE_LEG),
-                )
-                continue
-
-            # Strike + expiry must resolve to a listed Alpaca contract.
-            # Skip the check for closes (covered_call / protective_put
-            # against an existing position the journal already tracks).
-            opt_strike = t.get("strike")
-            opt_expiry = t.get("expiry")
-            opt_contracts = int(t.get("contracts") or 0)
-            if (not opt_strike or not opt_expiry
-                    or opt_contracts <= 0):
-                logger.warning(
-                    "OPTIONS %s: missing strike/expiry/contracts — "
-                    "rejected.", sym,
-                )
-                continue
-            try:
-                from options_chain_alpaca import (
-                    list_available_contracts, snap_to_listed_contract,
-                )
-                right = ("C" if opt_strategy in
-                         ("covered_call", "long_call") else "P")
-                # 2026-06-10 (post-PM-reset) — fetch the chain
-                # explicitly and degrade gracefully when it's
-                # unavailable. snap_to_listed_contract returns None
-                # for BOTH "strike doesn't exist" and "chain fetch
-                # failed"; treating the latter as a rejection killed
-                # valid proposals on infra blips. Same contract as
-                # the multileg validator: no chain data → the
-                # execution-layer snap remains the safety belt.
-                _chain = list_available_contracts(sym)
-                if not _chain:
-                    logger.debug(
-                        "OPTIONS %s: chain unavailable — proposal "
-                        "proceeds without parse-layer contract "
-                        "validation", sym,
+                ml_underlying = (t.get("symbol") or "").upper()
+                if not ml_underlying:
+                    logger.warning("MULTILEG_OPEN missing symbol — skipped")
+                    continue
+                strikes = t.get("strikes") or {}
+                expiry = t.get("expiry")
+                contracts = int(t.get("contracts") or 0)
+                if not strikes or not expiry or contracts <= 0:
+                    logger.warning(
+                        "MULTILEG_OPEN missing strikes/expiry/contracts — skipped"
                     )
-                else:
-                    snapped = snap_to_listed_contract(
-                        sym, opt_expiry, float(opt_strike), right,
-                        contracts=_chain,
+                    continue
+                # 2026-06-10 — PARSE-LAYER strike validation for multileg,
+                # mirroring the single-leg OPTIONS snap below. Without it,
+                # AI strikes that don't resolve to DISTINCT listed
+                # contracts only failed at execution (the strike-snap
+                # collision refusal) and badged GATED · ERROR on every
+                # profile that received the same proposal (AAL
+                # bear_call_spread 14/14.5 on a $1 grid hit 3 profiles in
+                # one cycle). Snap + repair here so the proposal is
+                # executable exactly as validated, or never reaches the
+                # brain.
+                try:
+                    from options_multileg import (
+                        validate_and_snap_multileg_strikes,
                     )
-                    if snapped is None:
+                    _ml_snapped = validate_and_snap_multileg_strikes(
+                        ml_underlying, strategy_name, strikes, expiry,
+                    )
+                    if _ml_snapped is None:
                         logger.warning(
-                            "OPTIONS %s: no listed Alpaca contract "
-                            "within tolerance of %s %s strike $%s exp "
-                            "%s — rejected at parse layer (AI proposed "
-                            "a strike that doesn't exist; would have "
-                            "hit 'asset not found' at broker).",
-                            sym, opt_strategy, right, opt_strike,
-                            opt_expiry,
+                            "MULTILEG_OPEN %s %s: strikes %s exp %s don't "
+                            "resolve to distinct listed contracts — "
+                            "rejected at parse layer (would have produced "
+                            "a zero-width or unbuildable spread at "
+                            "execution).",
+                            ml_underlying, strategy_name, strikes, expiry,
                         )
                         continue
-                    # Use the snapped strike + expiry so the executor
-                    # builds the OCC that actually exists.
-                    opt_strike = snapped["strike"]
-                    opt_expiry = snapped["expiration_date"]
-            except ImportError:
-                logger.debug(
-                    "OPTIONS snap check unavailable — proposal "
-                    "proceeds to executor without contract validation"
+                    strikes, expiry = _ml_snapped
+                except ImportError:
+                    logger.debug(
+                        "Multileg snap check unavailable — proposal "
+                        "proceeds to executor without contract validation"
+                    )
+                except Exception as _ml_snap_exc:
+                    logger.debug(
+                        "MULTILEG_OPEN %s snap check failed (non-fatal): "
+                        "%s: %s",
+                        ml_underlying, type(_ml_snap_exc).__name__,
+                        _ml_snap_exc,
+                    )
+                validated.append({
+                    "symbol": ml_underlying,
+                    "action": "MULTILEG_OPEN",
+                    "strategy_name": strategy_name,
+                    "strikes": strikes,
+                    "expiry": expiry,
+                    "contracts": contracts,
+                    "limit_price": t.get("limit_price"),
+                    "confidence": int(t.get("confidence", 50)),
+                    "reasoning": t.get("reasoning", ""),
+                })
+                continue
+
+            if action == "PAIR_TRADE":
+                sym_a = (t.get("symbol_a") or "").upper()
+                sym_b = (t.get("symbol_b") or "").upper()
+                pair_action = (t.get("pair_action") or "").upper()
+                if not sym_a or not sym_b:
+                    logger.warning(
+                        "PAIR_TRADE missing symbol_a/symbol_b — skipped"
+                    )
+                    continue
+                if pair_action not in ("ENTER_LONG_A_SHORT_B",
+                                           "ENTER_SHORT_A_LONG_B", "EXIT"):
+                    logger.warning(
+                        "PAIR_TRADE unsupported pair_action=%r — skipped",
+                        pair_action,
+                    )
+                    continue
+                db_path = getattr(ctx, "db_path", None) if ctx else None
+                if not db_path:
+                    logger.warning("PAIR_TRADE: no ctx.db_path — skipped")
+                    continue
+                # Pair must exist in active book
+                try:
+                    from stat_arb_pair_book import _lookup_active_pair
+                    pair = _lookup_active_pair(db_path, sym_a, sym_b)
+                except Exception:
+                    pair = None
+                if pair is None:
+                    logger.warning(
+                        "PAIR_TRADE %s/%s not in active pair book — skipped",
+                        sym_a, sym_b,
+                    )
+                    continue
+
+                validated.append({
+                    "symbol": pair.label,  # for logging visibility
+                    "action": "PAIR_TRADE",
+                    "pair_action": pair_action,
+                    "symbol_a": sym_a, "symbol_b": sym_b,
+                    "dollars_per_leg": float(t.get("dollars_per_leg") or 0),
+                    "confidence": int(t.get("confidence", 50)),
+                    "reasoning": t.get("reasoning", ""),
+                })
+                continue
+
+            sym = t.get("symbol", "")
+            if sym not in valid_symbols:
+                logger.warning("AI suggested symbol %s not in candidates — skipped", sym)
+                continue
+
+            if action == "SHORT" and not enable_shorts:
+                logger.warning("AI suggested SHORT on %s but shorts disabled — skipped", sym)
+                continue
+            # OPTIONS proposals follow a different path — they bypass the
+            # equity-position gates (balance, asymmetric-cap, neutrality)
+            # because options sizing is defined-risk and doesn't affect
+            # book beta the same way. Validation happens in
+            # options_trader.execute_option_strategy.
+            if action == "OPTIONS":
+                # 2026-06-10 — PROPOSAL-LEVEL VALIDATION. Bad OPTIONS
+                # proposals reaching the executor produced two distinct
+                # bug classes in this morning's brain:
+                #   (a) AI proposed a multileg strategy (bull_put_spread,
+                #       etc.) under action='OPTIONS', which is single-leg
+                #       only. Execution returned ERROR badge. Fix: reject
+                #       at this layer with a routing message.
+                #   (b) AI proposed strikes that don't exist on Alpaca's
+                #       chain (INTC 260717C00115000 — Alpaca returned
+                #       "asset not found"). Single-leg has no upstream
+                #       snap-to-listed-contract. Fix: validate strike +
+                #       expiry against Alpaca's listed contracts here.
+                _SINGLE_LEG = {
+                    "covered_call", "protective_put",
+                    "long_call", "long_put", "cash_secured_put",
+                }
+                _MULTILEG_NAMES = {
+                    "bull_put_spread", "bull_call_spread",
+                    "bear_put_spread", "bear_call_spread",
+                    "iron_condor", "iron_butterfly",
+                    "long_straddle", "short_straddle",
+                    "long_strangle",
+                }
+                opt_strategy = (t.get("option_strategy") or "").lower()
+                if opt_strategy in _MULTILEG_NAMES:
+                    logger.warning(
+                        "OPTIONS %s: AI proposed multileg strategy %r — "
+                        "rejected at parse layer. Spreads require "
+                        "action='MULTILEG_OPEN'.",
+                        sym, opt_strategy,
+                    )
+                    continue
+                if opt_strategy not in _SINGLE_LEG:
+                    logger.warning(
+                        "OPTIONS %s: unsupported single-leg strategy %r — "
+                        "rejected. Supported: %s",
+                        sym, opt_strategy, sorted(_SINGLE_LEG),
+                    )
+                    continue
+
+                # Strike + expiry must resolve to a listed Alpaca contract.
+                # Skip the check for closes (covered_call / protective_put
+                # against an existing position the journal already tracks).
+                opt_strike = t.get("strike")
+                opt_expiry = t.get("expiry")
+                opt_contracts = int(t.get("contracts") or 0)
+                if (not opt_strike or not opt_expiry
+                        or opt_contracts <= 0):
+                    logger.warning(
+                        "OPTIONS %s: missing strike/expiry/contracts — "
+                        "rejected.", sym,
+                    )
+                    continue
+                try:
+                    from options_chain_alpaca import (
+                        list_available_contracts, snap_to_listed_contract,
+                    )
+                    right = ("C" if opt_strategy in
+                             ("covered_call", "long_call") else "P")
+                    # 2026-06-10 (post-PM-reset) — fetch the chain
+                    # explicitly and degrade gracefully when it's
+                    # unavailable. snap_to_listed_contract returns None
+                    # for BOTH "strike doesn't exist" and "chain fetch
+                    # failed"; treating the latter as a rejection killed
+                    # valid proposals on infra blips. Same contract as
+                    # the multileg validator: no chain data → the
+                    # execution-layer snap remains the safety belt.
+                    _chain = list_available_contracts(sym)
+                    if not _chain:
+                        logger.debug(
+                            "OPTIONS %s: chain unavailable — proposal "
+                            "proceeds without parse-layer contract "
+                            "validation", sym,
+                        )
+                    else:
+                        snapped = snap_to_listed_contract(
+                            sym, opt_expiry, float(opt_strike), right,
+                            contracts=_chain,
+                        )
+                        if snapped is None:
+                            logger.warning(
+                                "OPTIONS %s: no listed Alpaca contract "
+                                "within tolerance of %s %s strike $%s exp "
+                                "%s — rejected at parse layer (AI proposed "
+                                "a strike that doesn't exist; would have "
+                                "hit 'asset not found' at broker).",
+                                sym, opt_strategy, right, opt_strike,
+                                opt_expiry,
+                            )
+                            continue
+                        # Use the snapped strike + expiry so the executor
+                        # builds the OCC that actually exists.
+                        opt_strike = snapped["strike"]
+                        opt_expiry = snapped["expiration_date"]
+                except ImportError:
+                    logger.debug(
+                        "OPTIONS snap check unavailable — proposal "
+                        "proceeds to executor without contract validation"
+                    )
+                except Exception as _snap_exc:
+                    logger.debug(
+                        "OPTIONS %s snap check failed (non-fatal): %s: %s",
+                        sym, type(_snap_exc).__name__, _snap_exc,
+                    )
+                validated.append({
+                    "symbol": sym,
+                    "action": "OPTIONS",
+                    "option_strategy": opt_strategy,
+                    "strike": opt_strike,
+                    "expiry": opt_expiry,
+                    "contracts": opt_contracts,
+                    "limit_price": t.get("limit_price"),
+                    "confidence": int(t.get("confidence", 50)),
+                    "reasoning": t.get("reasoning", ""),
+                })
+                continue
+            if action not in ("BUY", "SELL", "SHORT"):
+                continue
+            # P2.4 balance gate — block over-weighted side
+            if balance_gate_state == "block_shorts" and action in ("SHORT", "SELL"):
+                logger.info(
+                    "Balance gate blocked SHORT %s (book overshorted vs target_short_pct)",
+                    sym,
                 )
-            except Exception as _snap_exc:
-                logger.debug(
-                    "OPTIONS %s snap check failed (non-fatal): %s: %s",
-                    sym, type(_snap_exc).__name__, _snap_exc,
+                continue
+            if balance_gate_state == "block_longs" and action == "BUY":
+                logger.info(
+                    "Balance gate blocked BUY %s (book undershorted vs target_short_pct)",
+                    sym,
                 )
+                continue
+
+            # Cap by direction: longs against max_pos_pct, shorts against
+            # the smaller short_max_pos_pct (asymmetric-risk sizing).
+            cap_pct = (short_max_pos_pct if action in ("SHORT", "SELL")
+                       else max_pos_pct) * 100
+            # P1.14 — extra penalty for HTB shorts: the borrow cost eats
+            # the upside on a typical 2-3 week hold. Halve again.
+            if action in ("SHORT", "SELL") and borrow_cost_by_sym.get(sym) == "high":
+                cap_pct = cap_pct / 2
+            size_pct = min(float(t.get("size_pct", 5.0)), cap_pct)
+            size_pct = max(size_pct, 1.0)
+
+            # P4.5 — market-neutrality enforcement: block entries that
+            # push book beta further from target by > 0.5. Skipped for
+            # SELL (exiting a long can't worsen neutrality further than
+            # the entry already did) and when the gate isn't active.
+            if neutrality_enforce and action in ("BUY", "SHORT"):
+                try:
+                    from portfolio_exposure import simulate_book_beta_with_entry
+                    projected = simulate_book_beta_with_entry(
+                        cur_positions_for_beta,
+                        cur_equity_for_beta,
+                        sym,
+                        size_pct,
+                        action,
+                    )
+                    if projected is not None:
+                        cur_dist = abs(cur_book_beta_for_beta - target_book_beta)
+                        new_dist = abs(projected - target_book_beta)
+                        if new_dist - cur_dist > 0.5:
+                            logger.info(
+                                "P4.5 neutrality gate blocked %s %s: "
+                                "book_beta %.2f → %.2f (target %.2f, "
+                                "distance %.2f → %.2f)",
+                                action, sym, cur_book_beta_for_beta,
+                                projected, target_book_beta, cur_dist, new_dist,
+                            )
+                            continue
+                except Exception as exc:
+                    logger.debug("neutrality gate eval failed for %s: %s", sym, exc)
+
             validated.append({
                 "symbol": sym,
-                "action": "OPTIONS",
-                "option_strategy": opt_strategy,
-                "strike": opt_strike,
-                "expiry": opt_expiry,
-                "contracts": opt_contracts,
-                "limit_price": t.get("limit_price"),
+                "action": action,
+                "size_pct": size_pct,
                 "confidence": int(t.get("confidence", 50)),
+                "stop_loss_pct": float(t.get("stop_loss_pct", 3.0)),
+                "take_profit_pct": float(t.get("take_profit_pct", 10.0)),
                 "reasoning": t.get("reasoning", ""),
             })
-            continue
-        if action not in ("BUY", "SELL", "SHORT"):
-            continue
-        # P2.4 balance gate — block over-weighted side
-        if balance_gate_state == "block_shorts" and action in ("SHORT", "SELL"):
-            logger.info(
-                "Balance gate blocked SHORT %s (book overshorted vs target_short_pct)",
-                sym,
-            )
-            continue
-        if balance_gate_state == "block_longs" and action == "BUY":
-            logger.info(
-                "Balance gate blocked BUY %s (book undershorted vs target_short_pct)",
-                sym,
-            )
-            continue
 
-        # Cap by direction: longs against max_pos_pct, shorts against
-        # the smaller short_max_pos_pct (asymmetric-risk sizing).
-        cap_pct = (short_max_pos_pct if action in ("SHORT", "SELL")
-                   else max_pos_pct) * 100
-        # P1.14 — extra penalty for HTB shorts: the borrow cost eats
-        # the upside on a typical 2-3 week hold. Halve again.
-        if action in ("SHORT", "SELL") and borrow_cost_by_sym.get(sym) == "high":
-            cap_pct = cap_pct / 2
-        size_pct = min(float(t.get("size_pct", 5.0)), cap_pct)
-        size_pct = max(size_pct, 1.0)
+        return validated
 
-        # P4.5 — market-neutrality enforcement: block entries that
-        # push book beta further from target by > 0.5. Skipped for
-        # SELL (exiting a long can't worsen neutrality further than
-        # the entry already did) and when the gate isn't active.
-        if neutrality_enforce and action in ("BUY", "SHORT"):
-            try:
-                from portfolio_exposure import simulate_book_beta_with_entry
-                projected = simulate_book_beta_with_entry(
-                    cur_positions_for_beta,
-                    cur_equity_for_beta,
-                    sym,
-                    size_pct,
-                    action,
-                )
-                if projected is not None:
-                    cur_dist = abs(cur_book_beta_for_beta - target_book_beta)
-                    new_dist = abs(projected - target_book_beta)
-                    if new_dist - cur_dist > 0.5:
-                        logger.info(
-                            "P4.5 neutrality gate blocked %s %s: "
-                            "book_beta %.2f → %.2f (target %.2f, "
-                            "distance %.2f → %.2f)",
-                            action, sym, cur_book_beta_for_beta,
-                            projected, target_book_beta, cur_dist, new_dist,
-                        )
-                        continue
-            except Exception as exc:
-                logger.debug("neutrality gate eval failed for %s: %s", sym, exc)
-
-        validated.append({
-            "symbol": sym,
-            "action": action,
-            "size_pct": size_pct,
-            "confidence": int(t.get("confidence", 50)),
-            "stop_loss_pct": float(t.get("stop_loss_pct", 3.0)),
-            "take_profit_pct": float(t.get("take_profit_pct", 10.0)),
-            "reasoning": t.get("reasoning", ""),
-        })
+    # Primaries keep the historical 3-pick cap. Alternates are the
+    # fallback bench — validated by the identical rules but with a
+    # larger cap, since the AI shortlists ~10 vetted candidates and we
+    # only ever execute one per blocked primary.
+    validated = _validate_list(trades, 3)
+    alternates_raw = result.get("alternates", [])
+    if not isinstance(alternates_raw, list):
+        alternates_raw = []
+    alternates_validated = _validate_list(alternates_raw, 20)
 
     return {
         "trades": validated,
+        "alternates": alternates_validated,
         "portfolio_reasoning": reasoning,
         "pass_this_cycle": len(validated) == 0,
     }

@@ -81,8 +81,12 @@ def test_buy_short_etc_still_in_allowlist():
     accidentally dropped them would re-badge every successful
     single-leg trade as gated."""
     src = (REPO_ROOT / "trade_pipeline.py").read_text()
-    anchor = src.find("Trade NOT submitted for")
-    window = src[max(0, anchor - 1000):anchor]
+    # Anchor on the tuple literal itself (robust to comments added
+    # inside it, e.g. the 2026-06-17 OPTIONS_OPEN addition) rather than
+    # a fragile char-window before the warning string.
+    anchor = src.find("_SUCCESS_ACTIONS = (")
+    assert anchor > 0, "_SUCCESS_ACTIONS tuple not found in trade_pipeline.py"
+    window = src[anchor:anchor + 600]
     for action in ("BUY", "SELL", "SHORT", "COVER"):
         assert f'"{action}"' in window, (
             f"Success-action allowlist must still contain "
