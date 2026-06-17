@@ -1411,7 +1411,7 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
             try:
                 rows = conn.execute(
                     f"SELECT symbol, side, qty, {_vp_price} AS price, "
-                    "timestamp, occ_symbol "
+                    "timestamp, occ_symbol, status "
                     "FROM trades "
                     # Status-aware filter. Pre-2026-05-16 only
                     # 'canceled' was excluded, which left two leaks:
@@ -1551,6 +1551,7 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
         qty = float(row[2] or 0)
         price = float(row[3] or 0)
         occ_symbol = row[5] if len(row) > 5 else None
+        row_status = (row[6] if len(row) > 6 else None) or "open"
         if qty <= 0 or price <= 0:
             # Defense-in-depth: a row that gets here with qty<=0 or
             # price<=0 has bad data upstream (e.g. multileg combo
@@ -1600,7 +1601,16 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
             # False) is an orphan/closed-round-trip artifact — the
             # entry was excluded as 'closed' — and is still dropped, so
             # completed round-trips never flash a phantom short.
-            if remaining > 0 and (occ_symbol or consumed_any):
+            #
+            # 2026-06-17 — a 'closed' OPTION sell-to-open is a RESOLVED
+            # short (covered / expired / assigned) and must NOT spawn a
+            # phantom short lot. This is the expired-multileg-short
+            # orphan: the lifecycle sweep marks the leg 'closed' but
+            # get_virtual kept reporting its OCC as held. (Stock
+            # oversell shorts come through consumed_any and are
+            # unaffected; an OPEN option short still creates its lot.)
+            if (remaining > 0 and (occ_symbol or consumed_any)
+                    and not (occ_symbol and row_status == "closed")):
                 short_lots.setdefault(key, []).append(
                     [remaining, price]
                 )

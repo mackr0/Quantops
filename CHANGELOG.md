@@ -5,6 +5,21 @@ at the top.
 
 ---
 
+## 2026-06-17 — Expired multileg option legs no longer orphan (journal open vs broker flat). Severity: HIGH (silent permanent orphans; operator's "no orphans" invariant).
+
+A multi-agent audit of every option-orphan vector found the expiry sweep was the live one and several adjacent traps. `options_lifecycle.find_expired_open_options` matched only `signal_type='OPTIONS'`, so every MULTILEG / MULTILEG_OPEN spread leg was never swept: after expiry the broker zeroes the contract but the leg stayed `status='open'` forever and `get_virtual_positions` kept reporting its OCC as held — a permanent orphan. Fixes:
+
+- **Orphan-proof sweep filter.** The sweep now keys on `occ_symbol IS NOT NULL` (every option row has one; stocks and OPTION_EXERCISE equity legs do not) instead of a signal_type allow-list that silently falls behind — multileg entries already use BOTH `MULTILEG` and `MULTILEG_OPEN`. A new option signal_type can never re-open this class. Pinned by a structural test.
+- **Closed option shorts no longer spawn phantom shorts.** `get_virtual_positions` created an option short lot from any `sell`-with-no-long — including a `closed` one — so marking an expired short leg `closed` did NOT remove it from the book. A `closed` option sell-to-open is now correctly a resolved short (covered/expired/assigned) and creates no lot. (Stock oversell shorts are unaffected.)
+- **Rollback-close rows can't be mis-booked (O2).** A partner-rollback close (`reason` starts `Auto-rollback:`) carries the partner's past expiry; if its `pending_fill` decays to `open`, the broadened sweep would have booked a fabricated expired-worthless P&L on a CLOSE order. The sweep now excludes those rows.
+- **Lifecycle log KeyError (O9).** `_task_options_lifecycle` read `result['assignment_flagged']` (nonexistent; the key is `assigned`), raising a KeyError swallowed every cycle with expired options — suppressing the very log we need now. Fixed to read the real keys.
+
+**Invariant pinned** (`tests/test_option_orphan_invariant_2026_06_17.py`): after the sweep, NO option-bearing row can be (counted-open by get_virtual_positions) AND (expiry < today) — single-leg, MULTILEG, and MULTILEG_OPEN; plus negative controls (rollback-close not mis-booked, equity legs / unexpired options untouched) and a no-KeyError integration smoke. Full suite: 5,281 passed.
+
+**Honest residuals (separate, non-expiry orphan classes — NOT closed by this fix):** O5 single-leg `check_exits` option exit that journals no close row on success; O6 multileg partial-close orphaned partner; O7 early (pre-expiry) assignment of a short leg; O8 the reconciler skips open `sell`-side option rows so short legs have no pre-expiry backstop. The expiry sweep is the guarantee for EXPIRY orphans only; these others need their own fixes.
+
+---
+
 ## 2026-06-16 — Restore stop-loss protection (three bugs had quietly disabled it). Severity: CRITICAL (152 positions with no live broker stop; SUGP ran to −35% across 5 profiles).
 
 A cross-profile stop-loss audit found the 5%-stop rule was not holding the line: 20 long positions past their stop and still open, **152 of ~206 with no live broker stop**, worst being SUGP −35–40% across five profiles. Every blown position followed the same chain — entry placed as a bracket, its stop/TP children later canceled or never materialized, and **nothing re-armed the protection.** (Not caused by the day's other fixes: all deploys landed after the 20:00 UTC close; these drawdowns happened intraday under the prior code.) Three compounding bugs, now fixed:

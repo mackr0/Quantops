@@ -2813,11 +2813,20 @@ def _task_options_lifecycle(ctx):
         api = get_api(ctx)
         result = sweep_expired_options(api, db_path=ctx.db_path)
         if result["expired_found"]:
+            # 2026-06-17 — read the keys sweep_expired_options actually
+            # returns. The pre-fix code read result['assignment_flagged']
+            # which does not exist (the key is 'assigned'), so every
+            # cycle with expired options raised a KeyError swallowed by
+            # the except below — silently suppressing this success log
+            # exactly when the now-broadened (multileg) sweep needs to
+            # be observable.
             logging.info(
                 f"[{seg_label}] Options lifecycle: "
                 f"found={result['expired_found']}, "
                 f"closed_worthless={result['closed_worthless']}, "
-                f"assignment_flagged={result['assignment_flagged']}, "
+                f"assigned={result['assigned']}, "
+                f"exercised={result['exercised']}, "
+                f"needs_review={result['needs_review']}, "
                 f"errors={result['errors']}"
             )
     except Exception:

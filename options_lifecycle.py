@@ -33,27 +33,52 @@ logger = logging.getLogger(__name__)
 
 def find_expired_open_options(db_path: str,
                                   today: Optional[_date] = None) -> List[Dict[str, Any]]:
-    """Return open option trade rows whose expiry has passed.
+    """Return open option trade rows (single-leg AND multileg) whose
+    expiry has passed.
 
-    Args:
-        db_path: profile journal DB.
-        today: override for current date (testing). Defaults to today.
+    2026-06-17 — ORPHAN-PROOF FILTER. The pre-fix query matched only
+    `signal_type='OPTIONS'`, so every MULTILEG / MULTILEG_OPEN spread
+    leg was skipped: after expiry the broker zeroes the contract but
+    the leg stays status='open' forever, and get_virtual_positions
+    keeps reporting its OCC as a held lot — a permanent orphan (the
+    operator's "journal shows open, broker does not"). The filter now
+    keys on `occ_symbol IS NOT NULL` instead of a signal_type allow-
+    list, because:
+      • EVERY option position carries an OCC symbol; nothing else does
+        (stocks are NULL; OPTION_EXERCISE synthetic equity legs are
+        logged with the underlying symbol and occ_symbol=NULL, so they
+        are excluded automatically).
+      • A signal_type allow-list silently falls behind — multileg
+        entries already use BOTH 'MULTILEG' and 'MULTILEG_OPEN'. Keying
+        on occ_symbol covers every present and future option
+        signal_type, so a new option type can never re-open this orphan
+        class. (Pinned by a structural test.)
+    `status='open'` is exact: pending_fill / pending_protective /
+    needs_review / closed rows are not swept here.
 
     Returns rows shaped:
       {id, symbol, side, qty, occ_symbol, option_strategy, expiry,
-       strike, price, decision_price, ai_confidence}
+       strike, price, decision_price, ai_confidence, signal_type, reason}
     """
     today = today or _date.today()
     from journal import _get_conn
     with closing(_get_conn(db_path)) as conn:
         cur = conn.execute(
             """SELECT id, symbol, side, qty, occ_symbol, option_strategy,
-                      expiry, strike, price, decision_price, ai_confidence
+                      expiry, strike, price, decision_price, ai_confidence,
+                      signal_type, reason
                FROM trades
-               WHERE signal_type='OPTIONS'
+               WHERE occ_symbol IS NOT NULL
                  AND status='open'
                  AND expiry IS NOT NULL
-                 AND expiry < ?""",
+                 AND expiry < ?
+                 -- Exclude CLOSE rows masquerading as expired entries.
+                 -- A partner-rollback close (multi_scheduler) is a NEW
+                 -- MULTILEG row with the partner's past expiry; if its
+                 -- pending_fill decays to 'open' the entry-P&L logic
+                 -- would mis-book it. It is a close, not an expired
+                 -- entry — skip it here. (O2, 2026-06-17.)
+                 AND COALESCE(reason,'') NOT LIKE 'Auto-rollback:%'""",
             (today.isoformat(),),
         )
         cols = [d[0] for d in cur.description]
