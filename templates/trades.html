@@ -33,34 +33,53 @@
             </button>
         </div>
         {% if search %}
-        <a href="/trades?{% if selected_profile %}profile_id={{ selected_profile }}&{% endif %}{% if kind %}kind={{ kind }}&{% endif %}sort={{ sort_by }}&dir={{ sort_dir }}"
+        <a href="/trades?{% if selected_profile %}profile_id={{ selected_profile }}&{% endif %}{% if kind %}kind={{ kind }}&{% endif %}{% if view %}view={{ view }}&{% endif %}sort={{ sort_by }}&dir={{ sort_dir }}"
            class="muted" style="font-size:0.85rem;text-decoration:underline;">Clear</a>
         {% endif %}
-        {# Preserve current tab + sort across the profile-change submission #}
+        {# Preserve current tab + view + sort across the profile-change submission #}
         <input type="hidden" name="kind" value="{{ kind }}">
+        <input type="hidden" name="view" value="{{ view }}">
         <input type="hidden" name="sort" value="{{ sort_by }}">
         <input type="hidden" name="dir" value="{{ sort_dir }}">
     </form>
 </div>
 
 {# Server-driven tabs — each tab is a real URL so pagination + sort
-   + symbol search work per-tab without loading every row client-side. #}
+   + symbol search work per-tab without loading every row client-side.
+   Two orthogonal axes: instrument class (All/Stocks/Options) and ledger
+   view (All/Realized/Unrealized). Each axis preserves the other so you
+   can combine them (e.g. Options + Realized). #}
 {% set _qs_base = (('profile_id=' ~ selected_profile ~ '&') if selected_profile else '') %}
-{% set _qs_search = ('&search=' ~ search) if search else '' %}
-<div class="perf-tabs" style="margin-bottom:1rem;">
-    <a href="?{{ _qs_base }}sort={{ sort_by }}&dir={{ sort_dir }}{{ _qs_search }}" class="perf-tab {{ 'active' if not kind else '' }}">All</a>
-    <a href="?{{ _qs_base }}kind=stocks&sort={{ sort_by }}&dir={{ sort_dir }}{{ _qs_search }}" class="perf-tab {{ 'active' if kind == 'stocks' else '' }}">Stocks</a>
-    <a href="?{{ _qs_base }}kind=options&sort={{ sort_by }}&dir={{ sort_dir }}{{ _qs_search }}" class="perf-tab {{ 'active' if kind == 'options' else '' }}">Options</a>
+{# search is free-text — URL-encode it so an embedded space/&/=/# can't
+   split the query string and silently drop the view/kind/sort params. #}
+{% set _qs_search = ('&search=' ~ (search|urlencode)) if search else '' %}
+{% set _qs_keep_view = ('view=' ~ view ~ '&') if view else '' %}
+{% set _qs_keep_kind = ('kind=' ~ kind ~ '&') if kind else '' %}
+<div class="perf-tabs" style="margin-bottom:0.5rem;">
+    <a href="?{{ _qs_base }}{{ _qs_keep_view }}sort={{ sort_by }}&dir={{ sort_dir }}{{ _qs_search }}" class="perf-tab {{ 'active' if not kind else '' }}">All</a>
+    <a href="?{{ _qs_base }}{{ _qs_keep_view }}kind=stocks&sort={{ sort_by }}&dir={{ sort_dir }}{{ _qs_search }}" class="perf-tab {{ 'active' if kind == 'stocks' else '' }}">Stocks</a>
+    <a href="?{{ _qs_base }}{{ _qs_keep_view }}kind=options&sort={{ sort_by }}&dir={{ sort_dir }}{{ _qs_search }}" class="perf-tab {{ 'active' if kind == 'options' else '' }}">Options</a>
 </div>
+<div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.4rem;flex-wrap:wrap;">
+    <small class="muted" style="font-size:0.8rem;">Show:</small>
+    <div class="perf-tabs" style="margin:0;">
+        <a href="?{{ _qs_base }}{{ _qs_keep_kind }}sort={{ sort_by }}&dir={{ sort_dir }}{{ _qs_search }}" class="perf-tab {{ 'active' if not view else '' }}">All</a>
+        <a href="?{{ _qs_base }}{{ _qs_keep_kind }}view=realized&sort={{ sort_by }}&dir={{ sort_dir }}{{ _qs_search }}" class="perf-tab {{ 'active' if view == 'realized' else '' }}">Realized</a>
+        <a href="?{{ _qs_base }}{{ _qs_keep_kind }}view=unrealized&sort={{ sort_by }}&dir={{ sort_dir }}{{ _qs_search }}" class="perf-tab {{ 'active' if view == 'unrealized' else '' }}">Unrealized</a>
+    </div>
+</div>
+<p class="muted" style="font-size:0.8rem;margin:0 0 1rem 0;">
+    <strong>Realized</strong> = finalized trades with locked-in profit or loss (and orders that never filled).
+    <strong>Unrealized</strong> = positions you still hold, valued at the latest price.
+</p>
 
 <article>
     <header>
         <div style="display:flex;justify-content:space-between;align-items:center;">
             <h3 style="margin:0;">
-                {% if kind == 'stocks' %}Stock Trades
-                {% elif kind == 'options' %}Option Trades
-                {% else %}Trades
-                {% endif %}
+                {%- if view == 'realized' %}Realized {% elif view == 'unrealized' %}Open {% else %}All {% endif -%}
+                {%- if kind == 'stocks' %}stock {% elif kind == 'options' %}option {% endif -%}
+                {{ 'positions' if view == 'unrealized' else 'trades' }}
             </h3>
             <small class="muted">{{ total_trades }} total{% if total_pages > 1 %} · Page {{ page }} of {{ total_pages }}{% endif %}</small>
         </div>
@@ -68,7 +87,7 @@
     {{ trades_tpl.render_trades(trades, show_profile=True, sortable=True,
         empty_message="No trades yet. Trades will appear here once the AI selects and executes positions.") }}
     {% if total_pages > 1 %}
-    {% set _link_qs = ('&sort=' ~ sort_by ~ '&dir=' ~ sort_dir ~ ('&profile_id=' ~ selected_profile if selected_profile else '') ~ ('&kind=' ~ kind if kind else '') ~ ('&search=' ~ search if search else '')) %}
+    {% set _link_qs = ('&sort=' ~ sort_by ~ '&dir=' ~ sort_dir ~ ('&profile_id=' ~ selected_profile if selected_profile else '') ~ ('&kind=' ~ kind if kind else '') ~ ('&view=' ~ view if view else '') ~ ('&search=' ~ (search|urlencode) if search else '')) %}
     <div style="display:flex;justify-content:center;align-items:center;gap:0.35rem;margin-top:0.75rem;flex-wrap:wrap;">
         {% if page > 1 %}
         <a href="?page={{ page - 1 }}{{ _link_qs }}" class="outline secondary" style="padding:0.25rem 0.6rem;font-size:0.85rem;" role="button">&larr;</a>
@@ -99,6 +118,7 @@
             <input type="hidden" name="sort" value="{{ sort_by }}">
             <input type="hidden" name="dir" value="{{ sort_dir }}">
             {% if kind %}<input type="hidden" name="kind" value="{{ kind }}">{% endif %}
+            {% if view %}<input type="hidden" name="view" value="{{ view }}">{% endif %}
             {% if selected_profile %}<input type="hidden" name="profile_id" value="{{ selected_profile }}">{% endif %}
             {% if search %}<input type="hidden" name="search" value="{{ search }}">{% endif %}
         </form>

@@ -140,7 +140,8 @@ class TestRouteAcceptsSearch:
     def test_search_param_threaded_into_data_layer(self, monkeypatch):
         captured = []
 
-        def fake_history(profile_id, limit=100, kind=None, search=None):
+        def fake_history(profile_id, limit=100, kind=None, search=None,
+                         view=None):
             captured.append({"kind": kind, "search": search})
             return []
 
@@ -162,7 +163,8 @@ class TestRouteAcceptsSearch:
 
     def test_search_whitespace_stripped(self, monkeypatch):
         captured = []
-        def fake_history(profile_id, limit=100, kind=None, search=None):
+        def fake_history(profile_id, limit=100, kind=None, search=None,
+                         view=None):
             captured.append(search)
             return []
         monkeypatch.setattr("views._get_trade_history_for_profile",
@@ -181,7 +183,8 @@ class TestRouteAcceptsSearch:
         """Defensive: a 1000-char search input gets capped at 32 chars
         so it can't be used to construct an absurd query."""
         captured = []
-        def fake_history(profile_id, limit=100, kind=None, search=None):
+        def fake_history(profile_id, limit=100, kind=None, search=None,
+                         view=None):
             captured.append(search)
             return []
         monkeypatch.setattr("views._get_trade_history_for_profile",

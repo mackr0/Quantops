@@ -502,8 +502,38 @@ def _safe_pending_orders(ctx):
         return []
 
 
+# Trade-row statuses that mean the transaction is FINALIZED — a closed
+# round-trip (entry rows flip to 'closed' on exit) or a never-filled
+# order (canceled/expired/rejected/done_for_day) or a reconciliation
+# phantom-close. This is the SAME exclusion set `get_virtual_positions`
+# uses to decide an ENTRY row is no longer a live lot (journal.py),
+# minus 'pending_protective' which the /trades base filter already
+# drops — so the "Unrealized" view (open-lot side) lines up with the
+# dashboard's held entries (incl. open-ended states like 'needs_review',
+# 'filled', 'pending_fill' that are NOT finalized).
+#
+# A row is "Unrealized" (a position currently held) iff its status is
+# NOT finalized AND it has booked no realized P&L (`pnl IS NULL`).
+# "Realized" is the exact complement: finalized status OR a booked pnl.
+# The `pnl IS NULL` half matters because the journal has two close
+# conventions — most exits flip the entry to 'closed' + stamp `pnl`, but
+# some filled round-trips keep status='filled' on both legs while
+# `reconcile_trade_statuses` stamps the realized `pnl` on the closing
+# row; keying realized on "finalized OR pnl present" books a filled
+# close correctly either way. The two clauses are exact logical
+# complements over the (non-protective) ledger. (Edge: a position held
+# only as the leftover qty of an oversold/reversed exit row has no open
+# entry row of its own — it stays under Realized here and remains
+# dashboard-authoritative; oversells are anomalous and prevented
+# upstream by the order-id-isolation work.) Keep the test in sync.
+_FINALIZED_TRADE_STATUSES = (
+    "closed", "canceled", "expired", "rejected", "done_for_day",
+    "auto_reconciled_phantom_close",
+)
+
+
 def _get_trade_history_for_profile(profile_id, limit=100, kind=None,
-                                   search=None):
+                                   search=None, view=None):
     """Get trade history from the profile's journal DB.
 
     Args:
@@ -515,6 +545,11 @@ def _get_trade_history_for_profile(profile_id, limit=100, kind=None,
             "CWAN" finds both stock CWAN rows and CWAN option leg
             rows. SQL-injection-safe via parameter binding.
             Wired 2026-05-11 (TODO #3).
+        view: 'realized' (finalized transactions only — closed round
+            trips + never-filled orders), 'unrealized' (still-open
+            positions only), or None (both). The split keys off
+            `_FINALIZED_TRADE_STATUSES` + whether a realized `pnl` is
+            booked. Wired 2026-06-18.
     """
     db_path = f"quantopsai_profile_{profile_id}.db"
     # 2026-06-04 — pending_protective rows are PLACEMENT-time
@@ -542,6 +577,23 @@ def _get_trade_history_for_profile(profile_id, limit=100, kind=None,
             where.append("(UPPER(symbol) LIKE ? OR "
                          "UPPER(COALESCE(occ_symbol, '')) LIKE ?)")
             params.extend([f"{s}%", f"{s}%"])
+    # Realized vs unrealized split (2026-06-18). "Unrealized" = a
+    # still-open lot (status NOT finalized) with no booked P&L (position
+    # currently held); "Realized" = its exact complement (finalized
+    # status OR a booked realized pnl — catches both close conventions).
+    # Parameter-bound (injection-safe); `view` is already sanitized to
+    # one of {realized, unrealized, None} at the route.
+    _status_ph = ",".join("?" * len(_FINALIZED_TRADE_STATUSES))
+    if view == "unrealized":
+        where.append(
+            "(COALESCE(status, 'open') NOT IN (%s) AND pnl IS NULL)"
+            % _status_ph)
+        params.extend(_FINALIZED_TRADE_STATUSES)
+    elif view == "realized":
+        where.append(
+            "(COALESCE(status, 'open') IN (%s) OR pnl IS NOT NULL)"
+            % _status_ph)
+        params.extend(_FINALIZED_TRADE_STATUSES)
     sql = "SELECT * FROM trades WHERE " + " AND ".join(where)
     sql += " ORDER BY timestamp DESC LIMIT ?"
     params.append(limit)
@@ -2214,6 +2266,16 @@ def trades():
         kind = ""  # all
     sql_kind = kind or None
 
+    # Realized / unrealized view filter — orthogonal to the
+    # stocks/options `kind` tab. 'realized' = finalized transactions
+    # (closed round trips + never-filled orders), 'unrealized' = open
+    # positions held, '' = both. Sanitized like `kind` so an arbitrary
+    # URL param can't reach the SQL. Wired 2026-06-18.
+    view = request.args.get("view", "", type=str)
+    if view not in ("realized", "unrealized"):
+        view = ""  # all
+    sql_view = view or None
+
     # Symbol search — case-insensitive prefix on symbol/OCC.
     # Sanitize: strip whitespace, cap length to defend against absurd
     # inputs. Empty/None means no filter. Wired 2026-05-11 (TODO #3).
@@ -2228,43 +2290,49 @@ def trades():
         if prof:
             prof_trades = _get_trade_history_for_profile(
                 prof["id"], limit=200, kind=sql_kind, search=search,
+                view=sql_view,
             )
             for t in prof_trades:
                 t["profile_name"] = prof["name"]
                 t["profile_id"] = prof["id"]
                 t["segment"] = prof["name"]
-            try:
-                ctx = build_user_context_from_profile(prof["id"])
-                _enrich_trade_history_with_live_pnl(prof_trades, ctx)
-            except Exception as exc:
-                logger.warning(
-                    "trades(): live-P&L enrichment failed for profile %d: %s",
-                    prof["id"], exc,
-                )
+            # The Realized view shows only finalized rows; never borrow a
+            # live unrealized mark onto them (it would read as an
+            # unrealized number on a "locked-in P&L" row). Enrich for the
+            # All + Unrealized views, where open positions need the mark.
+            if view != "realized":
+                try:
+                    ctx = build_user_context_from_profile(prof["id"])
+                    _enrich_trade_history_with_live_pnl(prof_trades, ctx)
+                except Exception as exc:
+                    logger.warning(
+                        "trades(): live-P&L enrichment failed for profile %d: %s",
+                        prof["id"], exc,
+                    )
             all_trades.extend(prof_trades)
     else:
         # All profiles mode (current behavior)
         for prof in profiles:
             prof_trades = _get_trade_history_for_profile(
                 prof["id"], limit=100, kind=sql_kind, search=search,
+                view=sql_view,
             )
             for t in prof_trades:
                 t["profile_name"] = prof["name"]
                 t["profile_id"] = prof["id"]
                 t["segment"] = prof["name"]
-            try:
-                ctx = build_user_context_from_profile(prof["id"])
-                _enrich_trade_history_with_live_pnl(prof_trades, ctx)
-            except Exception as exc:
-                logger.warning(
-                    "trades(): live-P&L enrichment failed for profile %d: %s",
-                    prof["id"], exc,
-                )
+            if view != "realized":  # see single-profile branch above
+                try:
+                    ctx = build_user_context_from_profile(prof["id"])
+                    _enrich_trade_history_with_live_pnl(prof_trades, ctx)
+                except Exception as exc:
+                    logger.warning(
+                        "trades(): live-P&L enrichment failed for profile %d: %s",
+                        prof["id"], exc,
+                    )
             all_trades.extend(prof_trades)
 
     # Server-side sorting
-    sort_by = request.args.get("sort", "timestamp")
-    sort_dir = request.args.get("dir", "desc")
     sort_key_map = {
         "timestamp": lambda t: t.get("timestamp", ""),
         "symbol": lambda t: t.get("symbol", ""),
@@ -2275,8 +2343,15 @@ def trades():
         "pnl": lambda t: float(t.get("pnl", 0) or 0),
         "profile": lambda t: t.get("profile_name", ""),
     }
-    key_fn = sort_key_map.get(sort_by, sort_key_map["timestamp"])
-    all_trades.sort(key=key_fn, reverse=(sort_dir == "desc"))
+    # Whitelist sort params to the known column keys / directions. They
+    # are reflected into an inline <script> as JS string literals, and
+    # arbitrary input there breaks the sort handler (which silently stops
+    # preserving the active filters on column-click). Clamp like kind/view.
+    sort_by = request.args.get("sort", "timestamp")
+    if sort_by not in sort_key_map:
+        sort_by = "timestamp"
+    sort_dir = "asc" if request.args.get("dir", "desc") == "asc" else "desc"
+    all_trades.sort(key=sort_key_map[sort_by], reverse=(sort_dir == "desc"))
 
     # Server-side pagination
     page = request.args.get("page", 1, type=int)
@@ -2295,7 +2370,7 @@ def trades():
                            page=page, total_pages=total_pages,
                            page_links=page_links,
                            total_trades=total, sort_by=sort_by, sort_dir=sort_dir,
-                           kind=kind, search=search or "")
+                           kind=kind, view=view, search=search or "")
 
 
 def _build_page_links(current_page, total_pages, window=2):

@@ -123,7 +123,8 @@ class TestTradesRouteAcceptsKindParam:
         hiding)."""
         captured_calls = []
 
-        def fake_history(profile_id, limit=100, kind=None, search=None):
+        def fake_history(profile_id, limit=100, kind=None, search=None,
+                         view=None):
             captured_calls.append({
                 "profile_id": profile_id, "limit": limit, "kind": kind,
             })
@@ -150,7 +151,8 @@ class TestTradesRouteAcceptsKindParam:
     def test_kind_options_query_param_filters_via_sql(self, monkeypatch):
         captured = []
 
-        def fake_history(profile_id, limit=100, kind=None, search=None):
+        def fake_history(profile_id, limit=100, kind=None, search=None,
+                         view=None):
             captured.append(kind)
             return []
 
@@ -173,7 +175,8 @@ class TestTradesRouteAcceptsKindParam:
         so an injected URL param can't break the SQL."""
         captured = []
 
-        def fake_history(profile_id, limit=100, kind=None, search=None):
+        def fake_history(profile_id, limit=100, kind=None, search=None,
+                         view=None):
             captured.append(kind)
             return []
 
