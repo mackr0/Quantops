@@ -172,7 +172,8 @@ def get_active_strategies(market_type: str,
                           db_path: Optional[str] = None,
                           *,
                           enable_stocks: bool = True,
-                          enable_crypto: bool = False) -> List[Any]:
+                          enable_crypto: bool = False,
+                          enable_alt_data: bool = True) -> List[Any]:
     """Discover applicable strategies and return the actively-trading set.
 
     Filtering:
@@ -185,6 +186,14 @@ def get_active_strategies(market_type: str,
         every crypto-applicable strategy. A universal (`"*"`) strategy
         qualifies under either flag. Defaults preserve current
         behavior (stocks on, crypto off).
+      * 2026-06-18 — `enable_alt_data=False` (the NoAltData ablation arm)
+        drops every strategy that declares `USES_ALT_DATA = True`. Those
+        strategies source insider / short-interest / analyst data — the
+        same alt-data block `enable_alt_data` blanks in the AI prompt —
+        so leaving them active would let the arm's candidate POOL be
+        shaped by alt-data even though the prompt hides it. Gating them
+        here (the one place the active set is decided) keeps the
+        ablation symmetric across pool and prompt.
 
     `market_type` is still consulted for `discover_strategies` (the
     APPLICABLE_MARKETS list filter), but within-stock filtering is now
@@ -211,6 +220,11 @@ def get_active_strategies(market_type: str,
         if getattr(mod, "AUTO_GENERATED", False):
             if auto_status.get(name) != "active":
                 continue
+        # NoAltData ablation: an alt-data-sourced strategy must not even
+        # run for this profile, or it would rank alt-data names into the
+        # shared candidate pool the AI selects from.
+        if not enable_alt_data and getattr(mod, "USES_ALT_DATA", False):
+            continue
         applicable = getattr(mod, "APPLICABLE_MARKETS", [])
         # Asset-class enablement gate (2026-05-19). A strategy is kept
         # iff the operator has the relevant asset class enabled for

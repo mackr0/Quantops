@@ -144,8 +144,6 @@ def test_get_shared_ensemble_uses_persisted_cache_after_restart(fresh_cache_db, 
         "raw": {},
         "cost_calls": 4,
     }
-    sac.put("ensemble", "stocks", persisted_result, db_path=fresh_cache_db)
-
     # Simulate restart: clear the in-process cache.
     tp._ensemble_cache = {}
     tp._ensemble_cache_cycle = 0
@@ -156,6 +154,16 @@ def test_get_shared_ensemble_uses_persisted_cache_after_restart(fresh_cache_db, 
     ctx.ai_provider = "anthropic"
     ctx.ai_model = "claude-haiku-4-5-20251001"
     ctx.ai_api_key = "fake"
+    ctx.disabled_specialists = "[]"
+
+    # Seed the SQLite cache under the SAME content-sensitive key the
+    # code computes (segment + hash of the ensemble input). Restart
+    # safety must hold for the real key scheme — the key stopped being
+    # segment-only on 2026-06-18 (it leaked one arm's verdicts to
+    # every same-segment arm), so this seeds the real key it will look
+    # up rather than a hardcoded "stocks".
+    cache_key = "stocks:" + tp._ensemble_content_hash([], ctx)
+    sac.put("ensemble", cache_key, persisted_result, db_path=fresh_cache_db)
 
     # If _get_shared_ensemble calls run_ensemble, that's the bug.
     with patch("ensemble.run_ensemble") as mock_run:

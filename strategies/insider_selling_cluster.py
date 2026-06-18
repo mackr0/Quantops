@@ -20,6 +20,9 @@ from typing import Any, Dict, List
 
 NAME = "insider_selling_cluster"
 APPLICABLE_MARKETS = ["stocks"]
+# Sources alternative data (Form-4 insider activity). Gated out of the
+# candidate pool for the NoAltData ablation arm — see insider_cluster.
+USES_ALT_DATA = True
 
 
 def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:

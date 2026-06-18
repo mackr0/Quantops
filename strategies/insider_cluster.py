@@ -19,6 +19,11 @@ from typing import Any, Dict, List
 
 NAME = "insider_cluster"
 APPLICABLE_MARKETS = ["stocks"]
+# Sources alternative data (Form-4 insider activity). The NoAltData
+# ablation arm (enable_alt_data=0) must NOT let this strategy shape the
+# candidate pool — otherwise that arm still gets alt-data-driven symbol
+# selection even though the AI prompt's alt-data block is blanked.
+USES_ALT_DATA = True
 
 
 def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:

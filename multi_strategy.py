@@ -50,6 +50,11 @@ def aggregate_candidates(ctx: Any, universe: List[str],
         market_type, db_path=db_path,
         enable_stocks=getattr(ctx, "enable_stocks", True),
         enable_crypto=getattr(ctx, "enable_crypto", False),
+        # 2026-06-18 — NoAltData ablation: exclude alt-data-sourced
+        # strategies so the candidate POOL this arm sees is built from
+        # price/volume/technical signals only (matching its blanked
+        # prompt). Without this the arm still got alt-data-ranked names.
+        enable_alt_data=getattr(ctx, "enable_alt_data", True),
     )
 
     # When the profile cannot go short, SELL votes from long-only entry

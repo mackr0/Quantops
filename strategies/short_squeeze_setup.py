@@ -20,6 +20,10 @@ from typing import Any, Dict, List
 
 NAME = "short_squeeze_setup"
 APPLICABLE_MARKETS = ["stocks"]
+# Sources alternative data (short interest / days-to-cover). Gated out
+# of the candidate pool for the NoAltData ablation arm — see
+# insider_cluster.
+USES_ALT_DATA = True
 
 
 def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:

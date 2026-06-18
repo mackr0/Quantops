@@ -223,6 +223,49 @@ def _get_shared_political_context(ctx):
         return result
 
 
+def _ensemble_content_hash(candidates_data, ctx, max_candidates=15):
+    """Fingerprint everything that determines the ensemble's output.
+
+    The specialist verdicts depend ONLY on the candidates the ensemble
+    will actually score — symbol, signal, price, reason, alt_data: the
+    fields `format_candidate_for_specialist` renders — plus the
+    per-profile disabled-specialist list and the model. They do NOT
+    depend on the profile's capital or positions. So two profiles whose
+    ensemble INPUT is identical may safely share one cached result;
+    any difference yields a distinct key and its own recompute:
+
+      * NoAltData  → `alt_data` is blanked ({} vs populated)         → miss
+      * NoMetaModel→ a different post-meta-pregate symbol set         → miss
+      * different `disabled_specialists`                              → miss
+
+    This replaces the old segment-only key, which served the FIRST
+    concurrent caller's verdicts (and risk VETOs) to every same-segment
+    profile — leaking one arm's meta-pregated / alt-data-enriched
+    cohort into the ablation arms that are supposed to lack it. Profiles
+    with identical config still collide on the same hash, so the
+    cost-saving for same-config replicas is preserved.
+    """
+    import hashlib
+    import json as _json
+    batch = (candidates_data or [])[:max_candidates]
+    fp = [
+        {
+            "s": c.get("symbol", ""),
+            "g": c.get("signal", ""),
+            "p": c.get("price", 0),
+            "r": (c.get("reason", "") or "")[:120],
+            "a": c.get("alt_data") or {},
+        }
+        for c in batch
+    ]
+    raw_disabled = getattr(ctx, "disabled_specialists", "[]") or "[]"
+    disabled = (raw_disabled if isinstance(raw_disabled, str)
+                else sorted(raw_disabled))
+    payload = {"c": fp, "d": disabled, "m": getattr(ctx, "ai_model", "")}
+    blob = _json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
+
+
 def _get_shared_ensemble(candidates_data, ctx):
     """Return ensemble result, cached per market_type per cycle.
 
@@ -258,7 +301,14 @@ def _get_shared_ensemble(candidates_data, ctx):
     global _ensemble_cache, _ensemble_cache_cycle
     import time as _t
 
-    cache_key = ctx.segment
+    # Content-sensitive key (2026-06-18): segment + a hash of the actual
+    # ensemble input. Same-config profiles still share; ablation arms
+    # whose candidates differ (alt_data blanked, meta-pregated symbol
+    # set, different disabled list) get their own verdicts instead of
+    # inheriting the first concurrent caller's. See
+    # _ensemble_content_hash.
+    cache_key = "%s:%s" % (ctx.segment,
+                           _ensemble_content_hash(candidates_data, ctx))
 
     # Cycle-bucket rotation — guarded by the meta lock so a rotation
     # check doesn't race with a per-key compute filling L1.
@@ -266,6 +316,10 @@ def _get_shared_ensemble(candidates_data, ctx):
     with _ensemble_lock:
         if now_bucket != _ensemble_cache_cycle:
             _ensemble_cache = {}
+            # Content-keyed locks accumulate one entry per distinct
+            # candidate-set per cycle; clear them on rotation so the
+            # dict can't grow unbounded across cycles.
+            _per_key_ensemble_locks.clear()
             _ensemble_cache_cycle = now_bucket
 
     # ── FAST PATH 1: L1 (in-process) cache hit — no lock required.

@@ -28,6 +28,11 @@ from typing import Any, Dict, List
 
 NAME = "analyst_upgrade_drift"
 APPLICABLE_MARKETS = ["stocks"]
+# Sources alternative data (analyst-consensus revisions — part of the
+# same alt-data block, `analyst_estimates`, that enable_alt_data gates
+# in the AI prompt). Gated out of the candidate pool for the NoAltData
+# ablation arm — see insider_cluster.
+USES_ALT_DATA = True
 
 
 def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
