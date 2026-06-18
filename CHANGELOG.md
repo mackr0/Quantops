@@ -5,6 +5,17 @@ at the top.
 
 ---
 
+## 2026-06-18 — Trades page: "Realized" no longer counts cancelled/never-filled orders, plus a P&L reconciliation header. Severity: MED (the Realized view was misleading — it read as if dead orders were realized trades).
+
+Follow-up to the toggle below. The first cut bucketed *every* finalized status — including `canceled` / `expired` / `rejected` / `done_for_day` — as "Realized." Those orders never filled and carry no P&L, so the Realized view for an active options profile was dominated by a wall of cancelled orders that read like realized trades. (Surfaced on EXP-A3-700K-AggressiveFree / p154: 24 cancelled + 15 expired rows showed under Realized, while its actual realized P&L is **−$12,533.66** and its headline +$25,346.57 is **unrealized** gains on 45 open positions.)
+
+- **Realized now means a booked P&L** (`pnl IS NOT NULL`) — an actual closed gain/loss. Cancelled / expired / rejected / never-filled orders (no pnl) appear only under **All**. Unrealized is unchanged (open lot, no booked pnl). The two views are disjoint; never-filled orders belong to neither.
+- **Reconciliation header (`_trades_pnl_summary`).** The trades page now shows **Realized P&L** (Σ booked pnl) and a **never-filled order count** so the cancelled rows are visibly separated from P&L. For a single profile it also shows **Unrealized** and **Total**, where `Total = equity − initial_capital` (the exact number the dashboard's overview shows) and `Unrealized = Total − Realized`. By construction `Realized + Unrealized == the dashboard P&L`, so /trades and the overview tell the same story — answering "there's no evidence for the +$25K" (it's unrealized, and realized is actually a loss).
+
+**Tests** (added to `tests/test_trades_realized_unrealized_2026_06_18.py`): Realized = booked-pnl rows only; cancelled/expired excluded from Realized but present in All; Realized/Unrealized disjoint with never-filled in neither; and `_trades_pnl_summary` realized sum / never-filled count / equity-based `realized + unrealized == total` reconciliation / negative-realized formatting. Full suite: 5,393 passed.
+
+---
+
 ## 2026-06-18 — Trades page: an All / Realized / Unrealized toggle so the ledger no longer muddles finalized trades with open positions. Severity: LOW (display clarity) + two robustness fixes found in review.
 
 The /trades table mixed still-open positions (showing a live unrealized mark) with finalized closed trades (locked-in P&L) in one list. Added a **Show: All / Realized / Unrealized** toggle — a second server-driven tab row, orthogonal to the existing Stocks/Options `kind` tabs (you can combine them, e.g. Options + Realized). Each axis preserves the other plus profile / search / sort / pagination.

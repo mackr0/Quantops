@@ -87,16 +87,29 @@ class TestViewFilter:
             "CLOSEL", "FILLCLOSE", "SELLOPENPNL", "EXPIRED", "CANCELD"}
         assert "PROT" not in _names(rows)
 
-    def test_realized_returns_only_finalized(
+    def test_realized_returns_only_booked_pnl(
             self, tmp_profile_db_with_lifecycle_rows):
         from views import _get_trade_history_for_profile
         rows = _get_trade_history_for_profile(
             tmp_profile_db_with_lifecycle_rows, limit=100, view="realized")
-        # closed + never-filled + a FILLED close (pnl present) + a still-
-        # 'open'-status sell that already booked pnl (pnl present wins).
+        # ONLY rows that booked a realized P&L. A filled close (pnl
+        # present) and a still-'open'-status sell that already booked pnl
+        # both count; cancelled/expired (pnl NULL) do NOT.
         assert _names(rows) == {
-            "CLOSEW", "CLOSEL", "FILLCLOSE", "SELLOPENPNL",
-            "EXPIRED", "CANCELD"}
+            "CLOSEW", "CLOSEL", "FILLCLOSE", "SELLOPENPNL"}
+
+    def test_cancelled_and_expired_are_not_realized(
+            self, tmp_profile_db_with_lifecycle_rows):
+        """The bug this fixes: never-filled orders carry no P&L and must
+        NOT appear under Realized (they read as fake realized trades).
+        They live only under All."""
+        from views import _get_trade_history_for_profile
+        pid = tmp_profile_db_with_lifecycle_rows
+        real = _names(_get_trade_history_for_profile(pid, view="realized"))
+        assert "CANCELD" not in real and "EXPIRED" not in real
+        # but they DO still exist in the full ledger
+        allr = _names(_get_trade_history_for_profile(pid, view=None))
+        assert {"CANCELD", "EXPIRED"} <= allr
 
     def test_unrealized_returns_only_open_lots_without_pnl(
             self, tmp_profile_db_with_lifecycle_rows):
@@ -132,17 +145,19 @@ class TestViewFilter:
         assert "FILLCLOSE" not in _names(
             _get_trade_history_for_profile(pid, view="unrealized"))
 
-    def test_realized_and_unrealized_partition_all(
+    def test_realized_and_unrealized_are_disjoint_within_all(
             self, tmp_profile_db_with_lifecycle_rows):
-        """The two views are disjoint and together equal the full
-        (non-protective) ledger — no row hides from both, none in both."""
+        """Realized and Unrealized never overlap, both are subsets of
+        All, and the only rows in neither are the never-filled orders."""
         from views import _get_trade_history_for_profile
         pid = tmp_profile_db_with_lifecycle_rows
         allr = _names(_get_trade_history_for_profile(pid, view=None))
         real = _names(_get_trade_history_for_profile(pid, view="realized"))
         unre = _names(_get_trade_history_for_profile(pid, view="unrealized"))
         assert real & unre == set()
-        assert real | unre == allr
+        assert real | unre <= allr
+        # the rows in neither bucket are exactly the never-filled orders
+        assert (allr - real - unre) == {"EXPIRED", "CANCELD"}
 
     def test_view_composes_with_kind(
             self, tmp_profile_db_with_lifecycle_rows):
@@ -153,8 +168,7 @@ class TestViewFilter:
         # equals realized; realized+options equals empty.
         assert _names(_get_trade_history_for_profile(
             pid, view="realized", kind="stocks")) == {
-                "CLOSEW", "CLOSEL", "FILLCLOSE", "SELLOPENPNL",
-                "EXPIRED", "CANCELD"}
+                "CLOSEW", "CLOSEL", "FILLCLOSE", "SELLOPENPNL"}
         assert _get_trade_history_for_profile(
             pid, view="realized", kind="options") == []
 
@@ -290,3 +304,56 @@ def test_finalized_status_set_matches_get_virtual_positions_exclusion():
     # open-lifecycle states the dashboard counts as held must NOT be here
     for s in ("open", "filled", "pending_fill", "pending", "needs_review"):
         assert s not in fin
+
+
+# ── Reconciliation summary (so /trades agrees with the dashboard) ──────
+
+def test_pnl_summary_realized_and_never_filled(
+        tmp_profile_db_with_lifecycle_rows):
+    from views import _trades_pnl_summary
+    pid = tmp_profile_db_with_lifecycle_rows
+    s = _trades_pnl_summary([pid])
+    # realized = Σ booked pnl: 100 - 100 + 75 - 20 = 55, over 4 rows.
+    assert s["realized"] == 55.0
+    assert s["realized_n"] == 4
+    # never-filled = 1 canceled + 1 expired (NOT closed, NOT pnl-bearing).
+    assert s["never_filled_n"] == 2
+    assert s["realized_str"] == "+$55.00"
+    # no equity supplied → no equity-based split.
+    assert s["total"] is None and s["unrealized"] is None
+
+
+def test_pnl_summary_reconciles_realized_plus_unrealized_to_total(
+        tmp_profile_db_with_lifecycle_rows):
+    """Single-profile: total = equity − initial_capital (the dashboard
+    number); unrealized = total − realized. realized + unrealized must
+    equal total, so the page reconciles with the overview."""
+    from views import _trades_pnl_summary
+    pid = tmp_profile_db_with_lifecycle_rows
+    s = _trades_pnl_summary([pid], {pid: 710055.0}, {pid: 700000.0})
+    assert s["realized"] == 55.0
+    assert s["total"] == 10055.0          # 710,055 − 700,000
+    assert s["unrealized"] == 10000.0     # total − realized
+    assert round(s["realized"] + s["unrealized"], 2) == s["total"]
+    assert s["total_str"] == "+$10,055.00"
+
+
+def test_pnl_summary_negative_realized_uses_minus(
+        tmp_profile_db_with_lifecycle_rows, monkeypatch):
+    """A net realized loss formats with a leading minus and no equity
+    split when equity is unknown (mirrors profile 154's −$12,533.66)."""
+    import sqlite3
+    from views import _trades_pnl_summary
+    pid = tmp_profile_db_with_lifecycle_rows
+    # push realized net negative by adding a big loss close
+    conn = sqlite3.connect(f"quantopsai_profile_{pid}.db")
+    conn.execute(
+        "INSERT INTO trades (timestamp,symbol,side,qty,price,pnl,"
+        "signal_type,status) VALUES (?,?,?,?,?,?,?,?)",
+        ("2026-06-17T11:00:00", "BIGL", "sell", 1, 1.0, -1000.0, "BUY",
+         "closed"))
+    conn.commit()
+    conn.close()
+    s = _trades_pnl_summary([pid])
+    assert s["realized"] == -945.0        # 55 - 1000
+    assert s["realized_str"].startswith("−$")  # U+2212 minus, not "+"

@@ -512,24 +512,91 @@ def _safe_pending_orders(ctx):
 # dashboard's held entries (incl. open-ended states like 'needs_review',
 # 'filled', 'pending_fill' that are NOT finalized).
 #
-# A row is "Unrealized" (a position currently held) iff its status is
-# NOT finalized AND it has booked no realized P&L (`pnl IS NULL`).
-# "Realized" is the exact complement: finalized status OR a booked pnl.
-# The `pnl IS NULL` half matters because the journal has two close
-# conventions — most exits flip the entry to 'closed' + stamp `pnl`, but
-# some filled round-trips keep status='filled' on both legs while
-# `reconcile_trade_statuses` stamps the realized `pnl` on the closing
-# row; keying realized on "finalized OR pnl present" books a filled
-# close correctly either way. The two clauses are exact logical
-# complements over the (non-protective) ledger. (Edge: a position held
-# only as the leftover qty of an oversold/reversed exit row has no open
-# entry row of its own — it stays under Realized here and remains
-# dashboard-authoritative; oversells are anomalous and prevented
-# upstream by the order-id-isolation work.) Keep the test in sync.
+# Used by the "Unrealized" view to find still-open lots: a held position
+# is a row whose status is NOT in this set and which has booked no
+# realized pnl. "Realized" keys off `pnl IS NOT NULL` instead (an actual
+# booked gain/loss) — cancelled / expired / never-filled orders carry no
+# pnl and are neither realized nor held; they show only under "All".
+# (Edge: a position held only as the leftover qty of an oversold/reversed
+# exit row has no open entry row of its own and won't appear under
+# Unrealized; oversells are anomalous and prevented upstream by the
+# order-id-isolation work, and the dashboard stays authoritative.)
 _FINALIZED_TRADE_STATUSES = (
     "closed", "canceled", "expired", "rejected", "done_for_day",
     "auto_reconciled_phantom_close",
 )
+# Statuses for orders that never filled — counted separately on the
+# trades page so the user can see they are noise, not P&L.
+_NEVER_FILLED_STATUSES = ("canceled", "expired", "rejected", "done_for_day")
+
+
+def _trades_pnl_summary(profile_ids, account_equity_by_pid=None,
+                        initial_capital_by_pid=None):
+    """Reconciliation totals for the trades-page header.
+
+    realized   = Σ booked pnl across the profile(s) (an actual closed
+                 gain/loss).
+    never_filled = count of canceled/expired/rejected/done_for_day orders
+                 (pnl-less noise — shown so the user knows it isn't P&L).
+    total / unrealized: only when equity is supplied (single-profile
+                 view). total = equity − initial_capital (the SAME number
+                 the dashboard shows); unrealized = total − realized. By
+                 construction realized + unrealized == the dashboard P&L,
+                 so the page reconciles with the overview.
+    """
+    realized = 0.0
+    realized_n = 0
+    never_filled_n = 0
+    _ph = ",".join("?" * len(_NEVER_FILLED_STATUSES))
+    for pid in profile_ids:
+        db_path = f"quantopsai_profile_{pid}.db"
+        try:
+            with closing(open_profile_db(db_path)) as conn:
+                row = conn.execute(
+                    "SELECT COALESCE(SUM(pnl), 0), COUNT(*) "
+                    "FROM trades WHERE pnl IS NOT NULL"
+                ).fetchone()
+                realized += float(row[0] or 0)
+                realized_n += int(row[1] or 0)
+                never_filled_n += int(conn.execute(
+                    "SELECT COUNT(*) FROM trades WHERE COALESCE(status,'open') "
+                    "IN (%s)" % _ph, _NEVER_FILLED_STATUSES
+                ).fetchone()[0] or 0)
+        except Exception as exc:
+            logger.warning(
+                "_trades_pnl_summary: could not read profile %s: %s",
+                pid, exc,
+            )
+    def _money(x):
+        if x is None:
+            return None
+        sign = "+" if x >= 0 else "−"  # U+2212 minus
+        return "%s$%s" % (sign, format(abs(round(x, 2)), ",.2f"))
+
+    out = {
+        "realized": round(realized, 2),
+        "realized_str": _money(realized),
+        "realized_n": realized_n,
+        "never_filled_n": never_filled_n,
+        "total": None, "total_str": None,
+        "unrealized": None, "unrealized_str": None,
+    }
+    # Equity-based total only when a single profile's equity is known —
+    # mirrors the dashboard's `equity − initial_capital`, so the split
+    # reconciles exactly.
+    if (account_equity_by_pid and initial_capital_by_pid
+            and len(profile_ids) == 1):
+        pid = profile_ids[0]
+        eq = account_equity_by_pid.get(pid)
+        cap = initial_capital_by_pid.get(pid)
+        if eq is not None and cap and cap > 0:
+            total = float(eq) - float(cap)
+            unreal = total - realized
+            out["total"] = round(total, 2)
+            out["total_str"] = _money(total)
+            out["unrealized"] = round(unreal, 2)
+            out["unrealized_str"] = _money(unreal)
+    return out
 
 
 def _get_trade_history_for_profile(profile_id, limit=100, kind=None,
@@ -577,21 +644,23 @@ def _get_trade_history_for_profile(profile_id, limit=100, kind=None,
             where.append("(UPPER(symbol) LIKE ? OR "
                          "UPPER(COALESCE(occ_symbol, '')) LIKE ?)")
             params.extend([f"{s}%", f"{s}%"])
-    # Realized vs unrealized split (2026-06-18). "Unrealized" = a
-    # still-open lot (status NOT finalized) with no booked P&L (position
-    # currently held); "Realized" = its exact complement (finalized
-    # status OR a booked realized pnl — catches both close conventions).
+    # Realized vs unrealized split (2026-06-18).
+    #   Realized   = a row that booked a realized P&L (`pnl IS NOT NULL`)
+    #                — an actual closed trade with a gain/loss. Cancelled
+    #                / expired / rejected / never-filled orders have
+    #                `pnl IS NULL` and are NOT realized P&L; they appear
+    #                only under "All", never under Realized.
+    #   Unrealized = a still-open lot (status NOT finalized) with no
+    #                booked P&L — a position currently held.
+    # The two are disjoint; dead orders belong to neither (only "All").
     # Parameter-bound (injection-safe); `view` is already sanitized to
     # one of {realized, unrealized, None} at the route.
-    _status_ph = ",".join("?" * len(_FINALIZED_TRADE_STATUSES))
-    if view == "unrealized":
+    if view == "realized":
+        where.append("pnl IS NOT NULL")
+    elif view == "unrealized":
+        _status_ph = ",".join("?" * len(_FINALIZED_TRADE_STATUSES))
         where.append(
             "(COALESCE(status, 'open') NOT IN (%s) AND pnl IS NULL)"
-            % _status_ph)
-        params.extend(_FINALIZED_TRADE_STATUSES)
-    elif view == "realized":
-        where.append(
-            "(COALESCE(status, 'open') IN (%s) OR pnl IS NOT NULL)"
             % _status_ph)
         params.extend(_FINALIZED_TRADE_STATUSES)
     sql = "SELECT * FROM trades WHERE " + " AND ".join(where)
@@ -2363,6 +2432,39 @@ def trades():
     page_trades = all_trades[start:start + per_page]
     page_links = _build_page_links(page, total_pages, window=2)
 
+    # Reconciliation header: realized vs unrealized vs never-filled, so
+    # the trades page tells the same P&L story as the dashboard. For a
+    # single profile we also show the equity-based total (= dashboard
+    # number) split into realized (Σ booked pnl) and unrealized (the
+    # remainder, i.e. open-position marks). Best-effort — never blocks
+    # the page.
+    pnl_summary = None
+    try:
+        if selected_profile_int:
+            sel_prof = next((p for p in profiles
+                             if p["id"] == selected_profile_int), None)
+            equity_by, cap_by = {}, {}
+            if sel_prof:
+                cap_by[selected_profile_int] = float(
+                    sel_prof.get("initial_capital") or 0)
+                try:
+                    _sctx = build_user_context_from_profile(selected_profile_int)
+                    _acct = get_account_info(ctx=_sctx)
+                    equity_by[selected_profile_int] = float(
+                        _acct.get("equity") or 0)
+                except Exception as exc:
+                    logger.warning(
+                        "trades(): equity for P&L summary failed (profile "
+                        "%d): %s", selected_profile_int, exc,
+                    )
+            pnl_summary = _trades_pnl_summary(
+                [selected_profile_int], equity_by, cap_by)
+        elif profiles:
+            pnl_summary = _trades_pnl_summary([p["id"] for p in profiles])
+    except Exception as exc:
+        logger.warning("trades(): P&L summary failed: %s", exc)
+        pnl_summary = None
+
     return render_template("trades.html",
                            trades=page_trades,
                            profiles=profiles,
@@ -2370,7 +2472,8 @@ def trades():
                            page=page, total_pages=total_pages,
                            page_links=page_links,
                            total_trades=total, sort_by=sort_by, sort_dir=sort_dir,
-                           kind=kind, view=view, search=search or "")
+                           kind=kind, view=view, search=search or "",
+                           pnl_summary=pnl_summary)
 
 
 def _build_page_links(current_page, total_pages, window=2):

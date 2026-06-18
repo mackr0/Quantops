@@ -68,10 +68,33 @@
         <a href="?{{ _qs_base }}{{ _qs_keep_kind }}view=unrealized&sort={{ sort_by }}&dir={{ sort_dir }}{{ _qs_search }}" class="perf-tab {{ 'active' if view == 'unrealized' else '' }}">Unrealized</a>
     </div>
 </div>
-<p class="muted" style="font-size:0.8rem;margin:0 0 1rem 0;">
-    <strong>Realized</strong> = finalized trades with locked-in profit or loss (and orders that never filled).
+<p class="muted" style="font-size:0.8rem;margin:0 0 0.6rem 0;">
+    <strong>Realized</strong> = closed trades with locked-in profit or loss.
     <strong>Unrealized</strong> = positions you still hold, valued at the latest price.
+    Cancelled / expired orders never filled, so they carry no P&amp;L and show only under <strong>All</strong>.
 </p>
+{% if pnl_summary %}
+<div style="display:flex;flex-wrap:wrap;gap:0.4rem 1.4rem;align-items:baseline;
+            padding:0.6rem 0.85rem;margin:0 0 1rem;border:1px solid #e3e3ea;
+            border-radius:5px;background:#fafafb;font-size:0.9rem;">
+    <span><span class="muted">Realized P&amp;L</span>
+        <strong class="{{ 'pnl-pos' if pnl_summary.realized >= 0 else 'pnl-neg' }}">{{ pnl_summary.realized_str }}</strong>
+        <span class="muted" style="font-size:0.82rem;">· {{ pnl_summary.realized_n }} closed trade{{ '' if pnl_summary.realized_n == 1 else 's' }}</span>
+    </span>
+    {% if pnl_summary.total is not none %}
+    <span><span class="muted">Unrealized (open)</span>
+        <strong class="{{ 'pnl-pos' if pnl_summary.unrealized >= 0 else 'pnl-neg' }}">{{ pnl_summary.unrealized_str }}</strong>
+    </span>
+    <span><span class="muted">Total</span>
+        <strong class="{{ 'pnl-pos' if pnl_summary.total >= 0 else 'pnl-neg' }}">{{ pnl_summary.total_str }}</strong>
+        <span class="muted" style="font-size:0.82rem;">· matches the dashboard</span>
+    </span>
+    {% endif %}
+    {% if pnl_summary.never_filled_n %}
+    <span class="muted" style="font-size:0.82rem;">{{ pnl_summary.never_filled_n }} order{{ '' if pnl_summary.never_filled_n == 1 else 's' }} never filled — not P&amp;L</span>
+    {% endif %}
+</div>
+{% endif %}
 
 <article>
     <header>
