@@ -329,6 +329,7 @@
                     <th>Trades</th>
                     <th>Wins</th>
                     <th>Losses</th>
+                    <th>Scratch</th>
                     <th>P&amp;L</th>
                     <th>Return</th>
                 </tr>
@@ -340,8 +341,13 @@
                     <td>{{ m.trades }}</td>
                     <td class="pnl-pos">{{ m.wins }}</td>
                     <td class="pnl-neg">{{ m.losses }}</td>
+                    <td class="muted">{{ m.scratch | default(0) }}</td>
                     <td class="{{ 'pnl-pos' if m.pnl >= 0 else 'pnl-neg' }}">${{ "{:,.2f}".format(m.pnl) }}</td>
+                    {% if m.return_computable is defined and not m.return_computable %}
+                    <td class="muted">—</td>
+                    {% else %}
                     <td class="{{ 'pnl-pos' if m.return_pct >= 0 else 'pnl-neg' }}">{{ "{:+.1f}".format(m.return_pct) }}%</td>
+                    {% endif %}
                 </tr>
                 {% endfor %}
             </tbody>

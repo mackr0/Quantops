@@ -145,6 +145,7 @@
                         <th>Closed Trades</th>
                         <th>Wins</th>
                         <th>Losses</th>
+                        <th><span class="tip" data-tip="Breakeven trades — closed at $0 P&amp;L (e.g. a short opened and covered at the same price). Counted as a closed trade but neither a win nor a loss.">Scratch</span></th>
                         <th>P&amp;L</th>
                         <th>Return</th>
                     </tr>
@@ -156,8 +157,13 @@
                         <td>{{ mo.trades }}</td>
                         <td class="pnl-pos">{{ mo.wins }}</td>
                         <td class="pnl-neg">{{ mo.losses }}</td>
+                        <td class="muted">{{ mo.scratch }}</td>
                         <td class="{{ 'pnl-pos' if mo.pnl >= 0 else 'pnl-neg' }}">${{ "{:,.2f}".format(mo.pnl) }}</td>
+                        {% if mo.return_computable is defined and not mo.return_computable %}
+                        <td class="muted"><span class="tip" data-tip="No equity snapshot for this month yet — the return baseline populates as daily snapshots accrue">—</span></td>
+                        {% else %}
                         <td class="{{ 'pnl-pos' if mo.return_pct >= 0 else 'pnl-neg' }}">{{ "{:+.1f}".format(mo.return_pct) }}%</td>
+                        {% endif %}
                     </tr>
                     {% endfor %}
                 </tbody>

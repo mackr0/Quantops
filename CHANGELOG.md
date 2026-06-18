@@ -5,6 +5,17 @@ at the top.
 
 ---
 
+## 2026-06-17 — Performance page: breakeven trades counted (the "12 trades, 6 wins, 0 losses" mystery) + honest return baseline. Severity: LOW (display correctness).
+
+The monthly table read e.g. "12 Closed Trades, 6 Wins, 0 Losses" — which doesn't add up. Cause: it counted every closed row in "Closed Trades" but bucketed only `pnl > 0` as wins and `pnl < 0` as losses, so a **breakeven** (`pnl == 0`) close fell into neither. The real data: 6 wins, 0 losses, and 7 breakevens — all stock OPEN (Opendoor) shorts opened and covered at $4.70 (cost basis matched the fill, so $0 realized is correct; not a P&L bug). Separately, "Return" showed **+0.0%** on a non-zero P&L because the month had no equity snapshot yet (post-reset) and the code fell back to 0.0%.
+
+- **Scratch bucket.** `metrics/legacy.py` (the `performance.html` source) and `views.py._calculate_risk_metrics` (the `ai_performance.html` source) now count `pnl == 0` as a separate `scratch` count, so **wins + losses + scratch == trades**. Both monthly tables render a Scratch column.
+- **Honest return baseline.** A new `return_computable` flag is False when there's no month equity snapshot; the templates render "—" instead of a fake `+0.0%`. `return_pct` stays a float (0.0) so the SVG chart / best-worst-month numeric consumers are unaffected.
+
+**Tests** (`tests/test_monthly_scratch_2026_06_17.py`): a win + a loss + two breakevens yields wins=1/losses=1/scratch=2 and the row adds up; `return_computable` is False without a snapshot while `return_pct` stays numeric. Full suite: 5,363 passed.
+
+---
+
 ## 2026-06-17 — AI ranked-alternate substitution: a trade blocked by a shared-account conflict backfills with the next AI-vetted alternate. Severity: MED (recovers lost trade slots on the shared conduit).
 
 13 virtual-account profiles share 3 Alpaca accounts, so a trade a profile wants is sometimes rejected because a SIBLING profile holds a conflicting position (Alpaca enforces position_intent / cross-direction account-wide). The slot was simply lost — even though the AI shortlisted ~10 similar vetted candidates. Now a blocked trade gives its slot to the next AI-vetted, **AI-sized** alternate (no fabricated sizing — each alternate carries its own size_pct/conviction). Stocks and option spreads, one pass.

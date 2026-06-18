@@ -2553,7 +2553,8 @@ def _calculate_risk_metrics(db_paths):
     )
 
     # --- Monthly Returns ---
-    monthly = defaultdict(lambda: {"trades": 0, "wins": 0, "losses": 0, "pnl": 0.0})
+    monthly = defaultdict(
+        lambda: {"trades": 0, "wins": 0, "losses": 0, "scratch": 0, "pnl": 0.0})
     for t in all_trades:
         ts = t["timestamp"]
         if len(ts) >= 7:
@@ -2566,6 +2567,12 @@ def _calculate_risk_metrics(db_paths):
             monthly[month_key]["wins"] += 1
         elif t["pnl"] < 0:
             monthly[month_key]["losses"] += 1
+        else:
+            # pnl == 0: a breakeven/scratch close (e.g. a short opened
+            # and covered at the same price). It's a real closed trade
+            # but neither a win nor a loss — count it separately so the
+            # table adds up (wins + losses + scratch == trades).
+            monthly[month_key]["scratch"] += 1
 
     # Build monthly returns list sorted most recent first
     # For return_pct, we use pnl / first equity of that month from snapshots,
@@ -2585,16 +2592,23 @@ def _calculate_risk_metrics(db_paths):
         except Exception:
             label = mk
         equity_start = snapshot_by_month.get(mk, 0)
-        return_pct = 0.0
-        if equity_start and equity_start > 0:
-            return_pct = round(m["pnl"] / equity_start * 100, 1)
+        # return_computable is False when there's no equity snapshot for
+        # the month yet (e.g. the month just started, or post-reset) —
+        # the template renders "—" so a missing baseline isn't shown as
+        # a real 0.0% return next to a non-zero P&L. return_pct stays a
+        # float (0.0) for any downstream numeric consumers.
+        return_computable = bool(equity_start and equity_start > 0)
+        return_pct = (round(m["pnl"] / equity_start * 100, 1)
+                      if return_computable else 0.0)
         monthly_list.append({
             "month": label,
             "trades": m["trades"],
             "wins": m["wins"],
             "losses": m["losses"],
+            "scratch": m["scratch"],
             "pnl": round(m["pnl"], 2),
             "return_pct": return_pct,
+            "return_computable": return_computable,
         })
     result["monthly_returns"] = monthly_list
 

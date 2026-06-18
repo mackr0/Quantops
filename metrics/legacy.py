@@ -1163,7 +1163,8 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
     # -----------------------------------------------------------------------
     # Monthly returns
     # -----------------------------------------------------------------------
-    monthly = defaultdict(lambda: {"trades": 0, "wins": 0, "losses": 0, "pnl": 0.0})
+    monthly = defaultdict(
+        lambda: {"trades": 0, "wins": 0, "losses": 0, "scratch": 0, "pnl": 0.0})
     for t in trades:
         ts = t.get("timestamp", "")
         if len(ts) >= 7:
@@ -1171,11 +1172,18 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
         else:
             continue
         monthly[mk]["trades"] += 1
-        monthly[mk]["pnl"] += t.get("pnl", 0) or 0
-        if (t.get("pnl", 0) or 0) > 0:
+        _p = t.get("pnl", 0) or 0
+        monthly[mk]["pnl"] += _p
+        if _p > 0:
             monthly[mk]["wins"] += 1
-        elif (t.get("pnl", 0) or 0) < 0:
+        elif _p < 0:
             monthly[mk]["losses"] += 1
+        else:
+            # pnl == 0: a breakeven/scratch close (e.g. a short opened
+            # and covered at the same price). A real closed trade but
+            # neither win nor loss — counted separately so the table
+            # adds up (wins + losses + scratch == trades).
+            monthly[mk]["scratch"] += 1
 
     # Equity at start of each month from snapshots
     snap_by_month = {}
@@ -1192,15 +1200,22 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
         except Exception:
             label = mk
         eq_start = snap_by_month.get(mk, 0)
-        return_pct = round(m["pnl"] / eq_start * 100, 1) if eq_start > 0 else 0.0
+        # return_computable is False when there's no equity snapshot for
+        # the month yet — the template shows "—" so a missing baseline
+        # isn't displayed as a real 0.0% return. return_pct stays a float
+        # (0.0) for the SVG / best-worst-month numeric consumers.
+        return_computable = eq_start > 0
+        return_pct = round(m["pnl"] / eq_start * 100, 1) if return_computable else 0.0
         monthly_list.append({
             "month": label,
             "month_key": mk,
             "trades": m["trades"],
             "wins": m["wins"],
             "losses": m["losses"],
+            "scratch": m["scratch"],
             "pnl": round(m["pnl"], 2),
             "return_pct": return_pct,
+            "return_computable": return_computable,
         })
     result["monthly_returns"] = monthly_list
 
