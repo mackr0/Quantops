@@ -279,7 +279,18 @@
                        OTM options). Spread-level math gives the truth.
                        Caught 2026-05-11. #}
                     <td>
-                        {% if t.spread_pnl is defined and t.spread_pnl is not none %}
+                        {% if is_terminal_unfilled %}
+                            {# 2026-06-18 — an expired/canceled/rejected order
+                               did NOT fill, so it has NO realized P&L. Do not
+                               borrow the still-open position's unrealized mark
+                               onto it: a protective take-profit that simply
+                               expired was rendering "-$157.32 (-1.1%)", which
+                               reads as a realized loss on a closing trade when
+                               the position is actually still open. The live
+                               position mark lives on the dashboard and in this
+                               row's Market Value detail. #}
+                            <span class="muted" title="This order {{ t.status }} without filling, so it has no realized P&amp;L. Any underlying position is still open — see its live mark on the dashboard.">&mdash;<br><small style="font-size:0.7rem;">did not fill</small></span>
+                        {% elif t.spread_pnl is defined and t.spread_pnl is not none %}
                             {# 2026-06-15 — show THIS LEG's own dollar P&L so
                                the spread decomposes per leg (long -$50 +
                                short -$13 = the -$63 on the spread header

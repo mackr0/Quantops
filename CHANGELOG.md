@@ -5,6 +5,16 @@ at the top.
 
 ---
 
+## 2026-06-18 — Trades ledger: an expired/unfilled order no longer borrows the open position's unrealized mark as if it were realized P&L. Severity: LOW (display correctness).
+
+A bracket child take-profit (e.g. CDE PROTECTIVE_TP) that **expired without filling** showed "-$157.32 (-1.1%)" in the P&L column. That number is the still-**open** position's *unrealized* mark — the order itself filled zero shares and has **no** realized P&L. Rendered next to a terminal status it reads like a realized loss on a closing trade, which is misleading.
+
+- **`templates/_trades_table.html`.** The P&L cell now branches first on `is_terminal_unfilled` (`status in expired / canceled / rejected / done_for_day`) and renders "— / did not fill" with a tooltip ("this order {status} without filling, so it has no realized P&L; any underlying position is still open — see its live mark on the dashboard") instead of the borrowed unrealized number. Filled closes are unchanged: a real realized P&L still renders normally.
+
+**Tests** (`tests/test_expired_protective_no_pnl_2026_06_18.py`): an expired protective shows "did not fill" and does NOT render the borrowed `157.32`; canceled / rejected / done_for_day behave identically; a genuinely closed sell with `pnl=243.10` still renders its P&L. Full suite: 5,366 passed.
+
+---
+
 ## 2026-06-17 — Performance page: breakeven trades counted (the "12 trades, 6 wins, 0 losses" mystery) + honest return baseline. Severity: LOW (display correctness).
 
 The monthly table read e.g. "12 Closed Trades, 6 Wins, 0 Losses" — which doesn't add up. Cause: it counted every closed row in "Closed Trades" but bucketed only `pnl > 0` as wins and `pnl < 0` as losses, so a **breakeven** (`pnl == 0`) close fell into neither. The real data: 6 wins, 0 losses, and 7 breakevens — all stock OPEN (Opendoor) shorts opened and covered at $4.70 (cost basis matched the fill, so $0 realized is correct; not a P&L bug). Separately, "Return" showed **+0.0%** on a non-zero P&L because the month had no equity snapshot yet (post-reset) and the code fell back to 0.0%.
