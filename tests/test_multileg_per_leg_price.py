@@ -290,11 +290,15 @@ class TestOptionSellToOpenBuildsShortPosition:
         finally:
             os.unlink(db)
 
-    def test_stock_sell_with_no_long_does_not_open_short(self):
-        """Stocks use explicit `side='short'` for sell-to-open. A
-        stock `side='sell'` with no long lot is NOT a sell-to-open
-        (it would be a phantom — the bug shape we fixed for OPTIONS
-        only). Stock semantics are unchanged."""
+    def test_stock_sell_with_no_long_opens_a_real_short(self):
+        """Order-id truth (2026-06-18): a FILLED stock `side='sell'` with
+        no long lot is a real broker short sale and MUST surface as a
+        short — it is NOT dropped. The old 'stocks drop a bare sell' rule
+        is exactly what hid the UWMC oversell and produced ~$187K of
+        phantom equity (the sell proceeds stayed in cash with no
+        offsetting position). Intentional shorts should still journal
+        `side='short'` so the close routes through 'cover'; options keep
+        their own sell-to-open handling."""
         db = _make_db()
         try:
             conn = sqlite3.connect(db)
@@ -310,9 +314,12 @@ class TestOptionSellToOpenBuildsShortPosition:
 
             from journal import get_virtual_positions
             positions = get_virtual_positions(db)
-            # No long lot to consume + no occ → produces nothing
-            # (stock sell-to-open requires explicit 'short' side)
-            assert positions == []
+            # A bare filled stock sell = sold 100 shares never owned = a
+            # real -100 short. Surfacing it keeps virtual == broker
+            # (order-id truth); dropping it was the phantom-equity bug.
+            assert len(positions) == 1
+            assert positions[0]["symbol"] == "AAPL"
+            assert positions[0]["qty"] == -100
         finally:
             os.unlink(db)
 

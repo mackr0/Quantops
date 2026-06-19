@@ -30,7 +30,7 @@ This v2.1 design replaces v1 (the original 13-profile table earlier in this file
 - **3 Alpaca paper accounts** = real broker accounts the system uses for execution + funding. NOT the unit of accounting for the user.
 - **N virtual QuantOps profiles** = the actual units of accounting. Each = one strategy with its own initial_capital, AI config, risk params, journal, P&L. Many profiles share one Alpaca account.
 - **The journal is truth.** Dashboard equity is computed from `journal.get_virtual_account_info()`, NOT from broker API.
-- **The seven-tier integrity contract** (order_id pairing, qty parity, value parity, cash parity, basis parity, equity identity, reconciler heartbeat — all in `aggregate_audit.py` and `integrity_audit.py`) runs every 10 minutes via `audit_runner.detect_and_alert_new_drift`. First detection of any new drift emails the operator. This means the experiment's measurements are trustworthy — any leak between broker and journal surfaces within minutes.
+- **The book-integrity gate runs BEFORE entries on every trading cycle** (`multi_scheduler._run_integrity_gate`): broker drift (virtual qty == broker qty per account) and decomposition ((equity − initial) == realized + unrealized per profile). On any finding it **engages the kill switch**, so new entries halt on the same cycle the divergence appears (exits/covers still run) — and emails the operator. This replaced the old `audit_runner`, which ran *after* trading on a 10-min interval, only emailed, and (2026-06-18) was found to audit the wrong profile range (1-11, never the experiment's 145-154), which is how a ~$187K phantom-equity oversell across 10 profiles went undetected for ~a day. Enforcement now runs in-line with trading, so any broker↔journal leak halts the book instead of just sending mail.
 
 ---
 
@@ -283,7 +283,7 @@ The toggle is flipped ON when transitioning to live-money operation (the $25K re
 
 ## Stop / retune / restart conditions
 
-The system that supports this experiment is tested (4,561 tests, 1 skipped) and audited (seven-tier integrity contract running every 10 min). The first 2 weeks after any cohort start are treated as system shakeout, not a measurement window — the actual ablation-comparison clock starts on day 15 if days 1–14 ran clean.
+The system that supports this experiment is tested (full suite, see CHANGELOG) and gated (a book-integrity check runs before entries every trading cycle and halts the book on any broker↔journal divergence — see "The book-integrity gate" above). The first 2 weeks after any cohort start are treated as system shakeout, not a measurement window — the actual ablation-comparison clock starts on day 15 if days 1–14 ran clean.
 
 The experiment design is cohort-independent: if a cohort has to be reset, the same 13-profile A1/A2/A3 structure is re-created and the measurement clock restarts. Profile IDs shift across cohorts; the stable identifiers are the experiment names (`EXP-A1-FullSystemStandard`, `EXP-A2-NoAltData`, etc.).
 

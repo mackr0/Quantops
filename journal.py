@@ -1446,8 +1446,20 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
                     "    (side IN ('buy', 'short') AND "
                     "     COALESCE(status, 'open') NOT IN "
                     "     ('canceled', 'expired', 'rejected', "
-                    "      'done_for_day', 'closed', 'pending_protective', "
-                    "      'auto_reconciled_phantom_close'))"
+                    "      'done_for_day', 'pending_protective', "
+                    "      'auto_reconciled_phantom_close')"
+                    # 2026-06-18 — INCLUDE closed STOCK buys (occ NULL) in
+                    # the FIFO timeline so a sell that closed them is
+                    # matched in order, and a real oversell (a sell beyond
+                    # every buy ever placed) surfaces as a short instead of
+                    # vanishing — the dropping is what hid the UWMC shorts
+                    # and left ~$187K of phantom equity. Unconsumed
+                    # closed-buy lots are removed right after this FIFO
+                    # pass, so a status-flip close with no sell can't show
+                    # as a phantom long. Closed shorts and closed OPTION
+                    # buys stay excluded (resolved positions).
+                    "     AND (COALESCE(status, 'open') != 'closed' "
+                    "          OR (side = 'buy' AND occ_symbol IS NULL)))"
                     "    OR "
                     "    (side IN ('sell', 'cover') AND "
                     "     COALESCE(status, 'open') NOT IN "
@@ -1590,48 +1602,41 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
             pos_meta[key] = {"symbol": symbol, "occ_symbol": occ_symbol}
 
         if side == "buy":
-            long_lots.setdefault(key, []).append([qty, price])
+            # 3rd element tags a CLOSED stock buy (now included in the
+            # FIFO timeline, 2026-06-18). It still consumes sells in order
+            # (so a round-trip nets flat and a real oversell surfaces as a
+            # short), but any UNCONSUMED remainder is dropped before the
+            # positions are built — a closed buy is gone, never a held
+            # long. Open buys carry False and stay as normal lots.
+            long_lots.setdefault(key, []).append(
+                [qty, price, row_status == "closed"])
         elif side == "short":
             short_lots.setdefault(key, []).append([qty, price])
         elif side == "sell":
-            # Closes a long. FIFO-consume from long_lots first.
+            # Closes a long. FIFO-consume from OPEN long lots first.
             remaining = qty
             ll = long_lots.setdefault(key, [])
-            consumed_any = False
             while remaining > 0 and ll:
                 consumed = min(ll[0][0], remaining)
                 ll[0][0] -= consumed
                 remaining -= consumed
-                consumed_any = True
                 if ll[0][0] <= 0.001:
                     ll.pop(0)
-            # A leftover after consuming becomes a SHORT lot when:
-            #   • OPTION SELL-TO-OPEN: a multileg short leg writes
-            #     side='sell' (OptionLeg.side is 'buy'/'sell'), so a
-            #     `sell` with no long lot is a sell-to-open short, not
-            #     a phantom close. (Caught 2026-05-11.)
-            #   • STOCK OVERSELL: a stock `sell` that consumed some
-            #     long and then went PAST it really opened a broker
-            #     short (you sold more shares than you held). The old
-            #     code DROPPED that remainder, hiding the short — which
-            #     made the delta-hedge runaway invisible and let
-            #     certify(book) disagree with the order-id truth
-            #     (p128 SOUN: a 3772 sell oversold a 3672 long by 100;
-            #     the 100-share short vanished). 2026-06-16.
-            #
-            # A stock `sell` that matched NO open long (consumed_any
-            # False) is an orphan/closed-round-trip artifact — the
-            # entry was excluded as 'closed' — and is still dropped, so
-            # completed round-trips never flash a phantom short.
-            #
-            # 2026-06-17 — a 'closed' OPTION sell-to-open is a RESOLVED
-            # short (covered / expired / assigned) and must NOT spawn a
-            # phantom short lot. This is the expired-multileg-short
-            # orphan: the lifecycle sweep marks the leg 'closed' but
-            # get_virtual kept reporting its OCC as held. (Stock
-            # oversell shorts come through consumed_any and are
-            # unaffected; an OPEN option short still creates its lot.)
-            if (remaining > 0 and (occ_symbol or consumed_any)
+            # Whatever remains after consuming the FIFO long lots — which
+            # now include CLOSED stock buys in timestamp order, so a
+            # round-trip's sell matches its (closed) buy and nets flat — is
+            # a real short lot:
+            #   • STOCK OVERSELL — sold more shares than were EVER bought
+            #     → a genuine broker short. MUST be booked: order-id truth
+            #     says a filled sell always moves the net. Dropping it is
+            #     the phantom-equity bug (the cash credit survives, the
+            #     short liability vanishes). p128 SOUN (3772 sell over a
+            #     3672 long) and the 2026-06-18 UWMC oversells land here.
+            #   • OPTION SELL-TO-OPEN — a multileg short leg (side='sell').
+            #     An OPEN leg creates the short lot; a 'closed' /
+            #     phantom-close leg is a RESOLVED short and must not spawn
+            #     a phantom (the expired-multileg-short orphan, 2026-06-17).
+            if (remaining > 0
                     and not (occ_symbol and row_status in (
                         "closed", "auto_reconciled_phantom_close"))):
                 short_lots.setdefault(key, []).append(
@@ -1647,6 +1652,33 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
                 remaining -= consumed
                 if sl[0][0] <= 0.001:
                     sl.pop(0)
+
+    # 2026-06-18 — drop any UNCONSUMED closed-origin long lots. A CLOSED
+    # stock buy was added to the FIFO timeline so a same-symbol sell
+    # matches it in order (round-trip nets flat; a real oversell beyond
+    # every buy surfaces as a short above). But a closed buy is gone —
+    # whatever a sell didn't consume must NOT linger as a held long, or a
+    # status-flip close with no sell would read as a phantom long. Open
+    # buys (3rd element False) are untouched.
+    #
+    # KNOWN LIMITATION (anomalous data only): if a symbol has an ORPHAN
+    # closed buy (status='closed' with no matching sell) that is OLDER
+    # than a genuinely-held open buy, a later partial sell consumes the
+    # orphan (FIFO head) instead of the open lot, over-stating the long.
+    # The live close machinery never produces this state — _task_update_
+    # fills FIFO-closes a buy only alongside its triggering sell, and the
+    # reconciler only flips a buy 'closed' when broker qty<=0 (i.e. NOT
+    # while a newer lot is held). It only arises from manual/historical
+    # data repair, and the per-cycle integrity gate catches the symptom
+    # (broker-drift: virtual qty != broker qty) and HALTS. A fresh-start
+    # reset clears any such state. A perfect per-row resolution isn't
+    # possible without recorded sell↔buy pairing, so the gate is the
+    # backstop by design.
+    for _k in long_lots:
+        lots = long_lots[_k]
+        if any(len(lot) > 2 and lot[2] for lot in lots):
+            long_lots[_k] = [lot for lot in lots
+                             if not (len(lot) > 2 and lot[2])]
 
     # Build position dicts. A position-key can have BOTH a long and
     # a short open (rare for stock; common for option spreads where

@@ -320,9 +320,19 @@ def _collect_aggregate_drift(
 
     rows: List[Dict[str, Any]] = []
     err: Optional[str] = None
+    # 2026-06-18 — discover the live profiles dynamically instead of the
+    # hardcoded range(1, 12). That range never covered the experiment
+    # (profiles 145-154), so /issues was structurally blind to it — the
+    # same class defect that let the UWMC phantom hide. Fall back to the
+    # old range only if discovery fails, so /issues still renders.
+    try:
+        from models import get_active_profile_ids
+        _pids = list(get_active_profile_ids()) or list(range(1, 12))
+    except Exception:
+        _pids = list(range(1, 12))
     try:
         from aggregate_audit import audit_aggregate_drift
-        audit = audit_aggregate_drift(profile_ids=range(1, 12))
+        audit = audit_aggregate_drift(profile_ids=_pids)
         for d in audit.get("drift", []):
             # aggregate_audit returns `account` + `kind`; tolerate
             # alternate key names from older callers + tests.
@@ -360,7 +370,7 @@ def _collect_aggregate_drift(
     # match (different marks, missing multipliers, etc.).
     try:
         from aggregate_audit import audit_account_value_parity
-        v_audit = audit_account_value_parity(profile_ids=range(1, 12))
+        v_audit = audit_account_value_parity(profile_ids=_pids)
         for d in v_audit.get("drift", []):
             acct = d.get("account", "?")
             cat = d.get("kind") or "value_drift"
@@ -394,7 +404,7 @@ def _collect_aggregate_drift(
     # unrealized_pl divergence — bugs the other two audits can't see.
     try:
         from integrity_audit import audit_equity_identity_all
-        i_audit = audit_equity_identity_all(profile_ids=range(1, 12))
+        i_audit = audit_equity_identity_all(profile_ids=_pids)
         for d in i_audit.get("drift", []):
             pid = d.get("profile_id", "?")
             rows.append({
@@ -424,7 +434,7 @@ def _collect_aggregate_drift(
     # manual deposit) and trades that hit broker but not the journal.
     try:
         from aggregate_audit import audit_account_cash_parity
-        c_audit = audit_account_cash_parity(profile_ids=range(1, 12))
+        c_audit = audit_account_cash_parity(profile_ids=_pids)
         for d in c_audit.get("drift", []):
             acct = d.get("account", "?")
             rows.append({
@@ -452,7 +462,7 @@ def _collect_aggregate_drift(
     # if the reconciler isn't running. Stale (>60min) per profile = error.
     try:
         from integrity_audit import audit_reconciler_heartbeat_all
-        hb_audit = audit_reconciler_heartbeat_all(profile_ids=range(1, 12))
+        hb_audit = audit_reconciler_heartbeat_all(profile_ids=_pids)
         for d in hb_audit.get("drift", []):
             pid = d.get("profile_id", "?")
             age = d.get("age_minutes")
@@ -484,7 +494,7 @@ def _collect_aggregate_drift(
     # cost-allocation drift.
     try:
         from aggregate_audit import audit_account_basis_parity
-        b_audit = audit_account_basis_parity(profile_ids=range(1, 12))
+        b_audit = audit_account_basis_parity(profile_ids=_pids)
         for d in b_audit.get("drift", []):
             acct = d.get("account", "?")
             sym = d.get("symbol", "?")

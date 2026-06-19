@@ -230,8 +230,14 @@ class TestHedgeJournaledAsShortNotSell:
     hedger re-shorts the full delta every cycle → unbounded short.
     """
 
-    def test_get_virtual_drops_stock_sell_but_tracks_short(self, tmp_db):
-        """Root-cause pin: prove WHY the hedge must be 'short'."""
+    def test_bare_stock_sell_and_short_both_track_a_real_short(self, tmp_db):
+        """Order-id truth (2026-06-18): a FILLED stock 'sell' with no long
+        lot is a real short at the broker and MUST be tracked. Dropping it
+        (the old behavior) left the sell proceeds in equity with no
+        offsetting position — the UWMC phantom-equity oversell (10
+        profiles, ~$187K). The delta hedge still journals 'short' so its
+        CLOSE routes through 'cover', but a mis-journaled 'sell' hedge is
+        no longer silently invisible."""
         from journal import log_trade, get_virtual_positions
 
         def _qty(pos, sym):
@@ -240,21 +246,22 @@ class TestHedgeJournaledAsShortNotSell:
                     return r.get("qty", 0)
             return 0
 
-        # A stock SELL with no long lot → DROPPED (invisible).
+        # A bare stock SELL with no long lot → now tracked as a real short
+        # (was DROPPED pre-2026-06-18; that drop was the phantom bug).
         log_trade(symbol="ZZZA", side="sell", qty=50, price=10.0,
                   order_id="sell-no-long", status="open", db_path=tmp_db)
         pos = get_virtual_positions(tmp_db, price_fetcher=lambda s: 10.0)
-        assert _qty(pos, "ZZZA") == 0, (
-            "a bare stock 'sell' is dropped — this is exactly why a "
-            "hedge journaled 'sell' is invisible"
+        assert _qty(pos, "ZZZA") == -50, (
+            "a bare filled stock 'sell' opened a real broker short — it "
+            "must surface (order-id truth), not vanish into phantom equity"
         )
-        # A stock SHORT → tracked as a real short position.
+        # A stock SHORT → also tracked as a real short position.
         log_trade(symbol="ZZZB", side="short", qty=50, price=10.0,
                   order_id="short-1", status="open", db_path=tmp_db)
         pos = get_virtual_positions(tmp_db, price_fetcher=lambda s: 10.0)
         assert _qty(pos, "ZZZB") == -50, (
-            "a 'short' is tracked with negative qty — the hedge must "
-            "use this side so the book can see it"
+            "a 'short' is tracked with negative qty — the hedge uses this "
+            "side so its close routes through 'cover'"
         )
 
     def test_opening_short_hedge_is_journaled_side_short(self, tmp_db):

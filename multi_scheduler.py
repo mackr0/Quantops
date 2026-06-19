@@ -2971,6 +2971,106 @@ def _task_capture_broker_activities(ctx):
         )
 
 
+_INTEGRITY_REASON_PREFIX = "Book integrity FAILED"
+# Tracks whether the LAST gate run saw findings, so we email the operator
+# only on the first transition into a failure — even when another halt
+# (manual / loss-floor) is already in force and masks our reason text.
+_integrity_findings_active = False
+
+
+def _run_integrity_gate():
+    """THE book-integrity gate. Runs every trading cycle BEFORE any new
+    entries are placed, and AUTO-ENGAGES the kill switch on any
+    divergence so the entries this cycle are blocked (exits/covers still
+    run — the kill switch blocks entries only, so a corrupt book can be
+    unwound). A problem therefore halts trading on the SAME cycle it
+    appears — not on a slower side schedule.
+
+    Two checks, both scoped to the live (dynamically-discovered) profiles
+    and execution accounts, both of which caught the 2026-06-18 UWMC
+    phantom:
+      • broker drift — virtual qty == broker qty per account
+        (zero-tolerance: a share-count mismatch is always a real bug;
+         the phantom showed as broker=-41,907 vs virtual=0).
+      • decomposition — (equity − initial) == realized + unrealized per
+        profile, $250 tolerance so routine fee/slippage noise can't
+        false-halt the whole book.
+
+    Replaces the old `audit_runner` block, which ran AFTER trading on its
+    own interval, only emailed (never halted), and audited the wrong
+    profile range (1-11) so it never even looked at the experiment
+    (145-154). On the FIRST transition into a halt the operator is
+    emailed (best-effort); the kill-switch state is also shown on the
+    dashboard. Returns True when the books are clean."""
+    try:
+        from certify_books import check_broker_drift, check_decomposition
+        from kill_switch import activate, deactivate, is_active
+    except Exception:
+        logging.exception("integrity gate: imports failed — NOT trading blind")
+        return True  # fail-open on an import error rather than freeze
+    findings = []
+    try:
+        findings += list(check_broker_drift() or [])
+    except Exception:
+        logging.exception("integrity gate: broker-drift check failed")
+    try:
+        findings += list(check_decomposition(tolerance=250.0) or [])
+    except Exception:
+        logging.exception("integrity gate: decomposition check failed")
+    global _integrity_findings_active
+    if findings:
+        reason = ("%s — %d finding(s): %s" % (
+            _INTEGRITY_REASON_PREFIX, len(findings),
+            " | ".join(str(f) for f in findings[:6])))[:600]
+        already, prev_reason = is_active()
+        if (not already) or str(prev_reason).startswith(
+                _INTEGRITY_REASON_PREFIX):
+            # No halt yet, or our own integrity halt is already up —
+            # (re)stamp ours with the current findings.
+            activate(reason, set_by="integrity_auto")
+        else:
+            # A MANUAL / loss-floor halt is already in force. Trading is
+            # already stopped, so don't clobber its reason/provenance —
+            # overwriting it would make the clean-cycle auto-release below
+            # lift the human's kill switch (the reason-prefix is how we
+            # tell ours apart). Leave it; just log.
+            logging.error(
+                "INTEGRITY: findings present while a prior non-integrity "
+                "halt is active (%r) — left in place: %s",
+                prev_reason, reason)
+        logging.error(
+            "INTEGRITY HALT — new entries blocked until the books are "
+            "repaired: %s", reason)
+        if not _integrity_findings_active:
+            # FIRST detection of this integrity failure — surface it even
+            # if another halt already masked our reason on the dashboard.
+            _integrity_findings_active = True
+            try:
+                from notifications import send_email
+                send_email(
+                    "QuantOpsAI — book integrity FAILED (entries halted)",
+                    "The book-integrity gate found a broker/journal "
+                    "divergence before this trading cycle and blocked new "
+                    "entries until the books reconcile.\n\n" + reason,
+                )
+            except Exception:
+                logging.warning("integrity gate: operator email failed",
+                                exc_info=True)
+        return False
+    # Clean — auto-release ONLY a halt WE set; never override a manual or
+    # loss-floor kill switch (its reason won't carry our prefix, because
+    # the findings branch above never overwrites a non-integrity halt).
+    _integrity_findings_active = False
+    try:
+        on, why = is_active()
+        if on and str(why).startswith(_INTEGRITY_REASON_PREFIX):
+            deactivate(set_by="integrity_auto")
+            logging.info("Book integrity clean — integrity halt released.")
+    except Exception:
+        logging.exception("integrity gate: release check failed")
+    return True
+
+
 def _task_reconcile_trade_statuses(ctx):
     """Periodically reconcile trades.status against broker truth.
 
@@ -5223,12 +5323,10 @@ def main_loop(active_segments=None, legacy_mode=False):
     # 5min is the bound below which broker-side latency dominates.
     INTERVAL_CHECK_EXITS = 5 * 60
     INTERVAL_RESOLVE_PREDICTIONS = 60 * 60  # 60 minutes
-    # 2026-05-17 (#169): cross-profile integrity audit + first-detection
-    # alerter. 10 min cadence — fast enough that drift is caught quickly,
-    # slow enough that the five audits + the email path don't dominate
-    # the scheduler loop.
-    INTERVAL_AUDIT_RUNNER = 10 * 60
-    last_audit_run = 0.0
+    # 2026-06-18 — the old 10-min `audit_runner` cadence was removed. Book
+    # integrity is now checked by `_run_integrity_gate()` BEFORE entries
+    # every trading cycle (it halts on a finding instead of emailing
+    # after the fact).
 
     while not _shutdown:
         now = datetime.now(ET)
@@ -5399,6 +5497,14 @@ def main_loop(active_segments=None, legacy_mode=False):
                 return prof["name"]
 
             if due_profiles:
+                # INTEGRITY GATE (2026-06-18) — run the book-integrity
+                # checks BEFORE placing any new entries this cycle. On any
+                # broker/journal divergence it engages the kill switch, so
+                # the entries dispatched just below are blocked (exits
+                # still run). Runs EVERY cycle, in-line with trading — a
+                # problem halts entries on the same cycle it appears,
+                # instead of an email from a slower side audit.
+                _run_integrity_gate()
                 from concurrent.futures import ThreadPoolExecutor, as_completed
                 max_workers = min(len(due_profiles), 3)
                 logging.info(
@@ -5419,28 +5525,12 @@ def main_loop(active_segments=None, legacy_mode=False):
                             logging.exception(f"Profile {name} failed")
                 ran_something = True
 
-        # Audit runner (#169) — once per cycle, gated by its own
-        # interval. Cross-profile so it lives outside the per-profile
-        # task loop. Emails on first detection of any new drift
-        # signature; idempotent across re-runs.
-        if (time.time() - last_audit_run) >= INTERVAL_AUDIT_RUNNER:
-            try:
-                from audit_runner import detect_and_alert_new_drift
-                summary = detect_and_alert_new_drift()
-                if summary["new"]:
-                    logging.warning(
-                        "audit_runner: %d new drift item(s) (signatures: %s)",
-                        summary["new"],
-                        [it["signature"] for it in summary["new_items"]],
-                    )
-                if summary["resolved"]:
-                    logging.info(
-                        "audit_runner: %d drift item(s) resolved",
-                        summary["resolved"],
-                    )
-            except Exception:
-                logging.exception("audit_runner: cycle failed")
-            last_audit_run = time.time()
+        # NOTE (2026-06-18) — the old `audit_runner` block ran HERE, after
+        # trading, on its own interval, and only emailed. It has been
+        # replaced by `_run_integrity_gate()`, which runs BEFORE each
+        # cycle's entries and actually halts on a finding (see above). One
+        # gate, every cycle, in-line with trading — not a slower side
+        # audit that emails after the damage is done.
 
         # Update global timestamps (legacy mode + snapshot dedup)
         if ran_something:

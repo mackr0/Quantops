@@ -806,6 +806,20 @@ def ensure_protective_stops(api, positions, ctx, db_path,
             if not row:
                 continue
 
+            # 2026-06-18 — a per-arm "order-id-truth guard" was tried here
+            # and REMOVED: the `positions` snapshot already comes from
+            # get_virtual_positions (client.get_positions for virtual
+            # profiles), which since the same-day fix nets a closed
+            # position to 0 — so a flat/closed symbol never enters this
+            # sweep and the guard was moot. Worse, its flat signed-sum
+            # diverged from get_virtual_positions' FIFO+closed-origin
+            # netting and wrongly SKIPPED arming a genuinely-held position
+            # when an unbalanced closed row of the opposite sign coexisted,
+            # leaving real risk naked. Re-arm prevention now rests on the
+            # corrected get_virtual_positions (closed positions aren't in
+            # the snapshot) + the per-cycle integrity gate (halts on any
+            # broker↔journal drift).
+
             close_side = "buy" if is_short else "sell"
             abs_qty = abs(int(qty))
 
