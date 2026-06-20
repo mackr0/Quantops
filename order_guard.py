@@ -278,6 +278,7 @@ def allowable_buy_qty(
 def allowable_sell_qty(
     api, symbol: str, requested_qty: int,
     db_path: Optional[str] = None,
+    broker_drift_check: bool = True,
 ) -> tuple:
     """Pre-trade guard: return (allowed_qty, reason) for a SELL of `requested_qty`.
 
@@ -371,6 +372,17 @@ def allowable_sell_qty(
                 f"refused: profile virtually holds {own_virtual_qty}, "
                 f"requested {requested_qty}",
             )
+
+    # The per-profile journal check above is the load-bearing gate ("a
+    # profile may sell ONLY what its own book holds"). The broker
+    # cross-check below is a secondary drift sanity that needs a live
+    # list_positions call. The guarded-api door (see GuardedAlpacaApi)
+    # runs on EVERY sell with broker_drift_check=False so it stays
+    # journal-only — fast, and structurally incapable of consulting a
+    # sibling profile's holdings (the whole point). The explicit
+    # trader/pipeline call sites keep the broker drift check.
+    if not broker_drift_check:
+        return (requested_qty, "ok: journal-only (own book holds it)")
 
     # Sanity check against the broker. If the broker has fewer shares
     # than this profile claims, drift exists (something closed our
@@ -559,3 +571,144 @@ def allowable_cover_qty(
             f"requested {requested_qty}",
         )
     return (requested_qty, "ok")
+
+
+# ───────────────────────────────────────────────────────────────────────
+# THE DOOR — a single, unbypassable pre-submit gate on every broker order.
+#
+# Why this exists (2026-06-19): allowable_sell_qty ("a profile may sell
+# only what its OWN journal holds") already existed, but it was only wired
+# into the AI-driven exit paths (trader.py, trade_pipeline.py). The
+# protective sweep (bracket_orders) — and stat-arb / the delta hedger /
+# option rollbacks — called api.submit_order DIRECTLY, with no oversell
+# guard. That unguarded door is exactly how the 2026-06-18 phantom equity
+# happened: a re-armed protective SELL fired on a position the profile no
+# longer held (own journal long = 0) and filled as a real, unowned short.
+#
+# Wrapping the per-profile api factory (user_context.get_alpaca_api) means
+# EVERY submit_order — whatever module calls it — passes through this gate.
+# A stock SELL may not exceed this profile's own journal long unless it
+# explicitly declares intent="open_short". It's journal-only (the profile's
+# own book, never the shared-account aggregate), so it is structurally
+# incapable of selling another profile's shares. A new code path that tries
+# to submit a naked sell can't bypass it without bypassing the factory —
+# which a structural test forbids.
+# ───────────────────────────────────────────────────────────────────────
+
+#: An order may declare this as `intent=` to submit_order to mark a
+#: DELIBERATE short entry (a sell-to-open that is *supposed* to exceed the
+#: held long). The door consumes it and never forwards it to the broker.
+INTENT_OPEN_SHORT = "open_short"
+
+
+class OversellGuardError(Exception):
+    """Raised by the guarded api door when a stock SELL would exceed the
+    profile's own journal long and carries no short intent. Every
+    submit_order call site already wraps the call in try/except and treats
+    a raise as a non-fatal placement failure (the order is simply not
+    sent) — which is exactly right for a re-armed naked sell: the bogus
+    protective just isn't armed, the cycle continues."""
+
+
+def _is_occ(symbol: str) -> bool:
+    """OCC option symbol heuristic (UNDERLYING + YYMMDD + C/P + strike).
+    Options carry their own position_intent enforcement (Alpaca-side), so
+    the stock oversell door does not gate them."""
+    s = (symbol or "").upper()
+    return len(s) > 6 and any(c.isdigit() for c in s[1:7])
+
+
+def assert_sell_within_own_book(api, ctx, kwargs: dict) -> None:
+    """Enforce the oversell invariant for one submit_order call (kwargs).
+
+    Pops the internal `intent` marker (never forwarded to the broker).
+    For a STOCK SELL with no `intent="open_short"`, refuses (raises
+    OversellGuardError) if the qty exceeds this profile's own journal long.
+    Mutates `kwargs` in place to strip `intent`. No-op for buys, covers,
+    options, declared shorts, and missing/zero qty."""
+    intent = kwargs.pop("intent", None)
+    side = str(kwargs.get("side") or "").lower()
+    symbol = kwargs.get("symbol")
+    if side != "sell" or not symbol:
+        return
+    if _is_occ(str(symbol)):
+        return
+    if intent == INTENT_OPEN_SHORT:
+        return  # deliberate short entry — allowed to sell beyond the long
+    try:
+        qty = int(float(kwargs.get("qty") or 0))
+    except (TypeError, ValueError):
+        return
+    if qty <= 0:
+        return
+    db_path = getattr(ctx, "db_path", None)
+    allowed, reason = allowable_sell_qty(
+        api, str(symbol), qty, db_path=db_path, broker_drift_check=False)
+    if allowed <= 0:
+        who = getattr(ctx, "display_name", None) or db_path or "?"
+        logger.error(
+            "OVERSELL DOOR BLOCKED SELL %s qty=%d [%s]: %s. A profile may "
+            "only sell what its OWN journal holds; this would create an "
+            "unowned short (the phantom-equity vector). Order NOT sent. If "
+            "this is a deliberate short, the caller must pass "
+            "intent='open_short'.",
+            str(symbol).upper(), qty, who, reason)
+        raise OversellGuardError(
+            "naked SELL %s qty=%d refused: %s" % (
+                str(symbol).upper(), qty, reason))
+
+
+class GuardedAlpacaApi:
+    """Per-profile wrapper around the Alpaca REST client. The ONLY method
+    it changes is submit_order — routed through assert_sell_within_own_book.
+    Every other attribute/method delegates verbatim to the wrapped client.
+
+    Bound to ONE profile's ctx (its own db_path), so it cannot consult
+    another profile's holdings — order isolation by construction."""
+
+    def __init__(self, api, ctx):
+        # set via __dict__ to avoid tripping __getattr__ during init
+        self.__dict__["_api"] = api
+        self.__dict__["_ctx"] = ctx
+
+    def __getattr__(self, name):
+        # only reached for names not found normally (i.e. not _api/_ctx
+        # and not submit_order) — delegate to the wrapped client.
+        return getattr(self.__dict__["_api"], name)
+
+    @property
+    def unwrapped(self):
+        """The raw underlying REST client (for the rare caller that needs
+        the genuine object, e.g. isinstance checks). Order submission must
+        still go through this wrapper."""
+        return self.__dict__["_api"]
+
+    def submit_order(self, *args, **kwargs):
+        api = self.__dict__["_api"]
+        ctx = self.__dict__["_ctx"]
+        if args:
+            # Positional args would let `side`/`qty` slip past the gate
+            # (the door inspects kwargs). Every call site passes order
+            # fields by keyword; enforce it so a positional call can't
+            # silently bypass the oversell check.
+            raise TypeError(
+                "submit_order must be called with keyword arguments so the "
+                "oversell door can inspect side/qty (got positional args)")
+        if ctx is None:
+            # No per-profile ctx → no journal to oversell-check against.
+            # The no-ctx client (client.get_api(None)) exists only for
+            # read-only data calls; an order through it cannot be guarded,
+            # so refuse rather than send an unchecked naked sell.
+            raise OversellGuardError(
+                "order submission requires a per-profile ctx (a journal to "
+                "oversell-check against); none was provided")
+        assert_sell_within_own_book(api, ctx, kwargs)
+        return api.submit_order(**kwargs)
+
+
+def guarded_api(api, ctx):
+    """Wrap a per-profile REST client in the oversell door. Idempotent and
+    None-safe so it can wrap the factory return unconditionally."""
+    if api is None or isinstance(api, GuardedAlpacaApi):
+        return api
+    return GuardedAlpacaApi(api, ctx)

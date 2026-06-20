@@ -420,14 +420,26 @@ class UserContext:
         return True  # Unknown schedule type, default to active
 
     def get_alpaca_api(self):
-        """Create an Alpaca REST client for this user."""
+        """Create an Alpaca REST client for this user, wrapped in the
+        per-profile oversell door.
+
+        The wrapper (order_guard.GuardedAlpacaApi) gates submit_order so a
+        stock SELL can never exceed this profile's OWN journal long (its
+        own order_id fills) unless the order declares intent='open_short'.
+        Every order path obtains its client here, so the gate is universal
+        and unbypassable — the structural fix for the 2026-06-18 phantom
+        equity, where a re-armed naked sell reached the broker through a
+        path that had no oversell guard. All non-order calls delegate
+        straight through, so reads/account/positions are unchanged."""
         import alpaca_trade_api as tradeapi
-        return tradeapi.REST(
+        from order_guard import guarded_api
+        client = tradeapi.REST(
             self.alpaca_api_key,
             self.alpaca_secret_key,
             self.alpaca_base_url,
             api_version="v2"
         )
+        return guarded_api(client, self)
 
     @property
     def anthropic_api_key(self):

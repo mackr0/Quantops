@@ -125,10 +125,14 @@ def _submit_and_log(api, ctx, symbol, side, qty, price, strategy_name,
     """Submit a market order and write to the journal with order_id.
     Returns True on success."""
     from journal import log_trade
+    # simple_strategies opens positions; a 'sell' pick is a DELIBERATE
+    # short entry (sell-to-open), so declare it to the oversell door —
+    # otherwise the door refuses it as a naked sell (own journal long=0).
+    _entry_intent = {"intent": "open_short"} if side == "sell" else {}
     try:
         order = api.submit_order(
             symbol=symbol, qty=int(qty), side=side,
-            type="market", time_in_force="day",
+            type="market", time_in_force="day", **_entry_intent,
         )
     except (AttributeError, ValueError, TypeError, OSError) as exc:
         logger.error(

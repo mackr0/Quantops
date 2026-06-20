@@ -56,6 +56,16 @@ Each historical incident in CHANGELOG names the test that prevents it from recur
 ### 2.4 Guardrail tests (the AI-behavior layer)
 Static / cross-cutting checks that enforce architectural invariants. These prevent regression of an entire **class** of bug, not just one incident. Detailed in §3.
 
+### 2.5 Offline snapshot-replay harness (`snapshot_audit.py`)
+Hand-authored fixtures encode the author's mental model, so they pass even when that model is wrong — which is exactly how the phantom-equity incident shipped green. The snapshot harness runs ground-truth invariants against **real** per-profile DB snapshots (prod backups), no live broker required:
+
+- **Order-id truth** (per profile, stocks) — `get_virtual_positions` net per symbol == the signed sum of that profile's own confirmed fills.
+- **Order-id ownership** (cross profile) — the load-bearing isolation invariant: every fill-bearing row carries an alpaca order_id, and no order_id (entry or protective) appears in more than one profile's book. This makes profile-bleed and orphans decidable from the order_id alone. (Run against the whole 06-17/06-18 corrupt cohort — 234 backups — it confirmed **zero bleed and zero untracked fills**: the incident was a single-profile reconstruction bug, never bleed.)
+- **Filled-but-unpriced** — a `closed` (filled) row with no price is a real move the position view drops (escalated); a non-`closed` unpriced row is a softer data-quality note.
+- **Decomposition** — (equity − capital) == realized + unrealized; reported as SKIPPED, never silently half-run, when capital is unavailable.
+
+It is backed by three test layers (`tests/test_snapshot_audit_*`, `test_position_property_*`, `test_pipeline_replay_*`), including a property test whose **completeness** half asserts the harness fires on injected corruption (orphan closed-buy, closed-unpriced) rather than staying silent. **Honest scope:** this is a journal-internal + ownership net; it does **not** reconcile against the live broker — that stays the job of `certify_books` (the per-cycle gate, §4.2) and `aggregate_audit`. The harness itself was adversarially reviewed and nine false-greens fixed before it was trusted.
+
 ---
 
 ## 3. AI-behavior guardrails — the "stop the assistant from doing the same stupid thing twice" tests
@@ -155,6 +165,7 @@ The lesson: a passing test is worthless if the mock doesn't represent the failin
 These run at trade time, in addition to the pre-commit tests. Each is independent — any one is sufficient to stop the bleed.
 
 ### 4.1 Pre-trade gates (in priority order)
+0. **Oversell door** — the single, unbypassable gate at the per-profile api factory (`user_context.get_alpaca_api` → `order_guard.GuardedAlpacaApi`). Every `submit_order` passes through it; a stock SELL that exceeds the profile's **own journal long** (`get_virtual_positions` on its own book — never the shared-account aggregate) is **refused before the broker sees it**, unless the order declares `intent="open_short"` (the genuine short-entry sites do). This is *prevention*, not detection: a re-armed naked sell — the 2026-06-18 phantom-equity vector — can't reach the broker. A guardrail test forbids any order module from building its own raw `tradeapi.REST` (which would be an unguarded door).
 1. **Broker disconnect** — N consecutive Alpaca call failures → `BROKER_DISCONNECTED` until next success. Refuses new entries during an outage.
 2. **Master kill switch** — manual or auto-flipped by the book-loss floor. Blocks every new entry across every profile until cleared. Admin-only toggle.
 3. **Catastrophic single-trade gate** — proposed trade $ value > 5× profile recent average → refuse.

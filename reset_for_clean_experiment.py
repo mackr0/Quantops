@@ -179,7 +179,12 @@ def _close_all_broker_positions(profiles: List[Dict]) -> Dict[str, int]:
             if qty <= 0:
                 continue
             try:
-                api.submit_order(
+                # Deliberate broker-flatten (drift-clear): the journal is
+                # being wiped, so the per-profile oversell door (own-journal
+                # bound) would refuse these sells. Bypass it explicitly via
+                # the raw client — this is one of the few places we
+                # intentionally sell what the journal no longer reflects.
+                getattr(api, "unwrapped", api).submit_order(
                     symbol=sym, qty=int(qty), side=side,
                     type="market", time_in_force="day",
                 )

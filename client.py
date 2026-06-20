@@ -58,7 +58,14 @@ def get_api(ctx=None):
             "via the Settings page (writes to alpaca_accounts), or "
             "pass an explicit ctx with per-profile credentials."
         )
-    return tradeapi.REST(api_key, secret_key, base_url, api_version="v2")
+    # Wrap even the no-ctx client in the oversell door. This path is for
+    # read-only data calls (no profile journal to check against), so its
+    # submit_order refuses outright — an order can't be oversell-checked
+    # without a per-profile ctx, and a naked sell must never slip through
+    # the unguarded no-ctx door.
+    from order_guard import guarded_api
+    return guarded_api(
+        tradeapi.REST(api_key, secret_key, base_url, api_version="v2"), None)
 
 
 def _prefetch_prices(symbols):

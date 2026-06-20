@@ -287,9 +287,14 @@ def get_segment_api(name):
     import alpaca_trade_api as tradeapi
 
     seg = get_segment(name)
-    return tradeapi.REST(
+    client = tradeapi.REST(
         key_id=seg["alpaca_key"],
         secret_key=seg["alpaca_secret"],
         base_url=ALPACA_BASE_URL,
         api_version="v2",
     )
+    # Wrap in the oversell door (no per-segment journal ctx → submit_order
+    # refuses). This is a data/credential-fallback path with no product
+    # order callers, but it must not be a latent unguarded broker door.
+    from order_guard import guarded_api
+    return guarded_api(client, None)

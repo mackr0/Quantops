@@ -235,10 +235,18 @@ def rebalance_hedges(
             journal_side = "cover" if current < 0 else "buy"
         else:
             journal_side = "sell" if current > 0 else "short"
+        # A hedge SELL that would take the underlying past flat — from a
+        # short/flat (journal_side='short'), OR a cross-zero rebalance that
+        # sells MORE than the current long (qty > current>0) — deliberately
+        # goes net-short, so declare it to the oversell door. A pure
+        # reducing sell (qty <= current long) stays gated (it's a close).
+        _hedge_intent = ({"intent": "open_short"}
+                         if broker_side == "sell" and qty > max(0.0, current)
+                         else {})
         try:
             order = api.submit_order(
                 symbol=underlying, qty=qty, side=broker_side,
-                type="market", time_in_force="day",
+                type="market", time_in_force="day", **_hedge_intent,
             )
             order_id = getattr(order, "id", None)
         except Exception as exc:

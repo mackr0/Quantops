@@ -1918,6 +1918,11 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                         "symbol": symbol,
                         "qty": qty,
                         "side": "sell",  # sell without owning = short
+                        # DELIBERATE short entry — tell the oversell door
+                        # this sell is *supposed* to exceed the held long
+                        # (own journal long is 0 here). The door strips
+                        # this before forwarding to the broker.
+                        "intent": "open_short",
                         "type": order_type,
                         "time_in_force": "day",
                         "order_class": "bracket",

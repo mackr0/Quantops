@@ -106,6 +106,13 @@ ALLOWLIST_FILES = {
         "false-alarm on data_quality-tagged rows that legitimately "
         "contribute to cash math. Filtering here would defeat the "
         "purpose of the audit (which IS to surface bookkeeping bugs).",
+    "snapshot_audit.py":
+        "Offline twin of integrity_audit.py: the decomposition "
+        "invariant reconciles equity against realized+unrealized and "
+        "MUST sum the same rows get_virtual_account_info includes "
+        "(tagged rows contribute to cash math) — filtering data_quality "
+        "would make the phantom-equity check false-alarm. Surfacing all "
+        "rows IS this audit's purpose.",
     "recover_cycle_data.py":
         "Recovery script that lists recent predictions for human "
         "review. The MAX(timestamp) subquery triggers the analytics "

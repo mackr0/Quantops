@@ -936,11 +936,16 @@ def execute_pair_trade(api, proposal: Dict[str, Any], ctx,
             )
             return result
 
+        # A pair OPEN longs one leg and shorts the other. The short leg
+        # (side='sell' with nothing held) is a DELIBERATE short — declare
+        # it to the oversell door so it isn't refused as a naked sell.
+        _intent_a = {"intent": "open_short"} if side_a == "sell" else {}
+        _intent_b = {"intent": "open_short"} if side_b == "sell" else {}
         # Submit leg A
         try:
             order_a = api.submit_order(
                 symbol=sym_a, qty=qty_a, side=side_a,
-                type="market", time_in_force="day",
+                type="market", time_in_force="day", **_intent_a,
             )
             order_id_a = getattr(order_a, "id", None)
         except Exception as exc:
@@ -953,7 +958,7 @@ def execute_pair_trade(api, proposal: Dict[str, Any], ctx,
         try:
             order_b = api.submit_order(
                 symbol=sym_b, qty=qty_b, side=side_b,
-                type="market", time_in_force="day",
+                type="market", time_in_force="day", **_intent_b,
             )
             order_id_b = getattr(order_b, "id", None)
         except Exception as exc:
@@ -1035,7 +1040,11 @@ def execute_pair_trade(api, proposal: Dict[str, Any], ctx,
         qty = abs(int(float(pos.get("qty") or 0)))
         if qty == 0:
             continue
-        # Closing side is opposite of position side
+        # Closing side is opposite of position side. `positions` came from
+        # get_positions(ctx=ctx), which for a virtual profile IS the
+        # journal (get_virtual_positions) — so this close qty equals the
+        # profile's own holding and the oversell door (also journal-bound)
+        # never false-rejects it. (Stat-arb pairs run on virtual profiles.)
         is_short = float(pos.get("qty") or 0) < 0
         close_side = "buy" if is_short else "sell"
         try:
