@@ -5,6 +5,13 @@ at the top.
 
 ---
 
+## 2026-06-20 — Follow-ups to the oversell door: structural-guardrail registration + a date-drift test fix. Severity: LOW (tests/guardrails only; no behavior change).
+
+- **Register the door in the submit-site guardrails** (per the standing "extend the guardrail in the same change" rule — missed in the first commit). The door's pass-through `submit_order` (`order_guard.GuardedAlpacaApi`) is added to `PRODUCTION_SUBMIT_FILES` (so a new submit site is still detected) but exempt from the atomic-journaling check via `WRAPPER_DELEGATION_FILES` — the door delegates verbatim; journaling is the real caller's job (already enforced on the other files). It's annotated `RETRY_OK` for the unguarded-broker-call guard: every caller already wraps `submit_order` in try/except, which is exactly why the oversell raise is non-fatal.
+- **Date-drift fix** in `tests/test_greek_cap_tuners_phase2_2026_05_20.py`: it seeded hardcoded 2026-05-20 trades against the tuner's rolling 30-day window, so once wall-clock passed 30 days the rows aged out and silently emptied the bucket (and one test passed vacuously). Seed dates are now relative to now; `test_insufficient_sample_no_op` again exercises the real "5 in-window trades < 20" path.
+
+---
+
 ## 2026-06-19 — The oversell guard is now universal and unbypassable (a single door, so a naked sell can't reach the broker). Severity: CRITICAL prevention (closes the path that caused the phantom equity).
 
 Everything else this session was *detection* — telling us after a bad fill exists. This is *prevention*: the bad order never reaches the broker. The 2026-06-18 phantom equity happened because a re-armed protective SELL fired on a position the profile no longer held and filled as a real, unowned short. The guard that would have refused it — `order_guard.allowable_sell_qty`, written 2026-06-09, whose contract is literally "a profile may sell ONLY what its OWN journal holds" (computed from `get_virtual_positions`, the profile's own order_id fills — never the shared-account aggregate) — already existed. But it was wired into only two of ~eight sell paths (the AI-driven exits in `trader.py` and `trade_pipeline.py`). The **protective sweep** (`bracket_orders.py`), stat-arb, the delta hedger, and option rollbacks all called `api.submit_order(...)` directly, with no oversell guard. The phantom went through the one door that wasn't watched.

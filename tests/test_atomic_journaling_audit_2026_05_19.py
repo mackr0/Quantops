@@ -53,6 +53,17 @@ PRODUCTION_SUBMIT_FILES = {
     "stat_arb_pair_book.py",
     "simple_strategies.py",
     "bracket_orders.py",
+    "order_guard.py",
+}
+
+# Pass-through DELEGATION sites: the GuardedAlpacaApi oversell door wraps
+# the real client and calls api.submit_order verbatim. It does NOT journal
+# — journaling is the responsibility of the ACTUAL call sites (the other
+# files above, each of which is checked for atomic journaling). So the door
+# is in PRODUCTION_SUBMIT_FILES (so a new submit site is still detected) but
+# exempt from the "journal within N lines" rule.
+WRAPPER_DELEGATION_FILES = {
+    "order_guard.py",
 }
 
 
@@ -173,6 +184,8 @@ def test_every_submit_order_site_has_a_journal_write_nearby():
     """
     offenders = []
     for fname in PRODUCTION_SUBMIT_FILES:
+        if fname in WRAPPER_DELEGATION_FILES:
+            continue  # pass-through gate; the real caller journals
         path = REPO / fname
         if not path.exists():
             continue

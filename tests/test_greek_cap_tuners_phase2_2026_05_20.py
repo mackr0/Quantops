@@ -32,6 +32,14 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
 
+from datetime import datetime, timedelta  # noqa: E402
+
+# Seed trades a few days ago so they always land INSIDE the tuner's rolling
+# 30-day window (_options_bucket_pnl_30d), regardless of when the suite
+# runs. Hardcoded 2026-05-20 dates aged out of the window once wall-clock
+# passed 30 days, silently emptying the bucket and breaking these tests.
+_RECENT_DAY = (datetime.utcnow() - timedelta(days=2)).strftime("%Y-%m-%d")
+
 
 # ---------------------------------------------------------------------------
 # 1. Registry + tag presence
@@ -111,13 +119,13 @@ class TestOptionsBucketHelper:
         from self_tuning import _options_bucket_pnl_30d
         db = self._seed_db(tmp_path, [
             # Stock close — must be ignored
-            ("2026-05-20T10:00:00", "AAPL", None, "sell", 10, 200.0,
+            (f"{_RECENT_DAY}T10:00:00", "AAPL", None, "sell", 10, 200.0,
              "closed", -50.0, "STRONG_SELL", "ord-stock"),
             # Option close — counts
-            ("2026-05-20T10:00:00", "AAPL", "AAPL250620C00200000", "sell",
+            (f"{_RECENT_DAY}T10:00:00", "AAPL", "AAPL250620C00200000", "sell",
              1, 2.5, "closed", -100.0, "MULTILEG", "ord-opt1"),
             # Option close — counts
-            ("2026-05-20T11:00:00", "MSFT", "MSFT250620P00400000", "sell",
+            (f"{_RECENT_DAY}T11:00:00", "MSFT", "MSFT250620P00400000", "sell",
              1, 3.0, "closed", 75.0, "MULTILEG", "ord-opt2"),
         ])
         with closing(sqlite3.connect(db)) as conn:
@@ -170,7 +178,7 @@ class TestGreekCapTunerDecisions:
                     "INSERT INTO trades(timestamp, symbol, occ_symbol, side, "
                     "qty, price, status, pnl, signal_type, order_id) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (f"2026-05-{20-i:02d}T10:00:00", "AAPL",
+                    (f"{_RECENT_DAY}T{10+i:02d}:00:00", "AAPL",
                      f"AAPL250620C00{200+i}000", "sell", 1, 2.5,
                      "closed", -10.0, "MULTILEG", f"ord-{i}"),
                 )
@@ -200,7 +208,7 @@ class TestGreekCapTunerDecisions:
                     "INSERT INTO trades(timestamp, symbol, occ_symbol, side, "
                     "qty, price, status, pnl, signal_type, order_id) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (f"2026-05-20T{i:02d}:00:00", "AAPL",
+                    (f"{_RECENT_DAY}T{i:02d}:00:00", "AAPL",
                      f"AAPL250620C00{i+200:03d}000", "sell", 1, 2.5,
                      "closed", -120.0, "MULTILEG", f"ord-loss-{i}"),
                 )
@@ -238,7 +246,7 @@ class TestGreekCapTunerDecisions:
                     "INSERT INTO trades(timestamp, symbol, occ_symbol, side, "
                     "qty, price, status, pnl, signal_type, order_id) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (f"2026-05-20T{i:02d}:00:00", "AAPL",
+                    (f"{_RECENT_DAY}T{i:02d}:00:00", "AAPL",
                      f"AAPL250620C00{i+200:03d}000", "sell", 1, 2.5,
                      "closed", 120.0, "MULTILEG", f"ord-win-{i}"),
                 )
@@ -272,7 +280,7 @@ class TestGreekCapTunerDecisions:
                     "INSERT INTO trades(timestamp, symbol, occ_symbol, side, "
                     "qty, price, status, pnl, signal_type, order_id) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (f"2026-05-20T{i:02d}:00:00", "AAPL",
+                    (f"{_RECENT_DAY}T{i:02d}:00:00", "AAPL",
                      f"AAPL250620C00{i+200:03d}000", "sell", 1, 2.5,
                      "closed", 20.0, "MULTILEG", f"ord-tol-{i}"),
                 )

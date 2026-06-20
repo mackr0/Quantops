@@ -703,6 +703,11 @@ class GuardedAlpacaApi:
                 "order submission requires a per-profile ctx (a journal to "
                 "oversell-check against); none was provided")
         assert_sell_within_own_book(api, ctx, kwargs)
+        # RETRY_OK: this is the pass-through door, not an originating call
+        # site. Every real caller (trader, trade_pipeline, bracket_orders,
+        # …) already wraps its submit_order in try/except — that is exactly
+        # why the oversell raise above is non-fatal. Retry/error handling
+        # belongs to the caller, not the gate.
         return api.submit_order(**kwargs)
 
 
