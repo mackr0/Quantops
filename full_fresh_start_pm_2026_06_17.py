@@ -405,6 +405,37 @@ def step5c_install_new_ai_key(apply: bool) -> None:
                           "step5b's snapshot restore")
             else:
                 print("  DRY-RUN — no write")
+
+            # 2026-06-22 — ALSO sync the user-level Fallback LLM Key
+            # (users.anthropic_api_key_enc — the "same-provider fallback"
+            # credential used by ai_providers._resolve_same_provider_
+            # fallback_model). The reset historically refreshed ONLY the
+            # per-profile keys, leaving this user-level slot holding a
+            # STALE key. Once Google throttled the primary -lite model
+            # (frequent), every fallback call died "API key expired" on
+            # the old key while trades kept working on the fresh primary.
+            # Only overwrite a GOOGLE fallback — preserve a deliberately
+            # cross-provider fallback key (e.g. Anthropic) the operator set.
+            urow = conn.execute(
+                "SELECT id, llm_provider FROM users "
+                "ORDER BY id ASC LIMIT 1"
+            ).fetchone()
+            if not urow:
+                print("  (no users row — skipping Fallback LLM Key sync)")
+            elif (urow["llm_provider"] or "").lower() != "google":
+                print(f"  user{urow['id']} Fallback LLM Key NOT synced "
+                      f"(llm_provider={urow['llm_provider']!r} != google "
+                      "— preserving cross-provider fallback key)")
+            elif apply:
+                conn.execute(
+                    "UPDATE users SET anthropic_api_key_enc = ? "
+                    "WHERE id = ?", (enc, urow["id"]))
+                conn.commit()
+                print(f"  user{urow['id']} Fallback LLM Key <- new Google "
+                      "key (kept in sync with the per-profile primary)")
+            else:
+                print(f"  DRY-RUN — would sync user{urow['id']} Fallback "
+                      "LLM Key to the new Google key")
     except sqlite3.Error as exc:
         print(f"  step5c failed: {exc}")
 

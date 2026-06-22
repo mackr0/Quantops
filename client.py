@@ -30,6 +30,47 @@ _PRICE_CACHE_TTL = 30.0  # seconds
 _price_cache: dict = {}  # symbol -> (epoch_seconds, price)
 _price_cache_lock = threading.Lock()
 
+# Broker position marks (Alpaca's `current_price` per symbol) cached with a
+# TTL so marking reads the broker's real account value without re-polling
+# list_positions on every dashboard render. One list_positions call per
+# account per TTL — keyed by the account's API key id so profiles sharing
+# an account share the cache (Alpaca has no streaming entitlement, so we
+# REST-poll once and reuse; never poll the same state twice).
+_BROKER_MARK_TTL = 30.0  # seconds
+_broker_mark_cache: dict = {}  # account_key -> (epoch_seconds, {symbol: price})
+_broker_mark_lock = threading.Lock()
+
+
+def _broker_marks(api) -> dict:
+    """Return {SYMBOL: broker current_price} for the account behind `api`,
+    cached for `_BROKER_MARK_TTL`s. The broker's mark IS the account's real
+    value (a long marked at the bid, a short at the ask); marking at the
+    data-snapshot mid instead overstates option-heavy books by ~half the
+    bid/ask spread per leg. `current_price` is market-wide per symbol, so
+    sharing across profiles on the same account is correct. Any failure
+    returns {} so the caller falls back to the snapshot path (no break)."""
+    key = str(getattr(api, "_key_id", "") or "") or "default"
+    now = time.time()
+    with _broker_mark_lock:
+        entry = _broker_mark_cache.get(key)
+        if entry is not None and (now - entry[0]) < _BROKER_MARK_TTL:
+            return entry[1]
+    marks: dict = {}
+    try:
+        for p in (api.list_positions() or []):
+            sym = (getattr(p, "symbol", "") or "").upper().replace(" ", "")
+            try:
+                cp = float(getattr(p, "current_price", 0) or 0)
+            except (TypeError, ValueError):
+                cp = 0.0
+            if sym and cp > 0:
+                marks[sym] = cp
+    except Exception:
+        return {}
+    with _broker_mark_lock:
+        _broker_mark_cache[key] = (now, marks)
+    return marks
+
 
 def get_api(ctx=None):
     """Create and return an authenticated Alpaca API client.
@@ -247,18 +288,34 @@ def _make_price_fetcher(api):
     """Return a callable that gets the current price for a symbol,
     backed by a process-wide TTL cache populated by `_prefetch_prices`.
 
-    OCC option symbols (`<root><yymmdd><CP><strike×1000>`, 21 chars)
-    are routed to the Alpaca options-snapshot endpoint via
-    `_fetch_option_premium` and return the contract's mid premium.
-    Stock symbols continue through the cache + `get_latest_trade`
-    fallback path unchanged.
+    HELD positions are marked at the BROKER's reported `current_price`
+    (`api.list_positions`) — the account's actual mark, which values a
+    long at what you could sell it for and a short at what you'd pay to
+    close it (the realizable side). This makes the journal's reported
+    value equal the real Alpaca account. Marking at the data-snapshot MID
+    instead overstated option-heavy books by ~half the bid/ask spread per
+    leg (the dashboard read higher than the account is actually worth).
 
-    Per-symbol fallback to `api.get_latest_trade` only fires if the
-    batched snapshot path didn't yield a price for that symbol — in
-    practice, only when Alpaca itself returns a `None` snapshot for
-    a delisted/halted ticker.
+    The data-snapshot path (option-premium mid for OCC symbols, latest
+    trade for stocks) is the FALLBACK — used only for a symbol the broker
+    doesn't (yet) hold, e.g. a just-opened leg awaiting settlement, or
+    when the broker mark is unavailable.
     """
+    # The broker's own marks for currently-held positions — the
+    # authoritative account valuation, cached with a TTL so we read
+    # list_positions at most once per account per `_BROKER_MARK_TTL`s
+    # (no per-render hammering of Alpaca; no UI jank). On any failure
+    # `_broker_marks` returns {} and we fall back to the data snapshot.
+    broker_marks = _broker_marks(api)
+
     def fetch(symbol, side="buy"):
+        # Prefer the broker's mark for a held position — the real account
+        # value (realizable side), so journal value == broker value and the
+        # dashboard equals the actual account. Side-independent: the
+        # broker's current_price IS the account mark.
+        _bm = broker_marks.get((symbol or "").upper().replace(" ", ""))
+        if _bm is not None and _bm > 0:
+            return _bm
         now = time.time()
         # OCC option symbol: route to option-snapshot path. Cached
         # the same way as stocks but per-(symbol, side) since long

@@ -5,6 +5,26 @@ at the top.
 
 ---
 
+## 2026-06-22 — Mark positions at the broker's price, not mid: displayed equity now equals the real account. Severity: MED (P&L was overstated by the unrealizable spread).
+
+The dashboard valued option-heavy books ~$1,130 (0.13% on a ~$861K account) **higher** than the actual Alpaca account. Quantities reconciled exactly with the broker; the gap was pure marking: `client._make_price_fetcher` valued every position at the data-snapshot **mid**, while the broker marks at the **realizable side** (a long at the bid, a short at the ask). Mid assumes you close at the midpoint — you can't — so the extra value was unrealizable half-spread, i.e. overstated equity (a small cousin of the phantom).
+
+- **Fix:** held positions are now marked at the broker's reported `current_price` (`api.list_positions`), the account's actual mark — so the journal's reported value equals the real account and the value-parity drift collapses to ~$0. The data-snapshot path remains the fallback for a symbol the broker doesn't yet hold (e.g. a just-opened leg).
+- **Polling-safe / no UI jank:** broker marks are cached per account with a 30s TTL (`_broker_marks`), so `list_positions` is read at most once per account per window and reused across renders — no per-render hammering of Alpaca (which has no streaming entitlement; we REST-poll once and reuse).
+
+**Tests** (`tests/test_broker_mark_valuation_2026_06_22.py`): held stock & option marked at the broker price (not mid); unheld symbol and broker-error fall back to the snapshot; a zero/None broker mark falls back; and `list_positions` is fetched once across repeated fetcher builds (the no-hammering guarantee).
+
+---
+
+## 2026-06-22 — AI fallback key un-stranded + redundant broker polling removed. Severity: MED (AI degraded under throttle; needless rate-limit pressure).
+
+Two cadence/credential fixes from the Monday investigation:
+
+- **Stranded Fallback LLM Key.** "API key expired" errors flooded the logs while trades kept working — because the *primary* per-profile Google key was valid, but the **user-level Fallback LLM Key** (`users.anthropic_api_key_enc`, used by `ai_providers._resolve_same_provider_fallback_model` when Google throttles the `-lite` model) was a stale copy the reset never refreshed. Once Google 503-throttled the primary (frequent), every same-provider fallback call died on the old key. Refilled the live key (it's the same valid Google key); patched `full_fresh_start_pm_2026_06_17.py` step5c to also sync the user-level fallback key on reset (only when its `llm_provider` is Google — a deliberately cross-provider fallback key is preserved), so a future reset can't re-strand it.
+- **Redundant reconcile cron removed.** The corrective reconcile (`reconcile_with_ctx`) already runs every cycle inside the scheduler (`_task_reconcile_trade_statuses`). The standalone `*/15` (briefly `*/5`) `reconcile_journal_to_broker.py` cron re-polled the broker on a clock regardless of activity — doubling Alpaca load and risking rate-limiting for zero benefit. Removed it; the per-cycle scheduler reconcile is the sole path, and the reconciler-heartbeat audit alerts if it stops. Principle codified: Alpaca has no streaming, so poll at the cycle cadence and never poll the same state twice. (`docs/13` updated; the stale "every 15 minutes via cron" framing removed.)
+
+---
+
 ## 2026-06-22 — `/issues` flooded with false `broker_orphan` errors: the aggregate audit dropped every option short leg. Severity: MED (false alarms drowning real signal; books were correct).
 
 Monday's option trading lit up `/issues` with ~two dozen `broker_orphan` errors — the broker holding option **shorts** (`journal=0 broker=-N`) across all three accounts. They were **false positives**: `get_virtual_positions` (the authoritative view) correctly reports those shorts, and they match the broker. The bug was a *second, stale* position reconstruction.
