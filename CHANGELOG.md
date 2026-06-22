@@ -5,6 +5,17 @@ at the top.
 
 ---
 
+## 2026-06-22 — `/issues` flooded with false `broker_orphan` errors: the aggregate audit dropped every option short leg. Severity: MED (false alarms drowning real signal; books were correct).
+
+Monday's option trading lit up `/issues` with ~two dozen `broker_orphan` errors — the broker holding option **shorts** (`journal=0 broker=-N`) across all three accounts. They were **false positives**: `get_virtual_positions` (the authoritative view) correctly reports those shorts, and they match the broker. The bug was a *second, stale* position reconstruction.
+
+- **`aggregate_audit._journal_open_qty_per_symbol`** is a separate FIFO from `get_virtual_positions`. Its `sell` branch consumed long lots but **discarded the remainder** instead of booking it as a short. So every option **sell-to-open** leg (the short side of a bear-call / bull-put / etc. spread) netted to `journal_qty=0` → a false `broker_orphan`. The same discard would have **hidden a real stock oversell short** from the drift audit. When `get_virtual_positions` was taught to surface sell-remainders as shorts (the 2026-06-18 phantom fix), this duplicate wasn't updated — so the two drifted.
+- **Fix:** the `sell` branch now books the remaining qty as a short lot, mirroring `get_virtual_positions` (the live-status filter already excludes closed / `auto_reconciled_phantom_close` rows, matching the occ-exclusion). The audit now agrees with the authoritative position view, so the false orphans clear and a genuine oversell short would still surface.
+
+**Tests** (`tests/test_aggregate_audit.py`): an open option short leg nets −1 (matches broker, no false orphan); a stock oversell (buy 100, sell 150) nets −50 and reconciles; the genuine broker-orphan and phantom-claim detections still fire.
+
+---
+
 ## 2026-06-20 — Follow-ups to the oversell door: structural-guardrail registration + a date-drift test fix. Severity: LOW (tests/guardrails only; no behavior change).
 
 - **Register the door in the submit-site guardrails** (per the standing "extend the guardrail in the same change" rule — missed in the first commit). The door's pass-through `submit_order` (`order_guard.GuardedAlpacaApi`) is added to `PRODUCTION_SUBMIT_FILES` (so a new submit site is still detected) but exempt from the atomic-journaling check via `WRAPPER_DELEGATION_FILES` — the door delegates verbatim; journaling is the real caller's job (already enforced on the other files). It's annotated `RETRY_OK` for the unguarded-broker-call guard: every caller already wraps `submit_order` in try/except, which is exactly why the oversell raise is non-fatal.

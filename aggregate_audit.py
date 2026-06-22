@@ -119,6 +119,19 @@ def _journal_open_qty_per_symbol(db_path: str) -> Dict[str, float]:
                 remaining -= consumed
                 if ll[0][0] <= 0.001:
                     ll.pop(0)
+            # 2026-06-22 — book the sell REMAINDER as a short, mirroring
+            # get_virtual_positions (journal.py). A sell beyond any long is
+            # a real broker short: an option sell-to-open leg (the short
+            # side of a bear-call / bull-put / etc. spread) or a stock
+            # oversell. The old code DISCARDED this remainder, so every
+            # live option short leg read journal_qty=0 → a FALSE
+            # broker_orphan on /issues, and a real stock oversell short
+            # would have been hidden from the aggregate drift audit. The
+            # live-status filter above already excludes closed /
+            # auto_reconciled_phantom_close rows, so only genuinely-open
+            # shorts are booked (matching get_virtual's occ exclusion).
+            if remaining > 0.001:
+                short_lots.setdefault(sym, []).append([remaining, price])
         elif side == "cover":
             sl = short_lots.setdefault(sym, [])
             remaining = qty

@@ -138,6 +138,46 @@ def test_broker_orphan_shares_detected(mock_module_state):
     assert d["kind"] == "broker_orphan"
 
 
+def test_open_option_short_leg_is_not_false_orphan(mock_module_state):
+    """2026-06-22 regression: an option sell-to-open leg (the short side of
+    a spread) is a real broker short the journal records as side='sell',
+    status='open'. The aggregate audit must count it as -1 (matching the
+    broker), not discard the sell-remainder and report a FALSE
+    broker_orphan — the noise that flooded /issues. Mirrors
+    get_virtual_positions, the authoritative position view."""
+    from aggregate_audit import audit_aggregate_drift
+    state = mock_module_state
+    occ = "AMZN260731C00245000"
+    api = MagicMock()
+    api.list_positions.return_value = [_broker_position(occ, -1)]
+    _setup_profile(state, 1, account_id=1,
+                   journal_trades=[("AMZN", "sell", 1, 7.65, occ)],
+                   shared_api=api)
+    result = audit_aggregate_drift(profile_ids=[1])
+    assert result["drift"] == [], (
+        "an open option short leg must net -1 (matching the broker), not a "
+        "false broker_orphan: %s" % result["drift"])
+
+
+def test_stock_oversell_short_is_visible_to_aggregate_audit(mock_module_state):
+    """The same discard bug would have HIDDEN a real stock oversell short
+    from the aggregate drift audit. Journal: buy 100, oversell 150 (net
+    -50 short); broker holds -50. Must reconcile (no drift), proving the
+    short remainder is now booked."""
+    from aggregate_audit import audit_aggregate_drift
+    state = mock_module_state
+    api = MagicMock()
+    api.list_positions.return_value = [_broker_position("UWMC", -50)]
+    _setup_profile(state, 1, account_id=1,
+                   journal_trades=[("UWMC", "buy", 100, 2.0),
+                                   ("UWMC", "sell", 150, 2.1)],
+                   shared_api=api)
+    result = audit_aggregate_drift(profile_ids=[1])
+    assert result["drift"] == [], (
+        "stock oversell short (-50) must be booked and reconcile with the "
+        "broker, not be discarded: %s" % result["drift"])
+
+
 def test_journal_phantom_detected(mock_module_state):
     """Journal claims 50 AAPL but broker has 0 — phantom claim."""
     from aggregate_audit import audit_aggregate_drift
