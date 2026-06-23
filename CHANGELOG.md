@@ -5,6 +5,24 @@ at the top.
 
 ---
 
+## 2026-06-23 — Cancel-on-close: a closed position's protective orders are actively cancelled before they can fire on a flat book. Severity: HIGH (a resting sell could open an unintended short — the "sell the wrong thing" class).
+
+The double-reservation pull (entry below) surfaced one case it didn't fix: on profile 158, account PA3A2LULLCAL held **no** NFLX stock position, yet two live GTC sells were resting — `limit` 294 (`4da44dff`) and `trailing_stop` 294 (`61d17292`), both owned by p158's journal. The journal's NFLX BUY entry (`trades.id=10`) was `status='closed'`, but its `protective_tp_order_id` / `protective_trailing_order_id` still pointed at those two orders, and the matching `pending_protective` rows (77, 78) were still `pending_protective`. A resting sell firing on a flat position opens an **unintended short** — and the oversell door (`user_context.get_alpaca_api`) guards only *new* `submit_order` calls, not orders already resting at the broker. Confirmed against live broker truth: both orders `status=new`, `get_position("NFLX")` → *position does not exist*. (The open NFLX rows 82/83 on p158 are an *option* MULTILEG spread — `occ_symbol`-tagged — a separate position the fix must not touch.)
+
+**Root cause.** A protective order's lifetime must end when its position closes, but nothing actively cancelled one tied to a now-`closed` entry. `bracket_orders.cancel_for_symbol` and the `trader.py` exit path only scan `status='open'` entries; `ensure_protective_stops` only iterates *open* positions, so it never revisits a flat symbol; `verify_protective_order_sync` detects the journal→broker staleness but is pure read (never mutates).
+
+**Fix (class-wide, `bracket_orders.cancel_orphaned_protective_orders`, wired into the per-cycle reconcile in `multi_scheduler._task_reconcile_trade_statuses` right after the read-only `verify_protective_order_sync`):** every reconcile cycle, scan the **journal** (not the open-positions snapshot, so it reaches flat symbols) for:
+- **(Pass 1) `closed` stock entries** whose `protective_*_order_id` still names a live broker order → cancel the order, clear the pointer column.
+- **(Pass 2) `pending_protective` rows** for a stock symbol with no live stock entry (flat) → cancel the resting order, mark the row terminal. "Flat" mirrors `get_virtual_positions`' entry-side exclusion exactly.
+
+Mirrors `cancel_for_symbol`'s care: a protective that **already filled** is left fully intact (pointer + row) — its fill closed the slice and the fill state machine owns it; double-handling it would corrupt the close. Per-profile and order-id-scoped (only the profile's own journal-recorded orders are touched — the order-id-truth invariant), and stock-only (`occ_symbol IS NULL`, so option legs are never touched). Marking `pending_protective` rows terminal is **position-math-neutral**: `get_virtual_positions` already excludes `pending_protective` on both sides, so no equity/position shifts.
+
+**Verified on the real shape.** Replayed against a faithful replica of p158's NFLX rows: both orders cancelled, entry #10's pointers cleared, rows 77/78 → `canceled`, option legs 82/83 untouched, NFLX virtual position flat before and after.
+
+**Tests:** `tests/test_cancel_on_close_2026_06_23.py` (6) — the exact prod shape (closed entry + live protective pair + pending rows + same-symbol option legs → both cancelled, pointers cleared, rows terminated, options untouched); a filled protective on a closed entry left intact; an open position's protective never touched; a Pass-2 orphan on a flat symbol cancelled; an already-terminal-at-broker order synced without re-cancelling; and a structural pin that `multi_scheduler` wires the reconciler in after the read-only sync check. Full suite green.
+
+---
+
 ## 2026-06-23 — Protective stops: one sell-side reservation per slice (revert the broker-side take-profit that double-reserved shares and starved stops into naked exposure). Severity: HIGH (positions rode with no fresh broker stop).
 
 Prod logs (2026-06-22) showed 51 "Could not place protective … insufficient qty available (requested: N, available: M)" failures (NFLX, BMNR, PLUG, ETHA, DFTX…), each leaving a position with no fresh broker-side stop. This was a **distinct** cause from the hard-to-borrow day-order issue fixed the same day (commit cd9317c) — that one is untouched.
@@ -26,7 +44,7 @@ The `submit_protective_take_profit` primitive is retained (it still routes throu
 
 **Tests:** `tests/test_protective_no_double_reservation_2026_06_23.py` (6) — trailing and static modes each place exactly one sell-side order and never a `limit`; a lingering broker TP is cancelled and its column cleared (even when the position is already broker-covered, since the sunset runs before the coverage skip); structural pins that the sweep neither calls `submit_protective_take_profit` nor builds a `type='limit'` order, and that it sunsets the TP. `tests/test_broker_side_tp_2026_06_09.py` updated to pin the revert. Full suite green.
 
-**Known-separate follow-up (flagged, not in this commit):** NFLX on one account showed a `closed` entry (p158) whose protective pair was still live at the broker — a cancel-on-close leak (`cancel_for_symbol` only scans `status='open'`), the one case in the pull where a resting sell could fire on a flat position. Distinct mechanism from the double-reservation; tracked for its own pass.
+**Known-separate follow-up (flagged, not in this commit — RESOLVED 2026-06-23 below):** NFLX on one account showed a `closed` entry (p158) whose protective pair was still live at the broker — a cancel-on-close leak (`cancel_for_symbol` only scans `status='open'`), the one case in the pull where a resting sell could fire on a flat position. Distinct mechanism from the double-reservation; tracked for its own pass.
 
 ---
 

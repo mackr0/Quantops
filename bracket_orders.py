@@ -1757,3 +1757,212 @@ def cancel_for_symbol(api, db_path: str, symbol: str) -> bool:
     except Exception as exc:
         logger.debug("cancel_for_symbol(%s) skipped: %s", symbol, exc)
     return any_filled
+
+
+# A protective whose backing entry has CLOSED, or whose stock symbol is
+# flat in the journal, must not keep resting at the broker. These mirror
+# get_virtual_positions' entry-side exclusion so "flat" here means
+# exactly "contributes no live stock position".
+_CLOSED_ENTRY_STATUSES = frozenset({
+    "closed", "canceled", "cancelled", "expired", "rejected",
+    "done_for_day", "pending_protective", "auto_reconciled_phantom_close",
+})
+# Terminal-but-unfilled broker statuses: the order is already gone, so
+# there is nothing to cancel — only the stale journal row needs syncing.
+_TERMINAL_UNFILLED_STATUSES = frozenset({
+    "canceled", "cancelled", "expired", "rejected", "done_for_day",
+})
+
+
+def cancel_orphaned_protective_orders(api, db_path: str) -> dict:
+    """Cancel live broker-side protective orders whose backing STOCK
+    entry has CLOSED (or whose stock symbol is flat in this profile's
+    journal), then mark the matching pending_protective rows terminal.
+
+    THE LEAK (prod 2026-06-23, profile 158 NFLX): entry trades.id=10 (a
+    294-share BUY) was 'closed', but its protective_tp_order_id /
+    protective_trailing_order_id still pointed at two LIVE GTC sells (a
+    `limit` @294 + a `trailing_stop` @294) resting on a now-FLAT stock
+    position, and the pending_protective rows 77/78 (the journal side of
+    those two orders) stayed 'pending_protective'. A resting sell can
+    then fire on a flat position -> an unintended 294-share SHORT. The
+    oversell door at user_context.get_alpaca_api guards only NEW
+    submit_order calls; it cannot stop an order already resting at the
+    broker.
+
+    Why nothing else caught it: `cancel_for_symbol` and the trader exit
+    path scan only `status='open'`, so a protective tied to a CLOSED
+    entry is never cancelled; `ensure_protective_stops` iterates only
+    OPEN positions, so it never visits the flat symbol;
+    `verify_protective_order_sync` detects the staleness but is pure
+    read. This reconciler is the active correction — it runs per cycle
+    off the JOURNAL (not the open-positions snapshot), so it reaches
+    flat symbols.
+
+    Mirrors cancel_for_symbol's care: a protective that ALREADY FILLED
+    keeps its journal pointer/row (the fill state machine needs it) and
+    is never cancelled or terminated. Per-profile, own-order-id only:
+    every order_id touched comes from THIS profile's own journal — never
+    the shared-account aggregate (the order-id-truth invariant).
+    `occ_symbol IS NULL` confines the sweep to STOCK rows; option legs
+    (e.g. NFLX MULTILEG) have their own lifecycle and never carry these
+    stock-bracket pointers.
+
+    Returns {"checked", "canceled", "filled_kept", "rows_terminated"}.
+    """
+    out = {"checked": 0, "canceled": 0, "filled_kept": 0,
+           "rows_terminated": 0}
+    if not db_path:
+        return out
+
+    def _broker_status(oid) -> str:
+        """Lowercased broker status, or '' on lookup failure (treated as
+        not-filled — cancelling a possibly-dead order is safe; leaving a
+        possibly-live orphan resting is not)."""
+        try:
+            return (getattr(api.get_order(oid), "status", "") or "").lower()
+        except Exception as _exc:
+            logger.debug(
+                "cancel_orphaned_protective_orders: status lookup for "
+                "%s failed (%s) — treating as not-filled",
+                str(oid)[:8], _exc,
+            )
+            return ""
+
+    _PTR_COLS = ("protective_stop_order_id",
+                 "protective_tp_order_id",
+                 "protective_trailing_order_id")
+    try:
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+
+            # --- Pass 1: protective pointers on CLOSED stock entries ---
+            try:
+                closed_rows = conn.execute(
+                    "SELECT id, symbol, protective_stop_order_id, "
+                    "       protective_tp_order_id, "
+                    "       protective_trailing_order_id "
+                    "FROM trades "
+                    "WHERE status = 'closed' AND occ_symbol IS NULL "
+                    "  AND (protective_stop_order_id IS NOT NULL "
+                    "    OR protective_tp_order_id IS NOT NULL "
+                    "    OR protective_trailing_order_id IS NOT NULL)"
+                ).fetchall()
+            except sqlite3.OperationalError:
+                closed_rows = []  # minimal-schema fixture
+            cancelled_oids = set()
+            for row in closed_rows:
+                for col in _PTR_COLS:
+                    oid = row[col]
+                    if not oid:
+                        continue
+                    out["checked"] += 1
+                    if _broker_status(oid) == "filled":
+                        # The protective fired and closed the slice;
+                        # leave the pointer for the fill state machine.
+                        out["filled_kept"] += 1
+                        continue
+                    # Still working (or unconfirmed) — cancel it and
+                    # clear the stale pointer so it can never fire on a
+                    # flat position.
+                    cancel_protective_stop(api, oid)
+                    out["canceled"] += 1
+                    cancelled_oids.add(oid)
+                    conn.execute(
+                        f"UPDATE trades SET {col} = NULL WHERE id = ?",
+                        (row["id"],),
+                    )
+                    logger.warning(
+                        "cancel_orphaned_protective_orders: %s — entry "
+                        "#%s is CLOSED but %s named a live broker order "
+                        "%s; cancelled it (was resting on a flat "
+                        "position).",
+                        row["symbol"], row["id"], col, str(oid)[:8],
+                    )
+
+            # --- Pass 2: pending_protective rows for FLAT stock symbols
+            # A pending_protective row whose stock symbol has no live
+            # stock entry is orphaned (the position it protected is
+            # gone). This is the row-side of the same leak (ids 77/78)
+            # and also catches a pending row whose entry pointer was
+            # already cleared or never linked.
+            try:
+                pend_rows = conn.execute(
+                    "SELECT id, symbol, order_id FROM trades "
+                    "WHERE status = 'pending_protective' "
+                    "  AND occ_symbol IS NULL "
+                    "  AND order_id IS NOT NULL AND order_id != ''"
+                ).fetchall()
+            except sqlite3.OperationalError:
+                pend_rows = []
+            for prow in pend_rows:
+                sym = (prow["symbol"] or "").upper()
+                # Any non-terminal stock buy/short entry means the
+                # position is still live and this is legitimate coverage
+                # — leave it. "flat" mirrors get_virtual_positions'
+                # entry-side exclusion exactly.
+                try:
+                    entry_rows = conn.execute(
+                        "SELECT status FROM trades "
+                        "WHERE symbol = ? AND occ_symbol IS NULL "
+                        "  AND side IN ('buy', 'short')",
+                        (sym,),
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    entry_rows = []
+                has_live_position = any(
+                    (er["status"] or "open").lower()
+                    not in _CLOSED_ENTRY_STATUSES
+                    for er in entry_rows
+                )
+                if has_live_position:
+                    continue
+                oid = prow["order_id"]
+                # Already cancelled in Pass 1 (same order id) — just sync
+                # the row to terminal without re-hitting the broker.
+                if oid in cancelled_oids:
+                    # pnl = NULL: a canceled protective realized nothing
+                    # (the p121 decomposition-gap invariant — a terminal
+                    # row must never keep a speculative pnl).
+                    conn.execute(
+                        "UPDATE trades SET status = 'canceled', "
+                        "pnl = NULL WHERE id = ?", (prow["id"],),
+                    )
+                    out["rows_terminated"] += 1
+                    continue
+                out["checked"] += 1
+                status = _broker_status(oid)
+                if status == "filled":
+                    # Fired and closed the position — the fill state
+                    # machine flips this row to 'closed'. Leave it.
+                    out["filled_kept"] += 1
+                    continue
+                if status not in _TERMINAL_UNFILLED_STATUSES:
+                    # Still working (or unconfirmed) — cancel it.
+                    cancel_protective_stop(api, oid)
+                    out["canceled"] += 1
+                    logger.warning(
+                        "cancel_orphaned_protective_orders: %s — "
+                        "pending_protective #%s (order %s) has no live "
+                        "stock position; cancelled the resting order.",
+                        sym, prow["id"], str(oid)[:8],
+                    )
+                # Mark the row terminal either way (cancelled now, or
+                # already terminal at the broker). pnl = NULL: a
+                # terminal protective realized nothing (p121 invariant).
+                term = status if status in _TERMINAL_UNFILLED_STATUSES \
+                    else "canceled"
+                conn.execute(
+                    "UPDATE trades SET status = ?, pnl = NULL "
+                    "WHERE id = ?",
+                    (term, prow["id"]),
+                )
+                out["rows_terminated"] += 1
+
+            conn.commit()
+    except Exception as exc:
+        logger.warning(
+            "cancel_orphaned_protective_orders failed (%s: %s)",
+            type(exc).__name__, exc,
+        )
+    return out

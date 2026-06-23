@@ -3155,6 +3155,36 @@ def _task_reconcile_trade_statuses(ctx):
             seg_label, type(_sync_exc).__name__, _sync_exc,
         )
 
+    # 2026-06-23 — ACTIVE cancel-on-close. verify_protective_order_sync
+    # above only DETECTS journal->broker staleness (pure read). This
+    # CANCELS the live broker protective orders whose backing STOCK
+    # entry has closed (the profile-158 NFLX leak: a closed 294-share
+    # BUY left a limit + trailing_stop resting on a flat position, so a
+    # resting sell could fire into an unintended short — which the
+    # oversell door cannot stop once the order is already at the
+    # broker). Runs off the JOURNAL, so it reaches the FLAT symbols
+    # ensure_protective_stops (open-positions only) never visits. A
+    # protective that already FILLED is left intact for the fill state
+    # machine.
+    try:
+        from bracket_orders import cancel_orphaned_protective_orders
+        from client import get_api as _get_api_orphan
+        orphan = cancel_orphaned_protective_orders(
+            _get_api_orphan(ctx), ctx.db_path)
+        if orphan["canceled"] or orphan["rows_terminated"]:
+            logging.warning(
+                "[%s] Cancel-on-close: cancelled %d resting protective "
+                "order(s) on closed/flat positions, terminated %d "
+                "pending_protective row(s) (kept %d already-filled).",
+                seg_label, orphan["canceled"], orphan["rows_terminated"],
+                orphan["filled_kept"],
+            )
+    except Exception as _orphan_exc:
+        logging.warning(
+            "[%s] cancel-on-close reconcile failed (%s: %s)",
+            seg_label, type(_orphan_exc).__name__, _orphan_exc,
+        )
+
     # 2026-06-04 — PROACTIVE chain-walk sweep. Closes gap #3 from the
     # post-reset orphan-prevention list. For each pending_protective
     # row, advance its order_id through Alpaca's replace chain so the
