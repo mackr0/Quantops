@@ -5,6 +5,12 @@ at the top.
 
 ---
 
+## 2026-06-22 — Kill switch: clear the reason string on release. Severity: LOW (cosmetic/diagnostic; the switch itself behaved correctly).
+
+`deactivate()` set `enabled = 0` but left the old `reason` text in `kill_switch_state`. Any surface that reads the reason without first checking `enabled` (or a human glancing at the raw row) could mistake a released switch for an active one — it made the picture look "KILL SWITCH ACTIVE" after the integrity gate's auto-release on 2026-06-22, even though `enabled` was already 0. Now `deactivate()` clears `reason = ''` alongside `enabled = 0`, so the row reads cleanly after release. The dashboard banner was always correct (it keys off `kill_switch.enabled`); this fixes the underlying data so no other reader can be misled. Covered by the existing `tests/test_kill_switch.py` deactivate cases.
+
+---
+
 ## 2026-06-22 — Hard-to-borrow names: protective stops retry as DAY orders (never naked) + the broker's rejection teaches the entry gate. Severity: HIGH (a held long could ride with no downside protection).
 
 SPCX was bought as a long — Alpaca's asset endpoint reports `easy_to_borrow=True`, so the asset-flag tradability gate let it in — but the order engine then rejected **every** GTC protective stop with *"only day orders are allowed for hard-to-borrow asset"*. The old `bracket_orders` code logged the rejection and returned `None`, so the position rode **naked** (no downside protection) and churned the same doomed GTC order every cycle. Alpaca's own data contradicts itself here: the asset flag says easy-to-borrow, the order engine treats it as hard-to-borrow. Prod logs (2026-06-22) confirmed the exact string recurring across the session, plus a class of names (NFLX, BMNR, PLUG…) going naked when a bracket's child expired/canceled.

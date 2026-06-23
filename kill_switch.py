@@ -136,7 +136,10 @@ def deactivate(set_by: str = "manual",
     try:
         already, _ = is_active(db_path)
         conn.execute(
-            "UPDATE kill_switch_state SET enabled = 0, "
+            # Clear the reason on release too — a lingering reason string
+            # after enabled=0 misleads any surface that reads it (and made
+            # the dashboard look "ACTIVE" after an auto-release, 2026-06-22).
+            "UPDATE kill_switch_state SET enabled = 0, reason = '', "
             "set_at = datetime('now'), set_by = ? WHERE id = 1",
             (set_by,),
         )
