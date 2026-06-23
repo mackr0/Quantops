@@ -731,12 +731,15 @@ def ensure_protective_stops(api, positions, ctx, db_path,
     to submit a new one. Survives restarts and races with the entry
     path.
 
-    Why one order per position (not three): Alpaca treats every open
-    sell-side order as a qty reservation against the position. If we
-    submit a stop, take-profit AND trailing on a 19-share SBUX
-    position, the first one reserves all 19 shares — the next two
-    fail with 'insufficient qty available, requested: 19, available: 0'.
-    Verified pattern on prod 2026-04-30.
+    Why ONE sell-side order per position (not two): Alpaca holds shares
+    per open sell-side order. If we submit a trailing stop AND a
+    take-profit limit for the same slice, that slice is reserved TWICE —
+    so a profile consumes 2× its shares from the shared Alpaca account
+    pool, and the NEXT profile's protective stop can't place ('insufficient
+    qty available, requested: N, available: M<N'), leaving its position
+    NAKED. Verified on prod 2026-06-22: every doubled slice showed
+    `pos - sell_reserved == broker available` exactly (no drift, no
+    mis-tracking — purely the second reservation). See 2026-06-23 below.
 
     Order priority:
       1. If `use_trailing_stops`: place trailing_stop ONLY. Functionally
@@ -746,7 +749,20 @@ def ensure_protective_stops(api, positions, ctx, db_path,
 
     Take-profit is dropped from the broker side; the polling TP check
     in `check_stop_loss_take_profit` still fires at threshold breach.
-    TP isn't time-critical the way stops are.
+    TP isn't time-critical the way a stop is.
+
+    2026-06-23 — REVERTED the 2026-06-09 broker-side TP. That change
+    placed a second full-qty `limit` order alongside the stop/trailing,
+    reintroducing exactly the double-reservation this docstring warns
+    about: it caused 51 'insufficient qty available' protective failures
+    on 2026-06-22 (NFLX/BMNR/PLUG/ETHA/DFTX…), each leaving a position
+    with no fresh broker stop. The broker-side TP also could not work
+    reliably — in the default trailing mode it failed ~half the time
+    (the trailing already reserved the slice). The downside stop is the
+    safety control and must always win the single reservation; the TP
+    reverts to per-cycle polling. We also actively CANCEL any lingering
+    broker-side TP this entry still tracks (below) so the shares it was
+    hogging are freed for the actual stop the same cycle.
 
     conviction_tp_skip: when this returns True for a position (the
     runaway-winner override), skip the trailing stop entirely (let the
@@ -975,6 +991,38 @@ def ensure_protective_stops(api, positions, ctx, db_path,
                     _legacy_schema_exc,
                 )
 
+            # 2026-06-23 — SUNSET the broker-side take-profit. We no
+            # longer place a separate full-qty TP `limit` order (it
+            # double-reserved the slice and starved sibling profiles'
+            # stops into naked exposure — see the function docstring).
+            # Cancel any TP this entry still tracks so its reserved
+            # shares are freed for the actual protective stop THIS cycle,
+            # then clear the column. Runs before the coverage-skip below
+            # so even an already-stop-covered position gets drained.
+            # Bracket entries are excluded (they `continue` above) and
+            # never carry a sweep-placed protective_tp_order_id.
+            _lingering_tp = row["protective_tp_order_id"]
+            if _lingering_tp:
+                if cancel_protective_stop(api, _lingering_tp):
+                    try:
+                        conn.execute(
+                            "UPDATE trades SET protective_tp_order_id = NULL "
+                            "WHERE id = ?",
+                            (row["id"],),
+                        )
+                        conn.commit()
+                        logger.info(
+                            "Sunset broker-side TP %s for %s (entry #%s) — "
+                            "freed its share reservation for the stop.",
+                            str(_lingering_tp)[:8], symbol, row["id"],
+                        )
+                    except sqlite3.Error as _tp_clear_exc:
+                        logger.warning(
+                            "Cancelled broker-side TP %s for %s but couldn't "
+                            "clear the column: %s",
+                            str(_lingering_tp)[:8], symbol, _tp_clear_exc,
+                        )
+
             # RC3 (2026-06-05) — JOURNAL-SIDE dedup as the second
             # defense layer behind broker_coverage. Pattern observed:
             # broker_coverage occasionally returns empty for a symbol
@@ -1178,24 +1226,19 @@ def ensure_protective_stops(api, positions, ctx, db_path,
             sl_pct = sl_pct_short if is_short else sl_pct_long
 
             if use_trailing:
-                # Trailing-stop: covers downside + dynamic profit-lock
-                # (price-driven). The static TP placed below covers the
-                # case where price hits the AI's target precisely
-                # without giving back — locks in the AI's actual target
-                # rather than waiting for a 5% pullback. Both run
-                # concurrently as reduce-only orders; whichever fires
-                # first closes the position, the other becomes a
-                # no-shares-to-reduce sit-and-wait (cleaned by next
-                # cycle's broker-truth check).
+                # Trailing-stop ONLY: it covers downside (initial level =
+                # entry × (1 - trail)) AND dynamic profit-lock as the
+                # high-water rises. This is the single sell-side
+                # reservation for the slice; the AI's fixed profit target
+                # is enforced by the per-cycle polling TP. No broker-side
+                # TP is placed (it would double-reserve the slice — see
+                # the docstring and the TP-sunset above).
                 existing_trail_id = row["protective_trailing_order_id"]
                 if not (existing_trail_id and _is_order_active(api, existing_trail_id)):
-                    # Cancel any stale static stop AND any stale TP
-                    # (a legacy TP may be at yesterday's target price).
-                    # A fresh TP at the current entry-row target is
-                    # placed below — so this cancel + re-place gives
-                    # always-current TP pricing instead of leaving a
-                    # stale order at the broker.
-                    _cancel_stale_other_orders(api, conn, row, ("stop", "tp"))
+                    # Cancel any stale STATIC stop before re-arming the
+                    # trailing so its reservation is freed (the lingering
+                    # broker-side TP was already sunset above).
+                    _cancel_stale_other_orders(api, conn, row, ("stop",))
                     trail_pct = trail_percent_for_entry(sl_pct)
                     if trail_pct is not None:
                         order_id = submit_protective_trailing(
@@ -1216,14 +1259,15 @@ def ensure_protective_stops(api, positions, ctx, db_path,
                                     "store id: %s (symbol=%s)", exc, symbol,
                                 )
             else:
-                # Static stop branch (use_trailing=False).
+                # Static stop ONLY branch (use_trailing=False). This is
+                # the single sell-side reservation for the slice; the AI's
+                # profit target is enforced by the per-cycle polling TP.
                 existing_stop_id = row["protective_stop_order_id"]
                 if not (existing_stop_id and _is_order_active(api, existing_stop_id)):
-                    # Cancel any stale trailing AND any stale TP
-                    # (legacy TP may be at yesterday's target). Fresh
-                    # TP placed below from the entry row's current
-                    # take_profit.
-                    _cancel_stale_other_orders(api, conn, row, ("tp", "trailing"))
+                    # Cancel any stale trailing before re-arming the static
+                    # stop so its reservation is freed (the lingering
+                    # broker-side TP was already sunset above).
+                    _cancel_stale_other_orders(api, conn, row, ("trailing",))
                     stop_price = stop_price_for_entry(entry_price, sl_pct, is_short)
                     if stop_price is not None:
                         order_id = submit_protective_stop(
@@ -1244,53 +1288,13 @@ def ensure_protective_stops(api, positions, ctx, db_path,
                                     "store id: %s (symbol=%s)", exc, symbol,
                                 )
 
-            # 2026-06-09 — broker-side TAKE-PROFIT placement.
-            # Pre-fix, TPs went through `check_stop_loss_take_profit`
-            # polling — which ran once per ~5-min cycle and could miss
-            # intra-cycle spikes past the AI's target. Now place a
-            # GTC limit order at the entry row's `take_profit` price
-            # so the broker fills at the AI's clamped target the
-            # moment price reaches it. Runs alongside trailing/static
-            # stop: whichever fires first closes the position; the
-            # other becomes a no-shares-to-reduce order cleaned by
-            # the next cycle's broker-truth check (line ~740).
-            #
-            # Skip when:
-            #   - row has no take_profit price set (entry didn't
-            #     compute one)
-            #   - an active TP order already exists for this row
-            #   - conviction-TP override is active for this position
-            #     (caller already `continue`d above for that case)
-            try:
-                tp_price = row["take_profit"]
-            except (IndexError, KeyError):
-                # Legacy schema fallback (minimal-schema test
-                # fixtures) — no take_profit column means no
-                # broker-side TP for this row, skip the placement
-                # branch below.
-                tp_price = None
-            existing_tp_id = row["protective_tp_order_id"]
-            tp_active = (
-                existing_tp_id and _is_order_active(api, existing_tp_id)
-            )
-            if tp_price and float(tp_price) > 0 and not tp_active:
-                tp_order_id = submit_protective_take_profit(
-                    api, symbol, abs_qty, close_side, float(tp_price),
-                    db_path=db_path, entry_trade_id=row["id"],
-                )
-                if tp_order_id:
-                    try:
-                        conn.execute(
-                            "UPDATE trades SET protective_tp_order_id = ? "
-                            "WHERE id = ?",
-                            (tp_order_id, row["id"]),
-                        )
-                        conn.commit()
-                    except Exception as exc:
-                        logger.warning(
-                            "Protective TP placed but couldn't store id: "
-                            "%s (symbol=%s)", exc, symbol,
-                        )
+            # NB: no broker-side take-profit is placed here. A separate
+            # full-qty TP `limit` would double-reserve the slice and
+            # starve sibling profiles' stops into naked exposure (the
+            # 2026-06-22 incident — see the docstring). The AI's profit
+            # target is enforced every cycle by the polling check in
+            # `check_stop_loss_take_profit`; any lingering broker TP from
+            # the reverted design is sunset at the top of this loop.
 
     finally:
         try:

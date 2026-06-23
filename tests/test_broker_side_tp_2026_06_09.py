@@ -1,37 +1,31 @@
-"""2026-06-09 — broker-side take-profit placement.
+"""2026-06-09 broker-side take-profit — REVERTED 2026-06-23.
 
-Pre-fix: `bracket_orders.ensure_protective_stops` placed only a
-trailing stop (when `use_trailing=True`) OR a static stop (else).
-The comment at the static-stop branch said "No TP — that goes
-through polling." For trailing mode it claimed "trailing covers
-profit-lock." Neither mode placed a broker-side TP limit order at
-the AI's actual target.
+The 2026-06-09 change made `ensure_protective_stops` place a GTC `limit`
+take-profit at `row["take_profit"]` ALONGSIDE the trailing/static stop.
+The intent was intra-cycle TP precision the polling path can miss.
 
-Investigation 2026-06-09 (afternoon):
-  - 0/60 pid 42 entries had `protective_tp_order_id` set.
-  - 0 PROTECTIVE_TAKE_PROFIT rows in 30 days.
-  - The polling path (`check_stop_loss_take_profit`) runs once
-    per ~5-min cycle and can miss intra-cycle price spikes past
-    the AI target.
-  - Trailing-stop give-back captures only ~95% of MFE on perfect
-    runs, less when price pulls back hard after spiking.
+Why it was reverted (prod 2026-06-22): Alpaca holds shares per open
+sell-side order, so a `limit` TP + a `trailing_stop` for the SAME slice
+reserved that slice TWICE. On the shared Alpaca account each profile then
+consumed 2× its shares, and the next profile's protective stop could not
+place — 51 "insufficient qty available" failures, each leaving a position
+NAKED. A categorized broker+journal pull showed `position - sell_reserved
+== broker available` on every symbol (no drift; purely the second
+reservation). The downside stop is the safety control and must win the
+single reservation; the AI's profit target reverts to the per-cycle
+polling check in `check_stop_loss_take_profit`.
 
-Post-fix: `ensure_protective_stops` now ALSO places a GTC limit
-order at `row["take_profit"]` (the clamped AI target). Runs
-alongside trailing/static stop. Whichever fires first closes the
-position; the loser becomes a no-shares-to-reduce order and gets
-cleaned by the next cycle's broker-truth check.
+This file now pins the REVERT (the live behavior is pinned functionally
+in test_protective_no_double_reservation_2026_06_23.py):
+  - the sweep places NO broker-side take-profit (no `submit_protective_
+    take_profit` call, no `type='limit'` order);
+  - the sweep actively sunsets any lingering broker-side TP so its
+    reservation is freed for the actual stop.
 
-Tests pin:
-  1. When a stock entry has a take_profit price, a TP order is
-     submitted in the same sweep as the stop.
-  2. When an entry already has an active TP order, no duplicate
-     is placed.
-  3. When the entry's take_profit price is None or zero, no TP
-     is placed (defensive — entry didn't compute one).
-  4. The trailing-stop cancel-stale path no longer cancels TPs
-     (the trailing mode's prior comment claimed TP-via-polling;
-     now TP is broker-side and complementary).
+The `submit_protective_take_profit` PRIMITIVE is retained (it's a valid
+order helper and still routes through `_submit_protective` for the
+hard-to-borrow DAY-order retry); it is simply no longer called by the
+protective sweep. `TestSubmitTPHelperUnchanged` below still covers it.
 """
 from __future__ import annotations
 
@@ -51,85 +45,49 @@ sys.path.insert(0, str(REPO_ROOT))
 # ---------------------------------------------------------------------------
 
 
-class TestBrokerSideTPWiring:
+class TestBrokerSideTPReverted:
+    """2026-06-23 — the broker-side TP must NOT be placed by the sweep
+    (it double-reserves the slice). These invert the original 06-09 pins."""
 
-    def test_ensure_protective_stops_selects_take_profit_column(self):
-        """The entry-row SELECT in `ensure_protective_stops` must
-        include `take_profit` so the sweep has the AI's clamped
-        target available. Search scoped to the function body so
-        we don't accidentally match an unrelated SELECT elsewhere
-        in bracket_orders.py."""
+    def _sweep_body(self):
         src = (REPO_ROOT / "bracket_orders.py").read_text()
         fn_start = src.find("def ensure_protective_stops")
         assert fn_start > 0, "ensure_protective_stops missing"
         fn_end = src.find("\ndef ", fn_start + 1)
-        body = src[fn_start:fn_end if fn_end > 0 else len(src)]
-        assert "take_profit" in body, (
-            "ensure_protective_stops must read `take_profit` from "
-            "the entry row to place the broker-side TP. Without it "
-            "the polling-only fallback returns."
+        return src[fn_start:fn_end if fn_end > 0 else len(src)]
+
+    def test_sweep_does_not_call_submit_protective_take_profit(self):
+        """The sweep must NOT place a broker-side take-profit — a second
+        full-qty sell order reserves the slice twice and starves sibling
+        profiles' stops into naked exposure (the 2026-06-22 incident)."""
+        body = self._sweep_body()
+        assert "submit_protective_take_profit(" not in body, (
+            "ensure_protective_stops must not place a broker-side TP; "
+            "the AI target is enforced by the polling check."
         )
 
-    def test_ensure_protective_stops_calls_submit_protective_take_profit(self):
-        """The sweep must actually call `submit_protective_take_profit`
-        somewhere. Pre-2026-06-09 the function existed but was never
-        called from any code path."""
-        src = (REPO_ROOT / "bracket_orders.py").read_text()
-        # Find ensure_protective_stops function body
-        fn_start = src.find("def ensure_protective_stops")
-        assert fn_start > 0, "ensure_protective_stops missing"
-        fn_end = src.find("\ndef ", fn_start + 1)
-        body = src[fn_start:fn_end if fn_end > 0 else len(src)]
-        assert "submit_protective_take_profit(" in body, (
-            "ensure_protective_stops must call "
-            "submit_protective_take_profit. Without this call the "
-            "AI's TP targets are never placed at the broker and the "
-            "polling-only design returns."
+    def test_sweep_builds_no_limit_sell_order(self):
+        """No `type='limit'` sell order may be constructed in the sweep."""
+        body = self._sweep_body()
+        assert '"type": "limit"' not in body, (
+            "no broker-side TP limit may be built in the protective sweep"
         )
 
-    def test_tp_stored_via_protective_tp_order_id(self):
-        """After placement, the order_id must be persisted into the
-        entry row's `protective_tp_order_id` column so subsequent
-        cycles can see the TP exists and skip duplicate placement."""
-        src = (REPO_ROOT / "bracket_orders.py").read_text()
-        fn_start = src.find("def ensure_protective_stops")
-        fn_end = src.find("\ndef ", fn_start + 1)
-        body = src[fn_start:fn_end if fn_end > 0 else len(src)]
-        assert "protective_tp_order_id = ?" in body, (
-            "After TP placement, the order_id must be persisted to "
-            "the entry row's protective_tp_order_id column. Without "
-            "this the sweep will keep placing duplicates and the "
-            "broker-truth coverage check won't see the TP."
+    def test_sweep_sunsets_lingering_broker_tp(self):
+        """Any TP left over from the reverted design is cancelled and the
+        column cleared, freeing its reservation for the actual stop."""
+        body = self._sweep_body()
+        assert "protective_tp_order_id = NULL" in body, (
+            "the sweep must sunset (cancel + clear) any lingering "
+            "broker-side TP so its share reservation is freed"
         )
 
-    def test_tp_placement_happens_after_stop_branch(self):
-        """The TP placement must happen AFTER the stop placement
-        branch (trailing or static), not inside it. Either branch
-        cancels its stale counterpart (legacy stop + legacy TP) so
-        a fresh TP at the current entry-row target replaces any
-        out-of-date TP at the broker."""
-        src = (REPO_ROOT / "bracket_orders.py").read_text()
-        fn_start = src.find("def ensure_protective_stops")
-        fn_end = src.find("\ndef ", fn_start + 1)
-        body = src[fn_start:fn_end if fn_end > 0 else len(src)]
-        # The TP placement comment anchor
-        tp_anchor = body.find("broker-side TAKE-PROFIT placement")
-        assert tp_anchor > 0, (
-            "TP placement comment anchor missing — refactor must "
-            "preserve the anchor or update this pin."
-        )
-        # Both the trailing and static stop branches must appear
-        # BEFORE the TP placement (TP is placed unconditionally
-        # after whichever stop was placed)
-        trailing_anchor = body.find("if use_trailing:")
-        static_anchor = body.find("Static stop branch")
-        assert 0 < trailing_anchor < tp_anchor, (
-            "Trailing branch must precede TP placement so a fresh "
-            "TP is placed after the stop logic runs."
-        )
-        assert 0 < static_anchor < tp_anchor, (
-            "Static branch must precede TP placement."
-        )
+    def test_take_profit_column_still_read(self):
+        """The entry-row SELECT still reads `take_profit` (the polling
+        TP and other readers rely on the column being present); the
+        sweep just no longer places a broker order from it."""
+        body = self._sweep_body()
+        assert "take_profit" in body
 
 
 class TestSubmitTPHelperUnchanged:

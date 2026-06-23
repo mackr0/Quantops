@@ -5,6 +5,31 @@ at the top.
 
 ---
 
+## 2026-06-23 — Protective stops: one sell-side reservation per slice (revert the broker-side take-profit that double-reserved shares and starved stops into naked exposure). Severity: HIGH (positions rode with no fresh broker stop).
+
+Prod logs (2026-06-22) showed 51 "Could not place protective … insufficient qty available (requested: N, available: M)" failures (NFLX, BMNR, PLUG, ETHA, DFTX…), each leaving a position with no fresh broker-side stop. This was a **distinct** cause from the hard-to-borrow day-order issue fixed the same day (commit cd9317c) — that one is untouched.
+
+**Root cause (confirmed against live broker truth, not inferred).** A categorized pull of every open order + position across all three Alpaca accounts, cross-checked against each profile's journal, proved:
+- **0 orphan orders** — every resting order was owned by exactly one profile's journal (order-id tracking is intact).
+- **`position − sell_reserved == broker available` on every symbol** — zero `UNEXPLAINED`, i.e. no journal↔broker drift and nothing mis-attributed.
+- The entire deficit was one self-inflicted thing: each slice carried a `trailing_stop` **and** a `limit` take-profit for the same shares. Alpaca holds shares per open sell-side order, so each profile reserved its slice **twice**, consuming 2× its shares from the shared Alpaca account pool. The *next* profile's protective stop then couldn't place → naked. (PLUG: pos 17255, reserved 16846, avail 409; drop the redundant limits and avail returns to ~8832 — exactly the size of the un-armed, naked slice.)
+
+The second reservation was a 2026-06-09 change that added a broker-side TP limit alongside the stop — reintroducing precisely the qty-conflict the function's own docstring (and `docs/08_RISK_CONTROLS.md`) warned about. In the default trailing mode it also couldn't work reliably: the trailing already reserved the slice, so the TP failed ~half the time regardless. It is **not** the same as genuine journal>broker drift, so "size the order down to broker-available qty" was rejected as a mask — there was nothing to mask.
+
+**Fix (class-wide, in `bracket_orders.ensure_protective_stops`):**
+- **One sell-side order per slice.** Place only the trailing stop (default) or the static stop — never a second broker-side take-profit. With one reservation per slice, Σ(reservations) == Σ(positions) on the shared account, so a profile's own-slice stop always fits. The downside stop is the safety control and wins the single reservation.
+- **Take-profit reverts to the per-cycle polling check** (`portfolio_manager.check_stop_loss_take_profit`, which always ran). The trade is tick-level TP precision for a guaranteed-placeable stop — the right call, since a missing stop is catastrophic and a profit target firing ~5 min late is not. This is the design `docs/08_RISK_CONTROLS.md` already described; the code had silently drifted from it on 06-09.
+- **Sunset the existing doubled TP limits.** Each sweep cancels any broker-side TP the entry still tracks and clears `protective_tp_order_id`, so the ~50 GTC limit orders hogging shares are drained within a cycle or two and the freed shares go to the actual stops — the deployed fix takes effect immediately instead of waiting for the limits to age out.
+- **No silent down-sizing.** If a stop still can't place after this, that's genuine drift — it surfaces (the existing warning log) and the per-cycle integrity gate halts on the underlying broker↔journal divergence. We never quietly protect a smaller qty.
+
+The `submit_protective_take_profit` primitive is retained (it still routes through `_submit_protective` for the HTB DAY-order retry) but is no longer called by the sweep.
+
+**Tests:** `tests/test_protective_no_double_reservation_2026_06_23.py` (6) — trailing and static modes each place exactly one sell-side order and never a `limit`; a lingering broker TP is cancelled and its column cleared (even when the position is already broker-covered, since the sunset runs before the coverage skip); structural pins that the sweep neither calls `submit_protective_take_profit` nor builds a `type='limit'` order, and that it sunsets the TP. `tests/test_broker_side_tp_2026_06_09.py` updated to pin the revert. Full suite green.
+
+**Known-separate follow-up (flagged, not in this commit):** NFLX on one account showed a `closed` entry (p158) whose protective pair was still live at the broker — a cancel-on-close leak (`cancel_for_symbol` only scans `status='open'`), the one case in the pull where a resting sell could fire on a flat position. Distinct mechanism from the double-reservation; tracked for its own pass.
+
+---
+
 ## 2026-06-22 — Kill switch: clear the reason string on release. Severity: LOW (cosmetic/diagnostic; the switch itself behaved correctly).
 
 `deactivate()` set `enabled = 0` but left the old `reason` text in `kill_switch_state`. Any surface that reads the reason without first checking `enabled` (or a human glancing at the raw row) could mistake a released switch for an active one — it made the picture look "KILL SWITCH ACTIVE" after the integrity gate's auto-release on 2026-06-22, even though `enabled` was already 0. Now `deactivate()` clears `reason = ''` alongside `enabled = 0`, so the row reads cleanly after release. The dashboard banner was always correct (it keys off `kill_switch.enabled`); this fixes the underlying data so no other reader can be misled. Covered by the existing `tests/test_kill_switch.py` deactivate cases.

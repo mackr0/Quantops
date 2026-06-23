@@ -136,9 +136,9 @@ Every entry receives a broker-managed protective order at submission time:
 - **Trailing stop** (when `use_trailing_stops=1`, default): Alpaca `type='trailing_stop'` with `trail_percent` derived from `stop_loss_pct`, clamped [2%, 10%].
 - **Static stop loss** (otherwise): Alpaca `type='stop'` at `entry_price × (1 − stop_loss_pct)`.
 
-Exactly one protective order per position (Alpaca treats each open sell-side order as a qty reservation; placing stop+TP+trailing on the same shares triggers qty conflicts).
+Exactly **one** sell-side protective order per position. Alpaca holds shares per open sell-side order, so two orders on the same slice (e.g. a stop *and* a take-profit limit) reserve it twice — and because profiles share an Alpaca account, the doubled reservations drain the account's available shares so the *next* profile's protective stop can't place, leaving its position naked. A 2026-06-09 change that added a broker-side TP limit alongside the stop did exactly this and caused 51 "insufficient qty available" protective failures on 2026-06-22 (NFLX, BMNR, PLUG, ETHA, DFTX…); a broker+journal pull confirmed the cause was purely the second reservation (`position − sell_reserved == broker available` on every symbol — no drift, no mis-tracking). It was reverted on 2026-06-23, and the sweep now actively cancels any lingering broker-side TP so its reservation is freed for the stop.
 
-Take-profit detection runs in the polling fallback (cycle-based). Polling defers to the broker when `bracket_orders.has_active_broker_trailing(api, db_path, symbol)` confirms an active broker-side trailing — without the defer, polling would beat the broker to a worse fill on every cycle.
+Take-profit detection runs in the polling fallback (cycle-based) — it is *not* placed as a broker order. Polling defers to the broker when `bracket_orders.has_active_broker_trailing(api, db_path, symbol)` confirms an active broker-side trailing — without the defer, polling would beat the broker to a worse fill on every cycle.
 
 When `use_conviction_tp_override=1` and a position hits its fixed take-profit, the system can SKIP the fixed TP and let the trailing stop manage the exit — but ONLY when ALL of:
 
