@@ -622,6 +622,67 @@ def get_wash_cooldown_symbols(db_path: str, days: int = 30) -> set:
         return set()
 
 
+def record_htb_cooldown(db_path: str, symbol: str) -> None:
+    """Mark a symbol as learned hard-to-borrow from a broker order rejection.
+
+    Alpaca's asset-level ``easy_to_borrow`` flag is not always truthful:
+    SPCX, for one, reports ``easy_to_borrow=True`` yet the order engine
+    rejects every GTC protective stop with *"only day orders are allowed
+    for hard-to-borrow asset"*. The asset flag lied; the order engine is
+    the source of truth. When we observe that authoritative rejection
+    (``bracket_orders`` protective placement), we record the symbol here
+    so the entry gate stops opening NEW positions in a name we cannot
+    protect with a standing stop — the asset-flag gate could never catch
+    it because the flag itself is wrong.
+
+    Reuses ``recently_exited_symbols`` with ``trigger='htb_cooldown'`` so
+    the pre-filter pipeline lumps it in with the other cooldowns. The
+    INSERT OR REPLACE refreshes ``exited_at`` on every fresh rejection, so
+    a name stays excluded as long as it keeps rejecting; if it genuinely
+    becomes easy-to-borrow again, the cooldown lapses after the window.
+    """
+    if not db_path or not symbol:
+        return
+    try:
+        with closing(_get_conn(db_path)) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO recently_exited_symbols "
+                "(symbol, exited_at, trigger, exit_price) "
+                "VALUES (?, datetime('now'), 'htb_cooldown', NULL)",
+                (symbol.upper(),),
+            )
+            conn.commit()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as _htb_exc:
+        # HTB-cooldown marker write; best-effort and re-recorded on the
+        # next rejection. Surface for follow-up.
+        logger.debug(
+            "htb_cooldown marker write failed for %s: %s: %s",
+            symbol, type(_htb_exc).__name__, _htb_exc,
+        )
+
+
+def get_htb_cooldown_symbols(db_path: str, days: int = 30) -> set:
+    """Return symbols learned hard-to-borrow from broker order rejections.
+
+    Default 30-day window. The marker refreshes on every fresh HTB
+    rejection (see :func:`record_htb_cooldown`), so a name that is
+    actively hard-to-borrow stays excluded indefinitely while it keeps
+    rejecting; one that recovers ages out after the window."""
+    if not db_path:
+        return set()
+    try:
+        with closing(_get_conn(db_path)) as conn:
+            rows = conn.execute(
+                "SELECT symbol FROM recently_exited_symbols "
+                "WHERE trigger = 'htb_cooldown' "
+                "AND exited_at >= datetime('now', ?)",
+                (f"-{int(days)} days",),
+            ).fetchall()
+        return {r[0] for r in rows}
+    except Exception:
+        return set()
+
+
 def get_recently_exited(db_path: str, cooldown_minutes: int = 60) -> set:
     """Return the set of symbols currently in the post-exit cooldown window."""
     try:

@@ -1243,6 +1243,30 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                 "easy-to-borrow gate failed for %s: %s: %s",
                 symbol, type(_etb_exc).__name__, _etb_exc,
             )
+        # 2026-06-22 — LEARNED hard-to-borrow. The asset-flag gate above
+        # trusts Alpaca's easy_to_borrow flag, which is not always truthful
+        # (SPCX reports easy_to_borrow=True yet the order engine rejects
+        # every GTC protective stop: "only day orders are allowed for
+        # hard-to-borrow"). When bracket_orders observes that authoritative
+        # order-time rejection it records the symbol; refuse new entries on
+        # it so we never again hold a name we can't protect with a standing
+        # stop. Broker-driven and class-wide — not a hardcoded per-name list.
+        try:
+            from journal import get_htb_cooldown_symbols
+            if ctx is not None and symbol.upper() in get_htb_cooldown_symbols(
+                    getattr(ctx, "db_path", None)):
+                result["action"] = "SKIP"
+                result["reason"] = (
+                    f"{symbol} learned hard-to-borrow from a broker order "
+                    f"rejection (only day orders allowed) — excluded so we "
+                    f"don't hold a name we can't protect with a standing stop"
+                )
+                return result
+        except Exception as _htb_gate_exc:
+            logger.debug(
+                "learned-HTB gate failed for %s: %s: %s",
+                symbol, type(_htb_gate_exc).__name__, _htb_gate_exc,
+            )
         if action == "STRONG_BUY":
             alloc_pct = max_position_pct
         else:
@@ -1793,6 +1817,26 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                 "easy-to-borrow short gate failed for %s: %s: %s",
                 symbol, type(_etb_exc).__name__, _etb_exc,
             )
+        # 2026-06-22 — LEARNED hard-to-borrow (short side). A name the order
+        # engine flagged HTB rejects standing GTC orders on BOTH sides (the
+        # buy-to-cover protective stop too), so a short would ride naked the
+        # same way. Refuse new shorts on a learned-HTB name.
+        try:
+            from journal import get_htb_cooldown_symbols
+            if ctx is not None and symbol.upper() in get_htb_cooldown_symbols(
+                    getattr(ctx, "db_path", None)):
+                result["action"] = "SKIP"
+                result["reason"] = (
+                    f"{symbol} learned hard-to-borrow from a broker order "
+                    f"rejection — excluded so we don't hold a name we can't "
+                    f"protect with a standing stop"
+                )
+                return result
+        except Exception as _htb_gate_exc:
+            logger.debug(
+                "learned-HTB short gate failed for %s: %s: %s",
+                symbol, type(_htb_gate_exc).__name__, _htb_gate_exc,
+            )
         # Only if short selling is enabled for this profile
         enable_shorts = ctx.enable_short_selling if ctx is not None else False
         if not enable_shorts:
@@ -2175,16 +2219,26 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     # Held positions can still be ADDED to / exited; we only block fresh
     # BUY entries on symbols we just stopped out of.
     recently_exited: set = set()
+    htb_learned: set = set()
     if ctx is not None:
         try:
-            from journal import get_recently_exited, get_wash_cooldown_symbols
+            from journal import (get_recently_exited,
+                                  get_wash_cooldown_symbols,
+                                  get_htb_cooldown_symbols)
             cooldown_min = int(getattr(ctx, "reentry_cooldown_minutes", 60))
             recently_exited = get_recently_exited(ctx.db_path, cooldown_min)
             # Union with the longer (30-day) wash-trade cooldown so we
             # don't re-attempt buys Alpaca already rejected as wash.
             recently_exited |= get_wash_cooldown_symbols(ctx.db_path, 30)
+            # Names the broker's order engine confirmed hard-to-borrow
+            # (rejects standing GTC protective stops) — drop them early
+            # with an accurate reason. The per-symbol entry gate is the
+            # authoritative backstop (also catches AI picks that bypass
+            # this screen); this is the efficiency early-drop.
+            htb_learned = get_htb_cooldown_symbols(ctx.db_path, 30)
         except Exception:
             recently_exited = set()
+            htb_learned = set()
 
     for symbol in candidates:
         # Recent-exit cooldown (only applies to non-held positions — we
@@ -2194,6 +2248,19 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
             pre_filter_skips.append({
                 "symbol": symbol, "action": "COOLDOWN",
                 "reason": "Recently exited — cooldown to avoid churn",
+            })
+            continue
+
+        # Learned hard-to-borrow — the broker rejects standing protective
+        # stops on these (only day orders allowed), so we won't open a new
+        # position we can't protect. Holds already on the book are left
+        # alone (managed/exited normally); this only blocks fresh entries.
+        if symbol in htb_learned and symbol not in held_symbols:
+            pre_filter_skips.append({
+                "symbol": symbol, "action": "SKIP",
+                "reason": ("Learned hard-to-borrow — broker won't accept a "
+                           "standing protective stop; excluded from new "
+                           "entries"),
             })
             continue
 

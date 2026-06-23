@@ -36,6 +36,66 @@ _LIVE_PROTECTIVE_STATUSES = frozenset({
 })
 
 
+def _is_htb_rejection(exc) -> bool:
+    """True when a broker order rejection means the asset is hard-to-borrow
+    and only accepts DAY orders (a standing GTC protective order is refused).
+
+    Alpaca's message is ``only day orders are allowed for hard-to-borrow
+    asset "SYM"``. The asset-level ``easy_to_borrow`` flag does not always
+    agree with this — SPCX reports ``easy_to_borrow=True`` yet rejects here —
+    so this order-time rejection is the *authoritative* HTB signal."""
+    msg = str(exc).lower()
+    return (
+        "hard-to-borrow" in msg
+        or "hard to borrow" in msg
+        or "only day orders are allowed" in msg
+    )
+
+
+def _submit_protective(api, kwargs: dict, db_path, symbol: str, describe: str):
+    """Submit a protective order GTC, retrying as a DAY order when the
+    broker refuses the GTC because the asset is hard-to-borrow.
+
+    Hard-to-borrow names (SPCX et al.) reject every GTC protective stop —
+    without this retry the position rides NAKED and we churn the same
+    doomed order every cycle. A DAY order IS accepted, so the position is
+    protected through the session (the per-cycle polling stop-loss in
+    check_exits backstops between cycles and overnight). On the HTB path we
+    also LEARN the symbol via ``journal.record_htb_cooldown`` so the entry
+    gate stops opening fresh positions in a name we can't protect with a
+    standing stop — the asset-flag gate can't catch it because the flag
+    itself is wrong (SPCX reports easy_to_borrow=True).
+
+    ``describe`` is the human phrase for logs, e.g.
+    ``trailing stop for SPCX (qty=106, trail=5.00%)``. Returns the broker
+    order object, or None if it could not be placed.
+    """
+    try:
+        return api.submit_order(time_in_force="gtc", **kwargs)
+    except Exception as exc:
+        if not _is_htb_rejection(exc):
+            logger.warning(
+                "Could not place protective %s: %s", describe, exc)
+            return None
+        # Authoritative HTB signal from the order engine — learn it so we
+        # stop opening fresh positions we can't protect, then retry DAY.
+        from journal import record_htb_cooldown
+        record_htb_cooldown(db_path, symbol)
+        try:
+            order = api.submit_order(time_in_force="day", **kwargs)
+        except Exception as day_exc:
+            logger.warning(
+                "Could not place protective %s even as a DAY order "
+                "(hard-to-borrow): %s", describe, day_exc)
+            return None
+        logger.warning(
+            "Protective %s rejected as GTC (hard-to-borrow); placed as a "
+            "DAY order instead and marked the symbol HTB so we stop "
+            "opening new positions we can't protect with a standing stop.",
+            describe)
+        return order
+
+
 # 2026-05-21 — Per `feedback_no_orphan_broker_fills`: every api.submit_order
 # MUST write a journal row in the same code path. Protective orders
 # (stop / take-profit / trailing) were the historical hole — placement
@@ -326,20 +386,19 @@ def submit_protective_stop(
     """
     if not symbol or qty <= 0 or stop_price <= 0 or side not in ("sell", "buy"):
         return None
-    try:
-        order = api.submit_order(
-            symbol=symbol,
-            qty=int(qty),
-            side=side,
-            type="stop",
-            stop_price=round(float(stop_price), 2),
-            time_in_force="gtc",
-        )
-    except Exception as exc:
-        logger.warning(
-            "Could not place protective stop for %s (qty=%d, stop=$%.2f): %s",
-            symbol, qty, stop_price, exc,
-        )
+    order = _submit_protective(
+        api,
+        {
+            "symbol": symbol,
+            "qty": int(qty),
+            "side": side,
+            "type": "stop",
+            "stop_price": round(float(stop_price), 2),
+        },
+        db_path, symbol,
+        f"stop for {symbol} (qty={int(qty)}, stop=${stop_price:.2f})",
+    )
+    if order is None:
         return None
     order_id = getattr(order, "id", None)
     if not order_id:
@@ -455,20 +514,19 @@ def submit_protective_take_profit(
     """
     if not symbol or qty <= 0 or limit_price <= 0 or side not in ("sell", "buy"):
         return None
-    try:
-        order = api.submit_order(
-            symbol=symbol,
-            qty=int(qty),
-            side=side,
-            type="limit",
-            limit_price=round(float(limit_price), 2),
-            time_in_force="gtc",
-        )
-    except Exception as exc:
-        logger.warning(
-            "Could not place protective take-profit for %s (qty=%d, limit=$%.2f): %s",
-            symbol, qty, limit_price, exc,
-        )
+    order = _submit_protective(
+        api,
+        {
+            "symbol": symbol,
+            "qty": int(qty),
+            "side": side,
+            "type": "limit",
+            "limit_price": round(float(limit_price), 2),
+        },
+        db_path, symbol,
+        f"take-profit for {symbol} (qty={int(qty)}, limit=${limit_price:.2f})",
+    )
+    if order is None:
         return None
     order_id = getattr(order, "id", None)
     if not order_id:
@@ -547,21 +605,19 @@ def submit_protective_trailing(
     """
     if not symbol or qty <= 0 or trail_percent <= 0 or side not in ("sell", "buy"):
         return None
-    try:
-        order = api.submit_order(
-            symbol=symbol,
-            qty=int(qty),
-            side=side,
-            type="trailing_stop",
-            trail_percent=str(round(float(trail_percent), 2)),
-            time_in_force="gtc",
-        )
-    except Exception as exc:
-        logger.warning(
-            "Could not place protective trailing stop for %s "
-            "(qty=%d, trail=%.2f%%): %s",
-            symbol, qty, trail_percent, exc,
-        )
+    order = _submit_protective(
+        api,
+        {
+            "symbol": symbol,
+            "qty": int(qty),
+            "side": side,
+            "type": "trailing_stop",
+            "trail_percent": str(round(float(trail_percent), 2)),
+        },
+        db_path, symbol,
+        f"trailing stop for {symbol} (qty={int(qty)}, trail={trail_percent:.2f}%)",
+    )
+    if order is None:
         return None
     order_id = getattr(order, "id", None)
     if not order_id:

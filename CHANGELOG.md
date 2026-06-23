@@ -5,6 +5,20 @@ at the top.
 
 ---
 
+## 2026-06-22 — Hard-to-borrow names: protective stops retry as DAY orders (never naked) + the broker's rejection teaches the entry gate. Severity: HIGH (a held long could ride with no downside protection).
+
+SPCX was bought as a long — Alpaca's asset endpoint reports `easy_to_borrow=True`, so the asset-flag tradability gate let it in — but the order engine then rejected **every** GTC protective stop with *"only day orders are allowed for hard-to-borrow asset"*. The old `bracket_orders` code logged the rejection and returned `None`, so the position rode **naked** (no downside protection) and churned the same doomed GTC order every cycle. Alpaca's own data contradicts itself here: the asset flag says easy-to-borrow, the order engine treats it as hard-to-borrow. Prod logs (2026-06-22) confirmed the exact string recurring across the session, plus a class of names (NFLX, BMNR, PLUG…) going naked when a bracket's child expired/canceled.
+
+This is the same failure mode as the ICCM incident (naked long, no standing stop), but the **opposite cause**: ICCM was `easy_to_borrow=False` and the flag-based gate caught it; SPCX is flagged `True`, so the flag-based gate could *never* catch it. The order engine is the source of truth; the asset flag is not.
+
+- **Never naked (`bracket_orders._submit_protective`):** all three protective submitters (trailing stop, take-profit, static stop) now go through one helper that submits GTC and, when the broker refuses the GTC for hard-to-borrow reasons, retries the **same** order as a `time_in_force="day"` order. HTB names accept day orders, so the position is protected through the session; the per-cycle polling stop-loss in `check_exits` remains the backstop between cycles. Non-HTB rejections keep the previous behavior (log + return None).
+- **Learn from the rejection (`journal.record_htb_cooldown` / `get_htb_cooldown_symbols`):** the authoritative order-time rejection records the symbol to a learned hard-to-borrow set (reuses `recently_exited_symbols`, `trigger='htb_cooldown'`, 30-day window that refreshes on each fresh rejection). This is the auto-learn blocklist the system was missing for this case — broker-driven and class-wide, **not** a hardcoded per-name list.
+- **Stop re-entering (`trade_pipeline`):** new BUY **and** SHORT entries are refused on a learned-HTB symbol — at both per-symbol entry choke points (catches AI-proposed names that bypass the screen) and the pre-filter early-drop (accurate "learned hard-to-borrow" reason). Holds already on the book are left alone (managed/exited normally); only fresh entries are blocked. So even when Alpaca's flag lies, the **first** protective-stop rejection both protects the open position and prevents the next entry.
+
+**Tests** (`tests/test_htb_day_order_retry_2026_06_22.py`): the helper retries GTC→DAY on the real HTB message and learns the symbol; a non-HTB rejection neither retries nor learns; we still learn even when the DAY order is also refused; all three public submitters place a day order and learn; the journal round-trips and respects the 30-day window; and a structural check that both entry gates + the pre-filter consult the learned set. Known-separate finding logged for follow-up: 51 "insufficient qty available" protective failures (a distinct qty-reservation/drift cause, not HTB).
+
+---
+
 ## 2026-06-22 — Mark positions at the broker's price, not mid: displayed equity now equals the real account. Severity: MED (P&L was overstated by the unrealizable spread).
 
 The dashboard valued option-heavy books ~$1,130 (0.13% on a ~$861K account) **higher** than the actual Alpaca account. Quantities reconciled exactly with the broker; the gap was pure marking: `client._make_price_fetcher` valued every position at the data-snapshot **mid**, while the broker marks at the **realizable side** (a long at the bid, a short at the ask). Mid assumes you close at the midpoint — you can't — so the extra value was unrealizable half-spread, i.e. overstated equity (a small cousin of the phantom).

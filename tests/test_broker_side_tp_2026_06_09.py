@@ -153,16 +153,37 @@ class TestSubmitTPHelperUnchanged:
     def test_submit_protective_take_profit_uses_limit_type(self):
         """The function must use type='limit' (not stop) — TP fires
         only when price meets or beats the target, doesn't slip on
-        gaps. Source pin so a future refactor doesn't break it."""
+        gaps. Source pin so a future refactor doesn't break it.
+
+        2026-06-22 — the broker submit was factored into the shared
+        `_submit_protective` helper (so all three protective orders get
+        the hard-to-borrow DAY-order retry). The TP body now builds a
+        `"type": "limit"` kwargs dict and routes through the helper; the
+        helper owns the GTC-first / DAY-fallback time-in-force logic."""
         src = (REPO_ROOT / "bracket_orders.py").read_text()
         fn_start = src.find("def submit_protective_take_profit")
         fn_end = src.find("\ndef ", fn_start + 1)
         body = src[fn_start:fn_end if fn_end > 0 else len(src)]
-        assert 'type="limit"' in body, (
+        assert '"type": "limit"' in body, (
             "submit_protective_take_profit must use type='limit' "
             "so it fills only at/better than the target."
         )
-        assert 'time_in_force="gtc"' in body, (
-            "GTC so the TP persists across cycles until filled "
-            "or canceled by the broker-truth sweep."
+        assert "_submit_protective(" in body, (
+            "submit_protective_take_profit must route through "
+            "_submit_protective so it inherits GTC-first placement and "
+            "the hard-to-borrow DAY-order retry."
+        )
+        # The shared helper owns the time-in-force contract: GTC first
+        # (persists across cycles), DAY fallback only when the broker
+        # refuses the GTC because the asset is hard-to-borrow.
+        helper_start = src.find("def _submit_protective")
+        helper_end = src.find("\ndef ", helper_start + 1)
+        helper = src[helper_start:helper_end if helper_end > 0 else len(src)]
+        assert 'time_in_force="gtc"' in helper, (
+            "GTC so the protective order persists across cycles until "
+            "filled or canceled by the broker-truth sweep."
+        )
+        assert 'time_in_force="day"' in helper, (
+            "DAY fallback so a hard-to-borrow name (which rejects GTC) "
+            "still gets a working protective order instead of riding naked."
         )

@@ -226,6 +226,15 @@ When today's projected AI spend exceeds the daily ceiling, AI-cost-affecting act
 
 Alpaca rejects `wash trade detected` errors. The trade pipeline catches these as recoverable SKIP, not ERROR, and writes a 30-day cooldown row to `recently_exited_symbols(trigger='wash_cooldown')`. Pre-filter loop unions wash-cooldown into the existing recent-exit set so wash-flagged symbols don't re-attempt every cycle.
 
+### 4h-2. Hard-to-borrow protection (day-order retry + learned exclusion)
+
+A name's asset-level `easy_to_borrow` flag is not always truthful: a symbol can report `easy_to_borrow=True` (so the tradability gate admits it) yet have the order engine reject every standing GTC protective stop with *"only day orders are allowed for hard-to-borrow asset"*. Left unhandled, the long rides naked and churns the same doomed order every cycle (the SPCX case, 2026-06-22; same failure mode as the ICCM naked-long incident, opposite cause).
+
+Two layers, both driven by the broker's authoritative order-time rejection (not a hardcoded name list):
+
+- **Never naked.** All three protective submitters (trailing stop, take-profit, static stop) route through `bracket_orders._submit_protective`, which submits GTC and, on a hard-to-borrow rejection, retries the same order as a `time_in_force="day"` order. HTB names accept day orders, so the held position is protected through the session; the per-cycle polling stop-loss in `check_exits` backstops between cycles.
+- **Stop re-entering.** The same rejection records the symbol via `journal.record_htb_cooldown` to `recently_exited_symbols(trigger='htb_cooldown')` (30-day window, refreshed on each fresh rejection). New BUY and SHORT entries are then refused on that symbol at both per-symbol entry choke points (`is_experiment_tradable` neighbors, so AI-proposed names are covered too) and the pre-filter early-drop. Positions already on the book are left alone — only fresh entries are blocked.
+
 ### 4i. Cross-direction guard
 
 Alpaca rejects "cannot open a long buy while a short sell order is open" (and the symmetric short-side case). Recoverable SKIP. The conflicting order resolves first, then the new entry is re-attempted on a subsequent cycle.
@@ -432,6 +441,7 @@ Use this table to answer "why didn't this trade execute?" or "why was this trade
 | Crisis state | New long entries (crisis/severe) | All entry sizes (elevated) | Crisis monitor panel |
 | Intraday risk halt | New entries (during 60-min window) | — | Intraday risk panel |
 | Wash-trade cooldown | Entries on same symbol within 30 days | — | Recently-exited cache |
+| Learned hard-to-borrow | New entries on a symbol the broker rejects standing stops for (30 days) | — | Recently-exited cache (`htb_cooldown`) |
 | Cost guard | AI-cost-affecting autonomous actions | — | Cost guard panel |
 | Schedule window | Orders outside session | — | Order guard log |
 | Cross-direction guard | New side while opposing order is open | — | Trade pipeline log |
