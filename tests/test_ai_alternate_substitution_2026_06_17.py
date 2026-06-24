@@ -40,7 +40,9 @@ import ai_analyst
 import trade_pipeline
 from trade_pipeline import (
     _is_cross_profile_conflict,
+    _is_specialist_veto_drop,
     _select_backfill_alternate,
+    _veto_blocks_candidate,
 )
 
 
@@ -235,7 +237,10 @@ def _simulate_dispatch(primaries, alternates, outcome_for, held=None):
             traded_syms.add(symbol)
             traded_order.append(symbol)
 
-        if _is_cross_profile_conflict(trade_result) and alt_pool:
+        # Mirror the real gate: a shared-account conflict OR a specialist
+        # veto of a selected multileg both backfill from the bench.
+        if ((_is_cross_profile_conflict(trade_result)
+                or _is_specialist_veto_drop(trade_result)) and alt_pool):
             alt = _select_backfill_alternate(
                 alt_pool, traded_syms, attempted_syms, held_symbols,
             )
@@ -255,6 +260,9 @@ _OK = {"action": "BUY", "reason": ""}
 _IBP = {"action": "SKIP",
         "reason": "Alpaca rejected: insufficient buying power"}
 _BLACKLIST = {"action": "BLACKLIST_BLOCKED", "reason": "0/3 win rate"}
+# 2026-06-24 — a selected multileg vetoed in-loop by a risk specialist.
+_VETO = {"action": "SPECIALIST_VETOED",
+         "reason": "option_spread_risk: iv_rank too low for a credit spread"}
 
 
 class TestDispatchBackfillBehavior(unittest.TestCase):
@@ -460,6 +468,106 @@ class TestSourceStructuralPins(unittest.TestCase):
 
     def test_loop_tracks_traded_symbols(self):
         self.assertIn("_traded_syms.add(symbol)", self.tp_src)
+
+    def test_specialist_veto_wired_into_backfill(self):
+        # 2026-06-24 — a multileg specialist veto must also trigger the
+        # alternate backfill (the operator's "transact something else"
+        # intent). Pin that the gate consults _is_specialist_veto_drop.
+        self.assertIn("_is_specialist_veto_drop(", self.tp_src)
+
+    def test_veto_confined_to_entries_wired(self):
+        # The ensemble-veto filter must consult _veto_blocks_candidate so a
+        # veto can never drop a held-position EXIT.
+        self.assertIn("_veto_blocks_candidate(", self.tp_src)
+
+
+# ---------------------------------------------------------------------------
+# 6. (2026-06-24) Veto confined to entries  +  multileg veto substitutes.
+# ---------------------------------------------------------------------------
+class TestVetoBlocksCandidate(unittest.TestCase):
+    """#1 — a specialist VETO blocks ENTRIES only; a discretionary SELL on a
+    HELD position (a risk-reducing exit) is exempt."""
+
+    def test_held_sell_is_exempt(self):
+        c = {"symbol": "T", "signal": "SELL"}
+        self.assertFalse(_veto_blocks_candidate(c, {"T"}))
+
+    def test_held_strong_sell_is_exempt(self):
+        c = {"symbol": "T", "signal": "STRONG_SELL"}
+        self.assertFalse(_veto_blocks_candidate(c, {"T"}))
+
+    def test_long_entry_is_blockable(self):
+        c = {"symbol": "GOOGL", "signal": "BUY"}
+        self.assertTrue(_veto_blocks_candidate(c, {"T"}))
+
+    def test_short_entry_is_blockable(self):
+        c = {"symbol": "XYZ", "signal": "SHORT"}
+        self.assertTrue(_veto_blocks_candidate(c, set()))
+
+    def test_sell_on_non_held_is_blockable(self):
+        # A SELL signal on a symbol NOT in the book is a short entry, not an
+        # exit — still blockable.
+        c = {"symbol": "ABC", "signal": "SELL"}
+        self.assertTrue(_veto_blocks_candidate(c, {"OTHER"}))
+
+    def test_nondict_blocks_by_default(self):
+        self.assertTrue(_veto_blocks_candidate(None, set()))
+
+
+class TestIsSpecialistVetoDrop(unittest.TestCase):
+    """#2 — only an in-loop multileg SPECIALIST_VETOED drop substitutes."""
+
+    def test_specialist_vetoed_is_a_veto_drop(self):
+        self.assertTrue(_is_specialist_veto_drop(
+            {"action": "SPECIALIST_VETOED", "reason": "iv too low"}))
+
+    def test_case_insensitive(self):
+        self.assertTrue(_is_specialist_veto_drop(
+            {"action": "specialist_vetoed"}))
+
+    def test_skip_is_not_a_veto_drop(self):
+        self.assertFalse(_is_specialist_veto_drop(_CONFLICT))
+
+    def test_success_is_not_a_veto_drop(self):
+        self.assertFalse(_is_specialist_veto_drop(_OK))
+
+    def test_none_and_nondict(self):
+        self.assertFalse(_is_specialist_veto_drop(None))
+        self.assertFalse(_is_specialist_veto_drop("nope"))
+
+
+class TestMultilegVetoSubstitutes(unittest.TestCase):
+    """#2 behavioral — a vetoed multileg backfills from the bench rather than
+    losing the slot."""
+
+    def test_alternate_traded_when_multileg_vetoed(self):
+        outcomes = {"A": _VETO, "B": _OK}
+        traded = _simulate_dispatch(
+            primaries=[{"symbol": "A"}],
+            alternates=[{"symbol": "B"}],
+            outcome_for=lambda s: outcomes[s],
+        )
+        self.assertEqual(traded, ["B"])
+
+    def test_veto_then_conflict_chains(self):
+        # A vetoed → B pulled; B conflicts → C pulled; C trades.
+        outcomes = {"A": _VETO, "B": _CONFLICT, "C": _OK}
+        traded = _simulate_dispatch(
+            primaries=[{"symbol": "A"}],
+            alternates=[{"symbol": "B"}, {"symbol": "C"}],
+            outcome_for=lambda s: outcomes[s],
+        )
+        self.assertEqual(traded, ["C"])
+
+    def test_veto_with_empty_bench_loses_slot(self):
+        # No alternates → nothing to substitute (bounded, no error).
+        outcomes = {"A": _VETO}
+        traded = _simulate_dispatch(
+            primaries=[{"symbol": "A"}],
+            alternates=[],
+            outcome_for=lambda s: outcomes[s],
+        )
+        self.assertEqual(traded, [])
 
     def test_module_imports_collections(self):
         tree = ast.parse(

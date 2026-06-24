@@ -693,6 +693,45 @@ def _is_cross_profile_conflict(trade_result):
     return any(phrase in reason for phrase in _CROSS_PROFILE_CONFLICT_PHRASES)
 
 
+def _veto_blocks_candidate(candidate, held_symbols):
+    """Whether a specialist VETO should DROP this candidate from the shortlist.
+
+    2026-06-24 — a veto may block an ENTRY only, NEVER an EXIT. A discretionary
+    SELL / STRONG_SELL on a HELD position is a risk-REDUCING close; letting a
+    (possibly hallucinated) veto suppress it would block an exit — capital
+    risk, not mere opportunity cost. Such held closes are exempt: the veto
+    still rides along as ADVISORY context for the AI, but is no longer binding.
+    Every other candidate (a fresh long/short entry, or a sell on a NON-held
+    symbol) is still droppable by a veto.
+    """
+    if not isinstance(candidate, dict):
+        return True
+    sig = (candidate.get("signal") or "").upper()
+    sym = candidate.get("symbol", "")
+    is_held_exit = (
+        sig in ("SELL", "STRONG_SELL") and sym in (held_symbols or set())
+    )
+    return not is_held_exit
+
+
+def _is_specialist_veto_drop(trade_result):
+    """True iff a trade dropped because a risk SPECIALIST VETOED it — the
+    in-loop MULTILEG veto, which surfaces as action 'SPECIALIST_VETOED'
+    (pipelines/option.py). A veto says "not THIS trade", so substituting the
+    next AI-vetted, conviction-ranked alternate is exactly the operator's
+    intent ("we have plenty of vetted candidates — transact something else").
+
+    Asymmetry note: the STOCK ensemble veto is applied PRE-selection (the
+    symbol is dropped before ai_select_trades, which then re-selects the best
+    0-3 from the remaining pool — substitution already happens implicitly), so
+    it never reaches the dispatch loop. Only the post-selection multileg veto
+    needs explicit backfill here.
+    """
+    if not isinstance(trade_result, dict):
+        return False
+    return (trade_result.get("action") or "").upper() == "SPECIALIST_VETOED"
+
+
 def _select_backfill_alternate(alt_pool, traded_syms, attempted_syms,
                                held_symbols):
     """Pop the next eligible ranked alternate off the bench, or None.
@@ -2507,7 +2546,12 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
             for c in candidates_data:
                 sym = c.get("symbol", "")
                 verdict = per_symbol.get(sym)
-                if verdict and verdict.get("vetoed"):
+                # A veto blocks ENTRIES only — a discretionary SELL on a
+                # held position (a risk-reducing EXIT) is exempt so a
+                # spurious veto can never suppress a close. See
+                # _veto_blocks_candidate.
+                if (verdict and verdict.get("vetoed")
+                        and _veto_blocks_candidate(c, held_symbols)):
                     vetoed_syms.append(sym)
                     continue
                 if verdict:
@@ -3557,19 +3601,26 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                     symbol, action, exc, exc_info=True,
                 )
 
-        # ── Ranked-alternate BACKFILL (2026-06-17) ───────────────────
-        # End of the loop body. If THIS trade dropped on a shared-account
-        # cross-profile conflict (a sibling profile holds a conflicting
-        # position on the same symbol/strike — NOT a risk gate, blacklist,
-        # buying-power, or sector halt), pull the next AI-vetted, AI-SIZED
-        # alternate off the bench and append it to the list we're
-        # iterating. CPython's for-loop picks up items appended to the
-        # list it is iterating, so the alternate executes on the next
-        # turn of THIS loop with its own AI sizing. Only ONE alternate is
-        # appended per conflict; if that alternate ALSO conflicts, it
-        # appends the next — natural, bounded chaining (each alternate is
-        # attempted at most once; the pool is finite).
-        if _is_cross_profile_conflict(_iter_result) and _alt_pool:
+        # ── Ranked-alternate BACKFILL (2026-06-17; veto case 2026-06-24) ─
+        # End of the loop body. Pull the next AI-vetted, AI-SIZED alternate
+        # off the bench and append it to the list we're iterating when THIS
+        # trade dropped because of EITHER:
+        #   • a shared-account cross-profile conflict (a sibling profile
+        #     holds a conflicting position on the same symbol/strike — NOT a
+        #     risk gate, blacklist, buying-power, or sector halt); or
+        #   • a SPECIALIST VETO of a selected multileg (action
+        #     'SPECIALIST_VETOED') — a veto says "not THIS trade", and the
+        #     operator wants the slot filled from the vetted alternates bench
+        #     rather than simply lost (the stock ensemble veto is handled
+        #     pre-selection, so only the multileg veto reaches here).
+        # CPython's for-loop picks up items appended to the list it is
+        # iterating, so the alternate executes on the next turn of THIS loop
+        # with its own AI sizing. Only ONE alternate is appended per drop; if
+        # that alternate ALSO drops, it appends the next — natural, bounded
+        # chaining (each alternate is attempted at most once; the pool is
+        # finite).
+        _veto_drop = _is_specialist_veto_drop(_iter_result)
+        if (_is_cross_profile_conflict(_iter_result) or _veto_drop) and _alt_pool:
             _alt = _select_backfill_alternate(
                 _alt_pool, _traded_syms, _attempted_syms, held_symbols,
             )
@@ -3578,8 +3629,10 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 _attempted_syms.add(_alt_sym)
                 ai_trades.append(_alt)  # for-loop picks it up next
                 logging.info(
-                    "Cross-profile conflict on %s — backfilling slot "
-                    "with AI alternate %s (conf=%s)",
+                    "%s on %s — backfilling slot with AI alternate "
+                    "%s (conf=%s)",
+                    "Specialist veto" if _veto_drop
+                    else "Cross-profile conflict",
                     symbol, _alt_sym,
                     _alt.get("confidence") if isinstance(_alt, dict) else "?",
                 )
