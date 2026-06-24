@@ -1,4 +1,4 @@
-"""Same-provider model fallback (2026-05-21).
+"""Operator-configured fallback model (2026-05-21, generalized 2026-06-24).
 
 When Google's `gemini-2.5-flash-lite` tier started 503ing ~40-50% of
 calls, the chain had no way to step up to the more-reliable `flash`
@@ -7,23 +7,33 @@ tier while keeping the cost savings on the modal call path. The fix:
   1. Circuits are keyed per-(provider, model). One throttled model
      no longer locks out other models on the same provider.
   2. `users.llm_model` is a new column letting the operator pick a
-     same-provider fallback model (typically a higher tier).
+     fallback model (typically a higher tier).
   3. `_build_fallback_chain` inserts that fallback at the head of the
-     chain (BEFORE cross-provider fallbacks) so the same provider's
-     key gets tried with the more-reliable model before the chain
-     resorts to a different provider entirely.
+     chain (BEFORE the config-level cross-provider candidates) so the
+     operator's explicit pick is tried first when the primary model's
+     circuit trips.
+
+2026-06-24 — generalized so the operator fallback may target ANY
+provider (e.g. primary google/gemini-2.5-flash-lite, fallback
+anthropic/claude-haiku). That is an EXPLICIT operator choice, so —
+unlike the *silent* cross-provider fallback from the config-level
+candidates — it is honored regardless of provider and is NOT subject
+to the AI_ALLOW_ANTHROPIC_FALLBACK spend gate.
 
 Tests pin:
   1. Two (provider, model) circuits are independent — one model's
      trip doesn't open the other.
   2. status() exposes composite keys.
-  3. _resolve_same_provider_fallback_model returns the configured
-     llm_model when llm_provider matches the primary, else None.
-  4. _build_fallback_chain inserts the same-provider entry at the
-     head when llm_model is configured.
+  3. _resolve_operator_fallback_model returns the configured
+     (provider, model, key) — same OR different provider; None only
+     when unset, key-less, or an exact same-provider+model no-op.
+  4. _build_fallback_chain inserts the operator entry at the head
+     when llm_model is configured.
   5. Behavioral: when -lite's circuit is open, the chain falls
      through to -flash on the same provider before any other
      provider is consulted.
+  6. A cross-provider operator fallback (anthropic) lands at the
+     chain head and is NOT suppressed by the anthropic spend gate.
 """
 from __future__ import annotations
 
@@ -101,7 +111,7 @@ class TestCircuitsArePerProviderModel:
 
 
 # ---------------------------------------------------------------------------
-# 2. _resolve_same_provider_fallback_model lookup
+# 2. _resolve_operator_fallback_model lookup
 # ---------------------------------------------------------------------------
 
 class TestResolveSameProviderFallback:
@@ -144,37 +154,49 @@ class TestResolveSameProviderFallback:
         conn.close()
 
     def test_returns_model_and_key_when_provider_matches(self, master_db):
-        from ai_providers import _resolve_same_provider_fallback_model
+        from ai_providers import _resolve_operator_fallback_model
         self._set_user(master_db, "google", "gemini-2.5-flash")
-        out = _resolve_same_provider_fallback_model(
+        out = _resolve_operator_fallback_model(
             "google", "gemini-2.5-flash-lite")
         assert out is not None
-        model, key = out
+        provider, model, key = out
+        assert provider == "google"
         assert model == "gemini-2.5-flash"
         assert key == "test-fallback-key"
 
-    def test_returns_none_when_provider_mismatch(self, master_db):
-        """User has llm_provider='openai' but caller's primary is
-        'google' — don't inject openai's fallback model into google."""
-        from ai_providers import _resolve_same_provider_fallback_model
-        self._set_user(master_db, "openai", "gpt-4o")
-        out = _resolve_same_provider_fallback_model(
+    def test_returns_cross_provider_fallback_when_provider_differs(
+        self, master_db,
+    ):
+        """2026-06-24 — the operator may pick a DIFFERENT provider as
+        the fallback (an explicit choice via Settings → Fallback LLM).
+        Primary is google; operator picked anthropic/claude-haiku →
+        the resolver returns it (provider, model, key) so the chain can
+        route to Claude when Gemini is down. This is NOT the silent
+        cross-provider fallback the spend gate blocks — the operator
+        chose it deliberately."""
+        from ai_providers import _resolve_operator_fallback_model
+        self._set_user(master_db, "anthropic", "claude-haiku-4-5-20251001")
+        out = _resolve_operator_fallback_model(
             "google", "gemini-2.5-flash-lite")
-        assert out is None
+        assert out is not None
+        provider, model, key = out
+        assert provider == "anthropic"
+        assert model == "claude-haiku-4-5-20251001"
+        assert key == "test-fallback-key"
 
     def test_returns_none_when_no_model_set(self, master_db):
-        from ai_providers import _resolve_same_provider_fallback_model
+        from ai_providers import _resolve_operator_fallback_model
         self._set_user(master_db, "google", None)
-        out = _resolve_same_provider_fallback_model(
+        out = _resolve_operator_fallback_model(
             "google", "gemini-2.5-flash-lite")
         assert out is None
 
     def test_returns_none_when_fallback_equals_primary(self, master_db):
         """No-op: operator picked the same model for primary and
         fallback. Don't add a redundant chain entry."""
-        from ai_providers import _resolve_same_provider_fallback_model
+        from ai_providers import _resolve_operator_fallback_model
         self._set_user(master_db, "google", "gemini-2.5-flash-lite")
-        out = _resolve_same_provider_fallback_model(
+        out = _resolve_operator_fallback_model(
             "google", "gemini-2.5-flash-lite")
         assert out is None
 
@@ -182,10 +204,10 @@ class TestResolveSameProviderFallback:
         """Operator selected a fallback model but didn't set a
         Fallback LLM Key. Can't make the call → skip the entry
         cleanly (logs an INFO so the operator knows why)."""
-        from ai_providers import _resolve_same_provider_fallback_model
+        from ai_providers import _resolve_operator_fallback_model
         self._set_user(master_db, "google", "gemini-2.5-flash",
                        api_key="")
-        out = _resolve_same_provider_fallback_model(
+        out = _resolve_operator_fallback_model(
             "google", "gemini-2.5-flash-lite")
         assert out is None
 
@@ -193,8 +215,8 @@ class TestResolveSameProviderFallback:
         """No master DB → helper falls through cleanly. Don't break
         ai_providers in test environments without a populated DB."""
         monkeypatch.chdir(tmp_path)
-        from ai_providers import _resolve_same_provider_fallback_model
-        out = _resolve_same_provider_fallback_model(
+        from ai_providers import _resolve_operator_fallback_model
+        out = _resolve_operator_fallback_model(
             "google", "gemini-2.5-flash-lite")
         assert out is None
 
@@ -283,6 +305,51 @@ class TestFallbackChainInsertion:
                 "Without an llm_model configured, the chain should "
                 "not include a same-provider google entry."
             )
+
+    def test_cross_provider_operator_fallback_lands_at_head_unsuppressed(
+        self, tmp_path, monkeypatch,
+    ):
+        """2026-06-24 — operator picks anthropic/claude-haiku as the
+        fallback (Settings → Fallback LLM) with its own key, while the
+        primary profile runs google. Even with ANTHROPIC unset in the
+        env and the spend gate OFF (AI_ALLOW_ANTHROPIC_FALLBACK unset),
+        the operator's explicit Claude pick must land at the HEAD of the
+        chain — the spend gate only blocks the *silent* config-level
+        anthropic candidate, never the operator's deliberate choice."""
+        from crypto import encrypt
+        import config
+        db_path = tmp_path / "quantopsai.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript(
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, "
+            "llm_provider TEXT, llm_model TEXT, "
+            "anthropic_api_key_enc TEXT);"
+        )
+        conn.execute(
+            "INSERT INTO users (id, llm_provider, llm_model, "
+            "anthropic_api_key_enc) VALUES (1, 'anthropic', "
+            "'claude-haiku-4-5-20251001', ?)",
+            (encrypt("operator-claude-key-0987654321"),),
+        )
+        conn.commit()
+        conn.close()
+        monkeypatch.chdir(tmp_path)
+
+        monkeypatch.setattr(config, "OPENAI_API_KEY", "sk-test")
+        monkeypatch.setattr(config, "GEMINI_API_KEY", "g-test")
+        monkeypatch.setattr(config, "ANTHROPIC_API_KEY", None)
+        monkeypatch.delenv("AI_ALLOW_ANTHROPIC_FALLBACK", raising=False)
+
+        from ai_providers import _build_fallback_chain
+        chain = _build_fallback_chain("google", "gemini-2.5-flash-lite")
+        assert len(chain) >= 1
+        first = chain[0]
+        assert first[0] == "anthropic", (
+            f"Operator's deliberate cross-provider fallback should be "
+            f"FIRST in chain; got {first[0]} at position 0"
+        )
+        assert first[1] == "operator-claude-key-0987654321"
+        assert first[2] == "claude-haiku-4-5-20251001"
 
 
 # ---------------------------------------------------------------------------

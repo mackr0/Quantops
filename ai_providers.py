@@ -160,19 +160,27 @@ class AIProviderUnavailable(RuntimeError):
         self.next_retry_hint = next_retry_hint
 
 
-def _resolve_same_provider_fallback_model(primary_provider: str,
-                                            primary_model: Optional[str]):
-    """Look up the user-configured same-provider fallback model.
+def _resolve_operator_fallback_model(primary_provider: str,
+                                      primary_model: Optional[str]):
+    """Look up the operator-configured fallback model (Settings → Fallback
+    LLM). May be ANY provider — including one different from the primary.
 
     2026-05-21 — added so the operator can configure (via Settings →
-    Fallback LLM Model) a more-reliable model on the same provider
-    that the chain will try BEFORE giving up on the provider entirely.
+    Fallback LLM Model) a more-reliable model the chain will try BEFORE
+    giving up on the primary.
+
+    2026-06-24 — generalized to allow a DIFFERENT provider than the primary
+    (e.g. primary google/gemini-2.5-flash-lite, fallback anthropic/claude-
+    haiku). This is an EXPLICIT operator choice, which is NOT the *silent*
+    cross-provider fallback the anthropic-spend gate (`_build_fallback_chain`)
+    blocks — the operator deliberately picked it, so it is honored regardless
+    of provider, using the Fallback LLM Key they configured alongside it.
 
     Typical use: profile primary is `gemini-2.5-flash-lite` (cheap,
     heavily throttled by Google); operator sets the fallback model to
-    `gemini-2.5-flash` (standard tier, ~3× cost, far more reliable).
-    When -lite trips its (provider, model) circuit, the chain will try
-    -flash once before declaring google failed.
+    `gemini-2.5-flash` (same provider) OR `claude-haiku` (different
+    provider, its own key). When the primary trips its (provider, model)
+    circuit, the chain tries the operator fallback before giving up.
 
     Returns a tuple `(fallback_model, fallback_api_key)`, or None when:
       - The user hasn't picked a model
@@ -207,13 +215,13 @@ def _resolve_same_provider_fallback_model(primary_provider: str,
             return None
         fb_provider = (row["llm_provider"] or "").strip().lower()
         fb_model = (row["llm_model"] or "").strip()
-        if not fb_model:
+        if not fb_provider or not fb_model:
             return None
-        if fb_provider != primary_provider:
-            return None
-        if primary_model and fb_model == primary_model:
-            # Operator picked the same model for primary + fallback —
-            # nothing to gain; skip the no-op entry.
+        if (fb_provider == primary_provider and primary_model
+                and fb_model == primary_model):
+            # Operator picked the EXACT same provider+model for primary +
+            # fallback — nothing to gain; skip the no-op entry. (A different
+            # model on the same provider, or any other provider, is kept.)
             return None
         # Decrypt the fallback key (stored encrypted in the legacy-
         # named `anthropic_api_key_enc` column). Without a key we
@@ -226,23 +234,23 @@ def _resolve_same_provider_fallback_model(primary_provider: str,
             fb_key = _decrypt(enc) if enc else ""
         except Exception as _decrypt_exc:
             logger.warning(
-                "same-provider fallback key decrypt failed (%s: %s) — "
-                "chain will skip the same-provider fallback entry",
+                "operator fallback key decrypt failed (%s: %s) — "
+                "chain will skip the operator fallback entry",
                 type(_decrypt_exc).__name__, _decrypt_exc,
             )
             return None
         if not fb_key:
             logger.info(
-                "same-provider fallback model is set (%s/%s) but no "
+                "operator fallback model is set (%s/%s) but no "
                 "Fallback LLM Key configured — skipping. Set the key "
                 "in Settings → Fallback LLM Key to enable.",
                 fb_provider, fb_model,
             )
             return None
-        return (fb_model, fb_key)
+        return (fb_provider, fb_model, fb_key)
     except Exception as exc:
         logger.debug(
-            "same-provider fallback lookup failed (%s: %s) — chain "
+            "operator fallback lookup failed (%s: %s) — chain "
             "will proceed with cross-provider fallbacks only",
             type(exc).__name__, exc,
         )
@@ -280,22 +288,26 @@ def _build_fallback_chain(primary_provider: str,
         ("google", _config.GEMINI_API_KEY, _config.GEMINI_MODEL),
         ("anthropic", _config.ANTHROPIC_API_KEY, _config.CLAUDE_MODEL),
     ]
-    # 2026-05-21 — SAME-PROVIDER fallback model. Inserted at the head
-    # of the chain (BEFORE cross-provider fallbacks) so a more-reliable
-    # model on the same provider gets tried first when the primary
-    # model's circuit trips. Uses the operator's user-level Fallback
-    # LLM Key (Settings → Fallback LLM section) — independent of the
-    # per-profile API key used by the primary call.
-    fb_resolution = _resolve_same_provider_fallback_model(
+    # 2026-05-21 / 2026-06-24 — OPERATOR-CONFIGURED fallback model
+    # (Settings → Fallback LLM). Inserted at the head of the chain (BEFORE
+    # the cross-provider candidates below) so the operator's explicit pick
+    # is tried first when the primary model's circuit trips. May be the same
+    # provider (e.g. a more-reliable tier) OR a different provider entirely
+    # (e.g. anthropic/claude-haiku) — a DELIBERATE operator choice, so it is
+    # NOT subject to the anthropic-spend gate below (that gate only blocks
+    # *silent* cross-provider fallback from the config-level candidates).
+    # Uses the operator's user-level Fallback LLM Key (Settings → Fallback
+    # LLM section) — independent of the per-profile API key used by primary.
+    fb_resolution = _resolve_operator_fallback_model(
         primary_provider, primary_model,
     )
     if fb_resolution is not None:
-        fb_model, fb_key = fb_resolution
-        chain.append((primary_provider, fb_key, fb_model))
+        fb_provider, fb_model, fb_key = fb_resolution
+        chain.append((fb_provider, fb_key, fb_model))
         logger.info(
-            "Same-provider fallback enabled: %s/%s -> %s/%s",
+            "Operator fallback enabled: %s/%s -> %s/%s",
             primary_provider, primary_model or "(default)",
-            primary_provider, fb_model,
+            fb_provider, fb_model,
         )
 
     allow_anthropic_fallback = (
