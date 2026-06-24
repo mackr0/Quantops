@@ -542,6 +542,31 @@ def _submit_alpaca_order_raw(api, payload):
     Raises on HTTP error so the caller's try/except sees a real
     exception (matches SDK behavior).
     """
+    # FRESHNESS GATE for option orders (2026-06-24). Option submits bypass
+    # GuardedAlpacaApi by POSTing directly here, so the per-cycle freshness
+    # invariant must be enforced at this one chokepoint instead. Reconcile this
+    # profile to its own broker truth before the order; ensure_symbol_fresh
+    # RAISES (ReconcileUnavailable) when the broker is unreachable, so the
+    # option submit is refused (fail-closed) — matching the stock door. (Option
+    # lost-journal RECOVERY is handled by the option-orphan rollback backstop,
+    # so only PREVENTION is added here, not the stock recovery ledger.)
+    _fresh_ctx = getattr(api, "_ctx", None)
+    _fresh_sym = None
+    if isinstance(payload, dict):
+        # Single-leg orders carry a top-level "symbol"; the DEFAULT multileg
+        # combo carries "legs" with no top-level symbol — fall back to a leg's
+        # symbol so the combo path is gated too (reconciling on any one symbol
+        # freshens the whole profile, covering all legs).
+        _fresh_sym = payload.get("symbol")
+        if not _fresh_sym:
+            _legs = payload.get("legs") or []
+            for _lg in _legs:
+                if isinstance(_lg, dict) and _lg.get("symbol"):
+                    _fresh_sym = _lg["symbol"]
+                    break
+    if _fresh_ctx is not None and _fresh_sym:
+        from reconcile_journal_to_broker import ensure_symbol_fresh
+        ensure_symbol_fresh(_fresh_ctx, str(_fresh_sym))
     import requests
     base = getattr(api, "_base_url", None) or "https://paper-api.alpaca.markets"
     headers = {

@@ -159,6 +159,20 @@ def run_task(name, func, db_path=None):
 
 # ── Segment Cycle ────────────────────────────────────────────────────
 
+def _task_freshen_to_broker(ctx):
+    """RECONCILE-FIRST: bring this profile's journal to broker truth and stamp
+    every symbol fresh at the live cycle epoch BEFORE any exit / protective /
+    option logic reads positions or submits orders.
+
+    This is the eager half of the freshness invariant: it makes exit DECISIONS
+    use fresh data (the p166 root was a protective re-arm that *decided* to act
+    on a position the broker had already closed), and it means the oversell
+    door's per-symbol just-in-time reconcile almost never has to fire. Reuses
+    reconcile_and_stamp (which wraps the tested reconcile_with_ctx)."""
+    from reconcile_journal_to_broker import reconcile_and_stamp
+    reconcile_and_stamp(ctx)
+
+
 def run_segment_cycle(ctx, run_scan=True, run_exits=True,
                       run_predictions=False, run_snapshot=False,
                       run_summary=False):
@@ -244,6 +258,17 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
     # exits first guarantees they can't be blocked by a downstream
     # failure in the scan pipeline.
     if run_exits:
+        # RECONCILE-FIRST (2026-06-23 divergence-class fix): freshen this
+        # profile's journal to broker truth and stamp every symbol fresh at
+        # the live cycle epoch BEFORE any exit / protective / option logic
+        # reads positions or submits an order. Runs for every profile
+        # (baselines reconcile + capture activities below and must start
+        # fresh too).
+        run_task(
+            f"[{seg_label}] Freshen To Broker",
+            lambda: _task_freshen_to_broker(ctx),
+            db_path=ctx.db_path,
+        )
         # === AI-only auto-exit tasks (skipped for benchmark profiles) ===
         # These drive exit decisions or AI-specific risk controls.
         # Running them on buy_hold/random would impose stop-loss /
@@ -5399,6 +5424,13 @@ def main_loop(active_segments=None, legacy_mode=False):
         ran_something = False
 
         if legacy_mode:
+            # FRESHNESS CLOCK (2026-06-23): advance the cycle epoch once per
+            # legacy iteration so the oversell door's per-sell freshness gate
+            # stays live in legacy/CLI mode too (profile mode bumps in its own
+            # branch below). Once per cycle, before any run_segment_cycle —
+            # never inside run_segment_cycle, which runs per-segment.
+            import cycle_epoch
+            cycle_epoch.bump()
             # ── Legacy segment-based iteration ───────────────────────
             equity_segments = [s for s in active_segments if s != "crypto"]
             crypto_segments = [s for s in active_segments if s == "crypto"]
@@ -5509,6 +5541,10 @@ def main_loop(active_segments=None, legacy_mode=False):
                     f"scan={item['do_scan']} exits={item['do_exits']} "
                     f"preds={item['do_predictions']} snap={do_snapshot} ==="
                 )
+                # Each profile is an independent entity reconciled to its OWN
+                # order_id fills; it only ever sells what its own fresh book
+                # holds (the oversell door), so profiles need no coordination —
+                # they run fully in parallel.
                 run_segment_cycle(
                     ctx,
                     run_scan=item["do_scan"], run_exits=item["do_exits"],
@@ -5534,6 +5570,14 @@ def main_loop(active_segments=None, legacy_mode=False):
                 # still run). Runs EVERY cycle, in-line with trading — a
                 # problem halts entries on the same cycle it appears,
                 # instead of an email from a slower side audit.
+                # FRESHNESS CLOCK (2026-06-23): advance the cycle epoch once
+                # per orchestrator cycle. Every (profile, symbol) is now stale
+                # until reconciled-to-broker again this cycle — so the oversell
+                # door forces a fresh reconcile before it will act on it, and
+                # the reconcile-first task at the top of each profile's cycle
+                # re-stamps them.
+                import cycle_epoch
+                cycle_epoch.bump()
                 _run_integrity_gate()
                 from concurrent.futures import ThreadPoolExecutor, as_completed
                 max_workers = min(len(due_profiles), 3)

@@ -618,20 +618,62 @@ def _is_occ(symbol: str) -> bool:
     return len(s) > 6 and any(c.isdigit() for c in s[1:7])
 
 
+def _ensure_fresh_or_refuse(ctx, symbol: str) -> None:
+    """Force `symbol` reconciled-to-broker-truth THIS cycle before any sell.
+
+    Cheap when already fresh (a freshness-ledger read). When stale, runs a
+    just-in-time reconcile (reuses the per-cycle reconcile machinery, stamps
+    the symbol fresh). FAIL-CLOSED: if the reconcile cannot complete (broker
+    unreachable, DB error), raise OversellGuardError so the door REFUSES the
+    sell rather than act on a possibly-stale journal.
+
+    This is the heart of the divergence-class fix (2026-06-23): staleness is
+    the common root of every oversell/phantom instance (p166 PLUG, SMCI, the
+    phantom-equity incident — the journal said we held shares the broker had
+    already sold). Making staleness un-actable at the one door every order
+    passes through collapses the whole class."""
+    if ctx is None or not symbol:
+        return
+    try:
+        from reconcile_journal_to_broker import ensure_symbol_fresh
+        ensure_symbol_fresh(ctx, str(symbol))
+    except OversellGuardError:
+        raise
+    except Exception as exc:
+        who = (getattr(ctx, "display_name", None)
+               or getattr(ctx, "db_path", None) or "?")
+        logger.error(
+            "OVERSELL DOOR: could not freshen %s to broker truth this cycle "
+            "[%s]: %s: %s. Refusing the sell (fail-closed) rather than act on "
+            "a possibly-stale journal.",
+            str(symbol).upper(), who, type(exc).__name__, exc)
+        raise OversellGuardError(
+            "freshness reconcile failed for %s (%s) — sell refused" % (
+                str(symbol).upper(), type(exc).__name__))
+
+
 def assert_sell_within_own_book(api, ctx, kwargs: dict) -> None:
     """Enforce the oversell invariant for one submit_order call (kwargs).
 
     Pops the internal `intent` marker (never forwarded to the broker).
-    For a STOCK SELL with no `intent="open_short"`, refuses (raises
+    FIRST forces the symbol reconciled-to-broker this cycle (freshness gate);
+    then for a STOCK SELL with no `intent="open_short"`, refuses (raises
     OversellGuardError) if the qty exceeds this profile's own journal long.
-    Mutates `kwargs` in place to strip `intent`. No-op for buys, covers,
-    options, declared shorts, and missing/zero qty."""
+    Mutates `kwargs` in place to strip `intent`. The freshness gate applies
+    to options and declared shorts too (a rollback / partner close / short
+    must not fire on a stale book); the QTY check is stock-long-only."""
     intent = kwargs.pop("intent", None)
     side = str(kwargs.get("side") or "").lower()
     symbol = kwargs.get("symbol")
     if side != "sell" or not symbol:
         return
+    # FRESHNESS GATE — every sell (stock, option, declared short) must act on
+    # a journal reconciled to broker truth this cycle, or be refused.
+    _ensure_fresh_or_refuse(ctx, str(symbol))
     if _is_occ(str(symbol)):
+        # Option qty semantics are enforced Alpaca-side (position_intent); the
+        # freshness gate above still applies so a rollback / partner-leg close
+        # cannot fire on a stale option leg.
         return
     if intent == INTENT_OPEN_SHORT:
         return  # deliberate short entry — allowed to sell beyond the long
@@ -702,13 +744,38 @@ class GuardedAlpacaApi:
             raise OversellGuardError(
                 "order submission requires a per-profile ctx (a journal to "
                 "oversell-check against); none was provided")
+        # Capture the journal intent BEFORE the door strips it from kwargs, so
+        # the recovery ledger can record whether a broker 'sell' is a short
+        # ENTRY (open_short) vs a long close.
+        intent = kwargs.get("intent")
         assert_sell_within_own_book(api, ctx, kwargs)
         # RETRY_OK: this is the pass-through door, not an originating call
         # site. Every real caller (trader, trade_pipeline, bracket_orders,
         # …) already wraps its submit_order in try/except — that is exactly
         # why the oversell raise above is non-fatal. Retry/error handling
         # belongs to the caller, not the gate.
-        return api.submit_order(**kwargs)
+        result = api.submit_order(**kwargs)
+        # Durable-journaling recovery (2026-06-23): record the accepted order
+        # the moment the broker returns it, BEFORE the caller's log_trade. If
+        # that journal write is later lost (DB lock/disk), the order_id
+        # survives in submitted_orders so the reconciler can reconstruct the
+        # row from the broker fill instead of orphan-halting. Best-effort —
+        # a recovery-record failure must never look like a submit failure.
+        try:
+            oid = (getattr(result, "id", None)
+                   or getattr(result, "client_order_id", None))
+            if oid is not None:
+                from journal import record_submitted_order
+                record_submitted_order(
+                    getattr(ctx, "db_path", None), oid,
+                    kwargs.get("symbol"), kwargs.get("side"),
+                    kwargs.get("qty"), kwargs.get("occ_symbol"),
+                    intent=intent)
+        except Exception:
+            logger.debug(
+                "submitted_orders recovery record failed (non-fatal)",
+                exc_info=True)
+        return result
 
 
 def guarded_api(api, ctx):

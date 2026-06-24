@@ -952,6 +952,245 @@ def reconcile_option_orphans(api, conn, positions, today,
     return closed
 
 
+class ReconcileUnavailable(Exception):
+    """Raised by reconcile_and_stamp / ensure_symbol_fresh when a profile could
+    NOT be reconciled to broker truth this cycle (broker unreachable after
+    retries). The oversell door catches it and refuses the sell (fail-closed)
+    rather than act on a possibly-stale book. Critical: reconcile_with_ctx
+    RETURNS {"error": ...} on broker failure (it does not raise), so without
+    this the door would treat a stale book as fresh and let a naked sell
+    through — the exact divergence vector the invariant exists to kill."""
+
+
+def _reconstruct_unjournaled_submits(ctx) -> int:
+    """Durable-journaling recovery: recover orders the broker accepted but
+    whose journal write was lost (submitted_orders rows with no trades row).
+
+    For each, fetch the broker order by its OWN order_id:
+      - filled ENTRY (buy/short) → write the trades row from broker truth so
+        the position is OWNED and never seen as an orphan;
+      - canceled / expired / rejected → drop the recovery record (never
+        filled, nothing to recover);
+      - a filled SELL/COVER, or a still-working order → leave it: a sell's
+        close must go through the reconciler's FIFO matching (which it owns),
+        and a working order will reconstruct once it fills.
+
+    Only this profile's OWN order_ids are touched (the order-id-truth
+    invariant). Best-effort and non-fatal; returns the count reconstructed. A
+    duplicate is impossible — unjournaled_submitted_orders only returns ids
+    with no trades row, so a successfully-journaled order is never re-created."""
+    import journal
+    db_path = getattr(ctx, "db_path", None)
+    if not db_path:
+        return 0
+    pending = journal.unjournaled_submitted_orders(db_path)
+    if not pending:
+        return 0
+    api = (ctx.get_alpaca_api() if hasattr(ctx, "get_alpaca_api")
+           else getattr(ctx, "api", None))
+    if api is None:
+        return 0
+    # Snapshot this profile's currently-journaled SHORT positions once, to
+    # tell a long ENTRY (broker 'buy', no open short) from a buy-to-COVER
+    # (broker 'buy' while a short is open — the reconciler's backfill_cover
+    # owns that, NOT this recovery path).
+    try:
+        open_shorts = {
+            (p.get("symbol") or "").upper()
+            for p in journal.get_virtual_positions(db_path)
+            if float(p.get("qty", 0) or 0) < 0}
+    except Exception:
+        open_shorts = set()
+    # Reconstruct SHORT entries before BUYs: if BOTH a short-open and its cover
+    # lost their journal writes (a two-lost-writes edge), rebuilding the short
+    # first makes open_shorts see it so the cover-buy correctly SKIPS instead
+    # of becoming a phantom long. We use this profile's OWN journaled shorts,
+    # never the broker NET (the broker has no per-profile position on a shared
+    # account, so a net read would be a cross-profile correctness violation).
+    pending = sorted(
+        pending,
+        key=lambda r: 0 if str(r.get("side") or "").lower() == "sell" else 1)
+    n = 0
+    for rec in pending:
+        oid = rec.get("order_id")
+        broker_side = str(rec.get("side") or "").lower()
+        intent = str(rec.get("intent") or "").lower()
+        sym = rec.get("symbol")
+        try:
+            o = api.get_order(oid)
+        except Exception as exc:
+            logger.debug("reconstruct: get_order(%s) failed, will retry next "
+                         "cycle: %s", oid, exc)
+            continue  # broker unreachable for this order — retry next cycle
+        status = str(getattr(o, "status", "") or "").lower()
+        if status in ("canceled", "expired", "rejected"):
+            journal.drop_submitted_order(db_path, oid)
+            continue
+        if status != "filled":
+            continue  # still working — reconstruct once it fills
+        try:
+            filled_qty = float(getattr(o, "filled_qty", 0) or 0)
+            fill_px = float(getattr(o, "filled_avg_price", 0) or 0)
+        except (TypeError, ValueError) as exc:
+            logger.debug("reconstruct: bad fill fields for %s: %s", oid, exc)
+            continue
+        if filled_qty <= 0 or fill_px <= 0:
+            continue
+        # Map the BROKER side ('buy'/'sell') to the JOURNAL side, reconstructing
+        # ENTRIES only. A CLOSE (long sell / short cover) has an existing entry
+        # row and is rebuilt by the reconciler's backfill_sell/backfill_cover
+        # from the broker position change — never here. We must never rebuild a
+        # close as an entry (that was the phantom-long bug: a buy-to-cover
+        # reconstructed as a long, a short entry skipped entirely).
+        if broker_side == "sell" and intent == "open_short":
+            journal_side = "short"            # deliberate short ENTRY
+        elif broker_side == "buy" and (sym or "").upper() not in open_shorts:
+            journal_side = "buy"              # long ENTRY (no short to cover)
+        else:
+            continue  # long close, or buy-to-cover → reconciler's FIFO owns it
+        journal.log_trade(
+            symbol=sym, side=journal_side, qty=filled_qty, price=fill_px,
+            order_id=oid, signal_type="AUTO_RECONCILE", status="open",
+            fill_price=fill_px, occ_symbol=rec.get("occ_symbol"),
+            reason="reconcile: reconstructed from broker fill — journal write "
+                   "was lost at submit time",
+            db_path=db_path)
+        if journal_side == "short":
+            # a later cover-buy for this symbol must now see the open short
+            open_shorts.add((sym or "").upper())
+        n += 1
+    if n:
+        logger.warning(
+            "reconstructed %d unjournaled submitted order(s) for %s from "
+            "broker truth (durable-journaling recovery)", n, db_path)
+    return n
+
+
+def reconcile_and_stamp(ctx, epoch: Optional[int] = None,
+                        cross_profile_used_ids: Optional[set] = None) -> Dict[str, list]:
+    """Reconcile one profile to broker truth, then stamp every symbol it
+    touched as FRESH at `epoch` (default: the live cycle epoch).
+
+    This is the ONE writer of the freshness ledger. Both the cycle-top
+    reconcile (multi_scheduler) and the oversell door's just-in-time
+    reconcile call it, so one successful reconcile makes every one of the
+    profile's symbols actionable for the rest of the cycle.
+
+    Reuses reconcile_with_ctx verbatim — no new reconcile logic on the
+    load-bearing path. If reconcile raises, the stamp does NOT happen: the
+    symbols stay stale and the door stays fail-closed. (2026-06-23,
+    broker/journal divergence-class elimination.)"""
+    import cycle_epoch
+    import journal
+    if epoch is None:
+        epoch = cycle_epoch.current()
+    # Durable-journaling recovery: recover any order the broker accepted but
+    # whose journal write was lost, BEFORE reconciling, so it is owned and not
+    # mistaken for an unowned orphan. Non-fatal. Then prune recovery rows that
+    # are now safely journaled, to keep the ledger bounded.
+    try:
+        _reconstruct_unjournaled_submits(ctx)
+        journal.prune_journaled_submitted_orders(getattr(ctx, "db_path", None))
+    except Exception:
+        logger.exception(
+            "durable-journaling recovery failed (non-fatal) for %s",
+            getattr(ctx, "db_path", None))
+    result = reconcile_with_ctx(
+        ctx, apply_changes=True,
+        cross_profile_used_ids=cross_profile_used_ids)
+    # A reconcile that did NOT reach broker truth must NOT stamp symbols fresh
+    # — else the door treats a stale book as fresh and waves a naked sell
+    # through (fail-OPEN). reconcile_with_ctx RETURNS (does not raise)
+    # {"error": ...} when the broker is unreachable after retries, and
+    # {"skipped": ...} for a profile with no broker account. Neither reconciled.
+    if isinstance(result, dict) and result.get("error"):
+        logger.error(
+            "reconcile_and_stamp: reconcile FAILED for %s (%s) — NOT stamping "
+            "fresh; the oversell door fails closed on this profile's sells "
+            "until the broker is reachable again.",
+            getattr(ctx, "db_path", None), result.get("error"))
+        raise ReconcileUnavailable(str(result.get("error")))
+    if isinstance(result, dict) and result.get("skipped"):
+        # Archived/disabled profile with no broker account — there is no broker
+        # reality to diverge from; nothing was reconciled, so do not stamp.
+        return result
+    db_path = getattr(ctx, "db_path", None)
+    if db_path:
+        try:
+            import sqlite3
+            from contextlib import closing
+            with closing(sqlite3.connect(db_path)) as conn:
+                syms = [r[0] for r in conn.execute(
+                    "SELECT DISTINCT symbol FROM trades "
+                    "WHERE symbol IS NOT NULL").fetchall()]
+                # Option legs are keyed by their OCC symbol at the door
+                # (kwargs["symbol"] is the OCC string), so stamp those too —
+                # otherwise an option close would always read stale and the
+                # door would re-reconcile every option order.
+                try:
+                    syms += [r[0] for r in conn.execute(
+                        "SELECT DISTINCT occ_symbol FROM trades "
+                        "WHERE occ_symbol IS NOT NULL").fetchall()]
+                except sqlite3.OperationalError:
+                    pass  # minimal-schema DB without occ_symbol
+            if syms:
+                journal.stamp_symbols_fresh(db_path, syms, epoch)
+        except Exception:
+            logger.exception(
+                "reconcile_and_stamp: freshness stamp failed for %s; "
+                "symbols stay stale (door will re-reconcile)", db_path)
+    return result
+
+
+def ensure_symbol_fresh(ctx, symbol: str, epoch: Optional[int] = None) -> None:
+    """Guarantee THIS profile's journal for `symbol` is reconciled to broker
+    truth at the live cycle epoch BEFORE a caller acts on it.
+
+    Called by the oversell door on every stock sell. If the symbol is
+    already fresh this cycle (the normal case — the cycle-top reconcile
+    stamped it), this is a cheap ledger read and returns immediately. If
+    stale, it runs a full reconcile_and_stamp — uncommon (a brand-new symbol
+    not yet in the journal, or the first action on the symbol this cycle
+    before the cycle-top reconcile reached it) and built on tested machinery.
+
+    Fail-closed: if the reconcile raises (broker unreachable, etc.) the
+    exception propagates so the door REFUSES the sell rather than act on a
+    journal it could not freshen."""
+    import cycle_epoch
+    import journal
+    if epoch is None:
+        epoch = cycle_epoch.current()
+    db_path = getattr(ctx, "db_path", None)
+    if not db_path or not symbol:
+        return
+    # A ctx with no broker handle is a non-broker context (a unit-test double
+    # or a degenerate ctx) — there is no broker reality to diverge from, so
+    # the journal is the only truth and there is nothing to reconcile. Every
+    # real production ctx (UserContext) exposes get_alpaca_api, so the gate
+    # stays fully enforced live; this only spares contexts that physically
+    # cannot reach a broker.
+    if not (hasattr(ctx, "get_alpaca_api") or hasattr(ctx, "api")):
+        return
+    if journal.get_symbol_epoch(db_path, symbol) >= epoch:
+        return  # already reconciled to broker truth this cycle
+    # reconcile_and_stamp RAISES (ReconcileUnavailable) on broker-unreachable —
+    # the door converts that to a refusal (fail-closed). A 'skipped' result
+    # means the profile has no broker account to reconcile against (its journal
+    # is its only truth), so don't refuse.
+    result = reconcile_and_stamp(ctx, epoch=epoch)
+    if isinstance(result, dict) and result.get("skipped"):
+        return
+    # The full-profile reconcile SUCCEEDED (it raises ReconcileUnavailable on
+    # any broker error — so reaching here means the journal is now reconciled
+    # to this profile's own broker truth). THIS symbol is therefore fresh too,
+    # even a brand-new one the profile has never traded — e.g. a first-time
+    # SHORT entry, which reconcile_and_stamp's "stamp every symbol in trades"
+    # pass cannot cover because it isn't in trades yet. Stamp it explicitly so
+    # the gate passes. (Without this the door refused EVERY first-time short —
+    # the symbol stayed stale and the old re-check raised. 2026-06-24.)
+    journal.stamp_symbols_fresh(db_path, [symbol], epoch)
+
+
 def reconcile_with_ctx(ctx, apply_changes: bool = False,
                        cross_profile_used_ids: Optional[set] = None) -> Dict[str, list]:
     """Reconcile one profile from an already-built UserContext.

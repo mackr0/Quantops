@@ -4,6 +4,12 @@ Canonical procedure for a full fresh-start of the EXP-A* experiment. Supersedes
 the pasted instruction list. Last validated: 2026-06-17 (two resets — the
 morning run surfaced the `ENCRYPTION_KEY` footgun now fixed in Step 3).
 
+**Code baseline (2026-06-24):** this reset lands on the broker/journal
+divergence-class fix — the per-cycle freshness invariant + durable journaling
+(see CHANGELOG 2026-06-23 / *Standing state* below). Make sure Step 2 ships it
+(prod `HEAD` matches your pushed commit) so the fresh experiment runs on the
+fixed code.
+
 > **What a fresh-start does:** deletes every profile + per-profile DB outright,
 > rebuilds the 13 EXP-A* profiles from the manifest, swaps in new Alpaca paper
 > accounts, wipes AI learning state + caches + audit alerts + runtime/altdata
@@ -145,7 +151,14 @@ Watch the first ~3 cycles / ~20–30 min and confirm:
 - [ ] no profile halted; broker drift stays 0;
 - [ ] every new stock entry arms a protective stop (no naked positions);
 - [ ] options closes book P&L (no `pnl=NULL` on closed legs), no orphans;
-- [ ] no repeating tracebacks / `insufficient` / `only day orders are allowed`.
+- [ ] no repeating tracebacks / `insufficient` / `only day orders are allowed`;
+- [ ] the `Freshen To Broker` task runs first in each cycle's exits phase, and
+      `reconcile_state` accrues per-symbol epochs (the freshness invariant is
+      live). An occasional `OversellGuardError ... freshness reconcile failed`
+      during a real Alpaca hiccup is the gate **failing closed** (refusing a
+      sell on a possibly-stale book) — that is correct, not a bug; it clears
+      the next cycle once the broker is reachable. A *flood* of them means the
+      broker is unreachable — investigate connectivity, not the gate.
 
 ---
 
@@ -165,6 +178,19 @@ Watch the first ~3 cycles / ~20–30 min and confirm:
 
 ## Standing state
 
+- **Broker/journal freshness invariant + durable journaling (2026-06-24):** no
+  order is submitted for a (profile, symbol) unless that symbol's journal has
+  been reconciled to *this profile's own* broker truth this cycle. Enforced at
+  the oversell door (`order_guard`) for stocks/declared-shorts and at
+  `options_multileg._submit_alpaca_order_raw` for options; **fail-closed** if
+  the broker is unreachable (a refused sell is the gate working, not a bug). A
+  process-wide `cycle_epoch` (wall-clock-seeded, monotonic across restarts)
+  drives staleness; the per-profile `reconcile_state` and `submitted_orders`
+  tables are **auto-created by `init_db`** and **start empty after a wipe** — no
+  reset step needed. This is the class that repeatedly forced restarts (p166
+  PLUG oversell, the phantom-equity incidents); resets inherit the fix
+  automatically. Profiles remain **fully independent** — they share only the
+  brokerage conduit; nothing coordinates across them.
 - **Universe is institutionally aligned (2026-06-17, commit `6bad94e`):** the
   screener and `execute_trade` exclude `easy_to_borrow=False` (hard-to-borrow /
   non-shortable) names — the broker won't GTC-protect them and systematic funds

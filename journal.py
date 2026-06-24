@@ -523,6 +523,36 @@ def init_db(db_path=None):
                 ON ai_cycles(timestamp DESC);
             CREATE INDEX IF NOT EXISTS idx_ai_cycles_profile
                 ON ai_cycles(profile_id, timestamp DESC);
+
+            -- Freshness ledger for the broker/journal divergence invariant
+            -- (2026-06-23). Records, per symbol, the cycle epoch at which
+            -- THIS profile's journal for that symbol was last reconciled to
+            -- broker truth. The oversell door refuses to act on any symbol
+            -- whose epoch is older than the live cycle epoch (cycle_epoch).
+            CREATE TABLE IF NOT EXISTS reconcile_state (
+                symbol                TEXT PRIMARY KEY,
+                last_reconciled_epoch INTEGER NOT NULL DEFAULT 0,
+                updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            -- Durable-journaling recovery ledger (2026-06-23). The oversell
+            -- door records every order the broker accepts here the moment it
+            -- returns — BEFORE the full log_trade row is written. If that
+            -- journal write is then lost (DB lock / disk), the order_id
+            -- survives so the reconciler can reconstruct the trades row from
+            -- the broker fill instead of orphan-halting an unowned position.
+            CREATE TABLE IF NOT EXISTS submitted_orders (
+                order_id     TEXT PRIMARY KEY,
+                symbol       TEXT,
+                side         TEXT,        -- the BROKER side: 'buy' / 'sell'
+                qty          REAL,
+                occ_symbol   TEXT,
+                intent       TEXT,        -- 'open_short' for a deliberate short
+                                          -- entry; NULL otherwise. Lets the
+                                          -- reconstruct map broker side ->
+                                          -- journal side without ambiguity.
+                submitted_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
         """)
 
         # Universal schema migration: ensures every column defined in the
@@ -1169,27 +1199,43 @@ def log_trade(symbol, side, qty, price=None, order_id=None, signal_type=None,
             "drift. Investigate the caller.",
             side, symbol, qty, signal_type, status,
         )
-    with closing(_get_conn(db_path)) as conn:
-        cursor = conn.execute(
-            """INSERT INTO trades
-               (timestamp, symbol, side, qty, price, order_id, signal_type, strategy,
-                reason, ai_reasoning, ai_confidence, stop_loss, take_profit, status, pnl,
-                decision_price, fill_price, slippage_pct,
-                occ_symbol, option_strategy, expiry, strike,
-                predicted_slippage_bps, adv_at_decision)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                datetime.utcnow().isoformat(),
-                symbol, side, qty, price, order_id, signal_type, strategy,
-                reason, ai_reasoning, ai_confidence, stop_loss, take_profit,
-                status, pnl, decision_price, fill_price, slippage_pct,
-                occ_symbol, option_strategy, expiry, strike,
-                predicted_slippage_bps, adv_at_decision,
-            ),
-        )
-        conn.commit()
-        trade_id = cursor.lastrowid
-    return trade_id
+    # Retry transient DB failures (locked / busy / disk). The order this row
+    # represents may ALREADY be live at the broker — losing the row would
+    # orphan it (a submit with no journal entry → next reconcile sees an
+    # unowned broker position → drift halt). A momentary SQLite lock must not
+    # be able to create an unjournaled submit, so retry before giving up.
+    # (2026-06-23 durable-journaling hardening.) On final failure we re-raise:
+    # the door's submitted_orders recovery ledger has already recorded the
+    # order_id so the reconciler can reconstruct the row from the broker fill.
+    import time as _time
+    _last_exc = None
+    for _attempt in range(3):
+        try:
+            with closing(_get_conn(db_path)) as conn:
+                cursor = conn.execute(
+                    """INSERT INTO trades
+                       (timestamp, symbol, side, qty, price, order_id, signal_type, strategy,
+                        reason, ai_reasoning, ai_confidence, stop_loss, take_profit, status, pnl,
+                        decision_price, fill_price, slippage_pct,
+                        occ_symbol, option_strategy, expiry, strike,
+                        predicted_slippage_bps, adv_at_decision)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        datetime.utcnow().isoformat(),
+                        symbol, side, qty, price, order_id, signal_type, strategy,
+                        reason, ai_reasoning, ai_confidence, stop_loss, take_profit,
+                        status, pnl, decision_price, fill_price, slippage_pct,
+                        occ_symbol, option_strategy, expiry, strike,
+                        predicted_slippage_bps, adv_at_decision,
+                    ),
+                )
+                conn.commit()
+                trade_id = cursor.lastrowid
+            return trade_id
+        except sqlite3.OperationalError as _exc:
+            _last_exc = _exc
+            _time.sleep(0.2 * (_attempt + 1))
+    raise _last_exc
 
 
 # Broker-rejection classification + persistence ----------------------------
@@ -1420,6 +1466,180 @@ def get_open_entry_metadata(db_path, symbol, occ_symbol=None):
         return {"ai_confidence": None, "ai_reasoning": None}
 
 
+def get_symbol_epoch(db_path, symbol) -> int:
+    """Return the cycle epoch at which THIS profile's journal for `symbol`
+    was last reconciled to broker truth.
+
+    Returns 0 — meaning "never / unknown" — when there is no db_path, no
+    symbol, the ledger row is missing, or the read errors. 0 is older than
+    any live epoch (which starts at 1), so the oversell door treats it as
+    STALE and forces a reconcile before any sell. Unknown is fail-safe."""
+    if not db_path or not symbol:
+        return 0
+    import sqlite3
+    from contextlib import closing
+    try:
+        with closing(_get_conn(db_path)) as conn:
+            row = conn.execute(
+                "SELECT last_reconciled_epoch FROM reconcile_state "
+                "WHERE symbol = ?", ((symbol or "").upper(),)).fetchone()
+            return int(row[0]) if row and row[0] is not None else 0
+    except sqlite3.Error:
+        # Missing table / locked DB → treat as stale (fail-safe): the door
+        # will force a just-in-time reconcile rather than trust a maybe-
+        # stale journal.
+        return 0
+
+
+def stamp_symbols_fresh(db_path, symbols, epoch) -> None:
+    """Record that THIS profile's journal for each of `symbols` has been
+    reconciled to broker truth at cycle `epoch`. Idempotent upsert.
+
+    Called by the reconcile-and-stamp wrapper after a successful
+    reconcile_with_ctx (full reconcile → stamp every symbol it confirmed).
+    Creates the ledger table on demand so it works on DBs that predate the
+    migration. Errors are NOT swallowed silently: a stamp failure leaves the
+    symbol stale, which is safe (the door re-reconciles) but the caller
+    should know, so we let real DB errors propagate."""
+    if not db_path or not symbols:
+        return
+    from contextlib import closing
+    syms = sorted({(s or "").upper() for s in symbols if s})
+    if not syms:
+        return
+    with closing(_get_conn(db_path)) as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS reconcile_state ("
+            "symbol TEXT PRIMARY KEY, "
+            "last_reconciled_epoch INTEGER NOT NULL DEFAULT 0, "
+            "updated_at TEXT NOT NULL DEFAULT (datetime('now')))")
+        conn.executemany(
+            "INSERT OR REPLACE INTO reconcile_state "
+            "(symbol, last_reconciled_epoch, updated_at) "
+            "VALUES (?, ?, datetime('now'))",
+            [(s, int(epoch)) for s in syms])
+        conn.commit()
+
+
+def record_submitted_order(db_path, order_id, symbol, side, qty,
+                           occ_symbol=None, intent=None) -> None:
+    """Durably record an order the moment the broker accepts it — BEFORE the
+    full log_trade row is written. If log_trade then fails (DB lock/disk), the
+    order_id survives here so the reconciler can reconstruct the journal row
+    from the broker fill instead of orphan-halting (durable-journaling
+    recovery, 2026-06-23).
+
+    `side` is the BROKER side ('buy'/'sell'); `intent` is the caller's journal
+    intent ('open_short' for a deliberate short entry, else None) so the
+    reconstruct can map broker side -> journal side without ambiguity (a
+    broker 'sell' is a long close OR a short open; a broker 'buy' is a long
+    open OR a short cover).
+
+    BEST-EFFORT: never raises. The order is already live at the broker;
+    failing here must not break the caller (which would falsely look like a
+    submit failure). Creates the table on demand for pre-migration DBs."""
+    if not db_path or not order_id:
+        return
+    from contextlib import closing
+    try:
+        with closing(_get_conn(db_path)) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS submitted_orders ("
+                "order_id TEXT PRIMARY KEY, symbol TEXT, side TEXT, qty REAL, "
+                "occ_symbol TEXT, intent TEXT, submitted_at TEXT NOT NULL "
+                "DEFAULT (datetime('now')))")
+            conn.execute(
+                "INSERT OR IGNORE INTO submitted_orders "
+                "(order_id, symbol, side, qty, occ_symbol, intent) "
+                "VALUES (?,?,?,?,?,?)",
+                (str(order_id), symbol, str(side or ""),
+                 float(qty or 0), occ_symbol,
+                 str(intent) if intent else None))
+            conn.commit()
+    except sqlite3.Error as exc:
+        import logging as _log
+        _log.getLogger(__name__).warning(
+            "record_submitted_order(%s) failed (best-effort): %s",
+            order_id, exc)
+
+
+def unjournaled_submitted_orders(db_path) -> list:
+    """Return recovery-ledger rows whose order_id has NO matching trades row —
+    an order the broker accepted but whose journal write was lost. The
+    reconciler reconstructs these from broker fills before halting."""
+    if not db_path:
+        return []
+    from contextlib import closing
+    try:
+        with closing(_get_conn(db_path)) as conn:
+            tabs = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            if "submitted_orders" not in tabs:
+                return []
+            has_intent = any(
+                r[1] == "intent" for r in
+                conn.execute("PRAGMA table_info(submitted_orders)"))
+            intent_col = "s.intent" if has_intent else "NULL"
+            rows = conn.execute(
+                f"SELECT s.order_id, s.symbol, s.side, s.qty, s.occ_symbol, "
+                f"{intent_col} FROM submitted_orders s "
+                "WHERE NOT EXISTS (SELECT 1 FROM trades t "
+                "                  WHERE t.order_id = s.order_id)"
+            ).fetchall()
+            return [{"order_id": r[0], "symbol": r[1], "side": r[2],
+                     "qty": r[3], "occ_symbol": r[4], "intent": r[5]}
+                    for r in rows]
+    except sqlite3.Error:
+        return []
+
+
+def drop_submitted_order(db_path, order_id) -> None:
+    """Remove a recovery-ledger row (the order was reconstructed, or it never
+    filled). Best-effort; keeps the ledger bounded."""
+    if not db_path or not order_id:
+        return
+    from contextlib import closing
+    try:
+        with closing(_get_conn(db_path)) as conn:
+            conn.execute("DELETE FROM submitted_orders WHERE order_id = ?",
+                         (str(order_id),))
+            conn.commit()
+    except sqlite3.Error as exc:
+        import logging as _log
+        _log.getLogger(__name__).debug(
+            "drop_submitted_order(%s) failed (best-effort): %s",
+            order_id, exc)
+
+
+def prune_journaled_submitted_orders(db_path) -> None:
+    """Keep the recovery ledger bounded. Delete rows that (a) now HAVE a trades
+    row — journaled normally, no recovery needed — OR (b) are older than 2 days.
+    Recovery happens on the very next reconcile (within a cycle), so a row that
+    is still unrecovered after 2 days never will be (e.g. a lost SELL/COVER,
+    which the reconciler's backfill handles via the existing ENTRY row, not via
+    this ledger); pruning it stops an unbounded re-fetch-every-cycle leak.
+    Best-effort."""
+    if not db_path:
+        return
+    from contextlib import closing
+    try:
+        with closing(_get_conn(db_path)) as conn:
+            tabs = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            if "submitted_orders" not in tabs:
+                return
+            conn.execute(
+                "DELETE FROM submitted_orders WHERE EXISTS "
+                "(SELECT 1 FROM trades t "
+                " WHERE t.order_id = submitted_orders.order_id) "
+                "OR submitted_at < datetime('now', '-2 days')")
+            conn.commit()
+    except sqlite3.Error as exc:
+        import logging as _log
+        _log.getLogger(__name__).debug(
+            "prune_journaled_submitted_orders failed (best-effort): %s", exc)
+
+
 def get_virtual_positions(db_path=None, price_fetcher=None):
     """Compute net open positions from the trades table using FIFO lots.
 
@@ -1468,6 +1688,16 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
             _vp_price = (
                 "COALESCE(NULLIF(fill_price, 0), price)"
                 if "fill_price" in _vp_cols else "price"
+            )
+            # Exclude rows tagged with a known data-corruption marker
+            # (e.g. 'phantom_stop_2026_05_11'). The reconciler and the
+            # decomposition check already filter these; position truth —
+            # which feeds the oversell door's own_virtual_qty — must filter
+            # them too, or a poisoned 'open' row inflates/poisons the qty the
+            # door trusts. (2026-06-23 divergence-class hardening.)
+            _dq_clause = (
+                " AND data_quality IS NULL"
+                if "data_quality" in _vp_cols else ""
             )
             try:
                 rows = conn.execute(
@@ -1526,7 +1756,8 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
                     "     COALESCE(status, 'open') NOT IN "
                     "     ('canceled', 'expired', 'rejected', "
                     "      'done_for_day', 'pending_protective'))"
-                    ") "
+                    ")"
+                    f"{_dq_clause} "
                     "ORDER BY timestamp ASC, id ASC"
                 ).fetchall()
             except sqlite3.OperationalError:
@@ -1573,7 +1804,8 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
                     "     COALESCE(status, 'open') NOT IN "
                     "     ('canceled', 'expired', 'rejected', "
                     "      'done_for_day', 'pending_protective'))"
-                    ") "
+                    ")"
+                    f"{_dq_clause} "
                     "ORDER BY timestamp ASC, id ASC"
                 ).fetchall()
             # 2026-05-12 — per-trade TP/SL price lookup. UNH bug: the AI
@@ -1892,9 +2124,11 @@ def get_virtual_account_info(db_path=None, initial_capital=100000.0,
             ).fetchall()}
             has_occ = "occ_symbol" in cols
             has_fill = "fill_price" in cols
+            has_dq = "data_quality" in cols
         except Exception:
             has_occ = False
             has_fill = False
+            has_dq = False
         try:
             # 2026-05-21 — exclude 'pending_protective' placeholder
             # rows from the cash math (placement-time trigger prices
@@ -1923,12 +2157,18 @@ def get_virtual_account_info(db_path=None, initial_capital=100000.0,
                 "COALESCE(NULLIF(fill_price, 0), price)"
                 if has_fill else "price"
             )
+            # Exclude data_quality-tagged rows from the cash math IDENTICALLY
+            # to get_virtual_positions (which now filters them). Otherwise a
+            # tagged exit row keeps its cash effect while its lot is dropped
+            # from positions → equity overstated (broker/journal divergence).
+            # (2026-06-23 — the consistency half of the data_quality hardening.)
+            _dq = " AND data_quality IS NULL" if has_dq else ""
             if has_occ:
                 rows = conn.execute(
                     f"SELECT side, qty, {_price_expr}, occ_symbol "
                     "FROM trades "
                     "WHERE COALESCE(status, 'open') NOT IN "
-                    f"({_cash_excluded})"
+                    f"({_cash_excluded}){_dq}"
                 ).fetchall()
             else:
                 rows = [
@@ -1936,7 +2176,7 @@ def get_virtual_account_info(db_path=None, initial_capital=100000.0,
                     for r in conn.execute(
                         f"SELECT side, qty, {_price_expr} FROM trades "
                         "WHERE COALESCE(status, 'open') NOT IN "
-                        f"({_cash_excluded})"
+                        f"({_cash_excluded}){_dq}"
                     ).fetchall()
                 ]
         except Exception:
@@ -2084,6 +2324,20 @@ def recompute_realized_pnl(db_path=None):
         px_expr = ("COALESCE(NULLIF(fill_price, 0), price)"
                    if "fill_price" in cols else "price")
         occ_expr = "occ_symbol" if "occ_symbol" in cols else "NULL"
+        # Exclude data_quality-tagged rows so the realized-P&L FIFO consumes
+        # the IDENTICAL row-set as get_virtual_positions (the docstring's
+        # "mirror exactly" promise). Without this, a tagged-but-not-canceled
+        # row consumes a lot here that positions no longer does → a NON-tagged
+        # trade's pnl is computed against the wrong basis and poisons
+        # self-tuning / kelly / post-mortems. (2026-06-23 hardening.)
+        #
+        # NOTE (2026-06-24): we deliberately do NOT filter 'pending_fill' rows
+        # here. get_virtual_positions AND the cash math both KEEP pending_fill
+        # rows during the fill-confirmation window (using COALESCE(fill_price,
+        # price)), so realized must too — else positions/cash/realized disagree
+        # on a pending_fill close and the decomposition transiently breaks. An
+        # earlier pending_fill guard caused exactly that and was reverted.
+        dq_guard = " AND data_quality IS NULL" if "data_quality" in cols else ""
         try:
             rows = conn.execute(
                 f"SELECT id, symbol, side, qty, {px_expr}, "
@@ -2092,6 +2346,7 @@ def recompute_realized_pnl(db_path=None):
                 "('pending_protective', 'canceled', 'expired', "
                 " 'rejected', 'done_for_day', "
                 " 'auto_reconciled_phantom_close') "
+                f"{dq_guard} "
                 "ORDER BY timestamp ASC, id ASC"
             ).fetchall()
         except sqlite3.Error:

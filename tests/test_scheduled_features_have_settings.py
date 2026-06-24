@@ -68,6 +68,14 @@ INFRASTRUCTURE_TASKS = {
     "_task_check_exits",               # exit polling fallback
     "_task_cancel_stale_orders",       # order hygiene
     "_task_update_fills",              # broker fill sync
+    "_task_freshen_to_broker",         # 2026-06-23 reconcile-first: bring the
+                                         # journal to broker truth + stamp every
+                                         # symbol fresh-this-cycle BEFORE any
+                                         # exit/protective/option logic acts on
+                                         # it (the freshness invariant). Pure
+                                         # data-integrity infrastructure like
+                                         # the reconciler; a toggle would
+                                         # reopen the divergence class.
     "_task_reconcile_trade_statuses",  # DB consistency sweep
     "_task_capture_broker_activities", # 2026-05-17 #168: capture
                                          # DIV/OPEXP/OPASN/OPXRC from
