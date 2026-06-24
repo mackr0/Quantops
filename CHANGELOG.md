@@ -5,6 +5,12 @@ at the top.
 
 ---
 
+## 2026-06-24 — AI fallback model: replace the Google-deprecated `gemini-2.0-flash`. Severity: HIGH (the AI arm was selecting 0 trades whenever the primary failed over).
+
+Surfaced while watching the fresh 2026-06-24 experiment's first live cycles: the per-profile primary `gemini-2.5-flash-lite` was circuit-opening on Google "high demand" overload, and the same-provider failover then hit `config.GEMINI_MODEL = "gemini-2.0-flash"` — which Google has **deprecated** (live `generateContent` returns `404 "model no longer available"`). Net effect: when the primary overloaded, the AI returned 0 trades (verified in the scheduler log). The benchmark profiles (buy-hold / random) kept trading; only the AI-driven arm was hit.
+
+Fix: `config.py` `GEMINI_MODEL` default → `gemini-2.5-flash`, verified live on the production key (HTTP 200). The primary stays the cheaper `gemini-2.5-flash-lite`; the fallback is now a current, working model. Not related to the divergence-class work — a Google model deprecation that the fresh experiment's first AI calls exposed.
+
 ## 2026-06-23 — Broker/journal divergence class elimination: a per-cycle freshness invariant + durable-journaling recovery so no order can act on a stale journal. Severity: CRITICAL (this class — phantom positions, oversells, decomposition gaps — is what has repeatedly forced experiment restarts).
 
 A read-only adversarial audit (6 lenses, 46 order-submit/position-truth paths, 18 verified gaps) confirmed every instance of the recurring oversell/phantom class is one shape: an actor (a protective re-arm, an exit, a multileg rollback, an option close, a short entry) reads a journal that has **not been reconciled to broker truth this cycle** and submits on it. The p166 PLUG oversell (a trailing stop filled overnight, the journal stayed `open`, and the next cycle's re-exit sold 8,421 shares the broker no longer held → naked short + a double-booked −$1,263 realized loss) is the canonical case. Iso-fixes on each path guaranteed the class returned on a new path; this replaces them with a single invariant at the one chokepoint every order passes through.

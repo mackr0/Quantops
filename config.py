@@ -20,7 +20,13 @@ CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+# 2026-06-24 — the same-provider fallback model. Was "gemini-2.0-flash", which
+# Google has DEPRECATED (live calls 404 "model no longer available"), so when
+# the per-profile primary (gemini-2.5-flash-lite) circuit-opens — it currently
+# trips on "high demand" overload — failover hit a dead model and the AI
+# returned 0 trades. gemini-2.5-flash is verified live (HTTP 200) and is the
+# natural one-step-up fallback from the flash-lite primary.
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 # Database
 DB_PATH = os.getenv("DB_PATH", "quantopsai.db")
