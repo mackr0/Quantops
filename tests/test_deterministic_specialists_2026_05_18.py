@@ -865,14 +865,18 @@ _EMPTY_FIRE_EXEMPT = {
 }
 
 
-@pytest.mark.parametrize("rule_name", [c[0] for c in _FIRE_CASES])
+@pytest.mark.parametrize(
+    "rule_name",
+    [c[0] for c in _FIRE_CASES if c[0] not in _EMPTY_FIRE_EXEMPT],
+)
 def test_rule_no_op_on_empty_candidate(rule_name):
     """Every rule must return None on a candidate with no relevant
     fields. Guards against rules that crash on `candidate.get(...)
-    is None`. Exempts rules whose purpose is to fire on absence or
-    wall-clock — those are tested separately."""
-    if rule_name in _EMPTY_FIRE_EXEMPT:
-        pytest.skip(f"{rule_name} legitimately fires on minimal context")
+    is None`. Rules whose purpose is to fire on absence or wall-clock
+    (`_EMPTY_FIRE_EXEMPT`) are excluded from the parametrize set rather
+    than skipped — they legitimately fire on minimal context and are
+    covered by the positive fire-cases, so excluding them keeps this
+    case meaningful without emitting a skip."""
     mod = importlib.import_module(f"deterministic_specialists.{rule_name}")
     # Empty candidate apart from a matching signal
     cand = {"symbol": "X", "signal": "BUY"}

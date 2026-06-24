@@ -144,29 +144,26 @@ class TestNoStrategyZombies:
         days and has zero lifetime predictions in EVERY profile DB,
         it's a zombie — flag it.
 
-        On a CI machine with no profile DBs, this becomes a no-op
-        (skips). The test only catches regressions in environments
-        with production data."""
+        Without production prediction data (CI / fresh checkout / right
+        after a full-fresh-start reset) the data-DEPENDENT zombie
+        comparison is vacuous, but the data-INDEPENDENT registry
+        enumeration still runs and must pass — so this test is never
+        skipped and a broken/empty strategy registry always fails it."""
         dbs = _profile_dbs()
-        if not dbs:
-            pytest.skip(
-                "No profile DBs found — test requires production-like "
-                "data; skipped on CI / fresh checkout.",
-            )
-
-        # 2026-06-10 — fresh-start awareness. "Zero lifetime
-        # predictions" only indicts a strategy when the prediction
-        # data covers >= GRACE_DAYS of the strategy's deployed life.
-        # After a full fresh-start reset (DBs rebuilt, e.g. the
-        # 2026-06-10 PM reset) the window is ~0 days and EVERY
-        # strategy would read as a zombie; same for stale local DBs
-        # whose data ended before the strategy file existed.
-        earliest_pred, latest_pred = _prediction_data_window(dbs)
-        if earliest_pred is None:
-            pytest.skip(
-                "Profile DBs hold no predictions at all (fresh-start "
-                "reset?) — zombie check needs accumulated data.",
-            )
+        # The prediction-data window is data-DEPENDENT. Without
+        # accumulated predictions (CI / fresh checkout / right after a
+        # full-fresh-start reset, when the DBs are rebuilt and the window
+        # is ~0 days so EVERY strategy would read as a zombie) the zombie
+        # *comparison* is vacuous — but the registry enumeration and aging
+        # below are data-INDEPENDENT and ALWAYS run, so an empty/broken
+        # strategy registry still fails this test rather than silently
+        # skipping (it used to skip on no-DBs / no-predictions, which made
+        # the whole check a no-op after every reset — exactly when a
+        # registry regression is most likely to slip through).
+        earliest_pred, latest_pred = (None, None)
+        if dbs:
+            earliest_pred, latest_pred = _prediction_data_window(dbs)
+        have_data = earliest_pred is not None and latest_pred is not None
 
         from datetime import datetime, timedelta
         from strategies import discover_strategies
@@ -179,10 +176,21 @@ class TestNoStrategyZombies:
                 if name and name not in _WRAPPERS:
                     all_modules[name] = mod
 
+        assert all_modules, (
+            "discover_strategies returned no registered strategies — the "
+            "registry is empty or failed to import. This data-independent "
+            "contract must hold even with no prediction data."
+        )
+
         zombies = []
         for name, mod in all_modules.items():
             age = _strategy_age_days(mod)
             if age < _GRACE_DAYS:
+                continue
+            if not have_data:
+                # No accumulated predictions yet — not judgeable for the
+                # zombie comparison, but enumeration + aging above already
+                # exercised the data-independent contract.
                 continue
             # Observation window: from the later of (strategy deploy,
             # first data) to the last data point. Under GRACE_DAYS of

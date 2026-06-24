@@ -105,7 +105,10 @@ def test_working_tree_has_changelog_update_when_modifying_production_source():
     try:
         changed = _git(["diff", "--name-only", "HEAD"]).splitlines()
         untracked = _git(["ls-files", "--others", "--exclude-standard"]).splitlines()
-    except Exception:
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        # Genuinely can't run here: not a git repo / no HEAD yet, or no
+        # git binary. Narrow on purpose — any OTHER exception is a real
+        # defect that must surface, not be swallowed into a skip.
         pytest.skip("not in a git repo / no HEAD yet")
     all_changed = set(changed + untracked)
     if not all_changed:
@@ -167,7 +170,10 @@ def test_recent_commits_have_changelog_update_when_modifying_production_source()
         log_lines = _git(
             ["log", "-n", "5", "--format=%H %s"]
         ).splitlines()
-    except Exception:
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        # Narrow on purpose (see sibling test above) — only a missing
+        # repo/HEAD or missing git binary is a legitimate non-run; any
+        # other exception must surface rather than skip silently.
         pytest.skip("not in a git repo")
     if not log_lines:
         return

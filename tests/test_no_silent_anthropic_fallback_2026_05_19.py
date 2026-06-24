@@ -184,19 +184,32 @@ class TestSelfTuningNoEnvFallback:
 
 class TestBuildContextForSegmentNoEnvFallback:
     def test_segment_ctx_does_not_inherit_anthropic_env(self, monkeypatch):
-        """The legacy `_build_context_for_segment` function now defaults
-        ai_api_key='' instead of config.ANTHROPIC_API_KEY. Verifies the
-        result of building a segment-level ctx contains an empty AI key."""
+        """The legacy `build_context_from_segment` function defaults
+        ai_api_key='' instead of config.ANTHROPIC_API_KEY. Verifies that
+        building a segment-level ctx yields an empty AI key for EVERY
+        currently-defined segment.
+
+        2026-06-24 — was hardcoded to segment 'largecap', which was
+        removed when segments became ['stocks', 'crypto']. get_segment
+        then raised KeyError and a broad `except Exception: pytest.skip`
+        silently swallowed it, so this security check had stopped running
+        entirely. Now it enumerates the live segment set and runs with no
+        skip: a build failure here is a real regression that must FAIL
+        loudly (no silent failures)."""
         import config
         monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "fake-env-key")
+        from segments import list_segments
         from user_context import build_context_from_segment
-        try:
-            ctx = build_context_from_segment("largecap")
-        except Exception:
-            pytest.skip("build_context_from_segment couldn't build a "
-                         "segment ctx in this test env — skip")
-        # AI key on the resulting ctx must be empty, not the .env value
-        assert ctx.ai_api_key == "" or ctx.ai_api_key is None, (
-            f"Legacy segment ctx must default ai_api_key='', not pick "
-            f"up config.ANTHROPIC_API_KEY; got {ctx.ai_api_key!r}"
+        segments = list_segments()
+        assert segments, (
+            "no segments defined — cannot verify the no-env-inherit "
+            "contract; the segment registry must be non-empty."
         )
+        for segment in segments:
+            ctx = build_context_from_segment(segment)
+            # AI key on the resulting ctx must be empty, not the .env value
+            assert ctx.ai_api_key == "" or ctx.ai_api_key is None, (
+                f"Legacy segment ctx ({segment!r}) must default "
+                f"ai_api_key='', not pick up config.ANTHROPIC_API_KEY; "
+                f"got {ctx.ai_api_key!r}"
+            )
