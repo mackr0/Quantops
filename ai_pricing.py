@@ -48,6 +48,30 @@ PRICING: Dict[str, Dict[str, float]] = {
 FALLBACK_PRICING = {"input": 3.00, "output": 15.00}
 
 
+def _fmt_price(v: float) -> str:
+    """Format a $/M price compactly: 0.35 -> "$0.35", 1.0 -> "$1", 15.0 -> "$15"."""
+    s = ("%.2f" % float(v)).rstrip("0").rstrip(".")
+    return "$" + s
+
+
+def price_for(model: Optional[str]) -> Optional[Dict[str, float]]:
+    """Return the {"input","output"} $/M price for a model, or None if we
+    don't have a price (so callers can distinguish 'priced' from 'unknown'
+    rather than silently using FALLBACK_PRICING)."""
+    return PRICING.get(model) if model else None
+
+
+def cost_label(model: Optional[str]) -> Optional[str]:
+    """Human-readable per-1M-token price for a model, e.g.
+    "$0.35 in / $0.70 out per 1M". Returns None for unpriced models so the
+    UI can show them without inventing a number."""
+    p = price_for(model)
+    if not p:
+        return None
+    return "%s in / %s out per 1M" % (
+        _fmt_price(p["input"]), _fmt_price(p["output"]))
+
+
 def estimate_cost_usd(model: Optional[str],
                       input_tokens: int,
                       output_tokens: int) -> float:

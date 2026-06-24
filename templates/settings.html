@@ -1139,6 +1139,35 @@
 // AI Provider/Model configuration
 var AI_PROVIDERS = {{ ai_providers_json|safe }};
 
+// Per-provider live availability catalog (id -> {available, cost_label}),
+// fetched once per provider per page load. The dropdown labels already carry
+// cost (server-rendered); this layer adds a live "✓ available / unavailable"
+// badge so the operator can see which models actually work before committing.
+var _MODEL_CATALOG_CACHE = {};
+
+function annotateAvailability(modelSelect, provider) {
+    function apply(models) {
+        var byId = {};
+        (models || []).forEach(function(m) { byId[m.id] = m; });
+        Array.prototype.forEach.call(modelSelect.options, function(opt) {
+            var m = byId[opt.value];
+            if (!m || m.available === null || typeof m.available === 'undefined') return;
+            // Strip any prior badge, then re-apply (idempotent on re-render).
+            opt.textContent = opt.textContent.replace(/\s+(?:✓ available|· unavailable)$/, '');
+            opt.textContent += m.available ? '  ✓ available' : '  · unavailable';
+            // Info-only — never disable. A transient list-models failure must
+            // not lock the operator out of a model they want to choose.
+            opt.style.color = m.available ? '' : '#b00';
+        });
+    }
+    if (_MODEL_CATALOG_CACHE[provider]) { apply(_MODEL_CATALOG_CACHE[provider]); return; }
+    fetch('/api/provider-models?provider=' + encodeURIComponent(provider))
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+            if (d && d.models) { _MODEL_CATALOG_CACHE[provider] = d.models; apply(d.models); }
+        }).catch(function() { /* picker still shows cost; no badge on failure */ });
+}
+
 function populateModelDropdown(providerSelect) {
     var profileId = providerSelect.dataset.profileId;
     var provider = providerSelect.value;
@@ -1158,6 +1187,7 @@ function populateModelDropdown(providerSelect) {
         }
         modelSelect.appendChild(opt);
     }
+    annotateAvailability(modelSelect, provider);
 }
 
 // Initialize all provider/model dropdowns on page load

@@ -5,6 +5,19 @@ at the top.
 
 ---
 
+## 2026-06-24 — Settings model picker shows live availability + per-token cost; catalog reconciled to real, priced models. Severity: MEDIUM (cost control — the operator couldn't see prices or pick the cheap model).
+
+The AI-model picker (Settings → Fallback LLM, and the per-profile AI model dropdown) was a hardcoded list with **no cost** and **stale entries**: it offered the deprecated `gemini-2.0-flash` (live `generateContent` 404s) and the dated `claude-sonnet-4-20250514` / `claude-opus-4-20250514` (gone from Anthropic's `/v1/models`, and unpriced → blank cost), while **omitting** the cheap `gemini-2.5-flash` standard tier ($0.35 / $0.70 per 1M — ~7× cheaper than Claude Haiku's $1 / $5). A cost-constrained operator (trying to move the fallback off Haiku, which was running 92% of today's AI spend) literally could not pick the cheap model or see any prices.
+
+Changes:
+- `ai_pricing.py`: `price_for()` / `cost_label()` — single source of per-1M cost labels (e.g. "$0.35 in / $0.7 out per 1M").
+- `ai_providers.py`: `get_providers()` now annotates every model label with its cost; the **google** catalog adds `gemini-2.5-flash` and drops the deprecated `gemini-2.0-flash`; the **anthropic** catalog moves to the live-and-priced `claude-sonnet-4-6` / `claude-opus-4-6`. New `get_model_catalog(provider)` + `available_model_ids(provider)` live-query each provider's list-models endpoint (Google `v1beta/models`, Anthropic `/v1/models`, OpenAI `/v1/models`) with a working key sourced from the operator row → any enabled profile for that provider → env; cached 30 min; degrades to `available=None` (never raises) on no-key / network failure.
+- `views.py`: `/api/provider-models?provider=X` returns the cost+availability catalog (never 500s the picker).
+- `templates/settings.html`: the model dropdown shows cost inline (server-rendered) and async-badges each model **✓ available / · unavailable** — info-only, never disabled, so a transient list-models failure can't lock the operator out of a model they want.
+- Tests (`test_provider_model_picker_2026_06_24.py`): pins **PROVIDERS ⊆ ai_pricing.PRICING** (no blank-cost / silent FALLBACK_PRICING model is ever offered), no known-deprecated id is offered, cost annotation on every label, the availability flag (True/False/None) logic, and a Flask-client happy-path for every provider with a static coverage check (no picker left untested).
+
+Net: the operator now sees cost on every model, sees which models actually work, and can pick `gemini-2.5-flash` (~7× cheaper than Haiku) to cut the AI bill while Gemini's flash-lite primary is being throttled by Google "high demand."
+
 ## 2026-06-24 — Test suite: eliminate all 3 runtime skips; one was masking a security test that had silently stopped running. Severity: MEDIUM (test integrity — a no-silent-Claude-spend check had not executed since a segment rename).
 
 The full suite had been reporting `3 skipped` every run. None were disabled tests (`@pytest.mark.skip`) — all three were runtime `pytest.skip()` guards — but investigation found one was hiding a real regression and the other two were avoidable. All three are now removed so the suite runs **0 skipped**, with each test still doing real work:

@@ -9,10 +9,15 @@ logger = logging.getLogger(__name__)
 PROVIDERS = {
     "anthropic": {
         "name": "Anthropic (Claude)",
+        # 2026-06-24 — replaced the dated claude-sonnet-4-20250514 /
+        # claude-opus-4-20250514 ids: Anthropic's live /v1/models no longer
+        # lists them (deprecated) and they had no pricing entry, so they
+        # showed blank cost. claude-sonnet-4-6 / claude-opus-4-6 are both
+        # live AND priced.
         "models": {
             "claude-haiku-4-5-20251001": "Claude Haiku 4.5 (cheapest)",
-            "claude-sonnet-4-20250514": "Claude Sonnet 4 (balanced)",
-            "claude-opus-4-20250514": "Claude Opus 4 (most capable)",
+            "claude-sonnet-4-6": "Claude Sonnet 4.6 (balanced)",
+            "claude-opus-4-6": "Claude Opus 4.6 (most capable)",
         },
     },
     "openai": {
@@ -26,11 +31,16 @@ PROVIDERS = {
     },
     "google": {
         "name": "Google (Gemini)",
+        # 2026-06-24 — dropped gemini-2.0-flash (Google DEPRECATED it; live
+        # generateContent returns 404) and added gemini-2.5-flash, the cheap
+        # standard tier ($0.35/$0.70 per 1M — ~7x cheaper than Claude Haiku)
+        # that was missing from the picker. Switched the pro entry to the
+        # stable `gemini-2.5-pro` id.
         "models": {
             "gemini-2.5-flash-lite": "Gemini 2.5 Flash-Lite (cheapest)",
+            "gemini-2.5-flash": "Gemini 2.5 Flash (cheap, reliable)",
             "gemini-3.1-flash-lite": "Gemini 3.1 Flash-Lite (newer cheap tier)",
-            "gemini-2.0-flash": "Gemini 2.0 Flash",
-            "gemini-2.5-pro-preview-03-25": "Gemini 2.5 Pro (most capable)",
+            "gemini-2.5-pro": "Gemini 2.5 Pro (most capable)",
         },
     },
     "deepseek": {
@@ -55,14 +65,186 @@ _FENCE_RE = re.compile(r"^```[a-zA-Z]*\n?", re.MULTILINE)
 _FENCE_END_RE = re.compile(r"\n?```\s*$", re.MULTILINE)
 
 
-def get_providers():
-    """Return the providers dict for UI dropdowns."""
-    return PROVIDERS
+def get_providers(with_cost=True):
+    """Return the providers dict for UI dropdowns.
+
+    When `with_cost` (default), each model's display label is annotated with
+    its per-1M-token price from `ai_pricing` so the picker shows cost inline
+    — e.g. "Gemini 2.5 Flash (cheap, reliable) — $0.35 in / $0.70 out per 1M".
+    Unpriced models are left with their plain label (no invented number).
+    """
+    if not with_cost:
+        return PROVIDERS
+    from ai_pricing import cost_label
+    out = {}
+    for pkey, pinfo in PROVIDERS.items():
+        models = {}
+        for mid, label in pinfo.get("models", {}).items():
+            cl = cost_label(mid)
+            models[mid] = "%s — %s" % (label, cl) if cl else label
+        out[pkey] = {"name": pinfo["name"], "models": models}
+    return out
 
 
 def get_models_for_provider(provider):
-    """Return {model_id: display_name} for a provider."""
+    """Return {model_id: display_name} for a provider (raw labels, no cost)."""
     return PROVIDERS.get(provider, {}).get("models", {})
+
+
+# ---------------------------------------------------------------------------
+# Live model availability — query each provider's "list models" endpoint with
+# a key that actually works, so the picker can show which models are real
+# (the hardcoded list went stale: it offered the deprecated gemini-2.0-flash
+# and omitted gemini-2.5-flash). Cached per-provider; degrades to "unknown"
+# (None) on any failure so the picker NEVER breaks on a network hiccup.
+# ---------------------------------------------------------------------------
+
+_AVAIL_CACHE = {}          # provider -> (expiry_epoch, frozenset|None)
+_AVAIL_TTL_SECONDS = 1800  # model lists change rarely; 30 min is plenty
+
+
+def _working_key_for_provider(provider):
+    """Find a usable API key for `provider`, in priority order:
+    operator Fallback LLM key (if its provider matches) → any enabled
+    trading_profile configured for this provider → env-level key. Returns
+    "" when none is available."""
+    import sqlite3
+    from contextlib import closing
+    # 1. Operator-level Fallback LLM key (users row), if same provider.
+    try:
+        with closing(sqlite3.connect("quantopsai.db")) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT llm_provider, anthropic_api_key_enc FROM users "
+                "ORDER BY id ASC LIMIT 1"
+            ).fetchone()
+        if row and (row["llm_provider"] or "").strip().lower() == provider:
+            from crypto import decrypt
+            k = decrypt(row["anthropic_api_key_enc"] or "")
+            if k:
+                return k
+    except Exception as exc:
+        logger.debug("operator-key lookup for %s failed (%s) — trying "
+                     "profile keys next", provider, exc)
+    # 2. Any enabled trading_profile configured for this provider.
+    try:
+        with closing(sqlite3.connect("quantopsai.db")) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT ai_api_key_enc FROM trading_profiles "
+                "WHERE ai_provider = ? AND ai_api_key_enc != '' LIMIT 1",
+                (provider,),
+            ).fetchone()
+        if row:
+            from crypto import decrypt
+            k = decrypt(row["ai_api_key_enc"] or "")
+            if k:
+                return k
+    except Exception as exc:
+        logger.debug("profile-key lookup for %s failed (%s) — trying env "
+                     "key next", provider, exc)
+    # 3. Env-level key.
+    try:
+        import config
+        return {
+            "google": config.GEMINI_API_KEY,
+            "anthropic": config.ANTHROPIC_API_KEY,
+            "openai": config.OPENAI_API_KEY,
+        }.get(provider) or ""
+    except Exception as exc:
+        logger.debug("env-key lookup for %s failed (%s) — no key available",
+                     provider, exc)
+        return ""
+
+
+def _http_get_json(url, headers=None, timeout=12):
+    import json
+    import urllib.request
+    req = urllib.request.Request(url, headers=headers or {})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        raw = r.read()
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, ValueError) as exc:
+        # A non-JSON provider response → surface as an error the caller
+        # (available_model_ids) turns into "availability unknown".
+        raise ValueError("non-JSON response from list-models endpoint: %s"
+                         % exc)
+
+
+def _live_model_ids(provider, key):
+    """Query a provider's list-models endpoint → set of model ids. Raises on
+    any HTTP/parse failure (caller treats as 'unknown')."""
+    if provider == "google":
+        data = _http_get_json(
+            "https://generativelanguage.googleapis.com/v1beta/models"
+            "?key=%s&pageSize=400" % key)
+        ids = set()
+        for m in data.get("models", []):
+            if "generateContent" in m.get("supportedGenerationMethods", []):
+                ids.add(m.get("name", "").replace("models/", ""))
+        return ids
+    if provider == "anthropic":
+        data = _http_get_json(
+            "https://api.anthropic.com/v1/models?limit=1000",
+            headers={"x-api-key": key,
+                     "anthropic-version": "2023-06-01"})
+        return {m.get("id") for m in data.get("data", []) if m.get("id")}
+    if provider == "openai":
+        data = _http_get_json(
+            "https://api.openai.com/v1/models",
+            headers={"Authorization": "Bearer %s" % key})
+        return {m.get("id") for m in data.get("data", []) if m.get("id")}
+    # deepseek and any other: no cheap list endpoint wired — unknown.
+    raise ValueError("no list-models endpoint for provider %r" % provider)
+
+
+def available_model_ids(provider, force=False):
+    """Return a frozenset of model ids the provider currently lists as
+    callable, or None if it can't be determined (no key / network error).
+    Cached for `_AVAIL_TTL_SECONDS`."""
+    import time
+    now = time.time()
+    cached = _AVAIL_CACHE.get(provider)
+    if cached and not force and cached[0] > now:
+        return cached[1]
+    result = None
+    key = _working_key_for_provider(provider)
+    if key:
+        try:
+            result = frozenset(_live_model_ids(provider, key))
+        except Exception as exc:
+            logger.info("availability check for %s failed (%s: %s) — "
+                        "picker will show models without an availability "
+                        "badge", provider, type(exc).__name__, exc)
+            result = None
+    _AVAIL_CACHE[provider] = (now + _AVAIL_TTL_SECONDS, result)
+    return result
+
+
+def get_model_catalog(provider, check_availability=True):
+    """Rich model list for the picker: each entry has id, label, the cost
+    label, the raw input/output $/M prices, and an `available` flag
+    (True/False, or None when availability can't be determined).
+
+    Drives the Settings model dropdown so the operator sees cost AND which
+    models actually work before committing to one.
+    """
+    from ai_pricing import cost_label, price_for
+    models = PROVIDERS.get(provider, {}).get("models", {})
+    live = available_model_ids(provider) if check_availability else None
+    out = []
+    for mid, label in models.items():
+        price = price_for(mid)
+        out.append({
+            "id": mid,
+            "label": label,
+            "cost_label": cost_label(mid),
+            "input_per_m": price["input"] if price else None,
+            "output_per_m": price["output"] if price else None,
+            "available": (mid in live) if live is not None else None,
+        })
+    return out
 
 
 def get_provider_for_model(model_id):

@@ -1128,6 +1128,31 @@ def api_comparative_returns():
     return jsonify(build_payload(user_id=current_user.effective_user_id))
 
 
+@views_bp.route("/api/provider-models")
+@login_required
+def api_provider_models():
+    """Live model catalog for one AI provider — each model's id, display
+    label, per-1M-token cost, and whether the provider currently lists it as
+    callable (queried live against the provider's list-models endpoint with a
+    working key, cached ~30 min). Powers the Settings model picker so the
+    operator sees cost AND availability before committing — the hardcoded
+    list had gone stale (offered a deprecated Gemini model, omitted the cheap
+    standard tier). Degrades gracefully: `available` is null when it can't be
+    determined, and the picker still shows cost."""
+    from ai_providers import get_model_catalog
+    provider = (request.args.get("provider") or "").strip().lower()
+    if not provider:
+        return jsonify({"error": "provider required"}), 400
+    try:
+        catalog = get_model_catalog(provider)
+    except Exception as exc:  # never 500 the picker
+        logger.warning("provider-models catalog failed for %s: %s",
+                       provider, exc)
+        return jsonify({"provider": provider, "models": [],
+                        "error": "catalog unavailable"})
+    return jsonify({"provider": provider, "models": catalog})
+
+
 def _next_session_label(ctx, now):
     """Human 'next session' string for an inactive profile, holiday-aware.
 
