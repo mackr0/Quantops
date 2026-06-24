@@ -3003,6 +3003,55 @@ _INTEGRITY_REASON_PREFIX = "Book integrity FAILED"
 _integrity_findings_active = False
 
 
+def _collect_integrity_findings():
+    """Run the two book-integrity checks; return the combined findings list
+    (empty == clean). Each check is best-effort: one that errors is logged and
+    contributes no findings — we never halt on a checker crash, and the other
+    check still runs."""
+    findings = []
+    try:
+        from certify_books import check_broker_drift
+        findings += list(check_broker_drift() or [])
+    except Exception:
+        logging.exception("integrity gate: broker-drift check failed")
+    try:
+        from certify_books import check_decomposition
+        findings += list(check_decomposition(tolerance=250.0) or [])
+    except Exception:
+        logging.exception("integrity gate: decomposition check failed")
+    return findings
+
+
+def _heal_pending_fills_best_effort():
+    """Record confirmed broker fills across the live profiles — the same
+    per-cycle fill-recorder (`_task_update_fills`) the cycle already runs,
+    invoked here BEFORE the integrity gate decides to halt.
+
+    Why: a protective (stop / take-profit) that filled at the broker but whose
+    fill the recorder hasn't journaled yet briefly reads as a phantom long — a
+    normal winning take-profit does this for ~one cycle. Recording the fill
+    heals it. Crucially, `_task_update_fills` only journals fills that ACTUALLY
+    happened (polls each row's own order_id at the broker) — it never
+    fabricates a journal row to match the broker — so a GENUINE phantom (a
+    broker position with no corresponding journaled fill) is NOT masked and
+    still trips the halt on the re-check. Best-effort: never raises."""
+    try:
+        from models import (
+            get_active_profiles, build_user_context_from_profile)
+        profs = get_active_profiles()
+    except Exception:
+        logging.exception("integrity heal: could not enumerate profiles")
+        return
+    for prof in profs:
+        pid = prof.get("id")
+        try:
+            ctx = build_user_context_from_profile(pid)
+            _task_update_fills(ctx)
+        except Exception:
+            logging.warning("integrity heal: fill-record failed for p%s",
+                            pid, exc_info=True)
+
+
 def _run_integrity_gate():
     """THE book-integrity gate. Runs every trading cycle BEFORE any new
     entries are placed, and AUTO-ENGAGES the kill switch on any
@@ -3028,20 +3077,27 @@ def _run_integrity_gate():
     emailed (best-effort); the kill-switch state is also shown on the
     dashboard. Returns True when the books are clean."""
     try:
-        from certify_books import check_broker_drift, check_decomposition
         from kill_switch import activate, deactivate, is_active
     except Exception:
         logging.exception("integrity gate: imports failed — NOT trading blind")
         return True  # fail-open on an import error rather than freeze
-    findings = []
-    try:
-        findings += list(check_broker_drift() or [])
-    except Exception:
-        logging.exception("integrity gate: broker-drift check failed")
-    try:
-        findings += list(check_decomposition(tolerance=250.0) or [])
-    except Exception:
-        logging.exception("integrity gate: decomposition check failed")
+    findings = _collect_integrity_findings()
+    if findings:
+        # Transient vs. real. A protective (stop / take-profit) that filled at
+        # the broker but whose fill the per-cycle recorder hasn't journaled yet
+        # reads as a phantom long for ~one cycle — a normal winning take-profit
+        # does exactly this. Record confirmed broker fills across the live
+        # profiles and RE-CHECK before halting: `_task_update_fills` only
+        # journals fills that actually happened, so a TRANSIENT self-heals here
+        # while a GENUINE phantom (no recordable fill behind it) persists and
+        # still halts on the re-check. Kills the false-halt-on-take-profit
+        # class WITHOUT weakening the zero-tolerance halt on real drift.
+        logging.warning(
+            "INTEGRITY: drift detected — recording pending fills and "
+            "re-checking before any halt: %s",
+            " | ".join(str(f) for f in findings[:6]))
+        _heal_pending_fills_best_effort()
+        findings = _collect_integrity_findings()
     global _integrity_findings_active
     if findings:
         reason = ("%s — %d finding(s): %s" % (

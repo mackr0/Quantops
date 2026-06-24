@@ -1284,6 +1284,15 @@ def dashboard():
     with ThreadPoolExecutor(max_workers=10) as pool:
         profiles_data = list(pool.map(_load_profile, profiles))
 
+    # Cost-per-LLM breakdown (today, across all profiles) for the dashboard's
+    # "AI cost by model" rows — lets the operator see primary-vs-fallback spend
+    # at a glance (e.g. cheap Gemini primary vs. an expensive Claude fallback).
+    from ai_cost_ledger import by_model_today, merge_model_breakdowns
+    cost_by_model = merge_model_breakdowns([
+        by_model_today(f"quantopsai_profile_{prof['id']}.db")
+        for prof in profiles
+    ])
+
     # Check for recent scan failures across all profiles
     scan_failures = []
     for prof in profiles:
@@ -1420,6 +1429,7 @@ def dashboard():
                            scan_failures=scan_failures,
                            kill_switch=kill_switch_state,
                            halted_profiles=halted_profiles,
+                           cost_by_model=cost_by_model,
                            cost_status=cost_status)
 
 
@@ -6129,7 +6139,8 @@ def api_dashboard_totals():
     See Issue 14 deep-dive in `AUDIT_2026_05_09.md`.
     """
     from models import get_active_profiles, build_user_context_from_profile
-    from ai_cost_ledger import spend_summary
+    from ai_cost_ledger import (
+        spend_summary, by_model_today, merge_model_breakdowns)
     from client import get_account_info, get_positions
 
     cache_key = ("api_dashboard_totals", current_user.effective_user_id)
@@ -6143,6 +6154,7 @@ def api_dashboard_totals():
     # equity/P&L/cash/position sums were removed 2026-05-22 (not additive
     # across heterogeneous strategies; compare by per-row P&L % instead).
     total_cost = 0.0
+    model_breakdowns = []  # per-profile cost-per-LLM, merged below
     for p in profiles:
         try:
             ctx = build_user_context_from_profile(p["id"])
@@ -6156,6 +6168,7 @@ def api_dashboard_totals():
                     (spend_summary(ctx.db_path) or {})
                     .get("today", {}).get("usd") or 0
                 )
+                model_breakdowns.append(by_model_today(ctx.db_path))
             except Exception as exc:
                 logger.warning(
                     "dashboard-totals: spend_summary failed for "
@@ -6204,6 +6217,9 @@ def api_dashboard_totals():
         # accumulator init above. Per-profile equity/cash/pnl/pnl_pct ride
         # in `rows` for the per-row live refresh.
         "total_cost": total_cost,
+        # Cost-per-LLM breakdown (today, all profiles) so the operator can
+        # see how much each model — primary vs. fallback — is costing.
+        "cost_by_model": merge_model_breakdowns(model_breakdowns),
     }
     # Cache only on success. The endpoint never raises explicitly
     # (per-profile failures are absorbed via the WARNING above), so

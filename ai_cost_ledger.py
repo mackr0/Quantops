@@ -63,6 +63,62 @@ def log_ai_call(
 # Read path — spend summaries
 # ---------------------------------------------------------------------------
 
+def by_model_today(db_path: str) -> List[Dict[str, Any]]:
+    """Per-(provider, model) spend for TODAY (ET) on one profile DB.
+
+    Returns [{provider, model, calls, usd}] sorted by usd desc. This is the
+    raw material for the dashboard's "cost per LLM" breakdown — it shows the
+    operator how much each model (primary vs. fallback) is actually costing.
+    Safe on missing table / db: returns [].
+    """
+    out: List[Dict[str, Any]] = []
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+    except Exception:
+        return out
+    try:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        et_today = datetime.now(
+            ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        rows = conn.execute(
+            "SELECT provider, model, COUNT(*) AS n, "
+            "       COALESCE(SUM(estimated_cost_usd), 0) AS usd "
+            "FROM ai_cost_ledger WHERE timestamp >= ? "
+            "GROUP BY provider, model ORDER BY usd DESC",
+            (et_today,),
+        ).fetchall()
+        out = [{"provider": r["provider"], "model": r["model"],
+                "calls": int(r["n"] or 0),
+                "usd": round(float(r["usd"] or 0), 4)}
+               for r in rows]
+    except sqlite3.OperationalError:
+        pass  # table not created yet — return []
+    finally:
+        conn.close()
+    return out
+
+
+def merge_model_breakdowns(
+        breakdowns: "List[List[Dict[str, Any]]]") -> List[Dict[str, Any]]:
+    """Combine per-profile ``by_model_today()`` lists into one book-wide
+    breakdown, summed per (provider, model), sorted by usd desc. Used by the
+    dashboard to show total cost-per-LLM across all profiles."""
+    agg: Dict[tuple, Dict[str, Any]] = {}
+    for bd in breakdowns:
+        for r in bd or []:
+            key = (r.get("provider"), r.get("model"))
+            a = agg.setdefault(key, {"provider": r.get("provider"),
+                                     "model": r.get("model"),
+                                     "calls": 0, "usd": 0.0})
+            a["calls"] += int(r.get("calls") or 0)
+            a["usd"] += float(r.get("usd") or 0)
+    for a in agg.values():
+        a["usd"] = round(a["usd"], 4)
+    return sorted(agg.values(), key=lambda x: -x["usd"])
+
+
 def spend_summary(db_path: str) -> Dict[str, Any]:
     """Return 1d / 7d / 30d spend totals + call counts for one profile DB.
 

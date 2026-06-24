@@ -35,12 +35,24 @@ def patched(monkeypatch):
     # starts from a clean "no findings seen yet" state.
     multi_scheduler._integrity_findings_active = False
     state = {"drift": [], "decomp": [], "is_active": (False, ""),
-             "calls": {}, "emails": 0}
+             "calls": {}, "emails": 0, "heal_calls": 0, "on_heal": None}
 
     monkeypatch.setattr(certify_books, "check_broker_drift",
                         lambda: list(state["drift"]))
     monkeypatch.setattr(certify_books, "check_decomposition",
                         lambda tolerance=100.0: list(state["decomp"]))
+
+    # 2026-06-24 — the gate now records confirmed broker fills and RE-CHECKS
+    # before halting (so a just-filled take-profit not yet journaled doesn't
+    # false-halt). Mock the heal so tests stay deterministic; `on_heal` lets a
+    # test simulate the recorder clearing a transient drift. Default no-op =>
+    # drift persists => halt (the original behavior the existing tests pin).
+    def _fake_heal():
+        state["heal_calls"] += 1
+        if state["on_heal"]:
+            state["on_heal"]()
+    monkeypatch.setattr(multi_scheduler, "_heal_pending_fills_best_effort",
+                        _fake_heal)
     monkeypatch.setattr(kill_switch, "is_active",
                         lambda db_path=None: state["is_active"])
     monkeypatch.setattr(
@@ -154,3 +166,80 @@ def test_gate_runs_before_entries_every_cycle():
 def test_entries_gate_on_kill_switch():
     tp = (REPO / "trade_pipeline.py").read_text()
     assert "from kill_switch import is_active" in tp
+
+
+# ── 2026-06-24: heal-and-recheck — no false halt on transient TP-fill drift ──
+# Root cause of a spurious kill switch: a protective (stop/take-profit) that
+# FILLED at the broker but whose fill the per-cycle recorder hadn't journaled
+# yet read as a phantom long for one cycle, and the gate halted on it. The gate
+# now records confirmed fills and re-checks before halting — a transient heals,
+# a genuine phantom persists.
+
+def test_transient_drift_heals_in_cycle_and_does_not_halt(patched):
+    sched, st = patched
+    st["drift"] = [
+        "account 48 ABSI: broker=6,459 virtual=11,486 drift=-5,027"]
+    # Simulate _task_update_fills journaling the filled TP -> drift clears.
+    st["on_heal"] = lambda: st["drift"].clear()
+    ok = sched._run_integrity_gate()
+    assert ok is True, "a self-healing transient drift must NOT halt entries"
+    assert st["heal_calls"] == 1, (
+        "the gate must record pending fills before deciding to halt")
+    assert "activate" not in st["calls"], (
+        "transient (just-filled-TP) drift must not engage the kill switch")
+
+
+def test_persistent_phantom_still_halts_after_heal(patched):
+    """Safety preserved: a real phantom (a broker position with no recordable
+    fill behind it) is not resolved by the fill-recorder, so it STILL halts on
+    the re-check — exactly the 2026-06-18 UWMC class."""
+    sched, st = patched
+    st["drift"] = [
+        "account 9 UWMC: broker=-41,907 virtual=0 drift=-41,907"]
+    st["on_heal"] = lambda: None  # recorder finds no fill -> drift persists
+    ok = sched._run_integrity_gate()
+    assert ok is False, "a genuine persistent phantom MUST still halt"
+    assert st["heal_calls"] == 1
+    reason, set_by = st["calls"]["activate"]
+    assert set_by == "integrity_auto"
+    assert "UWMC" in reason
+
+
+def test_no_heal_work_when_books_already_clean(patched):
+    sched, st = patched
+    st["drift"] = []
+    st["decomp"] = []
+    assert sched._run_integrity_gate() is True
+    assert st["heal_calls"] == 0, "no finding => no heal work"
+    assert "activate" not in st["calls"]
+
+
+def test_decomposition_transient_also_heals(patched):
+    """The heal-and-recheck covers the decomposition check too — a close whose
+    realized P&L the recorder books in-cycle closes the gap."""
+    sched, st = patched
+    st["decomp"] = ["p179: decomposition gap 5,027 (equity vs realized+unrl)"]
+    st["on_heal"] = lambda: st["decomp"].clear()
+    assert sched._run_integrity_gate() is True
+    assert st["heal_calls"] == 1
+    assert "activate" not in st["calls"]
+
+
+def test_heal_records_fills_only_never_fabricates():
+    """Structural pin: the heal must call the fill-recorder (which journals
+    only real broker fills), NOT a reconcile-to-broker that would align the
+    journal to the broker and thereby MASK a genuine phantom."""
+    sched = (REPO / "multi_scheduler.py").read_text()
+    assert "def _heal_pending_fills_best_effort" in sched
+    # locate the heal body
+    start = sched.find("def _heal_pending_fills_best_effort")
+    end = sched.find("\ndef ", start + 1)
+    body = sched[start:end]
+    assert "_task_update_fills(" in body, (
+        "heal must use the fill-recorder so only real fills are journaled")
+    for masking in ("reconcile_and_stamp", "reconcile_profile(",
+                    "ensure_symbol_fresh"):
+        assert masking not in body, (
+            f"heal must NOT call {masking} — aligning the journal to the "
+            "broker would mask a genuine phantom instead of healing a "
+            "recordable fill.")

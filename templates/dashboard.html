@@ -237,6 +237,18 @@
                     <td></td>
                     <td class="muted" id="totals-book-cost">${{ "{:.2f}".format(ns.total_cost) }}</td>
                 </tr>
+                <tr id="ai-cost-by-model-row" style="font-weight:normal;">
+                    <td colspan="8" class="muted" style="padding-top:4px; font-size:0.9em;">
+                        <span style="opacity:0.75;">by model (today):</span>
+                        <span id="ai-cost-by-model">
+                        {% for m in cost_by_model %}
+                            <span style="margin-right:14px; white-space:nowrap;">{{ m.model }} — ${{ "%.2f"|format(m.usd) }} <span style="opacity:0.7;">({{ m.calls }} call{{ '' if m.calls == 1 else 's' }})</span></span>
+                        {% else %}
+                            <span style="opacity:0.7;">no AI spend today</span>
+                        {% endfor %}
+                        </span>
+                    </td>
+                </tr>
             </tfoot>
         </table>
         <script>
@@ -298,6 +310,28 @@
                     var u = document.getElementById('totals-updated');
                     if (bk) bk.textContent = QF.dollars2(d.total_cost || 0);
                     if (u) u.textContent = '— live · updated ' + new Date().toLocaleTimeString();
+                    // Cost-per-LLM breakdown (today) — primary vs fallback spend.
+                    var bm = document.getElementById('ai-cost-by-model');
+                    if (bm && d.cost_by_model) {
+                        if (!d.cost_by_model.length) {
+                            bm.textContent = 'no AI spend today';
+                        } else {
+                            bm.innerHTML = '';
+                            d.cost_by_model.forEach(function(m) {
+                                var span = document.createElement('span');
+                                span.style.marginRight = '14px';
+                                span.style.whiteSpace = 'nowrap';
+                                var calls = document.createElement('span');
+                                calls.style.opacity = '0.7';
+                                var n = (m.calls || 0);
+                                calls.textContent = ' (' + n + ' call' + (n === 1 ? '' : 's') + ')';
+                                // textContent for the model id keeps this XSS-safe.
+                                span.textContent = m.model + ' — ' + QF.dollars2(m.usd || 0);
+                                span.appendChild(calls);
+                                bm.appendChild(span);
+                            });
+                        }
+                    }
                 }).catch(function(){});
             }
             // Refresh at a market-aware cadence: 30s during market hours
