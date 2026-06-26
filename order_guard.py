@@ -342,6 +342,17 @@ def allowable_sell_qty(
             for pos in get_virtual_positions(db_path):
                 if (pos.get("symbol") or "").upper() != target:
                     continue
+                # 2026-06-25 — match the STOCK position ONLY. A profile that
+                # holds both a stock AND an option on the same underlying gets
+                # one get_virtual_positions row PER option leg (each carries an
+                # occ_symbol). A bare-symbol match grabs whichever row sorts
+                # first — often an option leg (e.g. a -1 short-put leg) — so the
+                # door computed the wrong sellable qty and REFUSED the stock's
+                # protective stop, leaving the position naked. A stock sell
+                # concerns ONLY the non-option row. (Option sells bypass this
+                # guard entirely via the OCC-symbol check above.)
+                if pos.get("occ_symbol"):
+                    continue
                 try:
                     own_virtual_qty = int(float(pos.get("qty", 0) or 0))
                 except (ValueError, TypeError):
@@ -491,6 +502,11 @@ def allowable_cover_qty(
             from journal import get_virtual_positions
             for pos in get_virtual_positions(db_path):
                 if (pos.get("symbol") or "").upper() != target:
+                    continue
+                # 2026-06-25 — match the STOCK row ONLY (same occ-symbol-aware
+                # fix as allowable_sell_qty): an option leg on the same
+                # underlying must not be mistaken for the stock short.
+                if pos.get("occ_symbol"):
                     continue
                 try:
                     own_signed = int(float(pos.get("qty") or 0))

@@ -431,3 +431,72 @@ class TestStockMedianExcludesOptionContracts:
         allowed, reason = allowable_buy_qty(db, "AAPL", 1000)
         assert allowed == 1000
         assert "permissive" in reason.lower()
+
+
+class TestOversellDoorOccSymbolAware:
+    """2026-06-25 — the oversell door must compute a STOCK's sellable /
+    coverable qty from the STOCK row only, never an option leg on the same
+    underlying.
+
+    Prod bug it pins: 7 positions rode NAKED. A profile held a stock AND a
+    1-contract option spread on the same underlying; get_virtual_positions
+    returns one row per option leg (each with an occ_symbol). The door matched
+    on bare symbol and grabbed whichever sorted first — a -1 short-put leg —
+    so it computed the stock holding as -1 and REFUSED the protective stop
+    (and any sell) of the real 904-share long. The option-leg-FIRST ordering
+    below reproduces that exact shadowing.
+    """
+
+    @staticmethod
+    def _vp(symbol, qty, occ=None):
+        return {"symbol": symbol, "qty": qty, "occ_symbol": occ}
+
+    def test_sell_matches_stock_not_option_leg(self):
+        from order_guard import allowable_sell_qty
+        vp = [
+            self._vp("FCEL", -1, "FCEL260731P00019000"),  # short put — sorts first
+            self._vp("FCEL", 1, "FCEL260731P00018000"),   # long put
+            self._vp("FCEL", 904, None),                   # the STOCK
+        ]
+        with patch("journal.get_virtual_positions", return_value=vp):
+            qty, reason = allowable_sell_qty(
+                None, "FCEL", 904, db_path="x.db", broker_drift_check=False)
+        assert qty == 904, (
+            "must read the 904-share STOCK row, not the -1 option leg; "
+            "got %s (%s)" % (qty, reason))
+
+    def test_sell_still_refuses_genuine_oversell_with_options_present(self):
+        # The fix must NOT weaken oversell protection: 2000 > 904 stock → refuse.
+        from order_guard import allowable_sell_qty
+        vp = [
+            self._vp("FCEL", 904, None),
+            self._vp("FCEL", -1, "FCEL260731P00019000"),
+        ]
+        with patch("journal.get_virtual_positions", return_value=vp):
+            qty, reason = allowable_sell_qty(
+                None, "FCEL", 2000, db_path="x.db", broker_drift_check=False)
+        assert qty == 0
+        assert "904" in reason
+
+    def test_sell_unaffected_when_no_options(self):
+        from order_guard import allowable_sell_qty
+        vp = [self._vp("FCEL", 904, None)]
+        with patch("journal.get_virtual_positions", return_value=vp):
+            qty, reason = allowable_sell_qty(
+                None, "FCEL", 904, db_path="x.db", broker_drift_check=False)
+        assert qty == 904
+
+    def test_cover_matches_stock_short_not_option_leg(self):
+        from order_guard import allowable_cover_qty
+        api = MagicMock()
+        bpos = MagicMock(); bpos.symbol = "FCEL"; bpos.qty = "-500"
+        api.list_positions.return_value = [bpos]
+        vp = [
+            self._vp("FCEL", 1, "FCEL260731P00018000"),  # option leg first
+            self._vp("FCEL", -500, None),                  # the STOCK short
+        ]
+        with patch("journal.get_virtual_positions", return_value=vp):
+            qty, reason = allowable_cover_qty(api, "FCEL", 500, db_path="x.db")
+        assert qty == 500, (
+            "must read the 500-share STOCK short, not the +1 option leg; "
+            "got %s (%s)" % (qty, reason))

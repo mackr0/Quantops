@@ -998,7 +998,11 @@ def _reconstruct_unjournaled_submits(ctx) -> int:
         open_shorts = {
             (p.get("symbol") or "").upper()
             for p in journal.get_virtual_positions(db_path)
-            if float(p.get("qty", 0) or 0) < 0}
+            # STOCK shorts only — an option leg on the same underlying carries
+            # an occ_symbol and must not be mistaken for a stock short (the
+            # 2026-06-25 occ-symbol-aware fix; an option-leg underlying landing
+            # here would wrongly skip a lost-write stock reconstruction).
+            if float(p.get("qty", 0) or 0) < 0 and not p.get("occ_symbol")}
     except Exception:
         open_shorts = set()
     # Reconstruct SHORT entries before BUYs: if BOTH a short-open and its cover
