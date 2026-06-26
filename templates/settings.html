@@ -355,7 +355,7 @@
             <strong style="color:#c62828;">⚠ TRADING HALTED</strong> —
             reconciler safety net blocked new entries.
             <br><small><strong>Reason:</strong> {{ prof.halt_reason or '(no reason recorded)' }}</small>
-            {% if prof.halted_at %}<br><small><strong>Halted at:</strong> {{ prof.halted_at }}</small>{% endif %}
+            {% if prof.halted_at %}<br><small><strong>Halted at:</strong> {{ prof.halted_at|friendly_time }}</small>{% endif %}
             <br><small style="color:#555;">
                 Existing exits + monitoring continue; only new entries are blocked.
                 Halt auto-clears next reconcile pass when no synthesis is needed.

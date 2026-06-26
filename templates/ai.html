@@ -333,11 +333,11 @@
                     </div>
                     <div class="stat-card">
                         <small class="muted">Last updated</small>
-                        <strong style="font-size:0.85rem;">{{ mp.online.last_update_at[:16] if mp.online.last_update_at else '—' }}</strong>
+                        <strong style="font-size:0.85rem;">{{ mp.online.last_update_at|friendly_time if mp.online.last_update_at else '—' }}</strong>
                     </div>
                     <div class="stat-card">
                         <small class="muted">Bootstrapped</small>
-                        <strong style="font-size:0.85rem;">{{ mp.online.created_at[:16] if mp.online.created_at else '—' }}</strong>
+                        <strong style="font-size:0.85rem;">{{ mp.online.created_at|friendly_time if mp.online.created_at else '—' }}</strong>
                     </div>
                 </div>
                 {% endif %}
@@ -494,7 +494,7 @@
                 <tbody>
                     {% for v in validations %}
                     <tr>
-                        <td class="muted">{{ v.timestamp[:16] }}</td>
+                        <td class="muted">{{ v.timestamp|friendly_time }}</td>
                         <td><strong>{{ v.strategy_name | display_name }}</strong></td>
                         <td>{{ v.market_type | humanize }}</td>
                         <td>
@@ -618,13 +618,13 @@
                             <td>{{ s.description | humanize }}</td>
                             <td class="muted" style="font-size:0.8rem;">
                                 {% if s.status == 'active' and s.promoted_at %}
-                                promoted {{ s.promoted_at[:10] }}
+                                promoted {{ s.promoted_at|friendly_date }}
                                 {% elif s.status == 'shadow' and s.shadow_started_at %}
-                                shadow since {{ s.shadow_started_at[:10] }}
+                                shadow since {{ s.shadow_started_at|friendly_date }}
                                 {% elif s.status == 'retired' and s.retired_at %}
-                                retired {{ s.retired_at[:10] }}
+                                retired {{ s.retired_at|friendly_date }}
                                 {% else %}
-                                created {{ s.created_at[:10] }}
+                                created {{ s.created_at|friendly_date }}
                                 {% endif %}
                             </td>
                         </tr>
@@ -660,7 +660,7 @@
                         {% for d in prof_decay.deprecated %}
                         <li style="margin:0.25rem 0;">
                             <strong>{{ d.strategy_type | display_name }}</strong>
-                            <small class="muted">— deprecated {{ d.deprecated_at[:10] }}: {{ d.reason | humanize }}</small>
+                            <small class="muted">— deprecated {{ d.deprecated_at|friendly_date }}: {{ d.reason | humanize }}</small>
                             <form method="post" action="/ai/profile/{{ prof_decay.profile_id }}/restore-strategy/{{ d.strategy_type }}" style="display:inline;margin-left:0.5rem;" onsubmit="return confirm('Restore {{ d.strategy_type | display_name }} into the active strategy mix?');">
                                 <button type="submit" class="outline" style="padding:0.1rem 0.5rem;font-size:0.75rem;margin:0;">Restore</button>
                             </form>
@@ -844,7 +844,7 @@
         <header style="padding:0.5rem 0.75rem;">
             <h4 style="margin:0;">{{ r.profile_name }}</h4>
             <small class="muted">
-                snapshot: {{ r.snapshot_at[:16] if r.snapshot_at else '—' }} ·
+                snapshot: {{ r.snapshot_at|friendly_time if r.snapshot_at else '—' }} ·
                 {{ r.n_symbols }} positions · book ${{ "{:,.0f}".format(r.equity or 0) }}
             </small>
         </header>
@@ -1033,7 +1033,7 @@
                     {% endif %}
                 </h4>
                 {% if prof.transitioned_at %}
-                <small class="muted">since {{ prof.transitioned_at[:16] }}</small>
+                <small class="muted">since {{ prof.transitioned_at|friendly_time }}</small>
                 {% endif %}
             </header>
             <div style="padding:0 0.75rem 0.5rem;">
@@ -1074,7 +1074,7 @@
                         <tbody>
                             {% for h in prof.history %}
                             <tr>
-                                <td>{{ h.transitioned_at[:16] }}</td>
+                                <td>{{ h.transitioned_at|friendly_time }}</td>
                                 <td class="muted">{{ h.from_level | display_name }}</td>
                                 <td><strong>{{ h.to_level | display_name }}</strong></td>
                                 <td style="font-family:monospace;">{{ "%.2f"|format(h.size_multiplier) }}</td>
@@ -1125,7 +1125,7 @@
                     <tbody>
                         {% for e in prof.events %}
                         <tr>
-                            <td class="muted" style="font-size:0.75rem;">{{ e.detected_at[:16] }}</td>
+                            <td class="muted" style="font-size:0.75rem;">{{ e.detected_at|friendly_time }}</td>
                             <td style="font-size:0.85rem;">{{ e.type | display_name }}</td>
                             <td style="font-family:monospace;">{{ e.symbol or '-' }}</td>
                             <td>

@@ -6607,7 +6607,7 @@ def api_cycle_history(profile_id):
     """
     import sqlite3 as _sql
     from contextlib import closing
-    from display_names import humanize
+    from display_names import humanize, friendly_time
 
     # Batch like the activity ticker so the client caches and pages
     # in memory (instant arrows) instead of a round-trip per click.
@@ -6731,7 +6731,9 @@ def api_cycle_history(profile_id):
 
                 entries.append({
                     "cycle_id": r["cycle_id"],
-                    "timestamp_friendly": r["timestamp"],
+                    # ET-localize the AI Brain history timestamp (was rendered
+                    # as the raw UTC DB string). friendly_time → "Jun 26, 1:50 PM ET".
+                    "timestamp_friendly": friendly_time(r["timestamp"]),
                     "ai_reasoning": humanize(r["ai_reasoning"] or ""),
                     "trades_selected": trades,
                     "shortlist": shortlist,

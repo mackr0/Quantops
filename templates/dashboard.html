@@ -77,7 +77,7 @@
                 {% for hp in halted_profiles %}
                 <div style="margin-bottom:0.3rem;">
                     <strong>{{ hp.name }}</strong> — {{ hp.halt_reason }}
-                    {% if hp.halted_at %}<br><small>Halted at: {{ hp.halted_at }}</small>{% endif %}
+                    {% if hp.halted_at %}<br><small>Halted at: {{ hp.halted_at|friendly_time }}</small>{% endif %}
                 </div>
                 {% endfor %}
                 <small>
@@ -309,7 +309,7 @@
                     var bk = document.getElementById('totals-book-cost');
                     var u = document.getElementById('totals-updated');
                     if (bk) bk.textContent = QF.dollars2(d.total_cost || 0);
-                    if (u) u.textContent = '— live · updated ' + new Date().toLocaleTimeString();
+                    if (u) u.textContent = '— live · updated ' + new Date().toLocaleTimeString('en-US', {timeZone: 'America/New_York'}) + ' ET';
                     // Cost-per-LLM breakdown (today) — primary vs fallback spend.
                     var bm = document.getElementById('ai-cost-by-model');
                     if (bm && d.cost_by_model) {
