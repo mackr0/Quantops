@@ -40,8 +40,31 @@ def _make_profile_db_with_runs(tmp_path, pid, runs):
     return str(db)
 
 
-def _ctx(pid, db_path):
-    return SimpleNamespace(profile_id=pid, db_path=db_path)
+def _ctx(pid, db_path, in_schedule=True):
+    """in_schedule: bool (constant) or a callable(now)->bool used as
+    ctx.is_within_schedule. Defaults to always-in-schedule so the staleness
+    tests below exercise the 'expected to be running' path."""
+    if callable(in_schedule):
+        sched = in_schedule
+    else:
+        sched = (lambda now=None, _v=in_schedule: _v)
+    return SimpleNamespace(
+        profile_id=pid, db_path=db_path, is_within_schedule=sched)
+
+
+def _open_since(minutes_ago):
+    """An is_within_schedule(now) that reads True only for times within the
+    last `minutes_ago` minutes — i.e. the session opened `minutes_ago` ago.
+    Lets a test distinguish now (in schedule) from now-max_age (maybe not)."""
+    from datetime import datetime as _d
+    from zoneinfo import ZoneInfo as _Z
+    et = _Z("America/New_York")
+
+    def _f(t=None):
+        if t is None:
+            t = _d.now(et)
+        return (_d.now(et) - t).total_seconds() <= minutes_ago * 60 + 5
+    return _f
 
 
 def _iso(dt):
@@ -157,6 +180,90 @@ class TestHeartbeatBatch:
         assert len(result["drift"]) == 1
         assert result["drift"][0]["profile_id"] == 2
         assert result["errored"] == [3]
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Schedule-aware gating (2026-06-26) — the reconciler only runs while the
+# profile's schedule is active, so off-schedule staleness is NOT an outage.
+# ─────────────────────────────────────────────────────────────────────
+
+class TestHeartbeatScheduleAware:
+    def test_off_schedule_stale_not_flagged(self, tmp_path):
+        """Reconciler 2h stale, but the market is closed (not within
+        schedule) → expected idle, NOT drift. This is the after-hours /
+        weekend flood the gate kills."""
+        from integrity_audit import audit_reconciler_heartbeat
+        now = datetime.now(tz=timezone.utc)
+        db = _make_profile_db_with_runs(tmp_path, 1, [
+            ("[P1] Reconcile Trade Statuses", _iso(now - timedelta(hours=2))),
+        ])
+        with patch("models.build_user_context_from_profile",
+                   return_value=_ctx(1, db, in_schedule=False)):
+            result = audit_reconciler_heartbeat(1)
+        assert result["has_drift"] is False
+        assert result["expected_running"] is False
+        assert result["age_minutes"] > 60  # it IS stale, just not flagged
+
+    def test_in_schedule_stale_flagged(self, tmp_path):
+        """Market open >max_age and reconciler 2h stale → real outage, flag."""
+        from integrity_audit import audit_reconciler_heartbeat
+        now = datetime.now(tz=timezone.utc)
+        db = _make_profile_db_with_runs(tmp_path, 1, [
+            ("[P1] Reconcile Trade Statuses", _iso(now - timedelta(hours=2))),
+        ])
+        with patch("models.build_user_context_from_profile",
+                   return_value=_ctx(1, db, in_schedule=_open_since(180))):
+            result = audit_reconciler_heartbeat(1)
+        assert result["expected_running"] is True
+        assert result["has_drift"] is True
+
+    def test_just_after_open_grace(self, tmp_path):
+        """Session opened 30 min ago; reconciler last ran before the prior
+        close (2h). In-schedule NOW but not max_age (60m) ago → grace, no
+        flag until the first cycle stamps a fresh run."""
+        from integrity_audit import audit_reconciler_heartbeat
+        now = datetime.now(tz=timezone.utc)
+        db = _make_profile_db_with_runs(tmp_path, 1, [
+            ("[P1] Reconcile Trade Statuses", _iso(now - timedelta(hours=2))),
+        ])
+        with patch("models.build_user_context_from_profile",
+                   return_value=_ctx(1, db, in_schedule=_open_since(30))):
+            result = audit_reconciler_heartbeat(1)
+        assert result["expected_running"] is False
+        assert result["has_drift"] is False
+
+    def test_never_ran_off_schedule_not_flagged(self, tmp_path):
+        """Fresh cohort, no reconciler row yet, market closed → expected
+        idle (the post-reset off-hours case), not drift."""
+        from integrity_audit import audit_reconciler_heartbeat
+        db = _make_profile_db_with_runs(tmp_path, 1, [])
+        with patch("models.build_user_context_from_profile",
+                   return_value=_ctx(1, db, in_schedule=False)):
+            result = audit_reconciler_heartbeat(1)
+        assert result["has_drift"] is False
+
+    def test_no_table_off_schedule_not_flagged(self, tmp_path):
+        from integrity_audit import audit_reconciler_heartbeat
+        db = tmp_path / "quantopsai_profile_1.db"
+        sqlite3.connect(db).close()
+        with patch("models.build_user_context_from_profile",
+                   return_value=_ctx(1, str(db), in_schedule=False)):
+            result = audit_reconciler_heartbeat(1)
+        assert result["has_drift"] is False
+
+    def test_missing_is_within_schedule_fails_to_detection(self, tmp_path):
+        """If schedule can't be determined, fail toward detection (a real
+        outage must still surface), not silence."""
+        from integrity_audit import audit_reconciler_heartbeat
+        now = datetime.now(tz=timezone.utc)
+        db = _make_profile_db_with_runs(tmp_path, 1, [
+            ("[P1] Reconcile Trade Statuses", _iso(now - timedelta(hours=2))),
+        ])
+        ctx = SimpleNamespace(profile_id=1, db_path=db)  # no is_within_schedule
+        with patch("models.build_user_context_from_profile", return_value=ctx):
+            result = audit_reconciler_heartbeat(1)
+        assert result["expected_running"] is True
+        assert result["has_drift"] is True
 
 
 # ─────────────────────────────────────────────────────────────────────

@@ -211,6 +211,7 @@ def audit_reconciler_heartbeat(
         "age_minutes": None,
         "max_age_minutes": max_age_minutes,
         "has_drift": False,
+        "expected_running": None,
         "errored": None,
     }
     try:
@@ -218,6 +219,31 @@ def audit_reconciler_heartbeat(
     except Exception as exc:
         out["errored"] = f"build_user_context: {type(exc).__name__}: {exc}"
         return out
+
+    # 2026-06-26 — the reconciler runs ONLY while the profile's own schedule is
+    # active (market_hours / extended_hours / 24_7 / custom). Off-schedule —
+    # nights, weekends, holidays, the freshly-reset hours before the first
+    # cycle — it is INTENTIONALLY idle, so a stale heartbeat then is expected,
+    # not an outage. Flagging it floods /issues with a false heartbeat per
+    # profile every evening and all weekend. Gate staleness on the SAME
+    # predicate the scheduler uses to decide whether to run a cycle, so the
+    # check is correct for every schedule type. The second call (max_age ago)
+    # skips the brief window right after the session opens, before the day's
+    # first cycle has had a chance to stamp a fresh run.
+    from datetime import (datetime as _dt, timezone as _tz,
+                          timedelta as _td)
+    from zoneinfo import ZoneInfo as _ZI
+    now_et = _dt.now(_ZI("America/New_York"))
+    try:
+        expected_running = bool(
+            ctx.is_within_schedule(now_et)
+            and ctx.is_within_schedule(now_et - _td(minutes=max_age_minutes))
+        )
+    except Exception:
+        # Can't determine the schedule → fail toward DETECTION, not silence:
+        # a genuine reconciler outage must still surface.
+        expected_running = True
+    out["expected_running"] = expected_running
 
     try:
         with sqlite3.connect(ctx.db_path) as conn:
@@ -228,31 +254,29 @@ def audit_reconciler_heartbeat(
             ).fetchone()
     except sqlite3.OperationalError as exc:
         if "no such table" in str(exc).lower():
-            # Fresh DB, no task has ever run — this IS stale.
-            out["has_drift"] = True
+            # Fresh DB, no task has ever run — stale ONLY if it should be
+            # running now (else it's the expected post-reset off-hours idle).
+            out["has_drift"] = expected_running
             return out
         out["errored"] = f"task_runs read: {exc}"
         return out
 
     if row is None or row[0] is None:
-        out["has_drift"] = True
+        out["has_drift"] = expected_running
         return out
 
     out["latest_run_at"] = row[0]
-    from datetime import datetime as _dt
     try:
         latest = _dt.fromisoformat(row[0].replace("Z", "+00:00"))
         # Handle naive timestamps as UTC
         if latest.tzinfo is None:
-            from datetime import timezone as _tz
             latest = latest.replace(tzinfo=_tz.utc)
     except (ValueError, TypeError, AttributeError) as exc:
         out["errored"] = f"timestamp parse: {exc}"
         return out
-    from datetime import timezone as _tz
     age = (_dt.now(tz=_tz.utc) - latest).total_seconds() / 60.0
     out["age_minutes"] = round(age, 1)
-    if age > max_age_minutes:
+    if expected_running and age > max_age_minutes:
         out["has_drift"] = True
     return out
 
