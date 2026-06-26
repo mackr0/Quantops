@@ -124,133 +124,44 @@ class TestCashParityDrift:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Basis parity
+# Basis parity — DISABLED 2026-06-26
 # ─────────────────────────────────────────────────────────────────────
+# The broker's per-symbol avg_entry_price is an account-level FIFO-net basis,
+# not attributable to any single profile on a shared conduit account (broker
+# FIFO and per-profile FIFO disagree on which lots remain after a partial
+# close). Comparing it to a profile's journal basis was a GUARANTEED false
+# positive on every partially-closed symbol. The audit is now a no-op: a
+# profile's true basis comes from its OWN order fills, and Σ qty == broker is
+# the real per-symbol invariant (audit_aggregate_drift).
 
-class TestBasisParityNoDrift:
-    def test_single_profile_matches_broker(self):
+class TestBasisParityDisabled:
+    def test_returns_empty_no_drift_regardless_of_input(self):
         from aggregate_audit import audit_account_basis_parity
-        api = MagicMock()
-        api.list_positions.return_value = [
-            SimpleNamespace(symbol="AAPL", qty=100, avg_entry_price=150.00),
-        ]
-        ctx = _mock_ctx(1, 10, "p1.db", api)
-        with patch(
-            "models.build_user_context_from_profile", return_value=ctx,
-        ), patch(
-            "journal.get_virtual_positions",
-            return_value=[{
-                "symbol": "AAPL", "qty": 100, "avg_entry_price": 150.00,
-                "occ_symbol": None,
-            }],
-        ):
+        assert audit_account_basis_parity([1, 2, 3]) == {
+            "accounts": {}, "drift": [], "errored": []}
+
+    def test_no_broker_or_journal_reads(self):
+        """The no-op short-circuits — it must not touch the broker or the
+        journal, so a mismatching broker-avg vs journal-avg (the old
+        'wrong price' case, and the shared-account FIFO case) can NEVER
+        produce a false basis_drift again."""
+        from aggregate_audit import audit_account_basis_parity
+        with patch("models.build_user_context_from_profile") as bld, \
+             patch("journal.get_virtual_positions") as gvp:
             result = audit_account_basis_parity([1])
         assert result["drift"] == []
-        accounts = result["accounts"]
-        assert accounts[10]["AAPL"]["broker_avg"] == 150.0
-        assert accounts[10]["AAPL"]["journal_avg"] == 150.0
+        bld.assert_not_called()
+        gvp.assert_not_called()
 
-    def test_multi_profile_weighted_avg(self):
-        """Two profiles holding AAPL: p1 has 100 @ $100, p2 has 200 @ $200.
-        Weighted avg = (100*100 + 200*200) / 300 = 50000/300 = $166.67."""
-        from aggregate_audit import audit_account_basis_parity
-        api = MagicMock()
-        api.list_positions.return_value = [
-            SimpleNamespace(symbol="AAPL", qty=300,
-                            avg_entry_price=166.67),
-        ]
-        ctx1 = _mock_ctx(1, 10, "p1.db", api)
-        ctx2 = _mock_ctx(2, 10, "p2.db", api)
-
-        def _build(pid):
-            return {1: ctx1, 2: ctx2}[pid]
-
-        def _positions(db_path=None):
-            if db_path == "p1.db":
-                return [{"symbol": "AAPL", "qty": 100,
-                         "avg_entry_price": 100.00, "occ_symbol": None}]
-            return [{"symbol": "AAPL", "qty": 200,
-                     "avg_entry_price": 200.00, "occ_symbol": None}]
-
-        with patch(
-            "models.build_user_context_from_profile", side_effect=_build,
-        ), patch(
-            "journal.get_virtual_positions", side_effect=_positions,
-        ):
-            result = audit_account_basis_parity([1, 2])
-        assert result["drift"] == []
-        aapl = result["accounts"][10]["AAPL"]
-        assert abs(aapl["journal_avg"] - 166.6667) < 0.001
-
-
-class TestBasisParityDrift:
-    def test_wrong_price_fill_caught(self):
-        """Broker recorded entry at $150 but journal logged at $145
-        (e.g. price typo or post-fill adjustment never propagated)."""
-        from aggregate_audit import audit_account_basis_parity
-        api = MagicMock()
-        api.list_positions.return_value = [
-            SimpleNamespace(symbol="AAPL", qty=100, avg_entry_price=150.00),
-        ]
-        ctx = _mock_ctx(1, 10, "p1.db", api)
-        with patch(
-            "models.build_user_context_from_profile", return_value=ctx,
-        ), patch(
-            "journal.get_virtual_positions",
-            return_value=[{
-                "symbol": "AAPL", "qty": 100, "avg_entry_price": 145.00,
-                "occ_symbol": None,
-            }],
-        ):
-            result = audit_account_basis_parity([1])
-        assert len(result["drift"]) == 1
-        d = result["drift"][0]
-        assert d["symbol"] == "AAPL"
-        assert d["drift"] == 5.00  # broker - journal
-        assert d["kind"] == "basis_drift"
-
-    def test_one_sided_position_not_flagged_as_basis_drift(self):
-        """Broker has AAPL, journal doesn't — that's a qty-parity issue
-        (the existing audit catches), NOT a basis issue. Basis only
-        applies when BOTH sides hold the symbol."""
-        from aggregate_audit import audit_account_basis_parity
-        api = MagicMock()
-        api.list_positions.return_value = [
-            SimpleNamespace(symbol="AAPL", qty=100, avg_entry_price=150.00),
-        ]
-        ctx = _mock_ctx(1, 10, "p1.db", api)
-        with patch(
-            "models.build_user_context_from_profile", return_value=ctx,
-        ), patch(
-            "journal.get_virtual_positions", return_value=[],  # empty
-        ):
-            result = audit_account_basis_parity([1])
-        # No basis drift; the AAPL row is in accounts but with j_qty=0
-        assert result["drift"] == []
-        assert result["accounts"][10]["AAPL"]["journal_qty"] == 0.0
-
-    def test_option_symbol_uses_occ(self):
-        """Option positions: journal stores OCC in occ_symbol; broker
-        reports OCC as the symbol. The audit matches on OCC."""
-        from aggregate_audit import audit_account_basis_parity
-        api = MagicMock()
-        api.list_positions.return_value = [
-            SimpleNamespace(symbol="AAPL260618C00200000",
-                            qty=5, avg_entry_price=5.00),
-        ]
-        ctx = _mock_ctx(1, 10, "p1.db", api)
-        with patch(
-            "models.build_user_context_from_profile", return_value=ctx,
-        ), patch(
-            "journal.get_virtual_positions",
-            return_value=[{
-                "symbol": "AAPL", "qty": 5, "avg_entry_price": 5.00,
-                "occ_symbol": "AAPL260618C00200000",
-            }],
-        ):
-            result = audit_account_basis_parity([1])
-        assert result["drift"] == []
-        assert "AAPL260618C00200000" in result["accounts"][10]
+    def test_source_documents_disabled_and_no_longer_flags(self):
+        import inspect
+        import aggregate_audit
+        src = inspect.getsource(aggregate_audit.audit_account_basis_parity)
+        assert "DISABLED" in src  # rationale documented
+        # The flagging logic is gone (these are code tokens, not docstring):
+        assert "drift_rows.append" not in src
+        assert "_broker_basis_per_symbol" not in src
+        assert 'return {"accounts": {}, "drift": [], "errored": []}' in src
 
 
 # ─────────────────────────────────────────────────────────────────────

@@ -795,175 +795,38 @@ def audit_account_cash_parity(
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Per-symbol cost-basis parity (#167 cont.)
+# Per-symbol cost-basis parity — DISABLED 2026-06-26 (see the docstring).
+# The broker's per-symbol avg_entry_price is an account-level FIFO-net basis
+# that is not attributable to any single profile on a shared account, so the
+# old broker-vs-journal-avg comparison was a structural false positive. Only
+# `Σ qty == broker qty` is broker-verifiable per symbol. The per-profile basis
+# from a profile's own fills is authoritative.
 # ─────────────────────────────────────────────────────────────────────
-#
-# For each (account, symbol) the broker still holds, the qty-weighted
-# average entry price across all virtual profiles' positions in that
-# symbol should match the broker's avg_entry_price for that symbol.
-#
-# If they DON'T match:
-#   - A trade was logged at the wrong price (typo, rounding bug,
-#     post-fill correction never propagated)
-#   - Broker reports the FIFO-adjusted basis after a partial close
-#     while the journal still reflects the original entry
-#   - Multileg cost allocation across legs differs between broker
-#     and journal
-#
-# Tolerance is per-share: $0.05 absolute OR 0.5% of broker basis.
-_BASIS_TOLERANCE_ABS = 0.05      # dollars per share
-_BASIS_TOLERANCE_PCT = 0.005     # 0.5% of broker basis
 
 
-def _broker_basis_per_symbol(api) -> Dict[str, Dict[str, float]]:
-    """Symbol → {qty, avg_entry_price} from broker. 0.0 entries skipped."""
-    out: Dict[str, Dict[str, float]] = {}
-    try:
-        positions = api.list_positions()
-    except Exception as exc:
-        logger.warning(
-            "aggregate_audit basis-parity: list_positions failed: %s", exc,
-        )
-        return out
-    for p in positions:
-        sym = (getattr(p, "symbol", "") or "").upper()
-        if not sym:
-            continue
-        try:
-            qty = abs(float(getattr(p, "qty", 0) or 0))
-            avg = float(getattr(p, "avg_entry_price", 0) or 0)
-        except (ValueError, TypeError, AttributeError) as exc:
-            logger.warning(
-                "aggregate_audit basis-parity: parse failed for %s: %s",
-                sym, exc,
-            )
-            continue
-        if qty > 0 and avg > 0:
-            out[sym] = {"qty": qty, "avg_entry_price": avg}
-    return out
+def audit_account_basis_parity(profile_ids, *_args, **_kwargs) -> Dict:
+    """DISABLED 2026-06-26 — cost basis is NOT broker-verifiable per profile on
+    a shared account.
 
+    Each Alpaca conduit account is shared by many virtual-account profiles. The
+    broker reports ONE avg_entry_price per symbol — a FIFO-net basis across
+    EVERY profile's lots, recomputed after each partial close. That number is
+    not attributable to any single profile, nor even to the Σ across profiles
+    once any lot has been sold (broker FIFO and per-profile FIFO disagree on
+    WHICH lots remain). A profile's TRUE basis is the qty-weighted average of
+    its OWN order fills — authoritative, and already broker-sourced per-order
+    via the fill_price backfill.
 
-def _journal_basis_per_symbol(db_path: str) -> Dict[str, Dict[str, float]]:
-    """Symbol → {qty, avg_entry_price} from this profile's journal."""
-    from journal import get_virtual_positions
-    out: Dict[str, Dict[str, float]] = {}
-    try:
-        positions = get_virtual_positions(db_path=db_path)
-    except Exception as exc:
-        logger.warning(
-            "aggregate_audit basis-parity: get_virtual_positions "
-            "failed for %s: %s", db_path, exc,
-        )
-        return out
-    for p in positions:
-        # Match broker's symbol convention (OCC for options, root for stocks)
-        sym = (p.get("occ_symbol") or p.get("symbol") or "").upper()
-        if not sym:
-            continue
-        qty = abs(float(p.get("qty", 0) or 0))
-        avg = float(p.get("avg_entry_price", 0) or 0)
-        if qty > 0 and avg > 0:
-            out[sym] = {"qty": qty, "avg_entry_price": avg}
-    return out
-
-
-def audit_account_basis_parity(
-    profile_ids: Iterable[int],
-    tolerance_abs: float = _BASIS_TOLERANCE_ABS,
-    tolerance_pct: float = _BASIS_TOLERANCE_PCT,
-) -> Dict:
-    """Per (account, symbol) compare broker avg_entry_price vs the
-    qty-weighted virtual avg_entry across all profiles holding that
-    symbol on that account.
-
-    Returns:
-      {
-        'accounts': {acct_id: {symbol: {
-            'broker_avg': float, 'journal_avg': float,
-            'broker_qty': float, 'journal_qty': float,
-            'drift': float,        # broker_avg - journal_avg
-            'tolerance': float,
-            'profile_ids': [int, ...],
-        }, ...}, ...},
-        'drift': [drift rows],
-        'errored': [profile_ids that errored],
-      }
+    Comparing the journal's per-profile basis to the account avg produced a
+    GUARANTEED false `basis_drift` on every symbol that had a cross-profile
+    partial close (e.g. AMZN: profile basis $227.04 from its own fill vs the
+    account FIFO-net $236.57), flooding /issues with non-actionable noise. The
+    only broker-verifiable per-symbol invariant is `Σ qty == broker qty`
+    (`audit_aggregate_drift`); that plus the decomposition identity are the
+    real guards. Returns no findings; kept as a no-op so callers
+    (issues_collector, audit_runner) and the audit registry are undisturbed.
     """
-    from models import build_user_context_from_profile
-
-    # Per (account, symbol): collect (qty, avg) entries from every profile.
-    journal_lots: Dict[int, Dict[str, List]] = defaultdict(
-        lambda: defaultdict(list)
-    )
-    api_per_acct: Dict[int, object] = {}
-    profiles_per_acct: Dict[int, List[int]] = defaultdict(list)
-    errored: List[int] = []
-
-    for p_id in profile_ids:
-        try:
-            ctx = build_user_context_from_profile(p_id)
-        except Exception:
-            errored.append(p_id)
-            continue
-        acct = getattr(ctx, "alpaca_account_id", None)
-        if not acct:
-            continue
-        if acct not in api_per_acct:
-            try:
-                api = ctx.get_alpaca_api() if hasattr(
-                    ctx, "get_alpaca_api") else ctx.api
-                api_per_acct[acct] = api
-            except Exception:
-                errored.append(p_id)
-                continue
-        profiles_per_acct[acct].append(p_id)
-        per_sym = _journal_basis_per_symbol(ctx.db_path)
-        for sym, info in per_sym.items():
-            journal_lots[acct][sym].append(
-                (info["qty"], info["avg_entry_price"], p_id)
-            )
-
-    accounts: Dict[int, Dict] = {}
-    drift_rows: List[Dict] = []
-    for acct, api in api_per_acct.items():
-        broker_basis = _broker_basis_per_symbol(api)
-        per_sym_results: Dict[str, Dict] = {}
-        symbols = set(broker_basis.keys()) | set(journal_lots[acct].keys())
-        for sym in symbols:
-            b_info = broker_basis.get(sym, {})
-            b_qty = float(b_info.get("qty", 0) or 0)
-            b_avg = float(b_info.get("avg_entry_price", 0) or 0)
-            lots = journal_lots[acct].get(sym, [])
-            j_qty = sum(lot[0] for lot in lots)
-            if j_qty > 0:
-                j_avg = sum(lot[0] * lot[1] for lot in lots) / j_qty
-            else:
-                j_avg = 0.0
-            d = round(b_avg - j_avg, 4) if b_qty and j_qty else 0.0
-            tol = max(tolerance_abs, b_avg * tolerance_pct) if b_avg else tolerance_abs
-            row = {
-                "account": acct,
-                "symbol": sym,
-                "broker_avg": round(b_avg, 4),
-                "journal_avg": round(j_avg, 4),
-                "broker_qty": round(b_qty, 4),
-                "journal_qty": round(j_qty, 4),
-                "drift": d,
-                "tolerance": round(tol, 4),
-                "profile_ids": sorted(set(lot[2] for lot in lots)),
-            }
-            per_sym_results[sym] = row
-            # Only flag drift when BOTH sides hold the symbol — a
-            # one-sided position is a qty-parity issue, not basis.
-            if b_qty > 0 and j_qty > 0 and abs(d) > tol:
-                drift_rows.append({**row, "kind": "basis_drift"})
-        accounts[acct] = per_sym_results
-
-    return {
-        "accounts": accounts,
-        "drift": drift_rows,
-        "errored": errored,
-    }
+    return {"accounts": {}, "drift": [], "errored": []}
 
 
 def format_cash_drift_summary(audit: Dict) -> str:
@@ -981,18 +844,3 @@ def format_cash_drift_summary(audit: Dict) -> str:
     return "\n".join(lines)
 
 
-def format_basis_drift_summary(audit: Dict) -> str:
-    drift = audit.get("drift", [])
-    if not drift:
-        return "basis-parity audit: 0 drift items, all cost bases match"
-    lines = [f"basis-parity audit: {len(drift)} drift item(s)"]
-    for d in drift:
-        lines.append(
-            f"  acct{d['account']} {d['symbol']:>12s}: "
-            f"broker_avg=${d['broker_avg']:>8.4f}  "
-            f"journal_avg=${d['journal_avg']:>8.4f}  "
-            f"drift=${d['drift']:>+8.4f}  "
-            f"(broker_qty={d['broker_qty']:.2f}, "
-            f"journal_qty={d['journal_qty']:.2f}, tol=${d['tolerance']:.4f})"
-        )
-    return "\n".join(lines)
