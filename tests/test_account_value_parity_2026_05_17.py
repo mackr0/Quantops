@@ -124,28 +124,123 @@ class TestDriftDetection:
         assert d["kind"] == "journal_value_phantom"
         assert d["drift"] == -5_000.0
 
-    def test_missing_multiplier_caught(self):
-        """Regression: if virtual position value forgets the options
-        contract multiplier (×100), broker shows $50k worth of contracts
-        but journal shows $500 — the value audit catches the 100× error
-        even though quantities match."""
+    def test_options_excluded_from_value_parity(self):
+        """2026-06-29: option legs are EXCLUDED from value-parity on BOTH
+        sides. Option dollar-marks are fuzzy (the journal's stock price
+        fetcher reads ~$0 for a short OCC leg while the broker carries the
+        real liability), which produced a false journal_value_phantom on
+        every options-holding cycle. A broker account holding ONLY an
+        option contract therefore compares as $0 stock vs $0 stock — no
+        drift. Option position truth is enforced by per-OCC quantity
+        parity (aggregate_audit) + the decomposition/equity-identity check
+        (which still catches a missing ×100 multiplier), not here."""
         from aggregate_audit import audit_account_value_parity
         api = MagicMock()
-        # Broker correctly marks the option premium ($5 × 100 × 100 contracts)
         api.list_positions.return_value = [
-            _broker_position("AAPL260618C00200000", 50_000.0, 100),
+            SimpleNamespace(symbol="AAPL260618C00200000",
+                            market_value=50_000.0, qty=100,
+                            asset_class="us_option"),
         ]
         ctx = _mock_ctx(1, 10, "p1.db", api)
         with patch(
             "models.build_user_context_from_profile", return_value=ctx,
         ), patch(
-            # Buggy journal: forgot ×100 multiplier → $500 instead of $50k
-            "aggregate_audit._journal_positions_value", return_value=500.0,
-        ), patch("client._make_price_fetcher", return_value=lambda s: 5.0):
+            "journal.get_virtual_positions",
+            return_value=[{"symbol": "AAPL",
+                           "occ_symbol": "AAPL260618C00200000",
+                           "market_value": 500.0}],
+        ), patch("client._make_price_fetcher",
+                 return_value=lambda *a, **k: 5.0):
             result = audit_account_value_parity([1])
-        assert len(result["drift"]) == 1
-        # 99% drift on the broker value — comfortably above any tolerance
-        assert abs(result["drift"][0]["drift"]) > 49_000.0
+        assert result["drift"] == []
+        assert result["accounts"][10]["broker_value"] == 0.0
+        assert result["accounts"][10]["journal_value"] == 0.0
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Option-leg exclusion (2026-06-29) — value-parity is STOCK-only
+# ─────────────────────────────────────────────────────────────────────
+
+class TestOptionExclusion:
+    def test_occ_symbol_classifier(self):
+        from aggregate_audit import _is_occ_option_symbol
+        assert _is_occ_option_symbol("T260807P00020000")
+        assert _is_occ_option_symbol("AAPL260618C00200000")
+        assert not _is_occ_option_symbol("F")
+        assert not _is_occ_option_symbol("AAPL")
+        assert not _is_occ_option_symbol("")
+
+    def test_broker_option_classifier_prefers_asset_class(self):
+        from aggregate_audit import _is_broker_option_position
+        # asset_class wins even if symbol looks stock-ish
+        assert _is_broker_option_position(
+            SimpleNamespace(symbol="WEIRD", asset_class="us_option"))
+        # OCC-symbol fallback when asset_class absent
+        assert _is_broker_option_position(
+            SimpleNamespace(symbol="T260807P00020000"))
+        assert not _is_broker_option_position(
+            SimpleNamespace(symbol="F", asset_class="us_equity"))
+
+    def test_journal_value_excludes_option_legs(self):
+        from aggregate_audit import _journal_positions_value
+        rows = [
+            {"symbol": "F", "occ_symbol": None, "market_value": 49_518.28},
+            {"symbol": "T", "occ_symbol": "T260807P00020000",
+             "market_value": -410.0},   # short put — journal mis-marks ~0/neg
+            {"symbol": "T", "occ_symbol": "T260807P00019000",
+             "market_value": 90.0},
+        ]
+        with patch("journal.get_virtual_positions", return_value=rows):
+            v = _journal_positions_value("p.db")
+        assert v == 49_518.28  # only the stock leg
+
+    def test_broker_value_excludes_option_positions(self):
+        from aggregate_audit import _broker_positions_value
+        api = MagicMock()
+        api.list_positions.return_value = [
+            SimpleNamespace(symbol="F", market_value=49_518.28, qty=3502,
+                            asset_class="us_equity"),
+            SimpleNamespace(symbol="T260807P00020000", market_value=-410.0,
+                            qty=-10, asset_class="us_option"),
+            SimpleNamespace(symbol="T260807P00019000", market_value=90.0,
+                            qty=10, asset_class="us_option"),
+        ]
+        assert _broker_positions_value(api) == 49_518.28
+
+    def test_short_option_leg_no_longer_false_drift(self):
+        """Reproduces the 2026-06-29 prod false drift: F stock reconciles,
+        broker marks the short T put at −$410 while the journal marks it
+        ~$0 — pre-fix that surfaced as a stable −$410 journal_value_phantom.
+        Post-fix both sides drop the option legs → only F is compared →
+        zero drift."""
+        from aggregate_audit import audit_account_value_parity
+        api = MagicMock()
+        api.list_positions.return_value = [
+            SimpleNamespace(symbol="F", market_value=49_518.28, qty=3502,
+                            asset_class="us_equity"),
+            SimpleNamespace(symbol="T260807P00019000", market_value=90.0,
+                            qty=10, asset_class="us_option"),
+            SimpleNamespace(symbol="T260807P00020000", market_value=-410.0,
+                            qty=-10, asset_class="us_option"),
+        ]
+        journal_rows = [
+            {"symbol": "F", "occ_symbol": None, "market_value": 49_518.28},
+            {"symbol": "T", "occ_symbol": "T260807P00019000",
+             "market_value": 90.0},
+            {"symbol": "T", "occ_symbol": "T260807P00020000",
+             "market_value": 0.0},   # the mis-mark that caused the drift
+        ]
+        ctx = _mock_ctx(1, 10, "p1.db", api)
+        with patch(
+            "models.build_user_context_from_profile", return_value=ctx,
+        ), patch(
+            "journal.get_virtual_positions", return_value=journal_rows,
+        ), patch("client._make_price_fetcher",
+                 return_value=lambda *a, **k: 0.0):
+            result = audit_account_value_parity([1])
+        assert result["drift"] == []
+        assert result["accounts"][10]["broker_value"] == 49_518.28
+        assert result["accounts"][10]["journal_value"] == 49_518.28
 
 
 # ─────────────────────────────────────────────────────────────────────

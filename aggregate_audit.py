@@ -38,8 +38,30 @@ Usage:
 from __future__ import annotations
 
 import logging
+import re
 from collections import defaultdict
 from typing import Dict, Iterable, List, Optional
+
+# OCC option symbol tail: <YYMMDD><C|P><strike*1000, 8 digits>, e.g.
+# T260807P00020000. Used to keep option legs out of the STOCK-only
+# dollar value-parity check (see audit_account_value_parity).
+_OCC_OPTION_RE = re.compile(r"\d{6}[CP]\d{8}$")
+
+
+def _is_occ_option_symbol(symbol: str) -> bool:
+    """True iff `symbol` is an OCC option contract identifier."""
+    return bool(_OCC_OPTION_RE.search(symbol or ""))
+
+
+def _is_broker_option_position(p) -> bool:
+    """True iff a broker position object is an option leg. Prefers
+    Alpaca's `asset_class` ('us_option'); falls back to the OCC symbol
+    pattern so a mocked/legacy position object without asset_class is
+    still classified correctly."""
+    ac = str(getattr(p, "asset_class", "") or "").lower()
+    if "option" in ac:
+        return True
+    return _is_occ_option_symbol(str(getattr(p, "symbol", "") or ""))
 
 logger = logging.getLogger(__name__)
 
@@ -514,9 +536,18 @@ _VALUE_TOLERANCE_PCT = 0.001     # 0.1% of broker positions value
 
 
 def _journal_positions_value(db_path: str, price_fetcher=None) -> float:
-    """Sum of market_value across all open virtual positions for ONE
+    """Sum of market_value across open virtual STOCK positions for ONE
     profile. Uses the same price_fetcher as get_virtual_positions so
-    both sides of the comparison are marked consistently."""
+    both sides of the comparison are marked consistently.
+
+    Option legs are EXCLUDED (2026-06-29): option dollar-marks are
+    inherently fuzzy — the journal's stock-oriented price fetcher reads
+    ~$0 for a short OCC leg while the broker carries its real liability,
+    so a held option spread produced a false `journal_value_phantom`
+    drift every cycle (e.g. a 10-lot short put = a stable −$410 false
+    drift). Option POSITION truth is enforced by aggregate_audit's
+    per-OCC quantity parity (broker-verifiable), which this dollar check
+    does not duplicate. Same lesson as basis_parity (2026-06-26)."""
     from journal import get_virtual_positions
     try:
         positions = get_virtual_positions(
@@ -528,15 +559,23 @@ def _journal_positions_value(db_path: str, price_fetcher=None) -> float:
             "for %s: %s: %s", db_path, type(exc).__name__, exc,
         )
         return 0.0
-    return sum(float(p.get("market_value", 0) or 0) for p in positions)
+    return sum(
+        float(p.get("market_value", 0) or 0)
+        for p in positions
+        if not p.get("occ_symbol")  # stock-only; options via qty parity
+    )
 
 
 def _broker_positions_value(api) -> float:
-    """Sum of market_value across the broker's positions on this
+    """Sum of market_value across the broker's STOCK positions on this
     account. Excludes cash deliberately — cash parity is a separate
     invariant (broker cash reflects real deposits; virtual cash is
     bookkeeping from initial_capital, and the two can legitimately
-    diverge on shared accounts)."""
+    diverge on shared accounts).
+
+    Option legs are EXCLUDED (2026-06-29) to match the journal side —
+    value-parity is a STOCK-only dollar check; option position truth is
+    enforced by per-OCC quantity parity. See _journal_positions_value."""
     try:
         positions = api.list_positions()
     except Exception as exc:
@@ -547,6 +586,8 @@ def _broker_positions_value(api) -> float:
         return 0.0
     total = 0.0
     for p in positions:
+        if _is_broker_option_position(p):
+            continue  # stock-only; options reconciled by quantity parity
         try:
             total += float(getattr(p, "market_value", 0) or 0)
         except (ValueError, TypeError, AttributeError, KeyError) as exc:
@@ -565,8 +606,11 @@ def audit_account_value_parity(
     tolerance_abs: float = _VALUE_TOLERANCE_ABS,
     tolerance_pct: float = _VALUE_TOLERANCE_PCT,
 ) -> Dict:
-    """Compare summed virtual positions value vs broker positions
-    value per Alpaca account.
+    """Compare summed virtual STOCK-position value vs broker stock-position
+    value per Alpaca account. Option legs are excluded on both sides
+    (option dollar-marks are fuzzy / not cleanly comparable; option
+    position truth is enforced by per-OCC quantity parity instead — see
+    _journal_positions_value).
 
     Returns:
       {
