@@ -4,11 +4,13 @@ Canonical procedure for a full fresh-start of the EXP-A* experiment. Supersedes
 the pasted instruction list. Last validated: 2026-06-17 (two resets — the
 morning run surfaced the `ENCRYPTION_KEY` footgun now fixed in Step 3).
 
-**Code baseline (2026-06-24):** this reset lands on the broker/journal
-divergence-class fix — the per-cycle freshness invariant + durable journaling
-(see CHANGELOG 2026-06-23 / *Standing state* below). Make sure Step 2 ships it
-(prod `HEAD` matches your pushed commit) so the fresh experiment runs on the
-fixed code.
+**Code baseline (2026-06-27):** this reset lands on the broker/journal
+divergence-class fix (per-cycle freshness invariant + durable journaling, CHANGELOG
+2026-06-23) **and** the institutional-universe floors — `$10` min price + `$5M`
+min dollar-ADV, operator-only / never auto-tuned (CHANGELOG 2026-06-26/27,
+*Standing state* below). A reset inherits both automatically. Make sure Step 2
+ships them (prod `HEAD` matches your pushed commit) so the fresh experiment runs
+on the fixed code and the institutional universe from day one.
 
 > **What a fresh-start does:** deletes every profile + per-profile DB outright,
 > rebuilds the 13 EXP-A* profiles from the manifest, swaps in new Alpaca paper
@@ -138,6 +140,16 @@ Require **`CERTIFIED CLEAN`** — five checks in one command:
 `4 ISSUES` (empty over 7 days). If any check FAILS, find the missed source and
 **fold the fix into the next dated script** — don't hand-patch prod.
 
+Then confirm the rebuilt profiles inherited the institutional universe floors
+(they come from the `stocks` segment automatically — this just proves it):
+
+```bash
+sqlite3 quantopsai.db "SELECT MIN(min_price),MAX(min_price),MIN(min_adv),MAX(min_adv) FROM trading_profiles WHERE enabled=1;"
+```
+Expect `10.0|10.0|5000000.0|5000000.0` (all 13 at $10 min price / $5M min ADV). If
+they came up at `1.0` / penny floors, the segment baseline regressed — fix
+`segments.py` before trading, don't hand-edit the rows.
+
 ---
 
 ## 7. Watch the first live cycles (necessary — certify CLEAN is not sufficient)
@@ -191,10 +203,20 @@ Watch the first ~3 cycles / ~20–30 min and confirm:
   PLUG oversell, the phantom-equity incidents); resets inherit the fix
   automatically. Profiles remain **fully independent** — they share only the
   brokerage conduit; nothing coordinates across them.
-- **Universe is institutionally aligned (2026-06-17, commit `6bad94e`):** the
-  screener and `execute_trade` exclude `easy_to_borrow=False` (hard-to-borrow /
-  non-shortable) names — the broker won't GTC-protect them and systematic funds
-  screen them out. Resets inherit this automatically.
+- **Universe is institutionally aligned (2026-06-17 `6bad94e`; floors 2026-06-27
+  `20ea3a0`):** the screener and `execute_trade` exclude `easy_to_borrow=False`
+  (hard-to-borrow / non-shortable) names, AND the `stocks` segment baseline is now
+  **min price `$10` + min dollar-ADV `$5,000,000`** (avg daily $ volume = price ×
+  20-day mean share volume) — the institutional liquid universe that excludes the
+  sub-$10 penny/meme tier and the thin-but-cheap names whose wide spreads whipsaw
+  the stops. These four floors (`min_price`/`max_price`/`min_volume`/`min_adv`) are
+  **operator-only — never auto-tuned** (`self_tuning._OPERATOR_ONLY_PARAMS`; the
+  tuner optimizes HOW to trade, the operator owns WHAT is eligible). The floors
+  live in `segments.py` (`get_segment("stocks")`), which `create_trading_profile`
+  copies into every profile, so **resets inherit `$10`/`$5M` automatically** — no
+  per-profile or manifest step. Rationale: ~80% of the prior cohort's realized
+  losses came from sub-$10 names this universe now excludes (HTZ alone, a ~$2.50
+  stock, was 60%). Operator can still narrow/widen any profile from Settings.
 - **Recommended hardening (not yet in the script):** an `ENCRYPTION_KEY`
   pre-flight in `step1` that aborts *before* `step2` if the var is unset, turning
   the Step-3 footgun into a clean no-op. Add it to the next dated script.
