@@ -61,7 +61,7 @@ Every per-profile setting lives here. Source of truth: `models.py` `init_user_db
 
 | Column | Type | Default | Description |
 |---|---|---|---|
-| `min_price` | REAL | 1.0 | Minimum stock price for inclusion. |
+| `min_price` | REAL | 10.0 | Minimum stock price for inclusion. Fresh-start baseline is $10 (institutional floor — excludes the sub-$10 penny/meme tier); operator narrows/widens per profile. |
 | `max_price` | REAL | 10000.0 | Maximum stock price. Schema default is intentionally generous (effectively no upper bound) so a fresh profile sees the full Alpaca pool; the operator narrows per-profile to dial scope. |
 | `min_volume` | INTEGER | 100000 | Minimum daily SHARE volume. A baseline liquidity floor; widen / tighten per profile. |
 | `min_adv` | REAL | 5000000 | Minimum average daily DOLLAR volume (price × 20-day mean share volume) — the dollar-liquidity floor share-count `min_volume` can't express (500k shares of a $2 stock is $1M ADV; of a $50 stock, $25M). The institutional "liquid enough to trade" gate, enforced in `screener.screen_by_price_range`. **Operator-only — never auto-tuned** (`self_tuning._OPERATOR_ONLY_PARAMS`; the tuner optimizes how to trade, the operator owns what is eligible). |

@@ -105,15 +105,18 @@ class TestSegments:
 
     def test_stocks_segment_has_sane_price_range(self):
         """2026-05-20 (docs/22): the four cap-tier segments collapsed
-        into a single 'stocks' segment with intentionally wide bounds
-        (min_price=1.0, max_price=10000.0). Per-profile thresholds on
-        the trading_profiles row are now the runtime gate."""
+        into a single 'stocks' segment. 2026-06-27: the baseline floor
+        is now an institutional $10 min price + $5M min ADV (excludes the
+        sub-$10 penny/meme tier); per-profile thresholds on the
+        trading_profiles row still narrow/widen it at runtime."""
         from segments import get_segment
         stocks = get_segment("stocks")
         assert stocks["min_price"] > 0
         assert stocks["max_price"] > stocks["min_price"]
-        # Wide enough to cover both penny stocks and BRK-class names
-        assert stocks["min_price"] <= 5.0
+        # Institutional baseline floor: $10 min price, and a wide ceiling
+        # that still reaches BRK-class names.
+        assert stocks["min_price"] == 10.0
+        assert stocks["min_adv"] == 5_000_000
         assert stocks["max_price"] >= 1000.0
 
 class TestMetrics:

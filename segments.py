@@ -196,9 +196,14 @@ SEGMENTS = {
         "alpaca_key": "",
         "alpaca_secret": "",
         "db_path": "quantopsai_stocks.db",
-        "min_price": 1.0,
+        # Fresh-start baseline floors a new profile inherits (create_trading_profile
+        # copies these). min_price $10 + min_adv $5M is the institutional liquid
+        # universe — excludes the sub-$10 penny/meme tier and thin-but-cheap names
+        # whose wide spreads whipsaw the stops. Operator narrows/widens per profile.
+        "min_price": 10.0,
         "max_price": 10000.0,
         "min_volume": 100_000,
+        "min_adv": 5_000_000,
         "max_position_pct": 0.07,
         "stop_loss_pct": 0.05,
         "take_profit_pct": 0.15,
@@ -212,6 +217,7 @@ SEGMENTS = {
         "min_price": 0.0,         # Crypto can be fractions of a cent
         "max_price": 200000.0,     # BTC
         "min_volume": 0,           # Volume filtering done differently for crypto
+        "min_adv": 0,              # No dollar-ADV floor for crypto (separate liquidity model / code path)
         "max_position_pct": 0.10,
         "stop_loss_pct": 0.05,
         "take_profit_pct": 0.15,

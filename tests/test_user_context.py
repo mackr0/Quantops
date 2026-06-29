@@ -88,13 +88,15 @@ class TestUserContext:
 
     def test_build_from_segment(self):
         """2026-05-20 (docs/22): segments collapsed to stocks + crypto.
-        The stocks segment now has wide thresholds (1.0–10000.0) since
-        per-profile columns are the actual gate at runtime."""
+        2026-06-27: the stocks segment baseline floor is now $10 min price
+        + $5M min ADV (institutional liquid universe); per-profile columns
+        still narrow/widen it at runtime."""
         from user_context import build_context_from_segment
         ctx = build_context_from_segment("stocks")
         assert ctx.segment == "stocks"
-        assert ctx.min_price == 1.0
+        assert ctx.min_price == 10.0
         assert ctx.max_price == 10000.0
+        assert ctx.min_adv == 5_000_000
 
     def test_all_segment_types(self):
         from user_context import build_context_from_segment

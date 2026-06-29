@@ -43,7 +43,7 @@ class UserContext:
     ai_confidence_threshold: int = 25
 
     # Screener parameters
-    min_price: float = 1.0
+    min_price: float = 10.0
     max_price: float = 20.0
     min_volume: int = 500_000
     # Minimum average daily DOLLAR volume (price * 20-day mean share

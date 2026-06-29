@@ -134,7 +134,7 @@ def from_yfinance_symbol(symbol):
     return symbol.replace("-", "/")
 
 
-def screen_by_price_range(min_price=1.0, max_price=20.0, min_volume=500_000,
+def screen_by_price_range(min_price=10.0, max_price=20.0, min_volume=500_000,
                           min_adv=5_000_000, limit=50, universe=None, api=None):
     """Screen small/micro-cap stocks by price range and minimum volume.
 
@@ -852,7 +852,7 @@ def get_active_alpaca_symbols(ctx=None, ttl=_ACTIVE_SYMBOLS_TTL):
         return _active_symbols_cache["symbols"]
 
 
-def screen_dynamic_universe(min_price=1.0, max_price=20.0, min_volume=500_000,
+def screen_dynamic_universe(min_price=10.0, max_price=20.0, min_volume=500_000,
                              market_type="small", fallback_universe=None,
                              ctx=None, max_symbols=100):
     """Discover actively traded symbols beyond the hardcoded universe.

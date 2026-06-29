@@ -54,7 +54,7 @@ SHADOW_DAILY_COST_CAP_USD = float(os.getenv("SHADOW_DAILY_COST_CAP_USD", "1.0"))
 DEFAULT_MAX_POSITION_PCT = 0.10
 DEFAULT_STOP_LOSS_PCT = 0.03
 DEFAULT_TAKE_PROFIT_PCT = 0.10
-SCREEN_MIN_PRICE = 1.00
+SCREEN_MIN_PRICE = 10.00  # fresh-start baseline floor (institutional: excludes sub-$10 penny/meme tier)
 SCREEN_MAX_PRICE = 20.00
 SCREEN_MIN_VOLUME = 500000
 # Minimum average daily DOLLAR volume (price * 20-day mean share volume).
