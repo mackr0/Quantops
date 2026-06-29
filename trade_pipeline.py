@@ -4268,6 +4268,30 @@ def _build_candidates_data(shortlist, ctx, symbol_reputation):
                 type(_sec_exc).__name__, _sec_exc,
             )
 
+    # Concentration-aware selection (2026-06-29, advisory): precompute the
+    # book's held underlyings + their 20-day returns ONCE so each candidate's
+    # book-fit annotation (max correlation to held names) reuses them instead
+    # of refetching per candidate. Fail-open — a data gap just means no
+    # annotation, never a broken candidate. See book_fit.py.
+    _bf_held = []
+    _bf_held_returns = None
+    try:
+        import config as _cfg
+        _bf_enabled = getattr(_cfg, "ENABLE_CONCENTRATION_AWARE", True)
+    except Exception:
+        _bf_enabled = True
+    if _bf_enabled and ctx is not None:
+        try:
+            from book_fit import held_underlyings
+            from journal import get_virtual_positions
+            from correlation import _fetch_returns
+            _bf_held = held_underlyings(get_virtual_positions(ctx.db_path))
+            if _bf_held:
+                _bf_held_returns = _fetch_returns(_bf_held, days=20)
+        except Exception as _bf_exc:
+            logger.debug("book_fit precompute failed: %s", _bf_exc)
+            _bf_held = []
+
     candidates = []
     for signal in shortlist:
         symbol = signal.get("symbol", "?")
@@ -4299,6 +4323,20 @@ def _build_candidates_data(shortlist, ctx, symbol_reputation):
             "candle": indicators.get("candle", {}),
             "reason": signal.get("reason", "")[:120],
         }
+
+        # Concentration-aware book-fit annotation (advisory): how correlated
+        # is this candidate with what the profile already holds? Surfaced in
+        # the AI prompt so it diversifies instead of piling onto the cluster
+        # the risk specialists would veto. Fail-open — never blocks.
+        if _bf_held:
+            try:
+                from book_fit import compute_book_fit
+                bf = compute_book_fit(
+                    symbol, _bf_held, held_returns=_bf_held_returns)
+                if bf and bf.get("summary"):
+                    entry["book_fit"] = bf["summary"]
+            except Exception as _bf_exc:
+                logger.debug("book_fit failed for %s: %s", symbol, _bf_exc)
 
         # Per-stock track record + last prediction reasoning.
         #

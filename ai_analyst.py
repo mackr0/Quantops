@@ -2004,6 +2004,12 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         ens = c.get("ensemble_summary")
         if ens:
             line += f"\n     {ens}"
+        # Concentration-aware book fit (2026-06-29): correlation/sector overlap
+        # vs current holdings, so the AI diversifies instead of proposing the
+        # cluster the risk specialists would veto post-selection.
+        bf = c.get("book_fit")
+        if bf:
+            line += f"\n     PORTFOLIO FIT: {bf}"
         news = c.get("news")
         if news:
             # 2026-05-19 — `news` items are dicts (headline/summary/

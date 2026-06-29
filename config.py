@@ -57,6 +57,13 @@ DEFAULT_TAKE_PROFIT_PCT = 0.10
 SCREEN_MIN_PRICE = 10.00  # fresh-start baseline floor (institutional: excludes sub-$10 penny/meme tier)
 SCREEN_MAX_PRICE = 20.00
 SCREEN_MIN_VOLUME = 500000
+# Concentration-aware candidate selection (2026-06-29): annotate each
+# candidate with a "book fit" line (max return-correlation to held names +
+# same-sector count) in the AI prompt, so the AI proposes trades that
+# DIVERSIFY rather than piling onto the cluster the risk specialists would
+# veto post-selection. Advisory only (never blocks). Kill switch here.
+ENABLE_CONCENTRATION_AWARE = True
+
 # Minimum average daily DOLLAR volume (price * 20-day mean share volume).
 # Share-count alone (SCREEN_MIN_VOLUME) doesn't capture tradability: 500k
 # shares of a $2 stock is $1M ADV (thin) while 500k shares of a $50 stock is
