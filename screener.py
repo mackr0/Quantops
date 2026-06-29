@@ -135,7 +135,7 @@ def from_yfinance_symbol(symbol):
 
 
 def screen_by_price_range(min_price=1.0, max_price=20.0, min_volume=500_000,
-                          limit=50, universe=None, api=None):
+                          min_adv=5_000_000, limit=50, universe=None, api=None):
     """Screen small/micro-cap stocks by price range and minimum volume.
 
     Uses yfinance batch download for speed. The ``api`` parameter is
@@ -155,6 +155,7 @@ def screen_by_price_range(min_price=1.0, max_price=20.0, min_volume=500_000,
     bars_map = _get_bars_for_symbols(universe, limit=30)
 
     results = []
+    dropped_adv = 0
     for sym, sym_df in bars_map.items():
         try:
             price = float(sym_df["close"].iloc[-1])
@@ -162,14 +163,27 @@ def screen_by_price_range(min_price=1.0, max_price=20.0, min_volume=500_000,
             prev_close = float(sym_df["close"].iloc[-2])
             change_pct = ((price - prev_close) / prev_close * 100) if prev_close > 0 else 0
 
-            if min_price <= price <= max_price and volume >= min_volume:
-                results.append({
-                    "symbol": sym,
-                    "price": round(price, 2),
-                    "volume": volume,
-                    "price_change_pct": round(change_pct, 2),
-                    "reason": f"${price:.2f} | vol: {volume:,} | chg: {change_pct:+.1f}%",
-                })
+            if not (min_price <= price <= max_price and volume >= min_volume):
+                continue
+            # Liquidity floor: 20-day mean DOLLAR volume (price * avg
+            # share volume). The 30 bars are already in hand, so the
+            # true ADV costs nothing extra here. Share-count alone
+            # (min_volume) can't tell a $2 stock from a $50 one.
+            adv_dollar = float(sym_df["volume"].tail(20).mean()) * price
+            if adv_dollar < min_adv:
+                dropped_adv += 1
+                continue
+            results.append({
+                "symbol": sym,
+                "price": round(price, 2),
+                "volume": volume,
+                "adv_dollar": round(adv_dollar),
+                "price_change_pct": round(change_pct, 2),
+                "reason": (
+                    f"${price:.2f} | vol: {volume:,} | "
+                    f"ADV: ${adv_dollar / 1e6:.1f}M | chg: {change_pct:+.1f}%"
+                ),
+            })
         except (KeyError, ValueError, AttributeError, TypeError,
                 IndexError, ZeroDivisionError) as _pv_exc:
             # Per-symbol price/volume scoring loop; one bad symbol
@@ -179,7 +193,14 @@ def screen_by_price_range(min_price=1.0, max_price=20.0, min_volume=500_000,
                 sym, type(_pv_exc).__name__, _pv_exc,
             )
 
-    print(f"  Found {len(results)} stocks in ${min_price}-${max_price} with {min_volume:,}+ volume")
+    if dropped_adv:
+        logger.info(
+            "screen_by_price_range: excluded %d symbol(s) below the "
+            "$%.1fM avg-daily-dollar-volume floor",
+            dropped_adv, min_adv / 1e6,
+        )
+    print(f"  Found {len(results)} stocks in ${min_price}-${max_price} "
+          f"with {min_volume:,}+ vol and ${min_adv/1e6:.1f}M+ ADV")
 
     results.sort(key=lambda x: x["volume"], reverse=True)
     return results[:limit]
@@ -326,7 +347,7 @@ def find_breakouts(candidates, api=None):
 
 
 def run_full_screen(universe=None, min_price=None, max_price=None, min_volume=None,
-                    api=None):
+                    min_adv=None, api=None):
     """Run the complete small-cap screening pipeline.
 
     Parameters
@@ -352,6 +373,8 @@ def run_full_screen(universe=None, min_price=None, max_price=None, min_volume=No
         kwargs["max_price"] = max_price
     if min_volume is not None:
         kwargs["min_volume"] = min_volume
+    if min_adv is not None:
+        kwargs["min_adv"] = min_adv
 
     # Step 1: Fast price/volume screen via yfinance batch download
     print("\n[1/4] Price & Volume Screen")

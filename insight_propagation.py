@@ -73,10 +73,11 @@ def _detector_for(change_type: str) -> Optional[Callable]:
         "sector_cap_tighten": st._optimize_max_sector_positions,
         "drawdown_pause_tighten": st._optimize_drawdown_thresholds,
         "drawdown_reduce_tighten": st._optimize_drawdown_reduce,
-        "price_band_min_raise": st._optimize_price_band,
-        "price_band_max_lower": st._optimize_price_band,
+        # price_band_* and min_volume_raise removed 2026-06-26: the
+        # universe / liquidity floors (min_price/max_price/min_volume/
+        # min_adv) are operator-only and never auto-tuned, so there is
+        # nothing to propagate to peers. See self_tuning._OPERATOR_ONLY_PARAMS.
         "maga_disable": st._optimize_maga_mode,
-        "min_volume_raise": st._optimize_min_volume,
         "volume_surge_tighten": st._optimize_volume_surge_multiplier,
         "breakout_volume_tighten": st._optimize_breakout_volume_threshold,
         "gap_threshold_tighten": st._optimize_gap_pct_threshold,

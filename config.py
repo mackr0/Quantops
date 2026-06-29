@@ -57,3 +57,11 @@ DEFAULT_TAKE_PROFIT_PCT = 0.10
 SCREEN_MIN_PRICE = 1.00
 SCREEN_MAX_PRICE = 20.00
 SCREEN_MIN_VOLUME = 500000
+# Minimum average daily DOLLAR volume (price * 20-day mean share volume).
+# Share-count alone (SCREEN_MIN_VOLUME) doesn't capture tradability: 500k
+# shares of a $2 stock is $1M ADV (thin) while 500k shares of a $50 stock is
+# $25M (deep). This dollar floor is the institutional "liquid enough to trade"
+# gate that excludes the cheap-but-liquid names whose wide spreads whipsaw the
+# ATR stops. Operator-set policy — deliberately NOT auto-tuned (see
+# self_tuning._OPERATOR_ONLY_PARAMS).
+SCREEN_MIN_ADV = 5_000_000

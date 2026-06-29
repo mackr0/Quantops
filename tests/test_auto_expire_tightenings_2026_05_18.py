@@ -250,13 +250,16 @@ class TestOptimizerFires:
         """The oldest expirable event is for ai_confidence_threshold
         but that param was tuned in the last 24h — fall through to
         the next event."""
+        # min_volume is no longer an auto-expirable tightening (operator-only
+        # universe floor, removed from _TIGHTENING_DIRECTION 2026-06-26). Use
+        # gap_pct_threshold as the next tunable tightening to fall through to.
         _insert_tightening(configured_db, age_days=30,
                             param_name="ai_confidence_threshold",
                             old_value="60", new_value="80")
         _insert_tightening(configured_db, age_days=20,
-                            param_name="min_volume",
-                            old_value="500000", new_value="1000000")
-        ctx = _ctx(ai_confidence_threshold=80, min_volume=1_000_000)
+                            param_name="gap_pct_threshold",
+                            old_value="4.0", new_value="8.0")
+        ctx = _ctx(ai_confidence_threshold=80, gap_pct_threshold=8.0)
         from self_tuning import (
             _optimize_auto_expire_old_tightenings, _get_conn,
         )
@@ -272,9 +275,10 @@ class TestOptimizerFires:
             msg = _optimize_auto_expire_old_tightenings(
                 conn, ctx, 1, 1, overall_wr=50.0, resolved=20)
         conn.close()
-        # Should fall through to min_volume — 1M * 0.75 = 750K (target 500K)
+        # Should fall through to gap_pct_threshold — one 25% step back toward
+        # the pre-tightening 4.0: 8.0 * 0.75 = 6.0.
         assert msg is not None
-        utp.assert_called_once_with(1, min_volume=750_000)
+        utp.assert_called_once_with(1, gap_pct_threshold=6.0)
 
 
 class TestExpiryMarking:

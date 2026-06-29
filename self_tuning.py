@@ -55,6 +55,20 @@ _CACHE_TTL = 30 * 60  # 30 minutes
 _MAX_PCT_PER_CYCLE = 0.25       # 25% per single tuning cycle
 _MAX_PCT_FROM_REFERENCE = 0.50  # 50% from day-1 baseline
 
+# Governance firewall (2026-06-26): the universe-definition / liquidity
+# floors are RISK POLICY, not alpha knobs. The optimizer tunes HOW to
+# trade (confidence, stops, sizing, signal weights); the operator owns
+# WHAT is eligible to trade. A self-tuner that can relax its own
+# liquidity floor would walk it down to chase entry count — the classic
+# "optimizer defeats its own risk limit." These params are settable only
+# from the Settings page; every tuner write path funnels through
+# _apply_param_change, which refuses them here as a single class-wide
+# backstop (covers the optimizer dispatch AND insight propagation AND any
+# future path). Pinned by tests/test_universe_floors_operator_only.py.
+_OPERATOR_ONLY_PARAMS = frozenset({
+    "min_price", "max_price", "min_volume", "min_adv",
+})
+
 
 def _clamp_delta(param_name: str,
                  old_value: float,
@@ -169,6 +183,19 @@ def _apply_param_change(profile_id: int, user_id: int,
     read (missing table, db error), the reference window is treated
     as "no reference" and only the per-cycle cap applies.
     """
+    # Governance firewall: the universe / liquidity floors are operator
+    # policy and must never be auto-tuned by ANY path. This is the single
+    # gatekeeper every optimizer and insight-propagation write funnels
+    # through, so refusing here is class-wide. Loud (warning) because the
+    # known dispatch/insight paths are already pruned — if this fires, a
+    # new path is leaking and must be fixed, not the floor moved.
+    if param_name in _OPERATOR_ONLY_PARAMS:
+        logger.warning(
+            "self-tuner refused to change operator-only param %s "
+            "(profile %s): universe/liquidity floors are set in Settings, "
+            "never auto-tuned", param_name, profile_id,
+        )
+        return old_value, False, " [refused: operator-only param]"
     from models import (
         update_trading_profile, log_tuning_change,
         get_param_reference, record_param_reference_if_absent,
@@ -1736,8 +1763,21 @@ def apply_auto_adjustments(ctx, db_path=None):
                         logger.warning(
                             "Failed to propagate insight: %s", prop_exc)
 
+                # Operator-only universe floors are never auto-reversed:
+                # this auto-reversal is the SECOND tuner write path (the
+                # _apply_param_change firewall only covers the optimizer
+                # path), so a historical floor-tightening row classified
+                # 'worsened' would otherwise loosen the operator's floor
+                # back toward its pre-change value right here. Refuse it.
+                # See _OPERATOR_ONLY_PARAMS.
+                if (rev["outcome_after"] == "worsened"
+                        and param in _OPERATOR_ONLY_PARAMS):
+                    logger.info(
+                        "self-tuner skipped auto-reversal of operator-only "
+                        "param %s (profile %s): universe/liquidity floors are "
+                        "operator-set, never auto-reversed", param, profile_id)
                 # If a past adjustment worsened things, reverse it
-                if rev["outcome_after"] == "worsened":
+                elif rev["outcome_after"] == "worsened":
                     try:
                         from models import update_trading_profile, log_tuning_change
                         # Reverse: set back to old value
@@ -2177,7 +2217,7 @@ _OPTIMIZER_DIRECTION = {
     "_optimize_tod_overrides": "STRUCTURAL",
     "_optimize_symbol_overrides": "STRUCTURAL",
     "_optimize_prompt_layout": "STRUCTURAL",
-    "_optimize_price_band": "STRUCTURAL",
+    # _optimize_price_band removed 2026-06-26 (operator-only universe floor)
     "_optimize_maga_mode": "STRUCTURAL",
     "_optimize_short_max_position_pct": "STRUCTURAL",
     "_optimize_short_max_hold_days": "STRUCTURAL",
@@ -2200,7 +2240,7 @@ _OPTIMIZER_DIRECTION = {
     "_optimize_avoid_earnings_days": "TIGHTEN",
     "_optimize_skip_first_minutes": "TIGHTEN",
     "_optimize_skip_first_minutes_slippage": "TIGHTEN",
-    "_optimize_min_volume": "TIGHTEN",
+    # _optimize_min_volume removed 2026-06-26 (operator-only universe floor)
     "_optimize_volume_surge_multiplier": "TIGHTEN",
     "_optimize_breakout_volume_threshold": "TIGHTEN",
     "_optimize_gap_pct_threshold": "TIGHTEN",
@@ -2243,7 +2283,8 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
         _optimize_avoid_earnings_days,
         _optimize_skip_first_minutes,
         _optimize_skip_first_minutes_slippage,
-        _optimize_min_volume,
+        # _optimize_min_volume removed 2026-06-26 — min_volume is an
+        # operator-only universe floor (see _OPERATOR_ONLY_PARAMS).
         _optimize_volume_surge_multiplier,
         _optimize_breakout_volume_threshold,
         _optimize_gap_pct_threshold,
@@ -2272,7 +2313,8 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
         _optimize_meta_pregate_threshold,
         _optimize_signal_weights,
         # Structural (parameter-shape changes; not volume-direction)
-        _optimize_price_band,
+        # _optimize_price_band removed 2026-06-26 — min_price/max_price are
+        # operator-only universe floors (see _OPERATOR_ONLY_PARAMS).
         _optimize_maga_mode,
         _optimize_short_max_position_pct,
         _optimize_short_max_hold_days,
@@ -3036,88 +3078,13 @@ def _optimize_drawdown_reduce(conn, ctx, profile_id, user_id,
             f"{applied:.0%}{suffix} ({reason})")
 
 
-def _optimize_price_band(conn, ctx, profile_id, user_id, overall_wr, resolved):
-    """Tune min_price / max_price within 0.5x-2.0x of current (and the
-    absolute floor/ceiling in PARAM_BOUNDS) when entries near the band
-    edges consistently fail."""
-    table_check = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='trades'"
-    ).fetchone()
-    if not table_check:
-        return None
-
-    current_min = float(getattr(ctx, "min_price", 1.0))
-    current_max = float(getattr(ctx, "max_price", 20.0))
-
-    # Bottom-of-band failure check: trades entered within 1.5× of min_price.
-    # Phase 5e — CRITICAL fix. Without the data_quality filter, the
-    # phantom-stop rows (price=$0.16-$1.48) all matched this bottom-
-    # of-band query and triggered min_price RAISES based on their
-    # 100% loss rate. The corrupt price field IS the trigger
-    # condition itself; without filtering, self-tuning was
-    # systematically WRONG for the past day.
-    from journal import data_quality_clause
-    _dq = data_quality_clause(conn)
-    bottom_threshold = current_min * 1.5
-    bot_row = conn.execute(
-        f"SELECT COUNT(*) as cnt, "
-        f" SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins "
-        f"FROM trades WHERE pnl IS NOT NULL AND price <= ? "
-        f"AND price > 0{_dq}",
-        (bottom_threshold,),
-    ).fetchone()
-    if (bot_row and bot_row["cnt"] >= 5):
-        bot_wr = (bot_row["wins"] or 0) / bot_row["cnt"] * 100
-        if bot_wr < 30 and _safe_change_guarded(profile_id, "min_price"):
-            # Raise floor — never above 2× current (identity guard) and
-            # always within absolute bounds.
-            candidate = min(current_min * 1.25, current_min * 2.0)
-            new_min = _bound("min_price", round(candidate, 2))
-            if new_min > current_min and new_min < current_max:
-                reason = (
-                    f"Bottom-of-band entries (≤${bottom_threshold:.2f}) "
-                    f"win rate {bot_wr:.0f}% on {bot_row['cnt']} trades — "
-                    f"raise {_label('min_price')} floor"
-                )
-                applied, _, suffix = _apply_param_change(
-                    profile_id, user_id, "price_band_min_raise",
-                    "min_price", current_min, new_min, reason,
-                    win_rate_at_change=overall_wr,
-                    predictions_resolved=resolved,
-                )
-                return (f"Raised {_label('min_price')} from ${current_min:.2f} to "
-                        f"${applied:.2f}{suffix} ({reason})")
-
-    # Top-of-band failure check: trades entered within 0.85× of max_price.
-    # Phase 5e exclusion: same pattern as bottom-of-band.
-    top_threshold = current_max * 0.85
-    top_row = conn.execute(
-        f"SELECT COUNT(*) as cnt, "
-        f" SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins "
-        f"FROM trades WHERE pnl IS NOT NULL AND price >= ?{_dq}",
-        (top_threshold,),
-    ).fetchone()
-    if (top_row and top_row["cnt"] >= 5):
-        top_wr = (top_row["wins"] or 0) / top_row["cnt"] * 100
-        if top_wr < 30 and _safe_change_guarded(profile_id, "max_price"):
-            candidate = max(current_max * 0.85, current_max * 0.5)
-            new_max = _bound("max_price", round(candidate, 2))
-            if new_max < current_max and new_max > current_min:
-                reason = (
-                    f"Top-of-band entries (≥${top_threshold:.2f}) "
-                    f"win rate {top_wr:.0f}% on {top_row['cnt']} trades — "
-                    f"lower {_label('max_price')} ceiling"
-                )
-                applied, _, suffix = _apply_param_change(
-                    profile_id, user_id, "price_band_max_lower",
-                    "max_price", current_max, new_max, reason,
-                    win_rate_at_change=overall_wr,
-                    predictions_resolved=resolved,
-                )
-                return (f"Lowered {_label('max_price')} from ${current_max:.2f} to "
-                        f"${applied:.2f}{suffix} ({reason})")
-
-    return None
+# _optimize_price_band was DELETED 2026-06-26. min_price / max_price are
+# the screener's universe-definition floors — operator policy, never
+# auto-tuned (the optimizer must not be able to redraw its own eligible
+# universe / relax its own risk limit). The self-tuner no longer adjusts
+# them; the _apply_param_change firewall (_OPERATOR_ONLY_PARAMS) refuses
+# any residual write path. Pinned by
+# tests/test_universe_floors_operator_only.py.
 
 
 def _optimize_avoid_earnings_days(conn, ctx, profile_id, user_id,
@@ -3401,32 +3368,11 @@ def _filter_threshold_signal(conn, feature_name, threshold,
     return (wins / total * 100.0), total
 
 
-def _optimize_min_volume(conn, ctx, profile_id, user_id, overall_wr, resolved):
-    """Raise min_volume when bottom-band entries (just above threshold)
-    are losing badly. Lower when the system is starved of candidates and
-    overall WR is healthy."""
-    if not _safe_change_guarded(profile_id, "min_volume"):
-        return None
-    current = int(getattr(ctx, "min_volume", 500_000))
-    wr, n = _filter_threshold_signal(conn, "volume", current,
-                                       tighten_band_factor=1.5)
-    if wr is None:
-        return None
-    if wr < 30:
-        new_val = _bound("min_volume", int(current * 1.50))
-        if new_val == current:
-            return None
-        reason = (
-            f"Marginal-volume entries (≤ 1.5× threshold) WR {wr:.0f}% on "
-            f"{n} samples — raise {_label('min_volume')} floor"
-        )
-        applied, _, suffix = _apply_param_change(
-            profile_id, user_id, "min_volume_raise",
-            "min_volume", current, new_val, reason,
-            win_rate_at_change=overall_wr, predictions_resolved=resolved,
-        )
-        return f"Raised {_label('min_volume')} from {current:,} to {int(applied):,}{suffix} ({reason})"
-    return None
+# _optimize_min_volume was DELETED 2026-06-26. min_volume is a screener
+# universe floor — operator policy, never auto-tuned (see the
+# _optimize_price_band tombstone above and _OPERATOR_ONLY_PARAMS). The
+# _apply_param_change firewall refuses any residual write path. Pinned by
+# tests/test_universe_floors_operator_only.py.
 
 
 def _optimize_volume_surge_multiplier(conn, ctx, profile_id, user_id,
@@ -5619,7 +5565,10 @@ _TRADE_COUNT_FLOOR_WINDOW_DAYS = 7
 _TRADE_COUNT_FILTERS: Dict[str, str] = {
     # higher value = more restrictive (less candidates pass)
     "ai_confidence_threshold":   "up",
-    "min_volume":                 "up",
+    # min_volume removed 2026-06-26: it's an operator-only universe floor
+    # (see _OPERATOR_ONLY_PARAMS), so auto-loosen must not pick it — it
+    # loosens a genuinely-tunable filter instead of wasting the action on
+    # a param the _apply_param_change firewall would refuse.
     "volume_surge_multiplier":    "up",
     "breakout_volume_threshold":  "up",
     "gap_pct_threshold":          "up",
@@ -5796,7 +5745,8 @@ _RESTRICTION_TTL_DAYS = 14
 _TIGHTENING_DIRECTION: Dict[str, str] = {
     # Entry / signal filters — higher = more restrictive
     "ai_confidence_threshold":   "up",
-    "min_volume":                 "up",
+    # min_volume removed 2026-06-26 (operator-only universe floor — never
+    # auto-tuned, so never auto-expired either; see _OPERATOR_ONLY_PARAMS).
     "volume_surge_multiplier":    "up",
     "breakout_volume_threshold":  "up",
     "gap_pct_threshold":          "up",
@@ -5825,10 +5775,8 @@ _TIGHTENING_DIRECTION: Dict[str, str] = {
     "atr_multiplier_sl":          "down",
     "atr_multiplier_tp":          "down",
     "trailing_atr_multiplier":    "down",
-    # Price band — narrowing the band is restrictive. Handled as
-    # two separate params each with its own restrictive direction.
-    "min_price":                  "up",    # higher floor cuts low-end candidates
-    "max_price":                  "down",  # lower ceiling cuts high-end candidates
+    # Price band (min_price/max_price) removed 2026-06-26: operator-only
+    # universe floors, never auto-tuned or auto-expired (_OPERATOR_ONLY_PARAMS).
     # RSI thresholds — extremes away from 50 fire less frequently
     "rsi_overbought":             "up",   # higher = harder to hit
     "rsi_oversold":               "down", # lower = harder to hit

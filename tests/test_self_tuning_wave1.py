@@ -341,44 +341,19 @@ class TestDrawdownThresholds:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# _optimize_price_band
+# _optimize_price_band — DELETED 2026-06-26.
+# min_price / max_price are now operator-only universe floors (never
+# auto-tuned). The detection-logic tests that lived here are obsolete;
+# the governance contract is pinned by
+# tests/test_universe_floors_operator_only.py.
 # ─────────────────────────────────────────────────────────────────────
 
-class TestPriceBand:
-    def test_raises_min_when_bottom_band_fails(self, tmp_path):
-        db = _make_db(tmp_path)
-        # 6 trades in bottom band ($1-$1.50), all losers
-        _seed_trades(db, [{"price": 1.20, "pnl": -50} for _ in range(6)])
-        ctx = _ctx(db, min_price=1.0, max_price=20.0)
-        from self_tuning import _optimize_price_band, _get_conn
-        conn = _get_conn(db)
-        with patch("self_tuning._get_recent_adjustment", return_value=None):
-            with patch("self_tuning._was_adjustment_effective", return_value=None):
-                with patch("models.update_trading_profile") as mock_up:
-                    with patch("models.log_tuning_change"):
-                        msg = _optimize_price_band(
-                            conn, ctx, 1, 1, overall_wr=45.0, resolved=30)
-                        mock_up.assert_called_with(1, min_price=1.25)
-        conn.close()
-        assert msg is not None
-        assert "1.25" in msg
-
-    def test_lowers_max_when_top_band_fails(self, tmp_path):
-        db = _make_db(tmp_path)
-        # 6 trades in top band ($17+), all losers
-        _seed_trades(db, [{"price": 18.0, "pnl": -50} for _ in range(6)])
-        ctx = _ctx(db, min_price=1.0, max_price=20.0)
-        from self_tuning import _optimize_price_band, _get_conn
-        conn = _get_conn(db)
-        with patch("self_tuning._get_recent_adjustment", return_value=None):
-            with patch("self_tuning._was_adjustment_effective", return_value=None):
-                with patch("models.update_trading_profile") as mock_up:
-                    with patch("models.log_tuning_change"):
-                        msg = _optimize_price_band(
-                            conn, ctx, 1, 1, overall_wr=45.0, resolved=30)
-                        mock_up.assert_called_with(1, max_price=17.0)
-        conn.close()
-        assert msg is not None
+class TestPriceBandRetired:
+    def test_optimizer_is_gone(self):
+        import self_tuning
+        assert not hasattr(self_tuning, "_optimize_price_band"), (
+            "_optimize_price_band must stay deleted — min_price/max_price "
+            "are operator-only universe floors")
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -489,7 +464,8 @@ class TestOptimizerRegistration:
             "_optimize_max_sector_positions",
             "_optimize_drawdown_thresholds",
             "_optimize_drawdown_reduce",
-            "_optimize_price_band",
+            # _optimize_price_band intentionally absent (deleted 2026-06-26 —
+            # min_price/max_price are operator-only universe floors).
             "_optimize_avoid_earnings_days",
             "_optimize_skip_first_minutes",
             "_optimize_maga_mode",

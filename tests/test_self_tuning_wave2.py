@@ -76,38 +76,17 @@ def _seed_with_feature(db, feature_name, rows):
 # min_volume
 # ─────────────────────────────────────────────────────────────────────
 
-class TestMinVolume:
-    def test_raises_when_marginal_volume_entries_lose(self, tmp_path):
-        db = _make_db(tmp_path)
-        # 10 entries at volume 600K-750K (within 1.5x of 500K min), all losers
-        _seed_with_feature(db, "volume",
-            [(650_000, "loss")] * 10)
-        ctx = _ctx(db, min_volume=500_000)
-        from self_tuning import _optimize_min_volume, _get_conn
-        conn = _get_conn(db)
-        with patch("self_tuning._get_recent_adjustment", return_value=None):
-            with patch("self_tuning._was_adjustment_effective", return_value=None):
-                with patch("models.update_trading_profile") as mock_up:
-                    with patch("models.log_tuning_change"):
-                        msg = _optimize_min_volume(
-                            conn, ctx, 1, 1, overall_wr=45.0, resolved=20)
-                        # Rule proposes +50% (500K→750K); 2026-05-18
-                        # per-cycle delta cap clamps to +25% (625K).
-                        mock_up.assert_called_with(1, min_volume=625_000)
-        conn.close()
-        assert msg is not None
-        assert "625,000" in msg
-
-    def test_no_op_without_features(self, tmp_path):
-        db = _make_db(tmp_path)
-        ctx = _ctx(db)
-        from self_tuning import _optimize_min_volume, _get_conn
-        conn = _get_conn(db)
-        with patch("self_tuning._get_recent_adjustment", return_value=None):
-            msg = _optimize_min_volume(
-                conn, ctx, 1, 1, overall_wr=45.0, resolved=0)
-        conn.close()
-        assert msg is None
+# TestMinVolume — DELETED 2026-06-26. min_volume is now an operator-only
+# universe floor; _optimize_min_volume was removed (the self-tuner must not
+# be able to relax its own liquidity floor). The detection-logic tests that
+# lived here are obsolete; the governance contract is pinned by
+# tests/test_universe_floors_operator_only.py.
+class TestMinVolumeRetired:
+    def test_optimizer_is_gone(self):
+        import self_tuning
+        assert not hasattr(self_tuning, "_optimize_min_volume"), (
+            "_optimize_min_volume must stay deleted — min_volume is an "
+            "operator-only universe floor")
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -259,15 +238,18 @@ class TestRsiBands:
 # ─────────────────────────────────────────────────────────────────────
 
 class TestCooldownAcrossW2Rules:
-    def test_min_volume_respects_cooldown(self, tmp_path):
+    def test_surviving_w2_rule_respects_cooldown(self, tmp_path):
+        # min_volume was retired 2026-06-26 (operator-only universe floor);
+        # use a surviving W2 tightening rule to assert cooldown is honored
+        # uniformly — a recent adjustment short-circuits to a no-op.
         db = _make_db(tmp_path)
-        _seed_with_feature(db, "volume", [(650_000, "loss")] * 10)
-        ctx = _ctx(db, min_volume=500_000)
-        from self_tuning import _optimize_min_volume, _get_conn
+        _seed_with_feature(db, "volume_ratio", [(2.2, "loss")] * 10)
+        ctx = _ctx(db)
+        from self_tuning import _optimize_volume_surge_multiplier, _get_conn
         conn = _get_conn(db)
         with patch("self_tuning._get_recent_adjustment",
                    return_value={"id": 1}):
-            msg = _optimize_min_volume(
+            msg = _optimize_volume_surge_multiplier(
                 conn, ctx, 1, 1, overall_wr=45.0, resolved=20)
         conn.close()
         assert msg is None
@@ -283,7 +265,8 @@ class TestW2OptimizerRegistration:
         import inspect
         src = inspect.getsource(self_tuning._apply_upward_optimizations)
         for fname in [
-            "_optimize_min_volume",
+            # _optimize_min_volume intentionally absent (deleted 2026-06-26 —
+            # min_volume is an operator-only universe floor).
             "_optimize_volume_surge_multiplier",
             "_optimize_breakout_volume_threshold",
             "_optimize_gap_pct_threshold",

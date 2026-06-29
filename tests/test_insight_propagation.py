@@ -27,7 +27,9 @@ class TestDetectorMapping:
             "regime_position_sizing",
             "strategy_toggle",
             "concentration_reduce",
-            "min_volume_raise",
+            # min_volume_raise / price_band_* retired 2026-06-26 (operator-only
+            # universe floors — no longer propagatable); use a surviving type.
+            "gap_threshold_tighten",
             "rsi_overbought_raise",
         ]:
             assert _detector_for(change_type) is not None, (

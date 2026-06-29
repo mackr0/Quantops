@@ -124,6 +124,7 @@ def init_user_db(db_path: Optional[str] = None) -> None:
                 min_price REAL NOT NULL DEFAULT 1.0,
                 max_price REAL NOT NULL DEFAULT 20.0,
                 min_volume INTEGER NOT NULL DEFAULT 500000,
+                min_adv REAL NOT NULL DEFAULT 5000000,
                 volume_surge_multiplier REAL NOT NULL DEFAULT 2.0,
                 rsi_overbought REAL NOT NULL DEFAULT 85.0,
                 rsi_oversold REAL NOT NULL DEFAULT 25.0,
@@ -176,6 +177,7 @@ def init_user_db(db_path: Optional[str] = None) -> None:
                 min_price REAL NOT NULL DEFAULT 1.0,
                 max_price REAL NOT NULL DEFAULT 20.0,
                 min_volume INTEGER NOT NULL DEFAULT 500000,
+                min_adv REAL NOT NULL DEFAULT 5000000,
                 volume_surge_multiplier REAL NOT NULL DEFAULT 2.0,
                 rsi_overbought REAL NOT NULL DEFAULT 85.0,
                 rsi_oversold REAL NOT NULL DEFAULT 25.0,
@@ -668,6 +670,15 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             # Default NULL means "not yet expired". Indexed implicitly
             # via the ORDER BY timestamp query.
             ("tuning_history", "expired_at", "TEXT DEFAULT NULL"),
+            # 2026-06-26 — minimum average daily DOLLAR volume screener
+            # floor (price * 20-day mean share volume). Closes the
+            # cheap-but-liquid gap that share-count alone (min_volume)
+            # misses. Operator-set policy, deliberately NOT auto-tuned.
+            # Added to both the live `trading_profiles` table and the
+            # legacy `user_segment_configs` twin so the settings form
+            # can't silently drop it on either save path.
+            ("trading_profiles", "min_adv", "REAL NOT NULL DEFAULT 5000000"),
+            ("user_segment_configs", "min_adv", "REAL NOT NULL DEFAULT 5000000"),
         ]
         for table, col, col_def in _migrations:
             try:
@@ -1155,7 +1166,8 @@ def update_user_segment_config(user_id: int, segment: str, **kwargs) -> None:
         "enabled", "alpaca_api_key_enc", "alpaca_secret_key_enc",
         "stop_loss_pct", "take_profit_pct", "max_position_pct",
         "max_total_positions", "ai_confidence_threshold",
-        "min_price", "max_price", "min_volume", "volume_surge_multiplier",
+        "min_price", "max_price", "min_volume", "min_adv",
+        "volume_surge_multiplier",
         "rsi_overbought", "rsi_oversold",
         "momentum_5d_gain", "momentum_20d_gain",
         "breakout_volume_threshold", "gap_pct_threshold",
@@ -1282,8 +1294,8 @@ def create_trading_profile(user_id: int, name: str, market_type: str) -> int:
             """INSERT INTO trading_profiles
                (user_id, name, market_type, enabled,
                 stop_loss_pct, take_profit_pct, max_position_pct,
-                min_price, max_price, min_volume, schedule_type)
-               VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)""",
+                min_price, max_price, min_volume, min_adv, schedule_type)
+               VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 user_id,
                 name,
@@ -1294,6 +1306,7 @@ def create_trading_profile(user_id: int, name: str, market_type: str) -> int:
                 seg.get("min_price", 1.0),
                 seg.get("max_price", 20.0),
                 seg.get("min_volume", 500_000),
+                seg.get("min_adv", 5_000_000),
                 default_schedule,
             ),
         )
@@ -1424,7 +1437,8 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         "alpaca_api_key_enc", "alpaca_secret_key_enc",
         "stop_loss_pct", "take_profit_pct", "max_position_pct",
         "max_total_positions", "ai_confidence_threshold",
-        "min_price", "max_price", "min_volume", "volume_surge_multiplier",
+        "min_price", "max_price", "min_volume", "min_adv",
+        "volume_surge_multiplier",
         "rsi_overbought", "rsi_oversold",
         "momentum_5d_gain", "momentum_20d_gain",
         "breakout_volume_threshold", "gap_pct_threshold",
@@ -1709,6 +1723,10 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
         min_price=profile["min_price"],
         max_price=profile["max_price"],
         min_volume=profile["min_volume"],
+        # .get keeps ctx-build safe in the brief window between deploy and
+        # the idempotent ALTER-ADD-COLUMN migration; default matches
+        # config.SCREEN_MIN_ADV / the schema default.
+        min_adv=profile.get("min_adv", 5_000_000),
         volume_surge_multiplier=profile["volume_surge_multiplier"],
         # RSI thresholds
         rsi_overbought=profile["rsi_overbought"],
@@ -1971,6 +1989,7 @@ def build_user_context(user_id: int, segment: str) -> UserContext:
         min_price=seg_config["min_price"],
         max_price=seg_config["max_price"],
         min_volume=seg_config["min_volume"],
+        min_adv=seg_config.get("min_adv", 5_000_000),
         volume_surge_multiplier=seg_config["volume_surge_multiplier"],
         # RSI thresholds
         rsi_overbought=seg_config["rsi_overbought"],

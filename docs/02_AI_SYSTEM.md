@@ -34,7 +34,7 @@ Each layer is documented below. Section sequence follows the data flow.
 
 Source: Alpaca's `/v2/assets` endpoint (US equities + ETFs, ~8,000 active symbols), filtered per-profile by:
 
-- Market type (`stocks` / `crypto`), via `segments.py` and `segments_historical.py`. The `stocks` segment is the unified Alpaca-tradable US equity universe; `crypto` is a separate 24/7 data path. Per-profile `min_price` / `max_price` / `min_volume` thresholds gate which of the ~8,000 active symbols actually reach the strategy layer; short selling is gated by `enable_short_selling`. The genuine instrument-class split (`stock` vs `option`) lives in `pipelines/dispatch.py`, not here.
+- Market type (`stocks` / `crypto`), via `segments.py` and `segments_historical.py`. The `stocks` segment is the unified Alpaca-tradable US equity universe; `crypto` is a separate 24/7 data path. Per-profile `min_price` / `max_price` / `min_volume` / `min_adv` thresholds gate which of the ~8,000 active symbols actually reach the strategy layer (`min_adv` is the dollar-liquidity floor — average daily dollar volume — that share-count `min_volume` can't express); these four universe floors are operator-only and never auto-tuned (`self_tuning._OPERATOR_ONLY_PARAMS`). Short selling is gated by `enable_short_selling`. The genuine instrument-class split (`stock` vs `option`) lives in `pipelines/dispatch.py`, not here.
 - Active-status flag (delisted / merged / renamed names are removed from live universe but kept in `historical_universe_additions` for backtest survivorship-bias correction).
 - Per-profile custom watchlist (additions) and exclusion list (removals).
 

@@ -899,6 +899,11 @@
                     <input type="number" name="min_volume" step="50000"
                            value="{{ prof.min_volume }}">
                 </label>
+                <label>
+                    <span class="tip" data-tip="Minimum average daily dollar volume (price times shares traded) a stock must have to be eligible. Share count alone treats a $2 stock and a $50 stock the same; this dollar floor screens out thin, hard-to-trade names whose wide spreads whipsaw stops. $5,000,000 is a sound institutional floor.">Min Avg Daily $ Volume</span>
+                    <input type="number" name="min_adv" step="500000" min="0"
+                           value="{{ prof.min_adv }}">
+                </label>
             </div>
             <div class="grid">
                 <label>

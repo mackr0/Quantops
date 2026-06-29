@@ -342,9 +342,12 @@ class TestCooldown:
         cooldown."""
         db = _make_db(tmp_path)
         _seed_entries(db, n_entries=0)
+        # min_volume is no longer an auto-loosen candidate (operator-only
+        # universe floor, removed 2026-06-26). Use gap_pct_threshold as the
+        # next-most-restrictive *tunable* filter for the fall-through.
         ctx = _ctx(db,
                     ai_confidence_threshold=88,   # most restrictive
-                    min_volume=4_000_000)          # next-most
+                    gap_pct_threshold=9.0)         # next-most (tunable)
         from self_tuning import (
             _optimize_trade_count_auto_loosen, _get_conn,
         )
@@ -363,10 +366,11 @@ class TestCooldown:
             msg = _optimize_trade_count_auto_loosen(
                 conn, ctx, 1, 1, overall_wr=50.0, resolved=20)
         conn.close()
-        # Should have fallen through to min_volume — 4M * 0.75 = 3M
-        utp.assert_called_once_with(1, min_volume=3_000_000)
+        # Should have fallen through to gap_pct_threshold — the per-cycle
+        # 25% cap clamps the loosen to 9.0 * 0.75 = 6.75.
+        utp.assert_called_once_with(1, gap_pct_threshold=6.75)
         assert msg is not None
-        assert "min_volume" in msg.lower() or "Min Volume" in msg
+        assert "gap" in msg.lower()
 
     def test_no_op_when_only_candidate_is_in_cooldown(self, tmp_path):
         db = _make_db(tmp_path)

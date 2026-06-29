@@ -663,6 +663,12 @@ def run_full_screen_for_segment(ctx, seg):
         min_price=ctx.min_price,
         max_price=ctx.max_price,
         min_volume=ctx.min_volume,
+        # Liquidity floor — entry-universe only. screen_by_price_range is
+        # the single chokepoint every stock entry path (dynamic, fallback,
+        # watchlist) passes through, and held positions never flow here,
+        # so this can't block an exit. min_adv is operator policy, never
+        # auto-tuned.
+        min_adv=ctx.min_adv,
         limit=50,
         universe=universe,
     )
@@ -928,9 +934,25 @@ def _get_shared_candidates(ctx, seg, is_crypto):
                 if "rsi" not in bars.columns:
                     continue
                 latest_rsi = float(bars.iloc[-1]["rsi"])
-                if latest_rsi < ctx.rsi_oversold:
-                    symbols.add(sym)
-                    maga_added += 1
+                if latest_rsi >= ctx.rsi_oversold:
+                    continue
+                # MAGA oversold scan is a SECOND entry path into the
+                # candidate set (it bypasses screen_by_price_range), so it
+                # must enforce the SAME per-profile universe floors —
+                # price band, share volume, and the dollar-ADV liquidity
+                # floor — or a thin/cheap oversold name would reach live
+                # trading below the operator's floors. Bars are already in
+                # hand, so the 20-day dollar ADV is free here (same formula
+                # as screen_by_price_range).
+                m_price = float(bars.iloc[-1]["close"])
+                m_volume = float(bars.iloc[-1]["volume"])
+                m_adv = float(bars["volume"].tail(20).mean()) * m_price
+                if not (ctx.min_price <= m_price <= ctx.max_price
+                        and m_volume >= ctx.min_volume
+                        and m_adv >= ctx.min_adv):
+                    continue
+                symbols.add(sym)
+                maga_added += 1
             except (KeyError, ValueError, AttributeError, TypeError,
                     IndexError, OSError) as _ms_exc:
                 # Per-symbol MAGA oversold scan; one bad symbol

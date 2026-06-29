@@ -46,6 +46,10 @@ class UserContext:
     min_price: float = 1.0
     max_price: float = 20.0
     min_volume: int = 500_000
+    # Minimum average daily DOLLAR volume (price * 20-day mean share
+    # volume). Liquidity floor the share-count min_volume can't express.
+    # Operator-set policy; never auto-tuned (self_tuning._OPERATOR_ONLY_PARAMS).
+    min_adv: float = 5_000_000.0
     volume_surge_multiplier: float = 2.0
 
     # RSI thresholds
@@ -519,4 +523,5 @@ def build_context_from_segment(segment_name: str) -> UserContext:
         min_price=seg.get("min_price", config.SCREEN_MIN_PRICE),
         max_price=seg.get("max_price", config.SCREEN_MAX_PRICE),
         min_volume=seg.get("min_volume", config.SCREEN_MIN_VOLUME),
+        min_adv=seg.get("min_adv", config.SCREEN_MIN_ADV),
     )

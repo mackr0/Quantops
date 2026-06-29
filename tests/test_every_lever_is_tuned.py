@@ -30,6 +30,18 @@ import pytest
 # reason. Adding to this list requires a written rationale — the test
 # fails on stale entries (columns no longer in the schema).
 MANUAL_PARAMETERS = {
+    # Universe / liquidity floors — OPERATOR-ONLY (2026-06-26). These
+    # define WHAT is eligible to trade; the self-tuner optimizes HOW to
+    # trade. A tuner that could relax its own liquidity floor would walk
+    # it down to chase entry count (optimizer defeats its own risk
+    # limit), so these are set only in Settings. Enforced class-wide by
+    # self_tuning._OPERATOR_ONLY_PARAMS / the _apply_param_change firewall;
+    # pinned by tests/test_universe_floors_operator_only_2026_06_26.py.
+    "min_price":   "Operator-only universe floor — never auto-tuned (_OPERATOR_ONLY_PARAMS)",
+    "max_price":   "Operator-only universe ceiling — never auto-tuned (_OPERATOR_ONLY_PARAMS)",
+    "min_volume":  "Operator-only share-liquidity floor — never auto-tuned (_OPERATOR_ONLY_PARAMS)",
+    "min_adv":     "Operator-only dollar-liquidity floor — never auto-tuned (_OPERATOR_ONLY_PARAMS)",
+
     # Identity / metadata — not "parameters" at all
     "id":              "PRIMARY KEY",
     "user_id":         "Foreign key to users",

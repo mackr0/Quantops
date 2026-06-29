@@ -57,9 +57,14 @@ class TestSelfTunerOptimizerDirections:
         # Inspect the source to extract registered optimizer names.
         src = inspect.getsource(_apply_upward_optimizations)
         import re
+        # Strip comments first so retired-optimizer tombstones (e.g.
+        # "# _optimize_min_volume removed 2026-06-26 ...") are NOT mistaken
+        # for live dispatch entries — only actual code references a
+        # registered optimizer.
+        code = "\n".join(line.split("#", 1)[0] for line in src.splitlines())
         # Match "_optimize_<name>," in the all_optimizers list.
         # Include digits (momentum_5d, momentum_20d, etc.).
-        registered = set(re.findall(r"_optimize_[a-z0-9_]+", src))
+        registered = set(re.findall(r"_optimize_[a-z0-9_]+", code))
         missing = registered - set(_OPTIMIZER_DIRECTION.keys())
         assert not missing, (
             f"Optimizers in the registry are missing direction tags "
