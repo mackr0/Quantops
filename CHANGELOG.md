@@ -5,6 +5,10 @@ at the top.
 
 ---
 
+## 2026-06-30 — Scheduler: protective exits run in a fast pass BEFORE the LLM entry scans (no more ~13-min stop/TP lag). Severity: MEDIUM (risk responsiveness; zero added cost).
+
+Exits (stop-loss / take-profit / trailing / reconcile) are deterministic and **free** (no LLM) and sit on a 5-min timer — but they shared the scheduler's 3-worker pool with the expensive LLM entry scans, so on the 13-profile fleet they queued behind scans and fired **~13 min apart** (measured p193: exits 17:12 → 17:25). A stop could be checked ~13 min late. Fix: the main loop now splits due profiles via `_split_due_for_fast_exits` and runs the **exit/maintenance cycles** (anything not due for an entry scan — exit-only, prediction-resolve, snapshot) in a **dedicated fast pass BEFORE** the slow scan pass, so protective checks fire on their ~5-min cadence. Safety preserved: the cycle epoch bumps once for both passes; the **integrity gate still runs before the entry-scan pass** (entries blocked on divergence — the pass-1 exits already ran, which is correct since exits are protective and each freshens-to-broker first); scan-due profiles still run exits + reconcile inside their full cycle (the 5-min exit timer is shorter than the 10-min scan interval, so entry freshness holds); per-account order-collision serialization is preserved (the two passes run sequentially, and the per-account lock still serializes within each). Pinned by `test_fast_exits_scheduler_2026_06_30.py` (bucketing + the exits → integrity-gate → scans ordering). Zero added cost — exits make no LLM calls.
+
 ## 2026-06-30 — AI cost reduction: disable 2 advisory specialists + 10-min scan floor. Severity: LOW (cost; verified no learning/protection impact).
 
 Fleet AI cost had risen to **~$3.10/day** (from ~$0.27 at the old 15-min cadence; 5-min interval × 13 profiles drove it), and the breakdown showed **~72% is the specialist ensemble**, ~28% the AI trade-selection, and **exits cost $0** (deterministic — no LLM). Two cuts:

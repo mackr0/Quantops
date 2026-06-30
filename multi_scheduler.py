@@ -5155,6 +5155,23 @@ def _load_active_profiles():
         return []
 
 
+def _split_due_for_fast_exits(due_profiles):
+    """Order due profiles so exit/maintenance cycles run BEFORE entry scans.
+
+    Profiles not due for an entry scan (exit-only, prediction-resolve,
+    snapshot) run a fast, deterministic, zero-LLM cycle. Running them in a
+    dedicated pass ahead of the slow LLM scan pass keeps protective stop/TP
+    checks from queuing behind entries in the shared 3-worker pool (which made
+    exits lag ~13 min on the 13-profile fleet). Returns (non_scan, scan_due);
+    every item lands in exactly one bucket. A scan-due profile is ALSO
+    exit-due (the 5-min exit timer is shorter than the scan interval), so its
+    freshness-reconcile + exits still run inside its full cycle in pass 2.
+    """
+    non_scan = [it for it in due_profiles if not it.get("do_scan")]
+    scan_due = [it for it in due_profiles if it.get("do_scan")]
+    return non_scan, scan_due
+
+
 def main_loop(active_segments=None, legacy_mode=False):
     """Run the multi-account scheduling loop.
 
@@ -5641,40 +5658,59 @@ def main_loop(active_segments=None, legacy_mode=False):
                 return prof["name"]
 
             if due_profiles:
-                # INTEGRITY GATE (2026-06-18) — run the book-integrity
-                # checks BEFORE placing any new entries this cycle. On any
-                # broker/journal divergence it engages the kill switch, so
-                # the entries dispatched just below are blocked (exits
-                # still run). Runs EVERY cycle, in-line with trading — a
-                # problem halts entries on the same cycle it appears,
-                # instead of an email from a slower side audit.
                 # FRESHNESS CLOCK (2026-06-23): advance the cycle epoch once
                 # per orchestrator cycle. Every (profile, symbol) is now stale
                 # until reconciled-to-broker again this cycle — so the oversell
                 # door forces a fresh reconcile before it will act on it, and
                 # the reconcile-first task at the top of each profile's cycle
-                # re-stamps them.
+                # re-stamps them. One bump covers both passes below.
                 import cycle_epoch
                 cycle_epoch.bump()
-                _run_integrity_gate()
                 from concurrent.futures import ThreadPoolExecutor, as_completed
-                max_workers = min(len(due_profiles), 3)
-                logging.info(
-                    f"Running {len(due_profiles)} profile(s) in parallel "
-                    f"(max_workers={max_workers})"
-                )
-                with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                    futures = {
-                        pool.submit(_run_one_profile, item): item["prof"]["name"]
-                        for item in due_profiles
-                    }
-                    for future in as_completed(futures):
-                        name = futures[future]
-                        try:
-                            future.result()
-                            logging.info(f"Profile {name} completed")
-                        except Exception:
-                            logging.exception(f"Profile {name} failed")
+
+                def _run_pool(items, label):
+                    if not items:
+                        return
+                    mw = min(len(items), 3)
+                    logging.info(
+                        f"Running {len(items)} {label} profile(s) in parallel "
+                        f"(max_workers={mw})"
+                    )
+                    with ThreadPoolExecutor(max_workers=mw) as pool:
+                        futures = {
+                            pool.submit(_run_one_profile, it): it["prof"]["name"]
+                            for it in items
+                        }
+                        for future in as_completed(futures):
+                            name = futures[future]
+                            try:
+                                future.result()
+                                logging.info(f"Profile {name} completed")
+                            except Exception:
+                                logging.exception(f"Profile {name} failed")
+
+                # PASS 1 — FAST EXITS / MAINTENANCE FIRST (2026-06-30). Profiles
+                # due for exits / prediction-resolve / snapshot but NOT an entry
+                # scan run their cheap, deterministic (zero-LLM) cycle in a
+                # dedicated pass AHEAD of the slow scans — so protective stop/TP
+                # checks fire on their ~5-min timer instead of queuing behind
+                # the LLM entry scans (which made exits lag ~13 min). These run
+                # regardless of the integrity gate: exits are protective and
+                # must always fire, and each freshens-to-broker first.
+                non_scan, scan_due = _split_due_for_fast_exits(due_profiles)
+                _run_pool(non_scan, "exit/maintenance")
+
+                # PASS 2 — ENTRY SCANS. The INTEGRITY GATE runs BEFORE any new
+                # entries: on broker/journal divergence it engages the kill
+                # switch so the scan-pass entries are blocked (the exits in
+                # pass 1 already ran). A scan-due profile also runs exits +
+                # freshness-reconcile inside its full cycle (the 5-min exit
+                # timer is shorter than the scan interval), so entry freshness
+                # is preserved.
+                if scan_due:
+                    _run_integrity_gate()
+                    _run_pool(scan_due, "scan")
+
                 ran_something = True
 
         # NOTE (2026-06-18) — the old `audit_runner` block ran HERE, after
