@@ -4,13 +4,19 @@ Canonical procedure for a full fresh-start of the EXP-A* experiment. Supersedes
 the pasted instruction list. Last validated: 2026-06-17 (two resets — the
 morning run surfaced the `ENCRYPTION_KEY` footgun now fixed in Step 3).
 
-**Code baseline (2026-06-27):** this reset lands on the broker/journal
+**Code baseline (2026-06-30):** this reset lands on the broker/journal
 divergence-class fix (per-cycle freshness invariant + durable journaling, CHANGELOG
-2026-06-23) **and** the institutional-universe floors — `$10` min price + `$5M`
-min dollar-ADV, operator-only / never auto-tuned (CHANGELOG 2026-06-26/27,
-*Standing state* below). A reset inherits both automatically. Make sure Step 2
-ships them (prod `HEAD` matches your pushed commit) so the fresh experiment runs
-on the fixed code and the institutional universe from day one.
+2026-06-23), the institutional-universe floors — `$10` min price + `$5M` min
+dollar-ADV, operator-only / never auto-tuned (CHANGELOG 2026-06-26/27) — **and**
+the 2026-06-30 options-path + isolation fixes (CHANGELOG 2026-06-30, *Standing
+state* below): the cross-profile Greeks leak in `option_spread_risk` closed
+(own-book), the options candidate path made own-book concentration-aware (no more
+~97% redundant-veto storm), option Greeks priced off the underlying spot (not the
+premium), the cross-profile concentration cap removed, the fast-exits two-pass
+scheduler, and the cost cuts (2 advisory specialists off + 10-min scan floor). A
+reset inherits all of these automatically. Make sure Step 2 ships them (prod
+`HEAD` matches your pushed commit) so the fresh experiment runs on the fixed code
+and the institutional universe from day one.
 
 > **What a fresh-start does:** deletes every profile + per-profile DB outright,
 > rebuilds the 13 EXP-A* profiles from the manifest, swaps in new Alpaca paper
@@ -39,8 +45,9 @@ on the fixed code and the institutional universe from day one.
 ## 1. Prepare the dated reset script
 
 Clone the **most recent** reset script (it carries the full lineage — funding
-guard, RC1–RC11, gap fixes). As of 2026-06-17 that is
-`full_fresh_start_pm_2026_06_17.py`.
+guard, RC1–RC11, gap fixes). As of 2026-06-30 that is
+`full_fresh_start_2026_06_29.py` (the 2026-06-30 reset cloned it to
+`full_fresh_start_2026_06_30.py`).
 
 **Naming the target** (the filename MUST end `_YYYY_MM_DD.py` for the
 test-exemption; **never** a numeric suffix):
@@ -217,6 +224,20 @@ Watch the first ~3 cycles / ~20–30 min and confirm:
   per-profile or manifest step. Rationale: ~80% of the prior cohort's realized
   losses came from sub-$10 names this universe now excludes (HTZ alone, a ~$2.50
   stock, was 60%). Operator can still narrow/widen any profile from Settings.
-- **Recommended hardening (not yet in the script):** an `ENCRYPTION_KEY`
-  pre-flight in `step1` that aborts *before* `step2` if the var is unset, turning
-  the Step-3 footgun into a clean no-op. Add it to the next dated script.
+- **Option-path isolation + own-book concentration (2026-06-30):** the option
+  risk specialist (`option_spread_risk`, a VETO specialist) reads its book-Greeks
+  context from the profile's OWN book (`client.get_positions(ctx=ctx)`), NEVER the
+  shared Alpaca conduit aggregate (`api.list_positions()`) — an AST test pins that
+  no specialist calls `list_positions()` directly. The options candidate generator
+  is own-book concentration-aware: it skips spreads on underlyings the profile
+  already holds, so the AI no longer re-proposes redundant spreads that the
+  reviewer auto-vetoes (the ~97% option-veto storm). Option-book Greeks are priced
+  off the underlying spot (`market_data.get_bars`), not the option premium. All
+  inherited automatically by a reset (code-level); profiles remain fully
+  independent — they share only the brokerage conduit.
+- **`ENCRYPTION_KEY` pre-flight (folded in 2026-06-30):** `step1_verify_keys`
+  now aborts *before* `step2` if `ENCRYPTION_KEY` is unset, turning the Step-3
+  footgun into a clean no-op (it returns False → `main()` aborts before any
+  destructive write). Step 3 above is still the operative instruction — load the
+  env — but a forgotten load now fails safe instead of crashing post-wipe. Carry
+  this gate forward when cloning the next dated script.
