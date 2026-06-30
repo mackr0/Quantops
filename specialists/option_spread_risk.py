@@ -28,9 +28,12 @@ when the option pipeline's execute() is wired.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List
 
 from specialists._common import candidates_block, extract_verdict_array
+
+logger = logging.getLogger(__name__)
 
 
 NAME = "option_spread_risk"
@@ -163,26 +166,52 @@ in the same order as the list above.
 
 
 def _current_positions(ctx: Any) -> List[Dict[str, Any]]:
-    """Get current broker positions for the ctx's account.
-    Failure-tolerant — returns [] if anything goes wrong (the
-    specialist still gets the rest of its prompt context)."""
+    """Get this profile's OWN-BOOK positions (isolation-critical).
+
+    Reads the profile's own book via ``client.get_positions(ctx=ctx)`` —
+    NEVER ``api.list_positions()``. The latter returns the shared Alpaca
+    conduit's AGGREGATE positions across every virtual profile on that
+    account, which would leak another profile's exposure into this
+    VETO-authority specialist's book-Greeks context (a profile must judge
+    only its own book). Mirrors the own-book routing in
+    ``adversarial_reviewer``.
+
+    ``occ_symbol`` is carried through explicitly: a virtual ``Position``'s
+    ``"symbol"`` is the UNDERLYING (not the 21-char OCC), so without it
+    ``compute_book_greeks`` would misclassify every option leg as stock and
+    silently drop all option Greeks. Failure-tolerant — returns [] on any
+    error so the specialist still renders the rest of its prompt context.
+    """
     try:
-        from client import get_api
-        api = get_api(ctx)
-        # Alpaca positions are list_positions; client handles paging
-        positions = api.list_positions() or []
-        # Convert to plain dicts compatible with compute_book_greeks
-        out = []
+        from client import get_positions
+        positions = get_positions(ctx=ctx) or []
+        # Convert to plain dicts compatible with compute_book_greeks.
+        # get_positions returns Position objects (dict-like .get); guard for
+        # any raw object that slips through.
+        out: List[Dict[str, Any]] = []
         for p in positions:
+            getter = p.get if hasattr(p, "get") else None
+            if getter is not None:
+                occ = getter("occ_symbol")
+                underlying = getter("symbol", "") or ""
+                qty = float(getter("qty") or 0)
+                cur = float(getter("current_price") or 0)
+            else:
+                occ = getattr(p, "occ_symbol", None)
+                underlying = getattr(p, "symbol", "") or ""
+                qty = float(getattr(p, "qty", 0) or 0)
+                cur = float(getattr(p, "current_price", 0) or 0)
             out.append({
-                "symbol": getattr(p, "symbol", "") or "",
-                "qty": float(getattr(p, "qty", 0) or 0),
-                "current_price": float(
-                    getattr(p, "current_price", 0) or 0
-                ),
+                # option legs key off the OCC; stocks off the underlying
+                "symbol": occ or underlying,
+                "occ_symbol": occ,
+                "qty": qty,
+                "current_price": cur,
             })
         return out
-    except Exception:
+    except Exception as exc:
+        logger.debug("own-book positions unavailable (fail-open, no Greeks "
+                     "line): %s", exc)
         return []
 
 

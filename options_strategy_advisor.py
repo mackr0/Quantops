@@ -232,6 +232,7 @@ def evaluate_candidate_for_multileg(
     iv_rank_pct: Optional[float] = None,
     regime: Optional[str] = None,
     ctx: Any = None,
+    held: Optional[set] = None,
 ) -> List[Dict[str, Any]]:
     """For a screener candidate (NOT a held position), return list of
     multi-leg strategy recommendations. AI takes it from there.
@@ -244,6 +245,13 @@ def evaluate_candidate_for_multileg(
             skipped (we don't price-blind on premium).
         regime: market regime hint. "ranging" pushes toward iron
             condors; "trending" pushes toward verticals.
+        held: this profile's OWN held underlyings (uppercased set). When
+            the candidate's underlying is already on the book, return no
+            recs — proposing an option spread on a name already held is the
+            redundant long / net-zero-wash the adversarial_reviewer vetoes
+            ~every cycle, so we suppress it BEFORE the prompt and the veto
+            (own-book only; isolation-safe). None → no filtering (the menu
+            renders exactly as before).
 
     Strategy selection logic:
       Bullish (signal in BUY/STRONG_BUY) + IV rich      → bull_put_spread (credit)
@@ -262,6 +270,13 @@ def evaluate_candidate_for_multileg(
     signal = (candidate.get("signal") or "").upper()
     price = float(candidate.get("price") or 0)
     if not symbol or price <= 0:
+        return recs
+    # Own-book concentration guard (isolation-safe — `held` is THIS
+    # profile's own underlyings only). Suppress option proposals on names
+    # already on the book; otherwise the generator re-proposes them every
+    # cycle and the adversarial_reviewer vetoes them post-selection,
+    # burning an LLM round-trip each time.
+    if held and str(symbol).upper() in held:
         return recs
     if iv_rank_pct is None:
         # Don't recommend any IV-conditional strategy without IV data
@@ -421,6 +436,29 @@ def evaluate_candidate_for_multileg(
     return recs
 
 
+def _own_book_held_underlyings(ctx: Any) -> set:
+    """This profile's OWN held underlyings (stock + option legs), uppercased.
+
+    Isolation-safe: reads ONLY ``ctx``'s own virtual book via
+    ``client.get_positions(ctx=ctx)`` (same own-book routing the
+    adversarial_reviewer uses) — never the shared Alpaca conduit aggregate.
+    Returns an empty set when concentration-awareness is off or anything is
+    unavailable (fail-open: a missing held set must never block proposals).
+    """
+    try:
+        import config as _cfg
+        if not getattr(_cfg, "ENABLE_CONCENTRATION_AWARE", False):
+            return set()
+        from client import get_positions
+        from book_fit import held_underlyings
+        positions = get_positions(ctx=ctx) or []
+        return {h.upper() for h in held_underlyings(positions) if h}
+    except Exception as exc:
+        logger.debug("own-book held-underlyings unavailable (fail-open, no "
+                     "concentration filtering this build): %s", exc)
+        return set()
+
+
 def render_multileg_recs_for_prompt(
     candidates: List[Dict[str, Any]],
     iv_rank_lookup=None,
@@ -445,6 +483,10 @@ def render_multileg_recs_for_prompt(
     """
     if not candidates:
         return ""
+    # Compute the own-book held set ONCE per prompt build (not per
+    # candidate) and pass it down so spreads on already-held underlyings
+    # are dropped before they ever reach the AI / the post-selection veto.
+    held = _own_book_held_underlyings(ctx)
     all_recs: List[Dict[str, Any]] = []
     for c in candidates:
         sym = c.get("symbol")
@@ -452,10 +494,12 @@ def render_multileg_recs_for_prompt(
         if iv_rank_lookup is not None and sym:
             try:
                 iv_rank = iv_rank_lookup(sym)
-            except Exception:
+            except Exception as exc:
+                logger.debug("iv_rank_lookup(%s) failed (fail-open, "
+                             "IV-conditional strategies skipped): %s", sym, exc)
                 iv_rank = None
         recs = evaluate_candidate_for_multileg(
-            c, iv_rank_pct=iv_rank, regime=regime, ctx=ctx,
+            c, iv_rank_pct=iv_rank, regime=regime, ctx=ctx, held=held,
         )
         all_recs.extend(recs)
 
@@ -495,7 +539,9 @@ def render_for_prompt(
         if iv_rank_lookup is not None and sym:
             try:
                 iv_rank = iv_rank_lookup(sym)
-            except Exception:
+            except Exception as exc:
+                logger.debug("iv_rank_lookup(%s) failed (fail-open, "
+                             "IV-conditional strategies skipped): %s", sym, exc)
                 iv_rank = None
         recs = evaluate_position_for_strategies(pos, iv_rank)
         all_recs.extend(recs)

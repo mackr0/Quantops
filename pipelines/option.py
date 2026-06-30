@@ -113,9 +113,15 @@ class OptionPipeline(Pipeline):
         from options_oracle import get_options_oracle
         from options_strategy_advisor import (
             evaluate_candidate_for_multileg,
+            _own_book_held_underlyings,
         )
 
         regime = getattr(ctx, "market_regime", None)
+        # Own-book held set, computed ONCE (isolation-safe — this profile's
+        # own book only). Suppresses spreads on already-held underlyings so
+        # the pipeline never emits the redundant proposals the
+        # adversarial_reviewer vetoes every cycle. Mirrors the live path.
+        held = _own_book_held_underlyings(ctx)
         out: List[Candidate] = []
         for signal in shortlist:
             if not isinstance(signal, dict):
@@ -158,6 +164,7 @@ class OptionPipeline(Pipeline):
                 iv_rank_pct=iv_rank_pct,
                 regime=regime,
                 ctx=ctx,
+                held=held,
             ) or []
             if not recs:
                 continue
