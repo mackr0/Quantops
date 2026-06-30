@@ -221,6 +221,19 @@ def run_ensemble(
             disabled = set(raw)
     except Exception:
         disabled = set()
+    # Global operator-disabled specialists (cost control, 2026-06-30):
+    # sentiment_narrative + pattern_recognizer are ADVISORY (non-veto) and
+    # largely redundant with the free 179-rule deterministic panel. Disabling
+    # them cuts ~22% of ensemble cost with NO learning impact (specialist
+    # verdicts are not a learning feature — the meta-model/self-tuner train on
+    # predictions+outcomes) and NO protection loss (neither is in
+    # VETO_AUTHORIZED). Edit config.GLOBALLY_DISABLED_SPECIALISTS to revert.
+    # The ≥2-active floor below still applies.
+    try:
+        import config as _cfg
+        disabled |= set(getattr(_cfg, "GLOBALLY_DISABLED_SPECIALISTS", []) or [])
+    except Exception as _gd_exc:
+        logger.debug("global specialist disable read failed: %s", _gd_exc)
     if len(specialists) - len(disabled) < 2:
         # Floor enforcement — un-disable arbitrarily until at least
         # 2 specialists run. Logged so operators can see when this

@@ -14,6 +14,17 @@ import json
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _full_specialist_set(monkeypatch):
+    """These tests verify ensemble MECHANICS (chunking, market applicability,
+    cost scaling) with the FULL specialist roster. Isolate them from the
+    operator-level cost disable (config.GLOBALLY_DISABLED_SPECIALISTS, which
+    turns off sentiment_narrative + pattern_recognizer in production) so a
+    cost-tuning choice never silently changes these mechanics assertions."""
+    import config
+    monkeypatch.setattr(config, "GLOBALLY_DISABLED_SPECIALISTS", [], raising=False)
+
+
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
 # ---------------------------------------------------------------------------

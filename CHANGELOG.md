@@ -5,6 +5,15 @@ at the top.
 
 ---
 
+## 2026-06-30 — AI cost reduction: disable 2 advisory specialists + 10-min scan floor. Severity: LOW (cost; verified no learning/protection impact).
+
+Fleet AI cost had risen to **~$3.10/day** (from ~$0.27 at the old 15-min cadence; 5-min interval × 13 profiles drove it), and the breakdown showed **~72% is the specialist ensemble**, ~28% the AI trade-selection, and **exits cost $0** (deterministic — no LLM). Two cuts:
+
+1. **Globally disable the 2 advisory non-veto specialists** `sentiment_narrative` + `pattern_recognizer` via `config.GLOBALLY_DISABLED_SPECIALISTS` (merged into the ensemble's per-run `disabled` set before the ≥2-active floor). ~22% of cost. **No learning impact** — specialist verdicts are NOT a learning feature (the meta-model/self-tuner train on predictions+outcomes; ensemble output is only persisted to `cycle_data` for display). **No protection loss** — neither is in `VETO_AUTHORIZED`; the risk vetoes (`adversarial_reviewer`, `risk_assessor`) stay. Signals largely preserved by the free 179-rule deterministic panel.
+2. **Scan interval 5 → 10 min** (`users.scan_interval_minutes`). At a 5-min floor the throughput-bound cadence varied ~7–11 min; a 10-min floor trims the faster sub-10 runs to a consistent ~10–11 min → modestly fewer scans. (Note: the 5-min interval was never actually achieved — the scheduler's 3-worker pool caps a full 13-profile pass at ~10 min regardless.)
+
+Tests: `test_specialist_cost_disable_2026_06_30.py` (the disabled set is exactly the 2 advisory specialists; neither is veto-authorized; the ensemble merges the config list); `test_ensemble.py` autouse-isolated from the global disable so mechanics assertions test the full roster. Full suite green. **Known follow-up (not in this change):** exits run on a 5-min timer but are queued behind the LLM scans in the same 3-worker pool, so they lag ~13 min on prod — decoupling them onto a fast independent loop is a free improvement to stop/TP responsiveness.
+
 ## 2026-06-30 — Isolation fix: removed the cross-profile concentration cap; + concentration-aware ranking (Phase 2). Severity: HIGH (isolation violation + idle-cash/no-trade).
 
 Diagnosed why p193 (EXP-A3-700K-AggressiveFree) sat ~49% cash with no new entries. Two changes:

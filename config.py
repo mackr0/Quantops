@@ -57,6 +57,14 @@ DEFAULT_TAKE_PROFIT_PCT = 0.10
 SCREEN_MIN_PRICE = 10.00  # fresh-start baseline floor (institutional: excludes sub-$10 penny/meme tier)
 SCREEN_MAX_PRICE = 20.00
 SCREEN_MIN_VOLUME = 500000
+# Specialist ensemble cost control (2026-06-30): globally disable these
+# advisory (non-veto) LLM specialists. They were ~22% of daily AI cost and are
+# largely redundant with the free 179-rule deterministic panel. Disabling them
+# does NOT affect learning (specialist verdicts aren't a learning feature) and
+# does NOT remove any veto/protection (neither is VETO_AUTHORIZED). To
+# re-enable, remove from this list. The ensemble keeps a ≥2-active floor.
+GLOBALLY_DISABLED_SPECIALISTS = ["sentiment_narrative", "pattern_recognizer"]
+
 # Concentration-aware candidate selection (2026-06-29): annotate each
 # candidate with a "book fit" line (max return-correlation to held names +
 # same-sector count) in the AI prompt, so the AI proposes trades that
