@@ -36,8 +36,11 @@ from __future__ import annotations
 # truth for Greeks aggregation since Phase A1 of OPTIONS_PROGRAM_PLAN;
 # Phase 6 of the pipeline refactor doesn't reinvent it, just gives it
 # a per-pipeline namespace.
-from options_greeks_aggregator import compute_book_greeks  # noqa: F401
+from options_greeks_aggregator import (  # noqa: F401
+    compute_book_greeks,
+    make_underlying_spot_lookup,
+)
 
 from . import exposure  # noqa: F401
 
-__all__ = ["compute_book_greeks", "exposure"]
+__all__ = ["compute_book_greeks", "make_underlying_spot_lookup", "exposure"]

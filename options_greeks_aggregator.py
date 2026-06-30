@@ -125,6 +125,39 @@ def _greek_contribution(
     }
 
 
+def make_underlying_spot_lookup() -> Callable[[str], Optional[float]]:
+    """Build a `price_lookup(underlying_ticker) -> latest spot` for
+    `compute_book_greeks` callers that hold OPTION legs.
+
+    Greeks need the UNDERLYING's spot. Without a price_lookup,
+    `compute_book_greeks` falls back to the leg's own `current_price` — which
+    for an option is the PREMIUM (e.g. $5), not the underlying spot (e.g.
+    $400) — producing nonsense delta/gamma/vega/theta. This returns the
+    underlying's latest close, ALPACA-FIRST via `market_data.get_bars`,
+    memoized per instance so a multi-leg book hits the API once per
+    underlying. Fail-soft: returns None for a symbol on any error (the
+    aggregator then skips that leg rather than mispricing it).
+    """
+    from market_data import get_bars
+
+    _cache: Dict[str, Optional[float]] = {}
+
+    def _spot(sym: str) -> Optional[float]:
+        if sym in _cache:
+            return _cache[sym]
+        val: Optional[float] = None
+        try:
+            bars = get_bars(sym, limit=2)
+            if bars is not None and len(bars) > 0:
+                val = float(bars["close"].iloc[-1])
+        except Exception as exc:
+            logger.debug("underlying spot lookup failed for %s: %s", sym, exc)
+        _cache[sym] = val
+        return val
+
+    return _spot
+
+
 def compute_book_greeks(
     positions: List[Dict[str, Any]],
     price_lookup: Optional[Callable[[str], Optional[float]]] = None,

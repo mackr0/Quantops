@@ -76,8 +76,18 @@ def build_prompt(candidates: List[Dict[str, Any]], ctx: Any) -> str:
     try:
         positions = _current_positions(ctx)
         if positions:
-            from pipelines.risk import compute_book_greeks
-            book = compute_book_greeks(positions) or {}
+            from pipelines.risk import (
+                compute_book_greeks, make_underlying_spot_lookup,
+            )
+            # Greeks need the UNDERLYING spot, not the option premium —
+            # pass a real spot lookup so net delta/gamma/vega/theta are
+            # meaningful (without it the aggregator falls back to each
+            # leg's current_price, i.e. the premium, and the budgets it
+            # vetoes against are nonsense).
+            book = compute_book_greeks(
+                positions,
+                price_lookup=make_underlying_spot_lookup(),
+            ) or {}
             n_legs = int(book.get("n_options_legs") or 0)
             if n_legs > 0:
                 greeks_line = (

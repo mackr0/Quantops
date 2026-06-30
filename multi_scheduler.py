@@ -3894,8 +3894,15 @@ def _task_portfolio_risk_snapshot(ctx):
         # can't capture. Failure-tolerant: if Greeks computation
         # raises, the snapshot continues without them.
         try:
-            from pipelines.risk import compute_book_greeks
-            risk["book_greeks"] = compute_book_greeks(positions) or {}
+            from pipelines.risk import (
+                compute_book_greeks, make_underlying_spot_lookup,
+            )
+            # Pass a real underlying-spot lookup so option-leg Greeks
+            # aren't computed off the premium (the aggregator's
+            # current_price fallback). Same fix as option_spread_risk.
+            risk["book_greeks"] = compute_book_greeks(
+                positions, price_lookup=make_underlying_spot_lookup()
+            ) or {}
         except Exception as exc:
             logging.debug(
                 f"[{seg_label}] Greeks aggregation failed (non-fatal): {exc}"
