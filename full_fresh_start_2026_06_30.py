@@ -203,8 +203,10 @@ NEW_KEYS = [
 # 2026-06-09 — fresh Google AI Studio key for the AI cycle. Replaces
 # whatever step5b restores from the pre-reset snapshot, so every
 # profile starts the new experiment with the same fresh credential.
-# All 13 enabled profiles currently use google/gemini-2.5-flash-lite
-# (verified pre-reset), so a single key applies uniformly.
+# All 13 enabled profiles currently use google/gemini-3.1-flash-lite
+# (verified pre-reset; manifest default updated to 3.1 in
+# create_experiment_profiles._AI_PROVIDER_DEFAULTS), so a single key
+# applies uniformly.
 #
 # 2026-06-09 (post-leak rewrite) — the original commit hardcoded
 # the key inline. Github's secret scanner caught it within minutes

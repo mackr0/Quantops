@@ -300,7 +300,11 @@ PROFILES: List[Dict[str, Any]] = [
 # switches change ONE line here, not 13.
 _AI_PROVIDER_DEFAULTS = {
     "ai_provider": "google",
-    "ai_model": "gemini-2.5-flash-lite",
+    # 2026-06-30: upgraded to gemini-3.1-flash-lite (the live cohort's model).
+    # Folded in so the rebuild manifest matches reality and the MANIFEST DRIFT
+    # check stays clean (step5b also restores the live model, but the manifest
+    # is the source of truth for a from-scratch build).
+    "ai_model": "gemini-3.1-flash-lite",
 }
 for _p in PROFILES:
     for _k, _v in _AI_PROVIDER_DEFAULTS.items():
