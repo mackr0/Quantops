@@ -117,3 +117,61 @@ def test_ai_prompt_renders_book_fit():
     assert re.search(r'c\.get\(\s*["\']book_fit["\']\s*\)', src), (
         "ai_analyst must read book_fit off each candidate")
     assert "PORTFOLIO FIT" in src
+
+
+# ---------------------------------------------------------------------------
+# Rank penalty (Phase 2): own-book sector-concentration haircut at ranking
+# ---------------------------------------------------------------------------
+
+def test_sector_penalty_scales_and_caps():
+    from book_fit import sector_concentration_penalty
+    from collections import Counter
+    counts = Counter({"tech": 5, "finance": 1})
+    assert sector_concentration_penalty("tech", counts) == 0.4   # 0.08*5 capped at 0.4
+    assert abs(sector_concentration_penalty("finance", counts) - 0.08) < 1e-9
+    assert sector_concentration_penalty("energy", counts) == 0.0  # not held
+
+
+def test_sector_penalty_zero_on_empty_or_unknown():
+    from book_fit import sector_concentration_penalty
+    assert sector_concentration_penalty("tech", {}) == 0.0
+    assert sector_concentration_penalty(None, {"tech": 3}) == 0.0
+
+
+def test_rank_penalty_elevates_diversifier_over_concentrated():
+    """A lower-raw-score diversifying long must outrank a higher-score long
+    whose sector is already heavy in the OWN book — so the AI's menu leads
+    with names its own risk veto won't reject."""
+    from unittest.mock import patch
+    from trade_pipeline import _rank_candidates
+    # CONC: strong signal but in the over-held 'tech' sector.
+    # DIVR: weaker signal but a diversifying 'finance' name.
+    sigs = [
+        {"symbol": "CONC", "score": 4.0, "signal": "BUY", "rsi": 50, "votes": {}},
+        {"symbol": "DIVR", "score": 3.0, "signal": "BUY", "rsi": 50, "votes": {}},
+    ]
+    held = {"H1", "H2", "H3", "H4", "H5"}  # all tech in the own book
+
+    def fake_sector(sym):
+        return "tech" if sym in held or sym == "CONC" else "finance"
+
+    with patch("sector_classifier.get_sector", side_effect=fake_sector):
+        ranked = _rank_candidates(sigs, held, enable_shorts=False)
+    order = [s["symbol"] for s in ranked]
+    assert order[0] == "DIVR", (
+        "diversifier should outrank the concentration-additive name; got %s" % order)
+
+
+def test_rank_penalty_off_keeps_raw_order():
+    """With the kill switch off, ranking is pure score (no concentration tilt)."""
+    from unittest.mock import patch
+    import config
+    from trade_pipeline import _rank_candidates
+    sigs = [
+        {"symbol": "CONC", "score": 4.0, "signal": "BUY", "rsi": 50, "votes": {}},
+        {"symbol": "DIVR", "score": 3.0, "signal": "BUY", "rsi": 50, "votes": {}},
+    ]
+    held = {"H1", "H2", "H3", "H4", "H5"}
+    with patch.object(config, "ENABLE_CONCENTRATION_AWARE", False):
+        ranked = _rank_candidates(sigs, held, enable_shorts=False)
+    assert [s["symbol"] for s in ranked][0] == "CONC", "kill switch off → pure score order"

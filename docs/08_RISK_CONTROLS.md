@@ -158,7 +158,7 @@ A defense-in-depth layer above the per-trade and validation gates. These exist f
 |---|---|---|---|
 | **Master kill switch** | Manual flip on dashboard banner OR auto-flip on book-wide day-P&L floor breach | Returns `KILL_SWITCH` for every new entry across every profile until manually deactivated | `kill_switch.py` |
 | **Book daily-loss floor** | Cumulative book day-of P&L < −8% of opening equity | Auto-flips master kill switch with reason `auto: book day P&L X% breached floor −8%` | `kill_switch.check_and_activate_on_loss_floor` |
-| **Cross-profile concentration cap** | Aggregate $ exposure to a single symbol > 25% of book | Returns `BOOK_CONCENTRATION_CAP` for the proposed entry | `book_concentration.py` |
+| **Own-book concentration steering** | Candidate correlated with / same sector as the profile's OWN holdings | Advisory `PORTFOLIO FIT` line in the AI prompt + a sector-concentration rank haircut that surfaces diversifiers — never blocks; OWN-book only | `book_fit.py` |
 | **Catastrophic single-trade gate** | Proposed trade $ value > 5× profile's recent avg position size | Returns `CATASTROPHIC_SINGLE_TRADE` | `single_trade_gate.py` |
 | **Broker disconnect detection** | 3 consecutive Alpaca calls fail | Returns `BROKER_DISCONNECTED` for new entries until next success | `broker_health.py` |
 | **AI provider failover** | 3 consecutive 5xx/timeout from active AI provider | Auto-routes to OpenAI / Google fallback (when configured) | `provider_circuit.py` |

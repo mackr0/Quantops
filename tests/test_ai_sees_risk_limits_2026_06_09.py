@@ -143,16 +143,24 @@ class TestRiskLimitsBlockAppears:
             "max_position_pct (here 7%)"
         )
 
-    def test_block_includes_book_concentration_cap(self, tmp_path):
+    def test_prompt_has_no_cross_profile_concentration_leak(self, tmp_path):
+        """The cross-profile book-concentration cap was REMOVED 2026-06-30.
+        Profiles are independent virtual accounts — the AI prompt must NOT
+        reference sibling/other profiles' holdings or any cross-profile
+        aggregate. Per-profile concentration is conveyed only by the
+        own-book PORTFOLIO FIT signal."""
         from ai_analyst import _build_batch_prompt
         db = _make_profile_db_with_history(tmp_path, avg_value=5000)
         prompt = _build_batch_prompt(
             [_candidate()], _portfolio_state(), _market_context(),
             ctx=_ctx(db),
         )
-        assert "25%" in prompt, (
-            "25% book-concentration cap must be visible to the AI"
-        )
+        low = prompt.lower()
+        for leak in ("sibling profile", "across sibling", "other profiles",
+                     "across profiles", "total book exposure across"):
+            assert leak not in low, (
+                "AI prompt must not leak cross-profile concentration: %r" % leak)
+        assert "Max position size" in prompt  # per-profile cap still shown
 
 
 # ---------------------------------------------------------------------------

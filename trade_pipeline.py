@@ -1083,40 +1083,18 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
     except Exception as _ct_exc:
         logging.debug("Catastrophic-trade check failed: %s", _ct_exc)
 
-    # --- Cross-profile concentration cap ---
-    # Per-profile max_position_pct only constrains a single profile's
-    # equity. If 10 profiles independently long the same name, the
-    # aggregate book exposure can exceed the intended limit and a
-    # single-name blowup hits all of them. Rejects new entries that
-    # would push aggregate share past max_book_exposure_pct_per_symbol
-    # (default 25%, configurable per-profile via UserContext).
-    try:
-        from book_concentration import would_breach as _book_would_breach
-        cap_pct = float(getattr(ctx, "max_book_exposure_pct_per_symbol", 0.25))
-        # Estimate the proposed trade $ value from signal price + a
-        # rough share count. The exact qty is computed downstream;
-        # for the gate we use the upper bound that the per-profile
-        # max_position_pct would permit.
-        equity_for_estimate = (account.get("equity") or 0)
-        proposed_value = (
-            equity_for_estimate * float(getattr(ctx, "max_position_pct", 0.10))
-        )
-        breach, reason, detail = _book_would_breach(
-            symbol, proposed_trade_value=proposed_value,
-            max_book_pct=cap_pct,
-        )
-        if breach:
-            return {
-                "symbol": symbol,
-                "action": "BOOK_CONCENTRATION_CAP",
-                "signal": signal.get("signal", "HOLD"),
-                "price": signal.get("price", 0),
-                "reason": reason,
-                "concentration_detail": detail,
-                "strategy": ctx.segment if ctx else "unknown",
-            }
-    except Exception as _bc_exc:
-        logging.debug("Book-concentration check failed: %s", _bc_exc)
+    # --- Cross-profile concentration cap: REMOVED 2026-06-30 ---
+    # This previously globbed every quantopsai_profile_*.db, summed a
+    # symbol's $ exposure ACROSS ALL PROFILES, and rejected a profile's
+    # entry when the aggregate breached a cap (BOOK_CONCENTRATION_CAP).
+    # That treats the 13 profiles as one shared book — a direct violation
+    # of the LOAD-BEARING isolation invariant: profiles are INDEPENDENT
+    # virtual accounts ("different people"), and one must NEVER be denied a
+    # trade because ANOTHER profile holds the same name. Per-profile
+    # concentration is already bounded by max_position_pct, the own-book
+    # specialist veto, and the own-book correlation signal (book_fit). Do
+    # NOT reintroduce ANY cross-profile aggregation in the decision path —
+    # pinned by tests/test_no_cross_profile_concentration_2026_06_30.py.
 
     # --- Drawdown protection ---
     dd = _dd if _dd is not None else {"action": "normal", "drawdown_pct": 0.0, "peak_equity": 0, "current_equity": 0}
@@ -4112,10 +4090,48 @@ def _rank_candidates(strategy_results, held_symbols, enable_shorts,
             short_skips["squeeze"], short_skips["regime"],
         )
 
-    sort_key = lambda s: (abs(s.get("score", 0)),
+    # Concentration-aware ranking (2026-06-30): down-weight a LONG
+    # candidate whose sector is already heavily represented in THIS
+    # PROFILE'S OWN book, so the top-N menu the AI sees leads with
+    # diversifying names instead of more of the same cluster (which the
+    # profile's own risk specialist would veto post-selection, leaving
+    # cash idle). OWN-BOOK ONLY (held_symbols is this profile's journal);
+    # shorts are hedges that REDUCE concentration, so they're never
+    # penalized; fail-open. Shares the book-fit kill switch.
+    _div_on = False
+    try:
+        import config as _cfg
+        _div_on = getattr(_cfg, "ENABLE_CONCENTRATION_AWARE", True)
+    except Exception:
+        _div_on = False
+    _held_sector_counts = {}
+    if _div_on and held_symbols:
+        try:
+            from collections import Counter
+            from sector_classifier import get_sector
+            _held_sector_counts = Counter(
+                s for s in (get_sector(h) for h in held_symbols) if s)
+        except Exception as _hs_exc:
+            logger.debug("held-sector precompute failed: %s", _hs_exc)
+            _held_sector_counts = {}
+
+    def _div_penalty(sig):
+        if not _held_sector_counts:
+            return 0.0
+        try:
+            from book_fit import sector_concentration_penalty
+            from sector_classifier import get_sector
+            return sector_concentration_penalty(
+                get_sector(sig.get("symbol", "")), _held_sector_counts)
+        except Exception:
+            return 0.0
+
+    long_key = lambda s: (abs(s.get("score", 0)) * (1.0 - _div_penalty(s)),
                           abs(s.get("rsi", 50) - 50))
-    long_eligible.sort(key=sort_key, reverse=True)
-    short_eligible.sort(key=sort_key, reverse=True)
+    short_key = lambda s: (abs(s.get("score", 0)),
+                           abs(s.get("rsi", 50) - 50))
+    long_eligible.sort(key=long_key, reverse=True)
+    short_eligible.sort(key=short_key, reverse=True)
 
     if enable_shorts:
         # Reserve slots: top 10 longs + top 5 shorts. If short bench is

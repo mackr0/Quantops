@@ -1274,6 +1274,11 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                     )
                 else:
                     anomaly_line = ""
+                # NOTE: the cross-profile "book concentration cap across
+                # sibling profiles" line was REMOVED 2026-06-30. Profiles are
+                # independent virtual accounts — the AI must not be told about,
+                # or constrained by, other profiles' holdings. Per-profile
+                # concentration is conveyed by the own-book PORTFOLIO FIT signal.
                 risk_limits_block = (
                     f"\n  System risk limits (system-enforced; "
                     f"proposals above auto-blocked):\n"
@@ -1281,9 +1286,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                     f"{max_pos_pct * 100:.1f}% of equity "
                     f"(${position_cap_dollars:,.0f}) <<< (primary cap; "
                     f"every BUY / STRONG_BUY sized to this max-or-less)"
-                    f"{anomaly_line}\n"
-                    f"    Book concentration cap: any single symbol > "
-                    f"25% of total book exposure across sibling profiles"
+                    f"{anomaly_line}"
                 )
     except Exception as _rl_exc:
         # Risk-limit enrichment is best-effort; prompt continues
@@ -2449,12 +2452,11 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         # primary is blocked by such a shared-account conflict.
         f"- Also return an \"alternates\" array: additional trades you "
         f"would ALSO make, RANKED by conviction (highest first), to be "
-        f"used ONLY if a primary trade is blocked by a shared-account "
-        f"conflict on a sibling profile. Each alternate is a full trade "
-        f"with the SAME schema as a primary (stock entries and option "
-        f"spreads both allowed). Size each alternate on its OWN merit — "
-        f"never copy a primary's size. Leave it empty ([]) if you have "
-        f"no further conviction trades.\n\n"
+        f"used ONLY to backfill a primary that cannot be placed. Each "
+        f"alternate is a full trade with the SAME schema as a primary "
+        f"(stock entries and option spreads both allowed). Size each "
+        f"alternate on its OWN merit — never copy a primary's size. Leave "
+        f"it empty ([]) if you have no further conviction trades.\n\n"
         f"Respond ONLY with valid JSON (no markdown, no commentary):\n"
         f'{{"trades": [{{"symbol": "TICKER", "action": "BUY", '
         f'"size_pct": 7.5, "confidence": 75, '

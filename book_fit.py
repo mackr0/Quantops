@@ -44,6 +44,28 @@ def held_underlyings(positions) -> List[str]:
     return out
 
 
+def sector_concentration_penalty(candidate_sector, held_sector_counts,
+                                 per_name: float = 0.08, cap: float = 0.4) -> float:
+    """A [0..cap] score haircut for a LONG candidate whose sector is already
+    well-represented in the profile's OWN book.
+
+    Used by _rank_candidates to push sector-diversifiers up the menu the AI
+    sees, so it proposes trades that won't be concentration-vetoed. Pure
+    function (no I/O) — the caller passes the candidate's sector and a
+    {sector: count} Counter of the profile's OWN held names (both from the
+    cached sector_classifier). per_name=0.08 → each held name in the same
+    sector shaves 8% off the candidate's effective rank score, capped at 40%.
+    Returns 0.0 when there's nothing to penalize (fail-open).
+    """
+    if not candidate_sector or not held_sector_counts:
+        return 0.0
+    try:
+        n = held_sector_counts.get(candidate_sector, 0)
+    except Exception:
+        return 0.0
+    return min(cap, per_name * n)
+
+
 def compute_book_fit(
     symbol: str,
     held: List[str],
