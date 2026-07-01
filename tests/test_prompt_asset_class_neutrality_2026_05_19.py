@@ -71,10 +71,14 @@ class TestNoRestrictiveMultilegFraming:
         from unittest.mock import patch
         from ai_analyst import _build_batch_prompt
 
-        # Force multileg + options to be enabled in the prompt
+        # Force the ledger to surface an option row so the MULTILEG_OPEN
+        # note renders (P2b: the note is gated on ledger_has_options).
         cands = [_make_candidate_with_options()]
-        with patch("options_strategy_advisor.render_multileg_recs_for_prompt",
-                   return_value="MULTI-LEG OPTIONS STRATEGIES:\n  - AAPL bull_put_spread"):
+        with patch("opportunity_ledger.render_opportunity_ledger",
+                   return_value=(
+                       "RISK-ADJUSTED OPPORTUNITY LEDGER\n"
+                       "   1  +0.30   62%  $8,000  $2,400   AAPL bull_put_spread",
+                       True)):
             prompt = _build_batch_prompt(
                 cands,
                 portfolio_state={"positions": [], "drawdown_pct": 0.0,
@@ -131,8 +135,11 @@ class TestEqualFirstClassFraming:
         from unittest.mock import patch
         from ai_analyst import _build_batch_prompt
         cands = [_make_candidate_with_options()]
-        with patch("options_strategy_advisor.render_multileg_recs_for_prompt",
-                   return_value="MULTI-LEG OPTIONS STRATEGIES:\n  - AAPL bull_put_spread"):
+        with patch("opportunity_ledger.render_opportunity_ledger",
+                   return_value=(
+                       "RISK-ADJUSTED OPPORTUNITY LEDGER\n"
+                       "   1  +0.30   62%  $8,000  $2,400   AAPL bull_put_spread",
+                       True)):
             prompt = _build_batch_prompt(
                 cands,
                 portfolio_state={"positions": [], "drawdown_pct": 0.0,
@@ -163,8 +170,8 @@ class TestParallelStructureAcrossActions:
         from unittest.mock import patch
         from ai_analyst import _build_batch_prompt
         cands = [_make_candidate_with_options()]
-        with patch("options_strategy_advisor.render_multileg_recs_for_prompt",
-                   return_value=""):  # no multileg this test
+        with patch("opportunity_ledger.render_opportunity_ledger",
+                   return_value=("", False)):  # no ledger option rows this test
             prompt = _build_batch_prompt(
                 cands,
                 portfolio_state={"positions": [], "drawdown_pct": 0.0,

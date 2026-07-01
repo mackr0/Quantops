@@ -132,52 +132,10 @@ def evaluate_candidate_for_stock_action(
     ]
 
 
-def render_stock_recs_for_prompt(
-    candidates: List[Dict[str, Any]],
-    ctx: Any = None,
-) -> str:
-    """Build the STOCK ACTION RECOMMENDATIONS prompt block. Output
-    mirrors render_multileg_recs_for_prompt in
-    options_strategy_advisor — same line shape so the AI sees both
-    blocks as equally-prepared trade ideas.
-
-    Output looks like:
-      STOCK ACTION RECOMMENDATIONS (sized + stop/TP pre-computed;
-      AI may propose via BUY/SHORT action — equal opportunity to
-      multi-leg options below):
-        - BUY AAPL @ 7.5% equity (stop -3.5%, TP +5.2%)
-            Rationale: BUY AAPL (ensemble score=+2.0). RSI 62, ADX 28, vol 1.4x.
-        - SHORT TSLA @ 4.0% equity (stop -4.1%, TP +6.1%)
-            Rationale: ...
-
-    Returns empty string when there are no actionable recs.
-    """
-    if not candidates:
-        return ""
-    all_recs: List[Dict[str, Any]] = []
-    for c in candidates:
-        recs = evaluate_candidate_for_stock_action(c, ctx=ctx)
-        all_recs.extend(recs)
-
-    if not all_recs:
-        return ""
-
-    lines = [
-        "STOCK ACTION RECOMMENDATIONS (sized + stop/TP pre-computed; "
-        "AI may propose via BUY/SHORT action — equal opportunity to "
-        "multi-leg options below):"
-    ]
-    # Cap at 8 per block to mirror the multileg cap. Both sides see
-    # the same maximum number of pre-built ideas so neither is
-    # structurally favored by volume.
-    for r in all_recs[:8]:
-        lines.append(
-            f"  - {r['action']} {r['symbol']} @ "
-            f"{r['size_pct']:.1f}% equity "
-            f"(stop -{r['stop_loss_pct']:.1f}%, "
-            f"TP +{r['take_profit_pct']:.1f}%)"
-        )
-        lines.append(f"      Rationale: {r['rationale']}")
-    if len(all_recs) > 8:
-        lines.append(f"  ... and {len(all_recs) - 8} more")
-    return "\n".join(lines)
+# NOTE (2026-07-01, selection-engine P2b): the standalone
+# render_stock_recs_for_prompt block was removed. Candidate stock
+# recommendations are now scored on the risk-adjusted axis and rendered
+# INTERLEAVED with option recs by `opportunity_ledger.render_opportunity_ledger`
+# (which calls `evaluate_candidate_for_stock_action` above). The single ranked
+# ledger is a STRONGER anti-asymmetry guarantee than two equal-length blocks:
+# both expressions now compete on one number. See docs/SELECTION_ENGINE_DESIGN.md.

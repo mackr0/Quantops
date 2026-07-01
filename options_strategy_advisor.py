@@ -573,70 +573,12 @@ def _options_budget_exhausted(ctx: Any) -> bool:
         return False
 
 
-def render_multileg_recs_for_prompt(
-    candidates: List[Dict[str, Any]],
-    iv_rank_lookup=None,
-    regime: Optional[str] = None,
-    ctx: Any = None,
-) -> str:
-    """Build the MULTI-LEG STRATEGIES prompt block.
-
-    iv_rank_lookup: callable(symbol) → IV rank 0-100 or None.
-    regime: market regime ("ranging", "trending", etc.) — gates
-        iron_condor recommendations.
-
-    Output looks like:
-      MULTI-LEG STRATEGIES (defined-risk options the AI may propose
-      via PAIR_TRADE-style action — the AI decides whether to take
-      any of these or stick with simple long/short):
-        - AAPL: bull_put_spread expiring 2026-05-30 (sell $145P / buy $140P)
-              — Rationale: ...
-        - ...
-
-    Returns empty string when there are no actionable recs.
-    """
-    if not candidates:
-        return ""
-    # If the options capital-at-risk budget is already spent, offer no
-    # spreads at all — they'd only be rejected by the execution budget gate
-    # ("proposed but can't be acted on"). Own-book, fail-open.
-    if _options_budget_exhausted(ctx):
-        return ""
-    # Compute the own-book held set ONCE per prompt build (not per
-    # candidate) and pass it down so spreads on already-held underlyings
-    # are dropped before they ever reach the AI / the post-selection veto.
-    held = _own_book_held_underlyings(ctx)
-    all_recs: List[Dict[str, Any]] = []
-    for c in candidates:
-        sym = c.get("symbol")
-        iv_rank = None
-        if iv_rank_lookup is not None and sym:
-            try:
-                iv_rank = iv_rank_lookup(sym)
-            except Exception as exc:
-                logger.debug("iv_rank_lookup(%s) failed (fail-open, "
-                             "IV-conditional strategies skipped): %s", sym, exc)
-                iv_rank = None
-        recs = evaluate_candidate_for_multileg(
-            c, iv_rank_pct=iv_rank, regime=regime, ctx=ctx, held=held,
-        )
-        all_recs.extend(recs)
-
-    if not all_recs:
-        return ""
-
-    lines = [
-        "MULTI-LEG OPTIONS STRATEGIES (defined-risk; AI may propose "
-        "via MULTILEG_OPEN action):"
-    ]
-    for r in all_recs[:8]:  # cap so prompt doesn't bloat
-        lines.append(
-            f"  - {r['symbol']} {r['strategy']} ({r['expiry']})"
-        )
-        lines.append(f"      Rationale: {r['rationale']}")
-    if len(all_recs) > 8:
-        lines.append(f"  ... and {len(all_recs) - 8} more")
-    return "\n".join(lines)
+# NOTE (2026-07-01, selection-engine P2b): the standalone
+# render_multileg_recs_for_prompt block was removed. Candidate option
+# recommendations are now scored on the risk-adjusted axis and rendered
+# INTERLEAVED with stock recs by `opportunity_ledger.render_opportunity_ledger`
+# (which calls `evaluate_candidate_for_multileg` below with the same
+# own-book / budget / IV gating). See docs/SELECTION_ENGINE_DESIGN.md.
 
 
 def render_for_prompt(

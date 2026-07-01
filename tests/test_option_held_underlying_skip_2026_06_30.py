@@ -30,14 +30,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
 
 from options_strategy_advisor import (
     evaluate_candidate_for_multileg,
-    render_multileg_recs_for_prompt,
     _own_book_held_underlyings,
 )
+from opportunity_ledger import build_opportunities
 
 
 def _bullish_candidate(sym="NVDA"):
     # Bullish + IV-rich → at least one spread rec in the control case.
-    return {"symbol": sym, "signal": "BUY", "price": 120.0,
+    return {"symbol": sym, "signal": "BUY", "price": 120.0, "score": 2.0,
             "volatility_view": None}
 
 
@@ -69,17 +69,25 @@ def test_held_match_is_case_insensitive():
     assert recs == []
 
 
-def test_render_drops_held_keeps_diversifier(monkeypatch):
+def test_ledger_drops_held_option_keeps_diversifier(monkeypatch):
+    """In the unified opportunity ledger, an already-held underlying yields
+    NO option expression (the held-skip), while a diversifying name does.
+    The held name can still appear as a STOCK expression — the skip is
+    option-only (you may still buy the stock), which is exactly the intent."""
     monkeypatch.setattr(
         "options_strategy_advisor._own_book_held_underlyings",
         lambda ctx: {"NVDA"},
     )
     cands = [_bullish_candidate("NVDA"), _bullish_candidate("AMD")]
-    block = render_multileg_recs_for_prompt(
-        cands, iv_rank_lookup=lambda s: 90, regime="trending",
-        ctx=SimpleNamespace())
-    assert "NVDA" not in block
-    assert "AMD" in block
+    opps = build_opportunities(
+        cands, ctx=SimpleNamespace(), equity=100_000.0,
+        iv_rank_lookup=lambda s: 90, regime="trending")
+    option_syms = {o.get("symbol") for o in opps
+                   if o.get("expression") == "option"}
+    assert "NVDA" not in option_syms, (
+        "a held underlying must yield no OPTION expression in the ledger")
+    assert "AMD" in option_syms, (
+        "a diversifying name must still yield an option expression")
 
 
 def test_helper_respects_flag(monkeypatch):

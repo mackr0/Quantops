@@ -324,33 +324,35 @@ class TestEvaluateCandidateForMultileg:
         ) == []
 
 
-class TestRenderMultilegRecs:
+class TestOptionStreamInLedger:
+    """The standalone MULTI-LEG STRATEGIES block was replaced (2026-07-01,
+    selection-engine P2b) by the interleaved risk-adjusted opportunity ledger.
+    Option candidate recs now reach the AI as OPTION rows in that ledger; these
+    pin the same behaviors on the new surface. See the ledger's own test file
+    for RAR/ranking coverage."""
+
+    def _ctx(self):
+        from types import SimpleNamespace
+        return SimpleNamespace()
+
     def test_empty_candidates_returns_empty(self):
-        from options_strategy_advisor import render_multileg_recs_for_prompt
-        assert render_multileg_recs_for_prompt([]) == ""
+        from opportunity_ledger import render_opportunity_ledger
+        block, has_opt = render_opportunity_ledger([], self._ctx(), 100_000.0)
+        assert block == "" and has_opt is False
 
-    def test_no_iv_returns_empty(self):
-        from options_strategy_advisor import render_multileg_recs_for_prompt
-        cands = [_candidate(signal="BUY")]
-        assert render_multileg_recs_for_prompt(
-            cands, iv_rank_lookup=lambda s: None,
-        ) == ""
+    def test_no_iv_yields_no_option_rows(self):
+        from opportunity_ledger import build_opportunities
+        cands = [_candidate(signal="BUY", score=2.0)]
+        opps = build_opportunities(cands, self._ctx(), 100_000.0,
+                                   iv_rank_lookup=lambda s: None)
+        assert not [o for o in opps if o.get("expression") == "option"]
 
-    def test_rendered_block_includes_strategy_and_rationale(self):
-        from options_strategy_advisor import render_multileg_recs_for_prompt
-        cands = [_candidate(signal="BUY")]
-        block = render_multileg_recs_for_prompt(
-            cands, iv_rank_lookup=lambda s: 70,
-        )
-        assert "MULTI-LEG OPTIONS STRATEGIES" in block
+    def test_ledger_includes_option_strategy_and_ranks(self):
+        from opportunity_ledger import render_opportunity_ledger
+        cands = [_candidate(signal="BUY", score=2.0)]
+        block, has_opt = render_opportunity_ledger(
+            cands, self._ctx(), 100_000.0, iv_rank_lookup=lambda s: 70)
+        assert has_opt is True
+        assert "RISK-ADJUSTED OPPORTUNITY LEDGER" in block
         assert "bull_put_spread" in block
-        assert "Rationale" in block
-
-    def test_caps_at_8_recommendations(self):
-        from options_strategy_advisor import render_multileg_recs_for_prompt
-        # 12 candidates × bull_put_spread = 12 recs, capped at 8
-        cands = [_candidate(symbol=f"S{i}", signal="BUY") for i in range(12)]
-        block = render_multileg_recs_for_prompt(
-            cands, iv_rank_lookup=lambda s: 80,
-        )
-        assert "and 4 more" in block
+        assert "RAR" in block

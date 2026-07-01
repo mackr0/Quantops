@@ -49,6 +49,11 @@ reservation) preserved. The prompt's "capital-efficient / lower max-loss" option
 3. **Expression-aware meta-model** (P4) — add `pipeline_kind` one-hot + option-geometry features
    so stock-vs-spread of the same name get different P once ≥100 resolved rows accrue.
 
+## Status (2026-07-01)
+
+P0, P1, P2 are SHIPPED (P2a scorer + P2b ledger/ranking live). P3 (veto
+shadow-prediction feedback) and P4 (learned per-expression calibration) remain.
+
 ## Phased plan
 
 - **P0** — fix `pred_type` (`trade_pipeline.py:2643-2661`): MULTILEG_OPEN/OPTIONS mislabeled as

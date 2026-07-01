@@ -20,8 +20,10 @@ Specifically:
   1. `stock_strategy_advisor.evaluate_candidate_for_stock_action`
      must return a sized + stop/TP-bearing rec for any candidate
      with a directional signal (BUY/SHORT/SELL).
-  2. `stock_strategy_advisor.render_stock_recs_for_prompt` must
-     produce a non-empty block when given actionable candidates.
+  2. `opportunity_ledger.render_opportunity_ledger` must produce a
+     non-empty ledger block when given actionable candidates (2026-07-01:
+     the two separate stock/option blocks were replaced by one ranked
+     ledger — a STRONGER neutrality guarantee than equal-length blocks).
   3. The output rec dict must carry the SAME information density as
      a multileg rec (action, size, stop, TP, rationale, confidence)
      — no missing fields that would let the AI feel one side is
@@ -82,45 +84,75 @@ class TestStocksAndOptionsEqualInPrompt:
             _candidate(signal="HOLD"))
         assert recs == []
 
-    def test_render_block_non_empty_with_actionables(self):
-        from stock_strategy_advisor import render_stock_recs_for_prompt
+    def test_ledger_non_empty_with_actionables(self):
+        """The unified ledger (P2b) renders stock expressions for actionable
+        candidates on the same RAR axis as options."""
+        from types import SimpleNamespace
+        from opportunity_ledger import render_opportunity_ledger
         cands = [
             _candidate(signal="BUY"),
             {**_candidate(signal="SHORT", score=-1.5), "symbol": "TSLA"},
         ]
-        block = render_stock_recs_for_prompt(cands)
-        assert "STOCK ACTION RECOMMENDATIONS" in block
+        block, _ = render_opportunity_ledger(
+            cands, SimpleNamespace(enable_short_selling=True), 100_000.0)
+        assert "RISK-ADJUSTED OPPORTUNITY LEDGER" in block
         assert "AAPL" in block
         assert "TSLA" in block
-        assert "size" in block.lower() or "% equity" in block
+        assert "RAR" in block
 
-    def test_render_block_empty_when_no_actionables(self):
-        from stock_strategy_advisor import render_stock_recs_for_prompt
-        block = render_stock_recs_for_prompt(
-            [_candidate(signal="HOLD"), _candidate(signal="HOLD")])
-        assert block == ""
+    def test_ledger_empty_when_no_actionables(self):
+        from types import SimpleNamespace
+        from opportunity_ledger import render_opportunity_ledger
+        block, has_opt = render_opportunity_ledger(
+            [_candidate(signal="HOLD"), _candidate(signal="HOLD")],
+            SimpleNamespace(), 100_000.0)
+        assert block == "" and has_opt is False
 
-    def test_prompt_inserts_both_blocks(self):
-        """The AI prompt builder must reference BOTH stock_recs_block
-        AND multileg_block. If a future refactor removes either, the
-        asymmetric-prompt bug recurs."""
+    def test_prompt_uses_unified_opportunity_ledger(self):
+        """The AI prompt builder must render the single RAR opportunity
+        ledger — the anti-asymmetry guarantee is now that BOTH expressions
+        are scored on ONE axis. If a refactor drops the ledger or scores
+        only one side, the 2026-05-12 / 18:1-skew bug pattern recurs."""
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        path = os.path.join(repo_root, "ai_analyst.py")
-        with open(path) as f:
-            src = f.read()
-        assert "stock_recs_block" in src, (
-            "ai_analyst.py is missing stock_recs_block. Without it, "
-            "the AI prompt has options recs but no symmetric stock "
-            "recs — the exact bug pattern from 2026-05-12."
+        with open(os.path.join(repo_root, "ai_analyst.py")) as f:
+            ai_src = f.read()
+        assert "render_opportunity_ledger" in ai_src, (
+            "ai_analyst.py must build the risk-adjusted opportunity ledger."
         )
-        assert "render_stock_recs_for_prompt" in src, (
-            "ai_analyst.py must call render_stock_recs_for_prompt to "
-            "build the stock-side block."
+        assert 'f"{ledger_block}"' in ai_src or "{ledger_block}" in ai_src, (
+            "The ledger block must appear in the prompt f-string body, not "
+            "be defined-but-unused."
         )
-        # Both blocks must appear in the f-string body, not just be
-        # defined-but-unused.
-        assert 'f"{stock_recs_block}"' in src or "{stock_recs_block}" in src
-        assert 'f"{multileg_block}"' in src or "{multileg_block}" in src
+        # Structural neutrality: the ledger MUST score BOTH expressions.
+        with open(os.path.join(repo_root, "opportunity_ledger.py")) as f:
+            led_src = f.read()
+        assert "evaluate_candidate_for_stock_action" in led_src, (
+            "opportunity_ledger must score the STOCK expression."
+        )
+        assert "evaluate_candidate_for_multileg" in led_src, (
+            "opportunity_ledger must score the OPTION expression."
+        )
+
+    def test_ledger_survives_covered_call_block_failure(self):
+        """The opportunity ledger must NOT vanish if the (unrelated) covered-
+        call options block fails — they were coupled through a shared IV-lookup
+        closure defined inside the covered-call try until 2026-07-01. Regression
+        guard for that decoupling (`_iv_rank_pct` is now module-level)."""
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from ai_analyst import _build_batch_prompt
+        ctx = SimpleNamespace(segment="stocks", max_position_pct=0.05,
+                              max_total_positions=10, enable_short_selling=False,
+                              enable_options=True)
+        with patch("options_strategy_advisor.render_for_prompt",
+                   side_effect=ImportError("covered-call block boom")):
+            prompt = _build_batch_prompt(
+                [_candidate(signal="BUY")],
+                portfolio_state={"positions": [], "drawdown_pct": 0.0,
+                                 "equity": 100000, "account": {"equity": 100000}},
+                market_context={"regime": "neutral"}, ctx=ctx)
+        assert "RISK-ADJUSTED OPPORTUNITY LEDGER" in prompt, (
+            "the ledger must render even when the covered-call block fails")
 
     def test_stock_rec_fields_match_multileg_rec_density(self):
         """Both kinds of rec must carry the same number of "planning"

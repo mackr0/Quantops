@@ -689,6 +689,25 @@ def _parse_ai_response_tolerant(raw: str) -> dict:
         raise first_err
 
 
+def _iv_rank_pct(sym):
+    """IV-rank percentile (0-100) for a symbol, or None. Cached oracle lookup;
+    best-effort — ANY failure (including a missing `options_oracle` import)
+    resolves to None so IV-conditional strategies simply skip. Module-level and
+    fully self-contained so no prompt block's availability is coupled to another
+    block's imports (a covered-call import failure must NOT wipe the opportunity
+    ledger — 2026-07-01 review finding)."""
+    try:
+        from options_oracle import get_options_oracle
+        oracle = get_options_oracle(sym)
+        if oracle and oracle.get("has_options"):
+            return oracle.get("iv_rank", {}).get("rank_pct")
+    except (ImportError, KeyError, ValueError, AttributeError,
+            TypeError, OSError) as _iv_exc:
+        logger.debug("IV-rank lookup failed for %s: %s: %s",
+                     sym, type(_iv_exc).__name__, _iv_exc)
+    return None
+
+
 def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=None):
     """Construct the prompt for the AI batch trade selector."""
 
@@ -825,28 +844,12 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     options_strategy_block = ""
     try:
         from options_strategy_advisor import render_for_prompt as opt_render
-        from options_oracle import get_options_oracle
         positions_for_opts = portfolio_state.get("positions") or []
-        # IV-rank lookup: get_options_oracle is cached, so per-symbol
-        # cost is one chain fetch per cache TTL. Best-effort: any
-        # failure → None (advisor skips IV-conditional strategies).
-        def _iv_rank_lookup(sym):
-            try:
-                oracle = get_options_oracle(sym)
-                if oracle and oracle.get("has_options"):
-                    return oracle.get("iv_rank", {}).get("rank_pct")
-            except (KeyError, ValueError, AttributeError, TypeError,
-                    OSError) as _iv_exc:
-                # Per-symbol IV-rank lookup; advisor falls back to
-                # no-IV path. Surface for follow-up.
-                logger.debug(
-                    "options-advisor IV-rank lookup failed for %s: %s: %s",
-                    sym, type(_iv_exc).__name__, _iv_exc,
-                )
-                return None
-            return None
+        # IV-rank lookup: module-level `_iv_rank_pct` (cached oracle, fully
+        # guarded) — shared by every block that needs IV so no block's
+        # availability is coupled to another's imports.
         options_strategy_block = opt_render(
-            positions_for_opts, iv_rank_lookup=_iv_rank_lookup,
+            positions_for_opts, iv_rank_lookup=_iv_rank_pct,
         )
     except (ImportError, KeyError, ValueError, AttributeError,
             TypeError) as _oa_exc:
@@ -980,26 +983,10 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                     sym, type(_el_exc).__name__, _el_exc,
                 )
                 return None
-        # iv lookup defined below — define early for both blocks.
-        def _iv_rank_lookup_2(sym):
-            try:
-                from options_oracle import get_options_oracle
-                oracle = get_options_oracle(sym)
-                if oracle and oracle.get("has_options"):
-                    return oracle.get("iv_rank", {}).get("rank_pct")
-            except (ImportError, KeyError, ValueError, AttributeError,
-                    TypeError, OSError) as _iv_exc:
-                # Per-symbol IV-rank lookup; renderer falls back to None.
-                logger.debug(
-                    "earnings-plays IV-rank lookup failed for %s: %s: %s",
-                    sym, type(_iv_exc).__name__, _iv_exc,
-                )
-                return None
-            return None
         earnings_plays_block = render_earnings_plays_for_prompt(
             candidates_data or [],
             earnings_lookup=_earn_lookup,
-            iv_rank_lookup=_iv_rank_lookup_2,
+            iv_rank_lookup=_iv_rank_pct,
         )
     except (ImportError, KeyError, ValueError, AttributeError,
             TypeError, OSError) as _ep_exc:
@@ -1042,57 +1029,34 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
             type(_vr_exc).__name__, _vr_exc,
         )
 
-    # Phase B4 of OPTIONS_PROGRAM_PLAN — multi-leg recommendations on
-    # CANDIDATES (the screener's shortlist), distinct from the per-
-    # position covered_call/protective_put advisor above.
-    # 2026-05-17: gated by `ctx.enable_options`. Ablation profiles
-    # (No-Options arm of the fresh-start experiment) get an empty
-    # multileg block so the AI prompt has no option proposals to
-    # consider — restricts the AI to stock trades only.
-    multileg_block = ""
-    options_enabled = getattr(ctx, "enable_options", True)
+    # Selection-engine P2b — the unified RISK-ADJUSTED OPPORTUNITY LEDGER.
+    # Replaces the two former asymmetric blocks (STOCK ACTION RECOMMENDATIONS
+    # + MULTI-LEG OPTIONS STRATEGIES, each an equally-long list that
+    # structurally implied "here are N of each, pick from both") with ONE
+    # ranked ledger: every candidate's stock expression AND each option-spread
+    # expression, scored on one RAR axis (expected profit per $ at risk) and
+    # interleaved, so the AI picks the best risk/reward trade instead of
+    # defaulting to options because they arrive pre-packaged with strikes and
+    # a defined max-loss. Respects ctx.enable_options (No-Options ablation
+    # profiles → stock-only ledger). See docs/SELECTION_ENGINE_DESIGN.md.
+    # Fail-open: any failure → empty ledger and the prompt continues with the
+    # raw candidate indicators below.
+    ledger_block = ""
+    ledger_has_options = False
     try:
-        if not options_enabled:
-            raise StopIteration  # short-circuit to the empty-block path
-        from options_strategy_advisor import render_multileg_recs_for_prompt
+        from opportunity_ledger import render_opportunity_ledger
         regime = (market_context or {}).get("regime") if market_context else None
-        multileg_block = render_multileg_recs_for_prompt(
-            candidates_data or [],
-            iv_rank_lookup=_iv_rank_lookup,
-            regime=regime,
-            ctx=ctx,  # 2026-05-12 — ctx-tuned IV thresholds
-        )
-    except StopIteration:
-        multileg_block = ""  # options disabled — empty block
-    except (ImportError, KeyError, ValueError, AttributeError,
-            TypeError, OSError) as _ml_exc:
-        # AI-prompt enrichment; prompt continues without multileg
-        # recs block. Surface for follow-up.
-        logger.debug(
-            "multileg recs block render failed: %s: %s",
-            type(_ml_exc).__name__, _ml_exc,
-        )
-
-    # 2026-05-14 — symmetric stock-action recommendations. Mirror of
-    # multileg_block: same level of pre-computed analysis (size /
-    # stop / TP / rationale) so stocks and options appear to the AI
-    # as equally-prepared trade ideas. Prevents the asymmetric-prompt
-    # bias that drove stock BUY signals to 0/day from 2026-05-06 to
-    # 2026-05-14. Per Mack: "stocks and options are not in
-    # competition with each other — two different opportunities."
-    stock_recs_block = ""
-    try:
-        from stock_strategy_advisor import render_stock_recs_for_prompt
-        stock_recs_block = render_stock_recs_for_prompt(
-            candidates_data or [], ctx=ctx,
+        equity_for_ledger = float(portfolio_state.get("equity") or 0)
+        ledger_block, ledger_has_options = render_opportunity_ledger(
+            candidates_data or [], ctx, equity_for_ledger,
+            iv_rank_lookup=_iv_rank_pct, regime=regime,
         )
     except (ImportError, KeyError, ValueError, AttributeError,
-            TypeError, OSError) as _sr_exc:
-        # AI-prompt enrichment; prompt continues without stock-recs
-        # block. Surface for follow-up.
+            TypeError, OSError, NameError) as _lg_exc:
+        # AI-prompt enrichment; prompt continues without the ledger. Surface.
         logger.debug(
-            "stock-recs block render failed: %s: %s",
-            type(_sr_exc).__name__, _sr_exc,
+            "opportunity-ledger block render failed: %s: %s",
+            type(_lg_exc).__name__, _lg_exc,
         )
 
     # P4.3 of LONG_SHORT_PLAN.md — drawdown-aware capital scaling.
@@ -1315,8 +1279,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         f"{options_strategy_block}"
         f"{vol_regime_block}"
         f"{earnings_plays_block}"
-        f"{stock_recs_block}"
-        f"{multileg_block}"
+        f"{ledger_block}"
         f"{wheel_block}"
         f"{roll_block}"
         f"{strategy_weights_block}"
@@ -2256,9 +2219,10 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     pair_action_enabled = bool(locals().get("pair_book_rendered", False))
     if pair_action_enabled:
         actions += " | PAIR_TRADE"
-    # Phase B4 — MULTILEG_OPEN action only offered when the multi-leg
-    # advisor has surfaced at least one regime-appropriate strategy.
-    multileg_action_enabled = bool(multileg_block.strip())
+    # Phase B4 — MULTILEG_OPEN action only offered when the opportunity
+    # ledger surfaced at least one option-spread expression (enable_options
+    # + own-book/budget/IV gates all passed).
+    multileg_action_enabled = bool(ledger_has_options)
     if multileg_action_enabled:
         actions += " | MULTILEG_OPEN"
 
@@ -2346,19 +2310,18 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     # only the implicit default — an asymmetry that subtly biased
     # the AI toward the explicitly-described action types.
     stock_recs_note = ""
-    if stock_recs_block:
+    if ledger_block:
         stock_recs_note = (
-            "\n- BUY/SHORT (stocks): pre-computed setups are listed "
-            "in STOCK ACTION RECOMMENDATIONS above with size, "
-            "ATR-based stop-loss, and ATR-based take-profit ready "
-            "to use. Take them as-is when they fit the portfolio "
-            "context, ADJUST size/stop/TP based on concentration / "
-            "regime / your symbol track record, or PROPOSE a "
-            "different stock setup not in the pre-list. Required "
-            "fields for BUY/SHORT: symbol, size_pct, confidence, "
-            "stop_loss_pct, take_profit_pct, reasoning. Stock "
-            "setups are first-class trades — there is no preference "
-            "for or against them relative to options.\n"
+            "\n- BUY/SHORT (stocks): stock rows in the RISK-ADJUSTED "
+            "OPPORTUNITY LEDGER above carry size, ATR-based stop-loss, "
+            "and ATR-based take-profit ready to use. Take them as-is when "
+            "they fit the portfolio context, ADJUST size/stop/TP based on "
+            "concentration / regime / your symbol track record, or PROPOSE "
+            "a different stock setup. Required fields for BUY/SHORT: "
+            "symbol, size_pct, confidence, stop_loss_pct, take_profit_pct, "
+            "reasoning. Stock setups are first-class trades — there is no "
+            "preference for or against them relative to options; the "
+            "ledger's RAR ranking is the guide.\n"
         )
 
     multileg_note = ""
@@ -2369,9 +2332,10 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         # asymmetric vs the inviting "take/adjust/propose" used for
         # stocks. Now parallel.
         multileg_note = (
-            "\n- MULTILEG_OPEN (defined-risk spreads): pre-computed "
-            "setups appear in the MULTI-LEG OPTIONS STRATEGIES lines "
-            "above. Take them as-is when they fit, ADJUST strikes / "
+            "\n- MULTILEG_OPEN (defined-risk spreads): option-spread rows "
+            "in the RISK-ADJUSTED OPPORTUNITY LEDGER above carry strategy, "
+            "expiry, strikes, and the RAR already computed off real "
+            "premiums. Take them as-is when they fit, ADJUST strikes / "
             "expiry / contracts based on conviction, or PROPOSE a "
             "different spread on any candidate with IV data. "
             "Required fields: strategy_name (one of bull_call_spread / "
@@ -2387,9 +2351,9 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
             "14/15). "
             "size_pct NOT used. Multi-leg setups are first-class trades "
             "— there is NO preference for or against them relative to "
-            "stocks or single-leg options. Defined-risk spreads can be "
-            "a CAPITAL-EFFICIENT alternative to a plain long/short "
-            "(lower max loss for the same directional exposure).\n"
+            "stocks or single-leg options. A spread earns its place ONLY "
+            "when its RAR beats the alternatives in the ledger — a lower "
+            "max-loss is not itself a reason to prefer it.\n"
         )
         multileg_example = (
             ', {"symbol": "AAPL", "action": "MULTILEG_OPEN", '

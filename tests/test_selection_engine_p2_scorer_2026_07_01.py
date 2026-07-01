@@ -9,6 +9,8 @@ from __future__ import annotations
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
 
 import risk_adjusted as ra
@@ -46,11 +48,29 @@ def test_option_opportunity_scored_and_sized_to_envelope():
     opp = ra.score_option_opportunity(rec, equity=100_000.0, p_win=0.6,
                                       ref_dollars=8000.0)
     assert opp["qty"] == 20                    # floor(8000/400)
-    assert opp["risk_dollars"] == 8000.0
-    assert opp["reward_dollars"] == 2000.0
-    # rar = 0.6·(2000/8000) − 0.4 = −0.25 → a low-POP credit spread is correctly
+    # transaction cost = $5/leg × 2 legs × 2 (round trip) × 20 = $400, netted
+    # into risk (+) and reward (−) so the option ranks apples-to-apples with the
+    # cost-charged stock expression.
+    assert opp["risk_dollars"] == 8400.0       # 8000 + 400 cost
+    assert opp["reward_dollars"] == 1600.0     # 2000 − 400 cost
+    # rar = 0.6·(1600/8400) − 0.4 ≈ −0.286 → a low-POP credit spread is correctly
     # UNattractive vs a stock at the same P_win (needs POP>0.8 to be positive)
-    assert opp["rar"] == -0.25
+    assert opp["rar"] == pytest.approx(-0.2857, abs=1e-3)
+
+
+def test_option_charges_round_trip_transaction_cost():
+    # A spread must be charged a per-leg half-spread (round trip), so its
+    # reported risk exceeds the gross max-loss and its reward is haircut —
+    # otherwise a zero-cost option out-ranks the cost-charged stock and the
+    # ledger re-tilts toward options (2026-07-01 verification finding).
+    rec = {"symbol": "AAPL", "strategy": "bull_call_spread", "priced": True,
+           "max_loss_per_contract": 100.0, "max_gain_per_contract": 400.0,
+           "strikes": {"short": 155, "long": 150}, "expiry": "2026-08-21"}
+    opp = ra.score_option_opportunity(rec, 100_000.0, 0.6, ref_dollars=1000.0)
+    assert opp["qty"] == 10                     # floor(1000/100)
+    # cost = $5/leg × 2 legs × 2 (round trip) × 10 = $200
+    assert opp["risk_dollars"] == 1200.0        # 1000 gross + 200 cost
+    assert opp["reward_dollars"] == 3800.0      # 4000 gross − 200 cost
 
 
 def test_unsizeable_option_returns_none():

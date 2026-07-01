@@ -115,14 +115,26 @@ def score_stock_opportunity(rec: Dict[str, Any], equity: float, p_win: float,
     }
 
 
+# Conservative per-contract, per-leg half-spread for options (USD). Options
+# have far wider bid/ask spreads than stocks, so scoring a spread with ZERO
+# transaction cost while the stock expression is cost-charged systematically
+# over-ranks options — the exact 18:1 skew the ledger exists to prevent. This
+# fixed model (no live bid/ask needed) charges each leg's half-spread on both
+# open and close; ~$5/contract ≈ a $0.10-wide market on a liquid contract. It
+# deliberately errs toward NOT under-charging options. P4 can refine with real
+# per-leg quotes.
+_OPTION_HALF_SPREAD_PER_LEG_USD = 5.0
+
+
 def score_option_opportunity(rec: Dict[str, Any], equity: float, p_win: float,
                              ref_dollars: Optional[float] = None
                              ) -> Optional[Dict[str, Any]]:
     """Opportunity object for a priced option-spread rec (P1 fields:
     max_loss_per_contract, max_gain_per_contract). Sizes to the same
-    capital-at-risk envelope as the stock (qty = floor(REF$/max_loss)), so the
-    two rank on the same scale. Returns None when the rec is unsizeable
-    (no max-loss → caller refuses it, per the budget-gate rule)."""
+    capital-at-risk envelope as the stock (qty = floor(REF$/max_loss)) AND nets
+    a transaction cost (per-leg half-spread, round-trip) so it ranks
+    apples-to-apples with the cost-charged stock expression. Returns None when
+    the rec is unsizeable (no max-loss → caller refuses it)."""
     max_loss_c = rec.get("max_loss_per_contract")
     if not max_loss_c or max_loss_c <= 0:
         return None                                    # unsizeable — refuse
@@ -132,18 +144,26 @@ def score_option_opportunity(rec: Dict[str, Any], equity: float, p_win: float,
     risk = float(max_loss_c) * qty
     # unpriced max_gain (fail-open width fallback) → conservative reward=0
     reward = (float(max_gain_c) * qty) if max_gain_c else 0.0
-    score = rar(p_win, reward, risk)
+    # Transaction cost: per-leg half-spread on both open and close. Legs are
+    # read from the strike dict (vertical=2, condor/butterfly=4, straddle=2),
+    # defaulting to 2 when unknown.
+    strikes = rec.get("strikes")
+    n_legs = len(strikes) if isinstance(strikes, dict) and strikes else 2
+    cost = _OPTION_HALF_SPREAD_PER_LEG_USD * n_legs * 2 * qty  # ×2 = round trip
+    reward_net = reward - cost
+    risk_net = risk + cost
+    score = rar(p_win, reward_net, risk_net)
     return {
         "expression": "option",
         "underlying": rec.get("symbol"),
         "action": "MULTILEG_OPEN",
         "strategy": rec.get("strategy"),
         "qty": qty,
-        "risk_dollars": round(risk, 2),
-        "reward_dollars": round(reward, 2),
+        "risk_dollars": round(risk_net, 2),
+        "reward_dollars": round(reward_net, 2),
         "p_win": round(_clip01(p_win), 4),
         "rar": round(score, 4),
-        "ev_dollars": round(score * risk, 2),
+        "ev_dollars": round(score * risk_net, 2),
         "priced": bool(rec.get("priced")),
         "breakeven": rec.get("breakeven"),
         "strikes": rec.get("strikes"),

@@ -2432,7 +2432,8 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     ) if ctx else 0.0
     shortlist = _rank_candidates(strategy_results, held_symbols, enable_shorts,
                                   deprecated_strategies=deprecated_types,
-                                  target_short_pct=target_short_pct_for_rank)
+                                  target_short_pct=target_short_pct_for_rank,
+                                  ctx=ctx, symbol_reputation=symbol_reputation)
 
     # Ensure every shortlisted candidate has a valid price. If the
     # strategy's get_bars call failed during scoring, the candidate
@@ -3946,7 +3947,8 @@ def _squeeze_risk(symbol: str) -> str:
 
 def _rank_candidates(strategy_results, held_symbols, enable_shorts,
                       deprecated_strategies=None,
-                      target_short_pct=0.0):
+                      target_short_pct=0.0,
+                      ctx=None, symbol_reputation=None):
     """Rank strategy results into a shortlist for AI batch review.
 
     When shorts are disabled: returns top ~15 long candidates by abs(score),
@@ -4114,9 +4116,38 @@ def _rank_candidates(strategy_results, held_symbols, enable_shorts,
         except Exception:
             return 0.0
 
-    long_key = lambda s: (abs(s.get("score", 0)) * (1.0 - _div_penalty(s)),
+    # Risk-adjusted shortlist ranking (selection-engine P2b, 2026-07-01):
+    # rank by the candidate's stock-expression RAR instead of raw |score|, so
+    # the AI's menu leads with the best risk-adjusted setups and a chronically
+    # losing symbol (poor realized win-rate) drops even at high conviction.
+    # RAR uses a constant reward/risk ratio (the profile's ATR TP:SL multiplier)
+    # since per-candidate stop/TP aren't materialized until _build_candidates_data.
+    # The conviction prior SATURATES at 0.68 for |score|>=3, so RAR ties across
+    # all high-conviction names — |score| is therefore the SECOND sort key (before
+    # the RSI-extremity tie-break), which keeps conviction order among the
+    # strongest signals identical to the old abs(score) ranking; reputation is
+    # what reorders below saturation. Fail-safe: any error → the old abs(score) key.
+    _tp_mult = float(getattr(ctx, "atr_multiplier_tp", 3.0) or 3.0) if ctx else 3.0
+    _sl_mult = float(getattr(ctx, "atr_multiplier_sl", 2.0) or 2.0) if ctx else 2.0
+    _rr_ratio = (_tp_mult / _sl_mult) if _sl_mult > 0 else 1.5
+
+    def _rar_score(sig):
+        try:
+            from risk_adjusted import rar as _rar
+            from opportunity_ledger import p_win_from_reputation
+            sym = sig.get("symbol", "")
+            rep = (symbol_reputation or {}).get(sym)
+            pw = p_win_from_reputation(
+                sig.get("score", 0), sig.get("signal"), rep)
+            return _rar(pw, _rr_ratio, 1.0)   # p·ratio − (1−p)
+        except Exception:
+            return abs(sig.get("score", 0) or 0)
+
+    long_key = lambda s: (_rar_score(s) * (1.0 - _div_penalty(s)),
+                          abs(s.get("score", 0) or 0),
                           abs(s.get("rsi", 50) - 50))
-    short_key = lambda s: (abs(s.get("score", 0)),
+    short_key = lambda s: (_rar_score(s),
+                           abs(s.get("score", 0) or 0),
                            abs(s.get("rsi", 50) - 50))
     long_eligible.sort(key=long_key, reverse=True)
     short_eligible.sort(key=short_key, reverse=True)
@@ -4367,6 +4398,20 @@ def _build_candidates_data(shortlist, ctx, symbol_reputation):
                 f"{rep['wins']}W/{rep['losses']}L overall "
                 f"({rep['win_rate']:.0f}%) — {sig_breakdown}"
             )
+
+        # P_win for the risk-adjusted opportunity ledger (selection-engine
+        # P2): this profile's OWN realized same-signal win-rate when a sample
+        # exists, else the conviction prior. Stamped here where
+        # symbol_reputation is in scope; consumed by opportunity_ledger in the
+        # AI prompt. Fail-open — a missing p_win falls back to the prior.
+        try:
+            from opportunity_ledger import p_win_from_reputation
+            entry["p_win"] = p_win_from_reputation(
+                signal.get("score", 0), entry.get("signal"),
+                symbol_reputation.get(symbol),
+            )
+        except Exception as _pw_exc:
+            logger.debug("p_win stamp failed for %s: %s", symbol, _pw_exc)
 
         # Fetch last prediction reasoning for this symbol so AI remembers
         # WHY it made its previous call
