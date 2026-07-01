@@ -809,6 +809,14 @@ def _migrate_all_columns(conn):
             # separate count so operators see when corrupt data
             # is present without it polluting the headline metrics.
             ("data_quality", "TEXT"),
+            # 2026-07-01 — per-row share of the option spread's max-loss
+            # (dollars). Stamped at multileg entry as
+            # (max_loss_per_contract * qty) / n_legs on EACH leg, so
+            # SUM(spread_max_loss) over a profile's OPEN option rows =
+            # the book's aggregate options capital-at-risk. Feeds the
+            # fund-grade max_options_risk_pct budget gate. NULL/0 on stock
+            # rows and on legs opened before this column existed.
+            ("spread_max_loss", "REAL"),
         ],
         "ai_predictions": [
             ("regime_at_prediction", "TEXT"),
@@ -1149,6 +1157,7 @@ def log_trade(symbol, side, qty, price=None, order_id=None, signal_type=None,
               decision_price=None, fill_price=None, slippage_pct=None,
               occ_symbol=None, option_strategy=None, expiry=None, strike=None,
               predicted_slippage_bps=None, adv_at_decision=None,
+              spread_max_loss=None,
               db_path=None):
     """Log a trade execution to the journal.
 
@@ -1208,26 +1217,34 @@ def log_trade(symbol, side, qty, price=None, order_id=None, signal_type=None,
     # the door's submitted_orders recovery ledger has already recorded the
     # order_id so the reconciler can reconstruct the row from the broker fill.
     import time as _time
+    _cols = ["timestamp", "symbol", "side", "qty", "price", "order_id",
+             "signal_type", "strategy", "reason", "ai_reasoning",
+             "ai_confidence", "stop_loss", "take_profit", "status", "pnl",
+             "decision_price", "fill_price", "slippage_pct", "occ_symbol",
+             "option_strategy", "expiry", "strike", "predicted_slippage_bps",
+             "adv_at_decision"]
+    _vals = [datetime.utcnow().isoformat(), symbol, side, qty, price, order_id,
+             signal_type, strategy, reason, ai_reasoning, ai_confidence,
+             stop_loss, take_profit, status, pnl, decision_price, fill_price,
+             slippage_pct, occ_symbol, option_strategy, expiry, strike,
+             predicted_slippage_bps, adv_at_decision]
     _last_exc = None
     for _attempt in range(3):
         try:
             with closing(_get_conn(db_path)) as conn:
+                # spread_max_loss is a migrated column — include it only when
+                # the table actually has it, so log_trade never hard-fails on a
+                # schema that predates it (e.g. hand-crafted test tables). Prod
+                # DBs are migrated by init_db, so the column is present there.
+                cols, vals = list(_cols), list(_vals)
+                _have = {r[1] for r in conn.execute("PRAGMA table_info(trades)")}
+                if "spread_max_loss" in _have:
+                    cols.append("spread_max_loss")
+                    vals.append(spread_max_loss)
+                _ph = ", ".join(["?"] * len(vals))
                 cursor = conn.execute(
-                    """INSERT INTO trades
-                       (timestamp, symbol, side, qty, price, order_id, signal_type, strategy,
-                        reason, ai_reasoning, ai_confidence, stop_loss, take_profit, status, pnl,
-                        decision_price, fill_price, slippage_pct,
-                        occ_symbol, option_strategy, expiry, strike,
-                        predicted_slippage_bps, adv_at_decision)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        datetime.utcnow().isoformat(),
-                        symbol, side, qty, price, order_id, signal_type, strategy,
-                        reason, ai_reasoning, ai_confidence, stop_loss, take_profit,
-                        status, pnl, decision_price, fill_price, slippage_pct,
-                        occ_symbol, option_strategy, expiry, strike,
-                        predicted_slippage_bps, adv_at_decision,
-                    ),
+                    f"INSERT INTO trades ({', '.join(cols)}) VALUES ({_ph})",
+                    tuple(vals),
                 )
                 conn.commit()
                 trade_id = cursor.lastrowid
@@ -1324,6 +1341,39 @@ def record_broker_rejection(db_path, *, symbol, action, signal_type,
             symbol, rejection_code, exc,
         )
         return None
+
+
+def open_options_capital_at_risk(db_path=None) -> float:
+    """Aggregate options CAPITAL-AT-RISK for this profile's OWN book, in $.
+
+    Sums `spread_max_loss` over the profile's OPEN option rows (rows with an
+    occ_symbol and a live status). Each multileg entry stamps its total
+    max-loss spread evenly across its legs, so this sum is the book's total
+    defined-risk max-loss. Feeds the fund-grade `max_options_risk_pct`
+    budget gate. Own-book only (single db_path) — isolation-safe. Returns
+    0.0 on any error or when the column is absent (fail-open: a missing
+    figure must never block trading; the gate treats 0 as "no prior risk").
+    """
+    try:
+        with closing(_get_conn(db_path)) as conn:
+            cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(trades)").fetchall()}
+            if "spread_max_loss" not in cols:
+                return 0.0
+            row = conn.execute(
+                "SELECT COALESCE(SUM(spread_max_loss), 0) FROM trades "
+                "WHERE occ_symbol IS NOT NULL "
+                "AND spread_max_loss IS NOT NULL "
+                "AND status IN ('open', 'pending', 'pending_fill', "
+                "               'pending_protective', 'partially_filled')",
+            ).fetchone()
+            return float(row[0] or 0.0) if row else 0.0
+    except Exception as exc:
+        _logging.warning(
+            "open_options_capital_at_risk failed (fail-open, returning 0): %s",
+            exc,
+        )
+        return 0.0
 
 
 def record_trade_drop(db_path, symbol, side, drop_code, drop_reason,

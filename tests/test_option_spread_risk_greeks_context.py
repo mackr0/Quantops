@@ -45,7 +45,10 @@ from specialists import option_spread_risk
 def _ctx(**overrides):
     base = {
         "max_per_trade_loss": 500.0,
-        "max_net_options_delta_pct": 0.05,
+        # delta cap retired to a backstop + no longer surfaced; the budget
+        # (max_options_risk_pct) is the primary cap the specialist sees.
+        "max_net_options_delta_pct": 1.50,
+        "max_options_risk_pct": 0.20,
         "max_theta_burn_dollars_per_day": 50.0,
         "max_short_vega_dollars": 500.0,
     }
@@ -153,15 +156,15 @@ class TestBudgetCapsLines:
         )
         # The per-profile caps block exists
         assert "Per-profile Greek-budget caps" in prompt
-        # delta_pct rendered as percentage
-        assert "5.0%" in prompt
+        # options capital-at-risk budget rendered as percentage (0.20 → 20.0%)
+        assert "20.0%" in prompt
         # theta and vega rendered as dollars
         assert "$50" in prompt
         assert "$500" in prompt
 
     def test_caps_omitted_when_all_none(self):
         ctx = _ctx(
-            max_net_options_delta_pct=None,
+            max_options_risk_pct=None,
             max_theta_burn_dollars_per_day=None,
             max_short_vega_dollars=None,
         )
@@ -172,7 +175,7 @@ class TestBudgetCapsLines:
 
     def test_partial_caps_still_show_set_ones(self):
         ctx = _ctx(
-            max_net_options_delta_pct=0.07,
+            max_options_risk_pct=0.07,
             max_theta_burn_dollars_per_day=None,
             max_short_vega_dollars=None,
         )

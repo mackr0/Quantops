@@ -1059,10 +1059,10 @@
             <p style="color:#888;font-size:0.85rem;margin-top:-0.5rem;">Risk-budget caps enforced on every option open (single-leg + multileg). The self-tuner adjusts these per profile over time based on option-bucket realized P&L. Operator can override; tuner re-evaluates on the next run.</p>
             <div class="grid">
                 <label>
-                    <span class="tip" data-tip="Cap on |net options delta| as % of equity. 5% = options can contribute up to 5% of equity in direction exposure. Self-tuner widens when realized risk has been well under the cap; tightens when option-bucket losses cluster around cap-hit attempts.">Net options delta cap (% of equity)</span>
-                    <input type="number" name="max_net_options_delta_pct" min="0.01" max="0.20" step="0.01"
-                           value="{{ '%.2f'|format(prof.get('max_net_options_delta_pct', 0.05)) }}">
-                    <small class="muted">e.g. 0.05 = 5% of equity ($5,000 of delta-shares on a $100K book)</small>
+                    <span class="tip" data-tip="Aggregate options CAPITAL-AT-RISK budget: the sum of open option spreads' max-loss plus a new trade's max-loss must stay under this fraction of NAV, else the trade is skipped. This is how a fund sizes a defined-risk options book — by money at risk, not delta. Self-tuner adjusts within 0.10–0.40 on option-bucket P&L.">Options capital-at-risk budget (fraction of NAV)</span>
+                    <input type="number" name="max_options_risk_pct" min="0.10" max="0.40" step="0.01"
+                           value="{{ '%.2f'|format(prof.get('max_options_risk_pct', 0.20)) }}">
+                    <small class="muted">e.g. 0.20 = up to 20% of NAV at risk in defined-risk options at once (replaced the retired 5%-delta gate)</small>
                 </label>
                 <label>
                     <span class="tip" data-tip="Maximum daily theta decay (in dollars) the book is allowed to be paying. Negative theta = paying decay (long-vol). When the cap is hit, new long-premium opens are blocked.">Max theta burn ($/day)</span>

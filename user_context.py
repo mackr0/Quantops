@@ -124,10 +124,20 @@ class UserContext:
     # are conservative; tunable per profile. None = no gate (the
     # behavior pre-Phase-A2).
     # max_net_options_delta_pct: |options-only delta| / equity cap.
-    #   0.05 = 5%. Stops the AI from accumulating directional exposure
-    #   via options (e.g. stacking long calls until the book is +50%
-    #   delta levered).
-    max_net_options_delta_pct: Optional[float] = 0.05
+    #   RETIRED as the binding gate (2026-07-01): capping options-delta
+    #   at 5% of equity is the wrong metric for DEFINED-RISK spreads (whose
+    #   risk is their max-loss, not their delta) and made options untradeable
+    #   on small accounts. Kept only as a wide runaway BACKSTOP (1.50 = 150%
+    #   of equity in options-delta — never binds in normal defined-risk
+    #   trading). The real control is max_options_risk_pct below.
+    max_net_options_delta_pct: Optional[float] = 1.50
+    # max_options_risk_pct: aggregate options CAPITAL-AT-RISK budget —
+    #   (sum of open option spreads' max-loss + the proposed trade's
+    #   max-loss) / equity. 0.20 = 20% of NAV at risk in defined-risk
+    #   options at once. This is how a real fund sizes a defined-risk book
+    #   (premium/max-loss at risk as % of NAV), not by delta. AI-tunable
+    #   within param_bounds. None = no gate.
+    max_options_risk_pct: Optional[float] = 0.20
     # max_theta_burn_dollars_per_day: positive number = max $/day of
     #   premium decay we're willing to pay (long-vol books). When net
     #   theta is BELOW -limit, block new long-premium trades.

@@ -2018,9 +2018,18 @@ def save_profile(profile_id):
     # PARAM_BOUNDS so a typo'd UI value can't blow out the cap; the
     # self-tuner re-evaluates from outcomes on its next run.
     from param_bounds import clamp as _clamp_bound
+    # RETIRED as binding gate (2026-07-01) — wide backstop only; default
+    # 1.50 so a settings-save keeps it a backstop, not the old 0.05.
     config_updates["max_net_options_delta_pct"] = _clamp_bound(
         "max_net_options_delta_pct",
-        float(form.get("max_net_options_delta_pct", 0.05) or 0.05),
+        float(form.get("max_net_options_delta_pct", 1.50) or 1.50),
+    )
+    # 2026-07-01 — the real options risk control (replaced the delta gate in
+    # the UI): aggregate capital-at-risk (max-loss) budget as a fraction of
+    # NAV. Clamped to param_bounds (0.10–0.40); self-tuner adjusts within.
+    config_updates["max_options_risk_pct"] = _clamp_bound(
+        "max_options_risk_pct",
+        float(form.get("max_options_risk_pct", 0.20) or 0.20),
     )
     config_updates["max_theta_burn_dollars_per_day"] = _clamp_bound(
         "max_theta_burn_dollars_per_day",

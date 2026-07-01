@@ -101,14 +101,16 @@ def build_prompt(candidates: List[Dict[str, Any]], ctx: Any) -> str:
     except Exception:
         greeks_line = ""
 
-    # Surface the per-pipeline Greek-budget caps so the specialist
-    # can reason about whether THIS proposal would push the book
-    # past one of them. These are tunable per-profile via the
-    # Phase 2b option tuner.
+    # Surface the per-profile options risk caps so the specialist can
+    # reason about whether THIS proposal would push the book past one of
+    # them. The primary control is max_options_risk_pct — the aggregate
+    # capital-at-risk (max-loss) budget as % of NAV (the options-delta cap
+    # is retired to a wide backstop and no longer shown). theta/vega caps
+    # remain. Tunable per-profile by the self-tuner.
     budget_caps_lines = []
     for cap_name, cap_label in [
-        ("max_net_options_delta_pct",
-         "max |options-delta| / equity"),
+        ("max_options_risk_pct",
+         "max options capital-at-risk (max-loss) / NAV"),
         ("max_theta_burn_dollars_per_day",
          "max $theta burn / day"),
         ("max_short_vega_dollars",

@@ -493,6 +493,61 @@ class OptionPipeline(Pipeline):
                 expiry_date, strikes, contracts,
             )
 
+            # 2026-07-01 — fund-grade options CAPITAL-AT-RISK budget gate
+            # (the REAL control; the options-delta gate below is now just a
+            # wide runaway backstop). A defined-risk spread's risk is its
+            # MAX-LOSS, not its delta — so cap the book's aggregate options
+            # max-loss at max_options_risk_pct of NAV, the way a real fund
+            # sizes a defined-risk book. Own-book only (isolation-safe).
+            # Best-effort: any failure is non-blocking so a flaky lookup
+            # never blocks a legitimate trade.
+            try:
+                _risk_pct = getattr(ctx, "max_options_risk_pct", None)
+                if _risk_pct is not None and _risk_pct > 0:
+                    from client import get_account_info as _gai
+                    from journal import (
+                        open_options_capital_at_risk as _ocar,
+                    )
+                    _equity = float((_gai(ctx=ctx) or {}).get("equity") or 0)
+                    if _equity <= 0:
+                        _equity = float(
+                            getattr(ctx, "initial_capital", 0) or 0)
+                    # Conservative max-loss even though the execution spec has
+                    # no premiums (width×$100 fallback for defined-width
+                    # spreads).
+                    _proposed_ml = spec.total_max_loss(
+                        proposal.get("limit_price"))
+                    # A spread we can't assign a max-loss to is width-less and
+                    # unpriced — a straddle. long_straddle's real debit is
+                    # unknown here and short_straddle is UNCAPPED loss; neither
+                    # belongs in a defined-risk capital-at-risk budget, so
+                    # refuse rather than admit it at $0.
+                    if _proposed_ml <= 0:
+                        return {
+                            "action": "SKIP", "symbol": symbol,
+                            "reason": (
+                                f"Options risk budget: cannot size {strategy_name}"
+                                " (width-less / unpriced) under a defined-risk "
+                                "max-loss budget — refused"
+                            ),
+                        }
+                    _open_ml = _ocar(ctx.db_path)
+                    _budget = _risk_pct * _equity
+                    if _equity > 0 and (_open_ml + _proposed_ml) > _budget:
+                        return {
+                            "action": "SKIP", "symbol": symbol,
+                            "reason": (
+                                f"Options risk budget: open ${_open_ml:,.0f} "
+                                f"+ trade ${_proposed_ml:,.0f} > ${_budget:,.0f}"
+                                f" ({_risk_pct*100:.0f}% NAV cap)"
+                            ),
+                        }
+            except Exception as _budget_exc:
+                logger.debug(
+                    "Options risk-budget gate eval failed (non-blocking): "
+                    "%s: %s", type(_budget_exc).__name__, _budget_exc,
+                )
+
             # 2026-05-20 (docs/23 / #195 Phase 1): Greeks gate for the
             # multileg path. Mirrors the single-leg gate at
             # options_trader.py:497-540. Aggregates per-leg delta /
@@ -747,8 +802,18 @@ class OptionPipeline(Pipeline):
         # credit-ratio veto) have looser = smaller threshold.
         BOUNDS = {
             # Greek-budget caps (existing — 2026-05-12 Phase 2b).
-            "max_net_options_delta_pct":
-                (0.02, 0.10, 1.05, 0.95, "float"),
+            # 2026-07-01 — max_net_options_delta_pct REMOVED: the delta gate
+            # is retired to a fixed 1.50 backstop, so nothing may tune it
+            # (this tuner's old 0.02-0.10 range dragged it straight back into
+            # the binding range and re-blocked spreads).
+            # The aggregate capital-at-risk budget IS tuned here, within its
+            # param_bounds band. (self_tuning._optimize_max_options_risk_pct
+            # also nudges it via the shared greek-cap optimizer — both are
+            # clamped to 0.10-0.40 and move the same direction on option-bucket
+            # P&L, exactly like the theta/vega caps below, so the effect is
+            # bounded convergence, not a fight.)
+            "max_options_risk_pct":
+                (0.10, 0.40, 1.05, 0.95, "float"),
             "max_theta_burn_dollars_per_day":
                 (25.0, 100.0, 1.05, 0.95, "float"),
             "max_short_vega_dollars":

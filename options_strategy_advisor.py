@@ -459,6 +459,31 @@ def _own_book_held_underlyings(ctx: Any) -> set:
         return set()
 
 
+def _options_budget_exhausted(ctx: Any) -> bool:
+    """True when this profile's OPEN options capital-at-risk already meets or
+    exceeds its max_options_risk_pct-of-NAV budget — so no new spread could be
+    acted on. Lets the prompt suppress the whole options menu rather than
+    offer trades the execution budget gate would only reject ("proposed but
+    can't be acted on"). Own-book only (isolation-safe). Fail-open (False) on
+    any error or when the budget gate is off."""
+    try:
+        risk_pct = getattr(ctx, "max_options_risk_pct", None)
+        if not risk_pct or risk_pct <= 0:
+            return False
+        from client import get_account_info
+        from journal import open_options_capital_at_risk
+        equity = float((get_account_info(ctx=ctx) or {}).get("equity") or 0)
+        if equity <= 0:
+            equity = float(getattr(ctx, "initial_capital", 0) or 0)
+        if equity <= 0:
+            return False
+        open_ml = open_options_capital_at_risk(getattr(ctx, "db_path", None))
+        return open_ml >= risk_pct * equity
+    except Exception as exc:
+        logger.debug("options budget check unavailable (fail-open): %s", exc)
+        return False
+
+
 def render_multileg_recs_for_prompt(
     candidates: List[Dict[str, Any]],
     iv_rank_lookup=None,
@@ -482,6 +507,11 @@ def render_multileg_recs_for_prompt(
     Returns empty string when there are no actionable recs.
     """
     if not candidates:
+        return ""
+    # If the options capital-at-risk budget is already spent, offer no
+    # spreads at all — they'd only be rejected by the execution budget gate
+    # ("proposed but can't be acted on"). Own-book, fail-open.
+    if _options_budget_exhausted(ctx):
         return ""
     # Compute the own-book held set ONCE per prompt build (not per
     # candidate) and pass it down so spreads on already-held underlyings

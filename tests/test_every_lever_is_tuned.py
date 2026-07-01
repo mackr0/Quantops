@@ -42,6 +42,13 @@ MANUAL_PARAMETERS = {
     "min_volume":  "Operator-only share-liquidity floor — never auto-tuned (_OPERATOR_ONLY_PARAMS)",
     "min_adv":     "Operator-only dollar-liquidity floor — never auto-tuned (_OPERATOR_ONLY_PARAMS)",
 
+    # 2026-07-01 — RETIRED to a fixed wide runaway backstop (1.50). The
+    # options-delta cap is no longer a binding gate or a tuned control (the
+    # real options risk control is max_options_risk_pct, which IS auto-tuned
+    # via OptionPipeline.tune()'s BOUNDS). Left operator-set only so nothing
+    # walks the backstop back into the binding range.
+    "max_net_options_delta_pct": "Retired to an operator-set runaway backstop (2026-07-01); superseded by the auto-tuned max_options_risk_pct budget",
+
     # Identity / metadata — not "parameters" at all
     "id":              "PRIMARY KEY",
     "user_id":         "Foreign key to users",

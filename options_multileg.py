@@ -119,6 +119,30 @@ class OptionStrategy:
             ],
         }
 
+    def total_max_loss(self, fallback_limit_price: Optional[float] = None
+                       ) -> float:
+        """Total $ max-loss for this spread across all contracts.
+
+        Uses the priced ``max_loss_per_contract`` when the builder had
+        premiums. On the EXECUTION path the spec is built from strikes only
+        (no premiums) so that field is None — fall back to a CONSERVATIVE
+        estimate so the capital-at-risk budget still counts the trade:
+          * defined-width spreads (verticals / condors): spread width × $100
+            — always ≥ the true max loss (which is width − net credit).
+          * width-less debit strategies (long strangle/straddle): the debit
+            paid, |limit_price| × $100.
+        Returns 0.0 only when nothing is knowable (fail-open — a missing
+        figure must never wrongly block a trade; logged by the caller)."""
+        per = self.max_loss_per_contract
+        if per is None:
+            if self.spread_width_points and self.spread_width_points > 0:
+                per = float(self.spread_width_points) * 100.0
+            elif fallback_limit_price:
+                per = abs(float(fallback_limit_price)) * 100.0
+            else:
+                per = 0.0
+        return float(per) * int(self.qty or 0)
+
 
 # ---------------------------------------------------------------------------
 # Vertical spread builders
@@ -898,6 +922,7 @@ def execute_multileg_strategy(
                     strategy, combo_id, ctx, api=api,
                     ai_confidence=ai_confidence,
                     ai_reasoning=ai_reasoning,
+                    limit_price=limit_price,
                 )
             result.update({
                 "action": "MULTILEG_OPEN",
@@ -1149,6 +1174,7 @@ def execute_multileg_strategy(
                 strategy, None, ctx,
                 leg_order_ids=leg_order_ids, api=api,
                 ai_confidence=ai_confidence, ai_reasoning=ai_reasoning,
+                limit_price=limit_price,
             )
         except _AtomicPlacementBreach:
             result.update({
@@ -2060,7 +2086,8 @@ def _log_strategy_legs(strategy: OptionStrategy,
                           leg_order_ids: Optional[List[str]] = None,
                           api=None,
                           ai_confidence: Optional[int] = None,
-                          ai_reasoning: Optional[str] = None) -> None:
+                          ai_reasoning: Optional[str] = None,
+                          limit_price: Optional[float] = None) -> None:
     """Write one journal row per leg, tagging them with the strategy
     name so the lifecycle sweep + dashboard can group them together.
 
@@ -2193,6 +2220,18 @@ def _log_strategy_legs(strategy: OptionStrategy,
                 option_strategy=strategy.name,
                 expiry=leg.expiry,
                 strike=float(leg.strike),
+                # Per-leg share of the spread's total max-loss ($), so
+                # SUM(spread_max_loss) over the book's open option rows =
+                # aggregate options capital-at-risk (feeds the
+                # max_options_risk_pct budget gate). total_max_loss() gives a
+                # conservative figure even when the spec has no premiums
+                # (width×$100 for defined-width spreads). Even split across
+                # legs so a whole-spread close zeroes it out; leg-level
+                # granularity noted in total_max_loss's docstring.
+                spread_max_loss=(
+                    strategy.total_max_loss(limit_price)
+                    / max(1, len(strategy.legs))
+                ),
                 db_path=db_path,
             )
             if row_id:

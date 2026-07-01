@@ -2200,7 +2200,7 @@ _OPTIMIZER_DIRECTION = {
     # because they both TIGHTEN (on option-bucket losses) and LOOSEN (on
     # option-bucket wins). Honors the trade-not-hoard rule's "default
     # bias = LOOSEN" by allowing widening when outcomes support it.
-    "_optimize_max_net_options_delta_pct": "BIDIRECTIONAL",
+    "_optimize_max_options_risk_pct": "BIDIRECTIONAL",
     "_optimize_max_theta_burn_dollars_per_day": "BIDIRECTIONAL",
     "_optimize_max_short_vega_dollars": "BIDIRECTIONAL",
     "_optimize_conviction_tp_override": "BIDIRECTIONAL",
@@ -2307,7 +2307,8 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
         _optimize_short_selling_toggle,
         _optimize_options_pnl_cutoff,
         # #195 Phase 2 (docs/23) — Greek-cap tuners
-        _optimize_max_net_options_delta_pct,
+        # 2026-07-01 — delta-cap tuner retired; budget tuner replaces it.
+        _optimize_max_options_risk_pct,
         _optimize_max_theta_burn_dollars_per_day,
         _optimize_max_short_vega_dollars,
         _optimize_meta_pregate_threshold,
@@ -4432,14 +4433,21 @@ def _optimize_greek_cap(conn, ctx, profile_id, user_id,
     return None
 
 
-def _optimize_max_net_options_delta_pct(conn, ctx, profile_id, user_id,
-                                          overall_wr, resolved):
-    """Adjust max_net_options_delta_pct based on option-bucket P&L.
-    Step = 1% of equity per adjustment, clamped to (0.01, 0.20)."""
+def _optimize_max_options_risk_pct(conn, ctx, profile_id, user_id,
+                                    overall_wr, resolved):
+    """Adjust max_options_risk_pct — the aggregate options CAPITAL-AT-RISK
+    (max-loss / NAV) budget — based on option-bucket P&L. Loosen (raise the
+    budget) when the options book is winning, tighten (lower) when losing.
+    Step = 2% of NAV per adjustment; clamped by param_bounds to (0.10, 0.40).
+
+    2026-07-01 — replaces the retired _optimize_max_net_options_delta_pct.
+    The options-delta gate is now a fixed wide backstop (not a tuned
+    control); the capital-at-risk budget is the fund-grade dial the AI
+    fine-tunes."""
     return _optimize_greek_cap(
         conn, ctx, profile_id, user_id, overall_wr, resolved,
-        param_name="max_net_options_delta_pct",
-        step=0.01, default_value=0.05,
+        param_name="max_options_risk_pct",
+        step=0.02, default_value=0.20,
     )
 
 

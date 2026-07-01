@@ -55,7 +55,7 @@ class TestRegistration:
         with open(src_path) as f:
             src = f.read()
         for name in (
-            "_optimize_max_net_options_delta_pct",
+            "_optimize_max_options_risk_pct",
             "_optimize_max_theta_burn_dollars_per_day",
             "_optimize_max_short_vega_dollars",
         ):
@@ -67,14 +67,14 @@ class TestRegistration:
 
     def test_tuners_callable_from_module(self):
         from self_tuning import (
-            _optimize_max_net_options_delta_pct,
+            _optimize_max_options_risk_pct,
             _optimize_max_theta_burn_dollars_per_day,
             _optimize_max_short_vega_dollars,
             _options_bucket_pnl_30d,
             _optimize_greek_cap,
         )
         for fn in (
-            _optimize_max_net_options_delta_pct,
+            _optimize_max_options_risk_pct,
             _optimize_max_theta_burn_dollars_per_day,
             _optimize_max_short_vega_dollars,
         ):
@@ -156,7 +156,8 @@ class TestGreekCapTunerDecisions:
             profile_id=99, user_id=1,
             segment="stocks",
             initial_capital=100_000.0,
-            max_net_options_delta_pct=0.05,
+            max_net_options_delta_pct=1.50,   # retired backstop
+            max_options_risk_pct=0.20,        # the tuned budget
             max_theta_burn_dollars_per_day=50.0,
             max_short_vega_dollars=500.0,
         )
@@ -167,7 +168,7 @@ class TestGreekCapTunerDecisions:
     @patch("self_tuning._apply_param_change")
     def test_insufficient_sample_no_op(self, mock_apply, _guard, tmp_path):
         """<20 closed option trades → tuner returns None (no change)."""
-        from self_tuning import _optimize_max_net_options_delta_pct
+        from self_tuning import _optimize_max_options_risk_pct
         from journal import init_db
         db = str(tmp_path / "profile.db")
         init_db(db)
@@ -185,7 +186,7 @@ class TestGreekCapTunerDecisions:
             conn.commit()
         with closing(sqlite3.connect(db)) as conn:
             conn.row_factory = sqlite3.Row
-            result = _optimize_max_net_options_delta_pct(
+            result = _optimize_max_options_risk_pct(
                 conn, self._ctx(), 99, 1,
                 overall_wr=50.0, resolved=100,
             )
@@ -194,10 +195,10 @@ class TestGreekCapTunerDecisions:
 
     @patch("self_tuning._safe_change_guarded", return_value=True)
     @patch("self_tuning._apply_param_change",
-           return_value=(0.04, None, ""))
+           return_value=(0.18, None, ""))
     def test_strong_loss_tightens_cap(self, mock_apply, _guard, tmp_path):
-        """Option bucket P&L < -2% of capital → cap TIGHTENS by 1 step."""
-        from self_tuning import _optimize_max_net_options_delta_pct
+        """Option bucket P&L < -2% of capital → budget TIGHTENS by 1 step."""
+        from self_tuning import _optimize_max_options_risk_pct
         from journal import init_db
         db = str(tmp_path / "profile.db")
         init_db(db)
@@ -215,7 +216,7 @@ class TestGreekCapTunerDecisions:
             conn.commit()
         with closing(sqlite3.connect(db)) as conn:
             conn.row_factory = sqlite3.Row
-            result = _optimize_max_net_options_delta_pct(
+            result = _optimize_max_options_risk_pct(
                 conn, self._ctx(), 99, 1,
                 overall_wr=40.0, resolved=100,
             )
@@ -226,16 +227,16 @@ class TestGreekCapTunerDecisions:
         call_kwargs = mock_apply.call_args
         args = call_kwargs.args
         # Arguments: profile_id, user_id, change_type, param, current, new
-        assert args[3] == "max_net_options_delta_pct"
-        assert args[4] == pytest.approx(0.05)
-        assert args[5] == pytest.approx(0.04)  # current - step (0.01)
+        assert args[3] == "max_options_risk_pct"
+        assert args[4] == pytest.approx(0.20)
+        assert args[5] == pytest.approx(0.18)  # current - step (0.02)
 
     @patch("self_tuning._safe_change_guarded", return_value=True)
     @patch("self_tuning._apply_param_change",
-           return_value=(0.06, None, ""))
+           return_value=(0.22, None, ""))
     def test_strong_win_loosens_cap(self, mock_apply, _guard, tmp_path):
-        """Option bucket P&L > +2% of capital → cap LOOSENS by 1 step."""
-        from self_tuning import _optimize_max_net_options_delta_pct
+        """Option bucket P&L > +2% of capital → budget LOOSENS by 1 step."""
+        from self_tuning import _optimize_max_options_risk_pct
         from journal import init_db
         db = str(tmp_path / "profile.db")
         init_db(db)
@@ -253,7 +254,7 @@ class TestGreekCapTunerDecisions:
             conn.commit()
         with closing(sqlite3.connect(db)) as conn:
             conn.row_factory = sqlite3.Row
-            result = _optimize_max_net_options_delta_pct(
+            result = _optimize_max_options_risk_pct(
                 conn, self._ctx(), 99, 1,
                 overall_wr=65.0, resolved=100,
             )
@@ -261,15 +262,15 @@ class TestGreekCapTunerDecisions:
         assert "Loosened" in result or "loosen" in result.lower()
         mock_apply.assert_called_once()
         args = mock_apply.call_args.args
-        assert args[3] == "max_net_options_delta_pct"
-        assert args[4] == pytest.approx(0.05)
-        assert args[5] == pytest.approx(0.06)
+        assert args[3] == "max_options_risk_pct"
+        assert args[4] == pytest.approx(0.20)
+        assert args[5] == pytest.approx(0.22)
 
     @patch("self_tuning._safe_change_guarded", return_value=True)
     @patch("self_tuning._apply_param_change")
     def test_within_tolerance_no_change(self, mock_apply, _guard, tmp_path):
         """Option P&L between -2% and +2% of capital → no change."""
-        from self_tuning import _optimize_max_net_options_delta_pct
+        from self_tuning import _optimize_max_options_risk_pct
         from journal import init_db
         db = str(tmp_path / "profile.db")
         init_db(db)
@@ -287,7 +288,7 @@ class TestGreekCapTunerDecisions:
             conn.commit()
         with closing(sqlite3.connect(db)) as conn:
             conn.row_factory = sqlite3.Row
-            result = _optimize_max_net_options_delta_pct(
+            result = _optimize_max_options_risk_pct(
                 conn, self._ctx(), 99, 1,
                 overall_wr=50.0, resolved=100,
             )
@@ -298,14 +299,14 @@ class TestGreekCapTunerDecisions:
     @patch("self_tuning._apply_param_change", return_value=(0.05, None, ""))
     def test_crypto_segment_skipped(self, mock_apply, _guard, tmp_path):
         """Crypto profiles don't trade options through this path."""
-        from self_tuning import _optimize_max_net_options_delta_pct
+        from self_tuning import _optimize_max_options_risk_pct
         from journal import init_db
         db = str(tmp_path / "profile.db")
         init_db(db)
         ctx = self._ctx(segment="crypto")
         with closing(sqlite3.connect(db)) as conn:
             conn.row_factory = sqlite3.Row
-            result = _optimize_max_net_options_delta_pct(
+            result = _optimize_max_options_risk_pct(
                 conn, ctx, 99, 1, overall_wr=50.0, resolved=100,
             )
         assert result is None
@@ -320,9 +321,12 @@ class TestParamBounds:
     def test_three_greek_caps_have_bounds(self):
         from param_bounds import PARAM_BOUNDS
         for name, expected_min, expected_max in [
-            ("max_net_options_delta_pct", 0.01, 0.20),
+            # delta cap RETIRED to a wide backstop (2026-07-01)
+            ("max_net_options_delta_pct", 1.0, 2.0),
             ("max_theta_burn_dollars_per_day", 10.0, 500.0),
             ("max_short_vega_dollars", 50.0, 5000.0),
+            # the fund-grade options capital-at-risk budget (real control)
+            ("max_options_risk_pct", 0.10, 0.40),
         ]:
             assert name in PARAM_BOUNDS, f"{name} missing from PARAM_BOUNDS"
             lo, hi = PARAM_BOUNDS[name]
@@ -331,34 +335,39 @@ class TestParamBounds:
 
     def test_clamp_works_for_greek_caps(self):
         from param_bounds import clamp
-        # Below floor
-        assert clamp("max_net_options_delta_pct", -1.0) == 0.01
+        # delta cap floor is now the backstop 1.0 (retired as binding gate)
+        assert clamp("max_net_options_delta_pct", -1.0) == 1.0
         # Above ceiling
         assert clamp("max_theta_burn_dollars_per_day", 99999.0) == 500.0
         # In range
         assert clamp("max_short_vega_dollars", 750.0) == 750.0
+        # budget clamps to its band
+        assert clamp("max_options_risk_pct", 0.99) == 0.40
+        assert clamp("max_options_risk_pct", 0.01) == 0.10
 
 
 class TestSettingsUiHasGreekInputs:
     def test_three_input_fields_present(self):
         with open(os.path.join(REPO, "templates", "settings.html")) as f:
             html = f.read()
+        # delta-cap input RETIRED (2026-07-01); the capital-at-risk budget
+        # is the operator-editable control now.
         for field in (
-            'name="max_net_options_delta_pct"',
+            'name="max_options_risk_pct"',
             'name="max_theta_burn_dollars_per_day"',
             'name="max_short_vega_dollars"',
         ):
             assert field in html, (
                 f"Settings UI missing {field} — operator can't override "
-                "the Greek cap. Add to the 'Options Greek-Exposure Caps' "
-                "section in templates/settings.html."
+                "the options risk cap. Add to the 'Options Greek-Exposure "
+                "Caps' section in templates/settings.html."
             )
 
     def test_views_persists_clamped_writes(self):
         with open(os.path.join(REPO, "views.py")) as f:
             src = f.read()
         for field in (
-            "max_net_options_delta_pct",
+            "max_options_risk_pct",
             "max_theta_burn_dollars_per_day",
             "max_short_vega_dollars",
         ):

@@ -113,22 +113,23 @@ class TestOptionTuneAdjustmentMath:
     def test_high_win_rate_loosens(self, db_path):
         _seed_option_outcomes(db_path, n=25, win_rate=0.72)
         adj = OptionPipeline().tune(_ctx(db_path), Metrics(pipeline_name="option"))
+        # delta cap RETIRED (2026-07-01) — no longer tuned by this pipeline
+        assert "max_net_options_delta_pct" not in adj.changes
         # Loosen: each new value > current
-        assert adj.changes["max_net_options_delta_pct"] > 0.05
         assert adj.changes["max_theta_burn_dollars_per_day"] > 50.0
         assert adj.changes["max_short_vega_dollars"] > 500.0
-        # 5% loosen: 0.05 * 1.05 = 0.0525
-        assert adj.changes["max_net_options_delta_pct"] == pytest.approx(0.0525)
+        # 5% loosen: 50.0 * 1.05 = 52.5
+        assert adj.changes["max_theta_burn_dollars_per_day"] == pytest.approx(52.5)
 
     def test_low_win_rate_tightens(self, db_path):
         _seed_option_outcomes(db_path, n=25, win_rate=0.30)
         adj = OptionPipeline().tune(_ctx(db_path), Metrics(pipeline_name="option"))
+        assert "max_net_options_delta_pct" not in adj.changes
         # Tighten: each new value < current
-        assert adj.changes["max_net_options_delta_pct"] < 0.05
         assert adj.changes["max_theta_burn_dollars_per_day"] < 50.0
         assert adj.changes["max_short_vega_dollars"] < 500.0
-        # 5% tighten: 0.05 * 0.95 = 0.0475
-        assert adj.changes["max_net_options_delta_pct"] == pytest.approx(0.0475)
+        # 5% tighten: 50.0 * 0.95 = 47.5
+        assert adj.changes["max_theta_burn_dollars_per_day"] == pytest.approx(47.5)
 
     def test_neutral_band_no_change(self, db_path):
         _seed_option_outcomes(db_path, n=25, win_rate=0.50)
@@ -149,22 +150,22 @@ class TestOptionTuneAdjustmentMath:
 
 class TestBoundsClipping:
     def test_loosen_at_ceiling_is_noop(self, db_path):
-        """At ceiling (max_net_options_delta_pct=0.10), loosen
+        """At ceiling (max_theta_burn_dollars_per_day=100.0), loosen
         attempts produce no delta — entry not in changes."""
         _seed_option_outcomes(db_path, n=25, win_rate=0.70)
-        ctx = _ctx(db_path, max_net_options_delta_pct=0.10)
+        ctx = _ctx(db_path, max_theta_burn_dollars_per_day=100.0)
         adj = OptionPipeline().tune(ctx, Metrics(pipeline_name="option"))
-        # delta_pct already at ceiling — clipped to ceiling, equals
+        # theta already at ceiling — clipped to ceiling, equals
         # current, so no entry recorded
-        assert "max_net_options_delta_pct" not in adj.changes
+        assert "max_theta_burn_dollars_per_day" not in adj.changes
         # Other params still adjusted (they're below their ceilings)
-        assert "max_theta_burn_dollars_per_day" in adj.changes
+        assert "max_short_vega_dollars" in adj.changes
 
     def test_tighten_at_floor_is_noop(self, db_path):
         _seed_option_outcomes(db_path, n=25, win_rate=0.30)
-        ctx = _ctx(db_path, max_net_options_delta_pct=0.02)
+        ctx = _ctx(db_path, max_theta_burn_dollars_per_day=25.0)
         adj = OptionPipeline().tune(ctx, Metrics(pipeline_name="option"))
-        assert "max_net_options_delta_pct" not in adj.changes
+        assert "max_theta_burn_dollars_per_day" not in adj.changes
 
 
 # ---------------------------------------------------------------------------

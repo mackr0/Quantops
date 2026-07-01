@@ -87,9 +87,15 @@ PARAM_BOUNDS: Dict[str, Tuple[Number, Number]] = {
     # open (pipelines/option.py); auto-tuned per profile by self_tuning
     # based on option-bucket realized P&L over recent closes. Operator
     # can also set in Settings UI.
-    "max_net_options_delta_pct":     (0.01, 0.20),   # 1%–20% of equity
+    # RETIRED as a binding gate (2026-07-01) — now a wide runaway backstop
+    # only. Bounds widened to 1.0–2.0 so the tuner can never pull it back
+    # down into the binding range that made options untradeable.
+    "max_net_options_delta_pct":     (1.0, 2.0),      # backstop only (100%–200%)
     "max_theta_burn_dollars_per_day": (10.0, 500.0), # $10–$500/day decay budget
     "max_short_vega_dollars":        (50.0, 5000.0), # $50–$5000 short-vega cap
+    # Aggregate options capital-at-risk budget (max-loss / NAV). The real
+    # fund-grade control on the options book; AI-tunable within this band.
+    "max_options_risk_pct":          (0.10, 0.40),    # 10%–40% of NAV at risk
 
     # ── Entry filters ─────────────────────────────────────────────
     "min_volume":                    (100_000, 5_000_000),

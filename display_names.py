@@ -194,6 +194,7 @@ _DISPLAY_NAMES = {
     "ai_confidence_threshold":  "AI Confidence Threshold",
     "max_position_pct":         "Max Position Size (%)",
     "max_total_positions":      "Max Total Positions",
+    "max_options_risk_pct":     "Options Capital-at-Risk Budget (% of NAV)",
     "stop_loss_pct":            "Stop-Loss (%)",
     "take_profit_pct":          "Take-Profit (%)",
     "drawdown_pause_pct":       "Drawdown Pause Threshold",

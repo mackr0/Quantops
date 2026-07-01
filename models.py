@@ -605,12 +605,20 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             # dataclass defaults (user_context.py:118-127). Without
             # these as actual columns, the tuner had nothing to write
             # to and per-profile customization was impossible.
+            # max_net_options_delta_pct RETIRED as binding gate (2026-07-01):
+            # default widened 0.05 -> 1.50 (runaway backstop only). The real
+            # options risk control is max_options_risk_pct below.
             ("trading_profiles", "max_net_options_delta_pct",
-                "REAL NOT NULL DEFAULT 0.05"),
+                "REAL NOT NULL DEFAULT 1.50"),
             ("trading_profiles", "max_theta_burn_dollars_per_day",
                 "REAL NOT NULL DEFAULT 50.0"),
             ("trading_profiles", "max_short_vega_dollars",
                 "REAL NOT NULL DEFAULT 500.0"),
+            # 2026-07-01 — aggregate options capital-at-risk budget
+            # (sum of open spreads' max-loss + proposed) / equity. The
+            # fund-grade control that replaced the options-delta gate.
+            ("trading_profiles", "max_options_risk_pct",
+                "REAL NOT NULL DEFAULT 0.20"),
             # 2026-05-12 — AI-tunable option exit + veto thresholds.
             # Until this commit these lived as module constants in
             # options_exits.py / option_spread_risk.py. The whole system
@@ -1506,6 +1514,8 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         "max_net_options_delta_pct",
         "max_theta_burn_dollars_per_day",
         "max_short_vega_dollars",
+        # 2026-07-01 — fund-grade options capital-at-risk budget.
+        "max_options_risk_pct",
         # 2026-05-12 — AI-tunable option exit + veto thresholds.
         "option_premium_stop_loss_pct",
         "option_premium_take_profit_pct",
@@ -1880,10 +1890,12 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
         # 2026-05-12 — Phase 2b option-Greeks budget caps. Per-profile
         # values; OptionPipeline.tune() can adjust them based on
         # option win rate. Defaults match user_context.py:118-127.
+        # max_net_options_delta_pct RETIRED as binding gate (2026-07-01) —
+        # default 1.50 = wide runaway backstop only. Real control below.
         max_net_options_delta_pct=float(
-            profile.get("max_net_options_delta_pct", 0.05)
+            profile.get("max_net_options_delta_pct", 1.50)
             if profile.get("max_net_options_delta_pct") is not None
-            else 0.05),
+            else 1.50),
         max_theta_burn_dollars_per_day=float(
             profile.get("max_theta_burn_dollars_per_day", 50.0)
             if profile.get("max_theta_burn_dollars_per_day") is not None
@@ -1892,6 +1904,12 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
             profile.get("max_short_vega_dollars", 500.0)
             if profile.get("max_short_vega_dollars") is not None
             else 500.0),
+        # 2026-07-01 — aggregate options capital-at-risk budget (max-loss
+        # / NAV). The fund-grade control that replaced the delta gate.
+        max_options_risk_pct=float(
+            profile.get("max_options_risk_pct", 0.20)
+            if profile.get("max_options_risk_pct") is not None
+            else 0.20),
         # 2026-05-12 — AI-tunable option exit + veto thresholds.
         option_premium_stop_loss_pct=float(
             profile.get("option_premium_stop_loss_pct", -0.50)
