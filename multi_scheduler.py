@@ -2114,6 +2114,14 @@ def _task_cost_check(ctx):
 _health_probe_last_run = 0.0
 _HEALTH_PROBE_INTERVAL_SEC = 600  # every 10 min
 
+# Per-cycle worker pool cap (2026-07-01). Raised 3 -> 6 so the scan queue
+# clears within the interval instead of stretching cadence out (at 3 on the
+# 13-profile fleet, profiles that came due together queued behind a wave,
+# pushing effective cadence to ~15-17min at a 10-min setting). Scans are
+# I/O-bound on LLM calls, so >CPU-count threads help even on the 2-CPU box.
+# Order-collision on the shared conduit is still serialized at submit time.
+_CYCLE_MAX_WORKERS = 6
+
 
 _auto_expiry_last_run_date = None
 _trade_rate_anomaly_last_run_date = None
@@ -5636,6 +5644,25 @@ def main_loop(active_segments=None, legacy_mode=False):
                 """Run a single profile's cycle. Called from thread pool."""
                 prof = item["prof"]
                 ctx = item["ctx"]
+                # CADENCE FIX (2026-07-01): stamp the per-profile run clock at
+                # START, not finish. Stamping at finish made the effective
+                # cadence = interval + cycle duration (~1.7min scan) + overhead,
+                # so a 10-min setting read as ~13-17min. Stamping at start makes
+                # the configured interval the actual cadence. On failure we
+                # RESTORE the prior stamps so a crashed cycle re-runs next
+                # iteration instead of waiting a full interval.
+                pr = item["pr"]
+                _prior = {
+                    k: pr.get(k) for k in
+                    ("scan", "check_exits", "resolve_predictions")
+                }
+                start_t = time.time()
+                if item["do_scan"]:
+                    pr["scan"] = start_t
+                if item["do_exits"]:
+                    pr["check_exits"] = start_t
+                if item["do_predictions"]:
+                    pr["resolve_predictions"] = start_t
                 logging.info(
                     f"=== Processing profile: {prof['name']} "
                     f"(#{prof['id']}, {prof['market_type']}, "
@@ -5647,21 +5674,20 @@ def main_loop(active_segments=None, legacy_mode=False):
                 # order_id fills; it only ever sells what its own fresh book
                 # holds (the oversell door), so profiles need no coordination —
                 # they run fully in parallel.
-                run_segment_cycle(
-                    ctx,
-                    run_scan=item["do_scan"], run_exits=item["do_exits"],
-                    run_predictions=item["do_predictions"],
-                    run_snapshot=do_snapshot, run_summary=do_snapshot,
-                )
-                # Stamp per-profile timestamps
-                finish_t = time.time()
-                pr = item["pr"]
-                if item["do_scan"]:
-                    pr["scan"] = finish_t
-                if item["do_exits"]:
-                    pr["check_exits"] = finish_t
-                if item["do_predictions"]:
-                    pr["resolve_predictions"] = finish_t
+                try:
+                    run_segment_cycle(
+                        ctx,
+                        run_scan=item["do_scan"], run_exits=item["do_exits"],
+                        run_predictions=item["do_predictions"],
+                        run_snapshot=do_snapshot, run_summary=do_snapshot,
+                    )
+                except Exception:
+                    # Roll the clock back so the failed cycle retries next
+                    # iteration rather than skipping a full interval.
+                    for _k, _v in _prior.items():
+                        if _v is not None:
+                            pr[_k] = _v
+                    raise
                 return prof["name"]
 
             if due_profiles:
@@ -5678,7 +5704,7 @@ def main_loop(active_segments=None, legacy_mode=False):
                 def _run_pool(items, label):
                     if not items:
                         return
-                    mw = min(len(items), 3)
+                    mw = min(len(items), _CYCLE_MAX_WORKERS)
                     logging.info(
                         f"Running {len(items)} {label} profile(s) in parallel "
                         f"(max_workers={mw})"
