@@ -78,7 +78,7 @@ def backfill_prediction_type(db_path=None):
     init_tracker_db(db_path)
     conn = _get_conn(db_path)
     counts = {"directional_long": 0, "directional_short": 0,
-              "exit_long": 0, "skipped": 0}
+              "exit_long": 0, "option_open": 0, "skipped": 0}
     try:
         # BUY and HOLD → directional_long
         c = conn.execute(
@@ -87,6 +87,15 @@ def backfill_prediction_type(db_path=None):
             "AND predicted_signal IN ('BUY', 'HOLD', 'STRONG_BUY')"
         )
         counts["directional_long"] += c.rowcount
+        # Option opens → option_open (P0 2026-07-01) — a distinct expression,
+        # never conflated with stock longs (see classify_prediction_type).
+        c = conn.execute(
+            "UPDATE ai_predictions SET prediction_type='option_open' "
+            "WHERE prediction_type IS NULL "
+            "AND predicted_signal IN ('MULTILEG_OPEN', 'OPTIONS', "
+            "                         'OPTION_EXERCISE')"
+        )
+        counts["option_open"] += c.rowcount
         # SHORT → directional_short
         c = conn.execute(
             "UPDATE ai_predictions SET prediction_type='directional_short' "
@@ -399,6 +408,32 @@ def _trading_days_since(timestamp_str):
 
 _OPTION_SIGNALS = frozenset({"MULTILEG_OPEN", "OPTIONS",
                               "OPTION_EXERCISE"})
+
+
+def classify_prediction_type(signal, held_qty=0.0):
+    """Classify a prediction for STATS + meta-model attribution.
+
+    P0 of the selection-engine design (2026-07-01): option opens are a DISTINCT
+    expression ("option_open") and must never be conflated with stock longs —
+    per-expression scoring/feedback depends on the split. Resolution itself is
+    P&L-based via the option_resolver (keyed on the SIGNAL, not this label), so
+    this only drives stats. SELL is exit-vs-directional by whether we hold.
+    See docs/SELECTION_ENGINE_DESIGN.md.
+    """
+    s = (signal or "").upper()
+    if s == "BUY":
+        return "directional_long"
+    if s == "SHORT":
+        return "directional_short"
+    if s in _OPTION_SIGNALS:
+        return "option_open"
+    if s == "SELL":
+        if held_qty > 0:
+            return "exit_long"
+        if held_qty < 0:
+            return "exit_short"
+        return "directional_short"   # SELL on unheld = directional bearish
+    return "directional_long"        # HOLD / unknown — neutral
 
 
 def _estimate_round_trip_cost_pct(prediction, db_path):

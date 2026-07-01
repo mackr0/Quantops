@@ -2599,7 +2599,7 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     # (did the price move in the predicted direction?) — NOT whether a
     # trade was executed. This feeds the self-tuning feedback loop.
     try:
-        from ai_tracker import record_prediction
+        from ai_tracker import record_prediction, classify_prediction_type
         current_regime = (regime_info or {}).get("regime")
         for c in candidates_data:
             sym = c.get("symbol", "")
@@ -2640,25 +2640,13 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
             # held LONG = exit-quality question; SELL on something we don't
             # hold = directional-bearish question. Lumping them together
             # made 'Avg Move on SELLs' uninterpretable.
-            sig_upper = (pred_signal or "").upper()
             held_pos = positions_dict.get(sym)
             held_qty = float(held_pos.get("qty", 0)) if held_pos else 0.0
-            if sig_upper == "BUY":
-                pred_type = "directional_long"
-            elif sig_upper == "SHORT":
-                pred_type = "directional_short"
-            elif sig_upper == "SELL":
-                if held_qty > 0:
-                    pred_type = "exit_long"
-                elif held_qty < 0:
-                    pred_type = "exit_short"
-                else:
-                    # AI hallucinated SELL on something we don't hold —
-                    # treat as directional_short.
-                    pred_type = "directional_short"
-            else:
-                # HOLD or unknown — keep neutral classification
-                pred_type = "directional_long"
+            # P0 (2026-07-01, selection-engine design): option opens classify as
+            # "option_open", never directional_long — otherwise every
+            # per-expression stat + meta-model training conflates spreads with
+            # stock longs. See ai_tracker.classify_prediction_type.
+            pred_type = classify_prediction_type(pred_signal, held_qty)
 
             # Build feature payload for meta-model training (Phase 1).
             # Strip non-numeric/non-scalar fields — store only what a feature

@@ -5,6 +5,10 @@ at the top.
 
 ---
 
+## 2026-07-01 — Selection engine P0: option predictions classify as `option_open`, not `directional_long`. Severity: LOW (stats correctness; prerequisite).
+
+First step of the risk-adjusted selection-engine design (docs/SELECTION_ENGINE_DESIGN.md) that fixes the ~18:1 option:stock proposal skew. Option opens (MULTILEG_OPEN / OPTIONS / OPTION_EXERCISE) fell through `pred_type` classification to `directional_long`, conflating every option outcome with stock longs — which corrupts the per-expression win-rate stats + meta-model training the selection engine's `P_win` depends on. Extracted the classification into a pure, unit-tested `ai_tracker.classify_prediction_type(signal, held_qty)` (option opens → `option_open`), used at the write site (`trade_pipeline` prediction-record path) and mirrored in `backfill_prediction_type`. No behavior change — resolution is unaffected (options resolve P&L-wise via the option_resolver, keyed on the signal, not this label). Pinned by `test_selection_engine_p0_2026_07_01.py`.
+
 ## 2026-07-01 — Scan cadence now matches the configured interval (was ~13–17 min at a 10-min setting). Severity: MEDIUM (throughput).
 
 At `scan_interval=10` the fleet was cycling every ~13–17 min (p203/p206 the ~17-min tail). Not broken — two structural causes, both fixed:
