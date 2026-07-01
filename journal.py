@@ -171,6 +171,50 @@ def init_db(db_path=None):
             CREATE INDEX IF NOT EXISTS idx_broker_rejections_prediction_id
                 ON broker_rejections(prediction_id);
 
+            -- 2026-07-01 (selection-engine P3/P4) — per-proposal option
+            -- outcomes. ONE row per option proposal the AI sent to the option
+            -- pipeline: vetoed (1) or accepted (0), keyed by the SPREAD
+            -- strategy + sector, so the opportunity ledger can discount an
+            -- option's RAR by THIS profile's own per-(strategy x sector) veto
+            -- rate BEFORE selection (stops the AI wasting picks on spreads its
+            -- own specialists will only veto). For vetoed rows we also capture
+            -- enough to resolve the spread's TRUE would-be P&L from its own
+            -- legs (P4). PHYSICALLY SEPARATE from ai_predictions on purpose:
+            -- a would-be/shadow outcome can NEVER contaminate real-trade
+            -- reputation / meta-model / win-rate stats. Own-book only (this
+            -- profile's DB file is the isolation boundary).
+            CREATE TABLE IF NOT EXISTS option_proposal_outcomes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+                symbol TEXT NOT NULL,
+                strategy TEXT NOT NULL,
+                sector TEXT,
+                vetoed INTEGER NOT NULL,
+                veto_reason TEXT,
+                confidence REAL,
+                -- would-be resolution fields (P4; NULL for accepted rows).
+                -- lo_strike/hi_strike + strategy direction + max_loss/gain let
+                -- the resolver compute the spread's INTRINSIC expiry P&L from
+                -- the underlying's close alone (no illiquid near-expiry option
+                -- marks) — the accurate path.
+                entry_net_premium REAL,
+                max_loss_per_contract REAL,
+                max_gain_per_contract REAL,
+                breakeven REAL,
+                lo_strike REAL,
+                hi_strike REAL,
+                expiry TEXT,
+                legs_json TEXT,
+                status TEXT DEFAULT 'pending',
+                wouldbe_outcome TEXT,
+                wouldbe_pnl REAL,
+                resolved_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_opo_strategy_sector
+                ON option_proposal_outcomes(strategy, sector);
+            CREATE INDEX IF NOT EXISTS idx_opo_status
+                ON option_proposal_outcomes(status);
+
             -- 2026-06-09 — PRE-broker drop log. broker_rejections (above)
             -- records what Alpaca rejected. trade_drops records what
             -- trade_pipeline.execute_trade dropped BEFORE submission —
@@ -1341,6 +1385,191 @@ def record_broker_rejection(db_path, *, symbol, action, signal_type,
             symbol, rejection_code, exc,
         )
         return None
+
+
+def record_option_proposal_outcome(db_path, *, symbol, strategy, sector,
+                                   vetoed, veto_reason=None, confidence=None,
+                                   entry_net_premium=None,
+                                   max_loss_per_contract=None,
+                                   max_gain_per_contract=None,
+                                   breakeven=None, lo_strike=None,
+                                   hi_strike=None, expiry=None,
+                                   legs_json=None):
+    """Record ONE option proposal outcome — vetoed (1) or accepted (0) — keyed
+    by the SPREAD strategy + sector, for the selection engine's per-(strategy x
+    sector) veto-rate discount (P3) and the would-be-P&L shadow resolver (P4).
+
+    Writes to THIS profile's DB only (`db_path` is the isolation boundary) and
+    to a table PHYSICALLY SEPARATE from ai_predictions, so a would-be outcome
+    can never contaminate real-trade reputation / meta-model / win-rate stats.
+    Vetoed rows land status='pending' (the shadow resolver fills wouldbe_*);
+    accepted rows land status='accepted' (no resolution needed — they became a
+    real trade tracked in ai_predictions/trades). Fail-open: on any error, log
+    and return None — a feedback-signal write must never break execution.
+    """
+    if not db_path or not strategy:
+        return None
+    import logging as _logging
+    try:
+        with closing(_get_conn(db_path)) as conn:
+            cursor = conn.execute(
+                "INSERT INTO option_proposal_outcomes "
+                "(symbol, strategy, sector, vetoed, veto_reason, confidence, "
+                " entry_net_premium, max_loss_per_contract, "
+                " max_gain_per_contract, breakeven, lo_strike, hi_strike, "
+                " expiry, legs_json, status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ((symbol or "").upper(), str(strategy), sector,
+                 1 if vetoed else 0, veto_reason, confidence,
+                 entry_net_premium, max_loss_per_contract,
+                 max_gain_per_contract, breakeven, lo_strike, hi_strike,
+                 expiry, legs_json,
+                 "pending" if vetoed else "accepted"),
+            )
+            conn.commit()
+            return cursor.lastrowid
+    except Exception as exc:
+        _logging.warning(
+            "record_option_proposal_outcome(symbol=%s, strategy=%s) failed: "
+            "%s: %s — veto/accept feedback not recorded this proposal",
+            symbol, strategy, type(exc).__name__, exc,
+        )
+        return None
+
+
+def option_veto_counts(db_path):
+    """Per-(strategy, sector) option-proposal counts for THIS profile's own
+    book: returns a list of (strategy, sector, vetoed_count, total_count).
+    Feeds veto_feedback.load_veto_discounts. Own-book only; returns [] on any
+    error or when the table is absent (fail-open — a missing feedback signal
+    must never block the ledger)."""
+    if not db_path:
+        return []
+    try:
+        with closing(_get_conn(db_path)) as conn:
+            rows = conn.execute(
+                "SELECT strategy, "
+                "       COALESCE(sector, '') AS sector, "
+                "       SUM(CASE WHEN vetoed = 1 THEN 1 ELSE 0 END) AS vetoed, "
+                "       COUNT(*) AS total "
+                "FROM option_proposal_outcomes "
+                "GROUP BY strategy, COALESCE(sector, '')"
+            ).fetchall()
+        return [(r["strategy"], r["sector"], int(r["vetoed"] or 0),
+                 int(r["total"] or 0)) for r in rows]
+    except Exception as exc:
+        import logging as _logging
+        _logging.getLogger(__name__).debug(
+            "option_veto_counts unavailable (fail-open): %s", exc)
+        return []
+
+
+def pending_veto_outcomes(db_path, strictly_before):
+    """Vetoed option-proposal rows awaiting would-be-P&L resolution: priced
+    verticals (max_loss/gain + both strikes present) whose expiry is STRICTLY
+    BEFORE `strictly_before` (YYYY-MM-DD). Strict `<` (not `<=`) so we never
+    resolve a row on its own expiry day, when the daily bar is still the
+    in-progress session's PARTIAL print rather than the settlement close —
+    locking in a wrong outcome permanently. Own-book; [] on any error
+    (fail-open). Returns a list of dicts."""
+    if not db_path:
+        return []
+    try:
+        with closing(_get_conn(db_path)) as conn:
+            rows = conn.execute(
+                "SELECT id, symbol, strategy, lo_strike, hi_strike, "
+                "       max_loss_per_contract, max_gain_per_contract, expiry "
+                "FROM option_proposal_outcomes "
+                "WHERE vetoed = 1 AND status = 'pending' "
+                "  AND max_loss_per_contract IS NOT NULL "
+                "  AND max_gain_per_contract IS NOT NULL "
+                "  AND lo_strike IS NOT NULL AND hi_strike IS NOT NULL "
+                "  AND expiry IS NOT NULL AND expiry < ?",
+                (str(strictly_before),),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception as exc:
+        import logging as _logging
+        _logging.getLogger(__name__).debug(
+            "pending_veto_outcomes unavailable (fail-open): %s", exc)
+        return []
+
+
+def mark_veto_outcome_resolved(db_path, row_id, *, outcome, pnl):
+    """Mark ONE vetoed option-proposal row resolved with its would-be outcome
+    (win/loss/neutral) + would-be P&L per contract. Idempotent (only updates a
+    still-'pending' row). Fail-open: log and return False on error."""
+    if not db_path or row_id is None:
+        return False
+    try:
+        with closing(_get_conn(db_path)) as conn:
+            cursor = conn.execute(
+                "UPDATE option_proposal_outcomes "
+                "SET status = 'resolved', wouldbe_outcome = ?, "
+                "    wouldbe_pnl = ?, resolved_at = datetime('now') "
+                "WHERE id = ? AND status = 'pending'",
+                (outcome, pnl, row_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0   # False if the row wasn't still pending
+    except Exception as exc:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "mark_veto_outcome_resolved(id=%s) failed: %s", row_id, exc)
+        return False
+
+
+def mark_veto_outcome_unresolvable(db_path, row_id):
+    """Mark a stale pending vetoed row 'unresolvable' (e.g. delisted underlying
+    with no expiry-day bar, or a non-trading-day expiry that will never print a
+    matching close). Excluded from both the pending set AND the resolved
+    veto-quality counts, so it neither re-queries forever nor pollutes the
+    signal. Fail-open (log, return False)."""
+    if not db_path or row_id is None:
+        return False
+    try:
+        with closing(_get_conn(db_path)) as conn:
+            conn.execute(
+                "UPDATE option_proposal_outcomes "
+                "SET status = 'unresolvable', resolved_at = datetime('now') "
+                "WHERE id = ? AND status = 'pending'",
+                (row_id,),
+            )
+            conn.commit()
+        return True
+    except Exception as exc:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "mark_veto_outcome_unresolvable(id=%s) failed: %s", row_id, exc)
+        return False
+
+
+def option_veto_quality_counts(db_path):
+    """Per-(strategy, sector) RESOLVED-veto counts for THIS profile: a list of
+    (strategy, sector, resolved_count, wouldbe_loss_count). A high loss fraction
+    means the profile's vetoes on that pair actually AVOIDED losses (smart
+    vetoes); a low fraction means they blocked would-be winners. Feeds the
+    veto-QUALITY refinement of the discount. Own-book; [] on any error."""
+    if not db_path:
+        return []
+    try:
+        with closing(_get_conn(db_path)) as conn:
+            rows = conn.execute(
+                "SELECT strategy, COALESCE(sector, '') AS sector, "
+                "       COUNT(*) AS resolved, "
+                "       SUM(CASE WHEN wouldbe_outcome = 'loss' THEN 1 ELSE 0 END)"
+                "         AS losses "
+                "FROM option_proposal_outcomes "
+                "WHERE vetoed = 1 AND status = 'resolved' "
+                "GROUP BY strategy, COALESCE(sector, '')"
+            ).fetchall()
+        return [(r["strategy"], r["sector"], int(r["resolved"] or 0),
+                 int(r["losses"] or 0)) for r in rows]
+    except Exception as exc:
+        import logging as _logging
+        _logging.getLogger(__name__).debug(
+            "option_veto_quality_counts unavailable (fail-open): %s", exc)
+        return []
 
 
 def open_options_capital_at_risk(db_path=None) -> float:

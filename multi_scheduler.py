@@ -3635,6 +3635,50 @@ def _task_resolve_predictions(ctx):
             type(exc).__name__, exc,
         )
 
+    # Selection-engine P4 — resolve VETOED option spreads to their TRUE
+    # would-be P&L (intrinsic at expiry, from the underlying close), on this
+    # same cadence. Feeds the ledger's veto-QUALITY refinement (only down-rank
+    # a strategy whose vetoes actually avoided losses). Own-book (ctx.db_path);
+    # additive + fail-open — must never block the primary resolver above.
+    try:
+        from datetime import date as _date, timedelta as _td
+        from veto_feedback import resolve_option_proposal_outcomes
+        import market_data as _md
+
+        def _spot_on(symbol, expiry_str):
+            try:
+                if not symbol or not expiry_str:
+                    return None
+                exp = _date.fromisoformat(str(expiry_str)[:10])
+                end = (exp + _td(days=5)).isoformat()
+                df = _md.get_bars_daterange(symbol, exp.isoformat(), end)
+                if df is None or getattr(df, "empty", True):
+                    return None
+                # Resolve ONLY against the TRUE expiry-day settlement close:
+                # accept the first bar iff its session date IS the expiry date.
+                # A gap / non-trading-day expiry → None (stay pending; the
+                # resolver retires it if it's stale) — never resolve against a
+                # wrong-date close.
+                idx0 = df.index[0]
+                bar_date = idx0.date() if hasattr(idx0, "date") else None
+                if bar_date is None or bar_date.isoformat() != exp.isoformat():
+                    return None
+                return float(df["close"].iloc[0])
+            except Exception as _sp_exc:
+                logging.debug("veto-outcome spot lookup(%s,%s) failed: %s",
+                              symbol, expiry_str, _sp_exc)
+                return None
+
+        n_veto = resolve_option_proposal_outcomes(
+            ctx.db_path, _spot_on, _date.today().isoformat())
+        if n_veto:
+            logging.info("Vetoed-spread would-be outcomes resolved: %d", n_veto)
+    except Exception as exc:
+        logging.warning(
+            "veto-outcome resolution skipped (%s: %s) — additive; retries "
+            "next cadence.", type(exc).__name__, exc,
+        )
+
 
 def _task_daily_snapshot(ctx):
     """Save end-of-day portfolio snapshot.

@@ -380,8 +380,10 @@ def test_prediction_type_in_meta_model_categorical_features():
         "meta_model.CATEGORICAL_FEATURES is missing prediction_type — "
         "models trained without it can't differentiate long/short edges."
     )
+    # option_open added 2026-07-01 (selection-engine P4) so the meta-model can
+    # calibrate a stock vs an option spread of the same name differently.
     expected_values = {"directional_long", "directional_short",
-                       "exit_long", "exit_short"}
+                       "exit_long", "exit_short", "option_open"}
     assert set(CATEGORICAL_FEATURES["prediction_type"]) == expected_values
 
 

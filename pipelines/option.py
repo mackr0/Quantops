@@ -330,6 +330,13 @@ class OptionPipeline(Pipeline):
             sym = vetoed.get("symbol", "") if isinstance(vetoed, dict) else ""
             veto_reason, vetoed_by = self._veto_reason_for(verdict, sym)
             self._record_veto(ctx, vetoed, sym, (veto_reason, vetoed_by))
+            # P3 feedback: record the vetoed proposal keyed by (spread
+            # strategy x sector) so the ledger can discount doomed spreads.
+            if isinstance(vetoed, dict):
+                self._record_option_outcome(
+                    ctx, vetoed, sym, vetoed_flag=1,
+                    veto_reason=(f"{vetoed_by}: {veto_reason}"
+                                 if vetoed_by else veto_reason))
             result.skipped.append({
                 "action": "SPECIALIST_VETOED",
                 "symbol": sym,
@@ -346,6 +353,9 @@ class OptionPipeline(Pipeline):
                 continue
             action = (proposal.get("action") or "").upper()
             symbol = proposal.get("symbol", "")
+            # P3 feedback: an approved proposal survived the specialist veto —
+            # record it (vetoed=0) so P(veto) = vetoed / (vetoed + approved).
+            self._record_option_outcome(ctx, proposal, symbol, vetoed_flag=0)
             try:
                 if action == "MULTILEG_OPEN":
                     res = self._execute_multileg(ctx, proposal, symbol)
@@ -451,6 +461,81 @@ class OptionPipeline(Pipeline):
                 "veto-prediction journal write failed: %s: %s",
                 type(_v_exc).__name__, _v_exc,
             )
+
+    @staticmethod
+    def _price_vetoed_spread(strategy, symbol, proposal):
+        """Price a vetoed VERTICAL now so its would-be P&L is resolvable later
+        (entry premium + legs + max-loss/gain + breakeven + the two strikes).
+        Returns the resolution kwargs for `record_option_proposal_outcome`, or
+        {} (all NULL) when the spread can't be priced ACCURATELY — non-vertical
+        or untrusted marks. The row then still counts toward P(veto) but stays
+        unresolved; we never store an approximation (perfect-data rule)."""
+        try:
+            import json as _json
+            from options_strategy_advisor import _price_option_rec
+            strikes = proposal.get("strikes") or {}
+            ks = [float(v) for v in strikes.values() if v is not None]
+            if len(ks) < 2:
+                return {}
+            prec = {"strategy": strategy, "symbol": symbol,
+                    "expiry": proposal.get("expiry"), "strikes": strikes}
+            _price_option_rec(prec)
+            if not prec.get("priced"):
+                return {}
+            legs = prec.get("legs")
+            return {
+                "entry_net_premium": prec.get("entry_net_premium"),
+                "max_loss_per_contract": prec.get("max_loss_per_contract"),
+                "max_gain_per_contract": prec.get("max_gain_per_contract"),
+                "breakeven": prec.get("breakeven"),
+                "lo_strike": min(ks),
+                "hi_strike": max(ks),
+                "legs_json": _json.dumps(legs) if legs else None,
+            }
+        except Exception as exc:
+            logger.debug("vetoed-spread pricing failed (fields NULL): %s", exc)
+            return {}
+
+    @staticmethod
+    def _record_option_outcome(ctx, proposal, symbol, *, vetoed_flag,
+                               veto_reason=None):
+        """Record ONE option proposal outcome (vetoed_flag 1/0) keyed by the
+        SPREAD strategy + sector, for the selection engine's per-(strategy x
+        sector) veto-rate discount (P3) and would-be-P&L calibration (P4).
+        Vetoed spreads are priced NOW so every row is resolvable (no data gap).
+        Own-book (ctx.db_path); fail-open — a feedback write must NEVER affect
+        execution."""
+        if not ctx or not getattr(ctx, "db_path", None):
+            return
+        try:
+            strategy = (proposal.get("strategy_name")
+                        or proposal.get("option_strategy")
+                        or proposal.get("action") or "option")
+            sym = symbol or proposal.get("symbol", "")
+            sector = None
+            try:
+                from sector_classifier import get_sector
+                sector = get_sector(sym) if sym else None
+            except Exception as _sec_exc:
+                logger.debug("sector lookup failed for %s (sector=None): %s",
+                             sym, _sec_exc)
+            # Accurate would-be-P&L capture for vetoed spreads only (accepted
+            # ones become real trades tracked in ai_predictions/trades).
+            fields = (OptionPipeline._price_vetoed_spread(strategy, sym,
+                                                          proposal)
+                      if vetoed_flag else {})
+            from journal import record_option_proposal_outcome
+            record_option_proposal_outcome(
+                ctx.db_path, symbol=sym, strategy=strategy, sector=sector,
+                vetoed=vetoed_flag, veto_reason=veto_reason,
+                confidence=proposal.get("confidence"),
+                expiry=proposal.get("expiry"), **fields,
+            )
+        except Exception as exc:
+            # Feedback-signal write; execution is unaffected. WARNING (not
+            # debug) so a systematic failure of the learning signal is visible.
+            logger.warning("option outcome record failed (fail-open): %s: %s",
+                           type(exc).__name__, exc)
 
     @staticmethod
     def _execute_multileg(ctx, proposal, symbol):

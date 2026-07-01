@@ -39,11 +39,17 @@ reservation) preserved. The prompt's "capital-efficient / lower max-loss" option
 
 ## Feedback loop (own-book only — never pooled across profiles)
 
-1. **Veto shadow prediction** — a veto today is only a `broker_rejections` row, invisible to
-   every win-rate query. Write a shadow `ai_predictions` row on veto so its would-be P&L
-   resolves; discount option RAR by per-`(strategy × sector)` P(veto) **before** selection.
-   Adapts within tens of cycles. (Shadow rows are pending predictions, NEVER orders — excluded
-   from position/equity/order-id reconstruction; freshness + isolation invariants intact.)
+1. **Veto-rate discount** — a veto today is only a `broker_rejections` row, invisible to every
+   win-rate query. Record every option proposal's outcome (vetoed/accepted) keyed by
+   `(strategy × sector)` in a dedicated `option_proposal_outcomes` table and discount option RAR
+   by that P(veto) **before** selection. Adapts within tens of cycles.
+   **Architecture note (2026-07-01, operator mandate "perfect data, zero contamination"):** the
+   outcomes live in their OWN table, PHYSICALLY SEPARATE from `ai_predictions` — NOT a shadow
+   `ai_predictions` row behind an exclusion filter. Physical separation is the strongest possible
+   guarantee that a would-be/veto outcome can never leak into real-trade reputation / meta-model /
+   win-rate stats (no reader can forget a filter it never needed). The would-be-P&L *resolution*
+   of vetoed spreads (to learn whether the vetoes were smart) is folded into P4, where the resolver
+   + its consumption live; the table's nullable resolution columns are ready for it.
 2. **Realized-RAR shrinkage** (nightly) — pull modeled option P_win toward this profile's own
    realized option win-rate. Primary guard against POP optimism.
 3. **Expression-aware meta-model** (P4) — add `pipeline_kind` one-hot + option-geometry features
@@ -51,8 +57,12 @@ reservation) preserved. The prompt's "capital-efficient / lower max-loss" option
 
 ## Status (2026-07-01)
 
-P0, P1, P2 are SHIPPED (P2a scorer + P2b ledger/ranking live). P3 (veto
-shadow-prediction feedback) and P4 (learned per-expression calibration) remain.
+P0–P4 are ALL SHIPPED (P2a scorer + P2b ledger/ranking + P3 veto-rate discount
++ P4 would-be-P&L resolver, veto-quality calibration, and the `option_open`
+meta-model one-hot). The full risk-adjusted selection engine + its self-learning
+veto-feedback loop are live. Remaining refinements are data-gated (they need
+weeks of resolved option outcomes to matter): option-geometry meta-model
+features, and pulling modeled option POP toward realized option win-rate.
 
 ## Phased plan
 
@@ -63,8 +73,14 @@ shadow-prediction feedback) and P4 (learned per-expression calibration) remain.
 - **P2** — the RAR scorer (new risk_adjusted.py module) + independent streams in `_build_candidates_data`
   + flat-pool rank in `_rank_candidates` + single `render_opportunity_ledger` in `_build_batch_prompt`
   (delete the option thumb). Respects `enable_options` (p201 → stock-only ledger). The core.
-- **P3** — veto shadow-prediction feedback (`pipelines/option._record_veto` + new veto_feedback.py module).
-- **P4** — learned per-expression calibration (nightly realized-RAR rollup + `meta_model` features).
+- **P3** — per-(strategy × sector) veto-rate discount: `option_proposal_outcomes` table (own-book,
+  separate from ai_predictions) written at the option pipeline's veto + accept sites; `veto_feedback.py`
+  computes the P(veto) discount (≥30 samples, capped 0.5, positive-RAR-only); applied in the ledger.
+- **P4** — would-be-P&L resolver (prices vetoed spreads at veto time, resolves them intrinsically at
+  expiry on the resolve cadence) + veto-QUALITY calibration (`discount = P(veto) × loss-fraction`, so
+  only strategies whose vetoes actually avoided losses are down-ranked) + `option_open` one-hot in
+  `meta_model` so the GBM can calibrate stock vs spread separately. All in `option_proposal_outcomes`
+  (own-book, separate from ai_predictions). Data-gated refinements (geometry features, POP shrinkage) noted.
 
 ## Confirmed operator decisions (2026-07-01)
 

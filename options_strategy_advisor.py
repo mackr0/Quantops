@@ -286,10 +286,10 @@ def _price_option_rec(rec: Dict[str, Any]) -> None:
         from options_multileg import _vertical_pl_bounds
         right = "P" if strat in ("bull_put_spread", "bear_put_spread") else "C"
         exp = _date.fromisoformat(rec["expiry"])
-        p_short = _cached_option_premium(
-            format_occ_symbol(rec["symbol"], exp, float(short_k), right), "sell")
-        p_long = _cached_option_premium(
-            format_occ_symbol(rec["symbol"], exp, float(long_k), right), "buy")
+        occ_short = format_occ_symbol(rec["symbol"], exp, float(short_k), right)
+        occ_long = format_occ_symbol(rec["symbol"], exp, float(long_k), right)
+        p_short = _cached_option_premium(occ_short, "sell")
+        p_long = _cached_option_premium(occ_long, "buy")
         if p_short <= 0 or p_long <= 0:
             return  # untrusted marks — keep width fallback
         net_prem = abs(p_short - p_long)  # per-share, positive
@@ -306,6 +306,12 @@ def _price_option_rec(rec: Dict[str, Any]) -> None:
                 rec["breakeven"] = (float(long_k) + net_prem if right == "C"
                                     else float(long_k) - net_prem)
             rec["priced"] = True
+            # Entry economics for the veto-feedback shadow resolver (P4): net
+            # premium per contract + the two legs (occ + side as the AI would
+            # trade them). Harmless extra fields for the ledger's P1 use.
+            rec["entry_net_premium"] = round(net_prem * 100.0, 2)
+            rec["legs"] = [{"occ": occ_short, "side": "sell"},
+                           {"occ": occ_long, "side": "buy"}]
     except Exception as exc:
         logger.debug("option rec pricing failed (fail-open, width fallback): "
                      "%s", exc)

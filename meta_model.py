@@ -70,8 +70,13 @@ CATEGORICAL_FEATURES = {
     # have prediction_type populated; new rows store it at write
     # time. At inference time the caller derives a candidate's
     # likely prediction_type from its strategy signal.
+    # 2026-07-01 (selection-engine P4) — `option_open` added so the meta-model
+    # can give a STOCK and an option SPREAD on the same name a DIFFERENT
+    # P(correct) once enough resolved option predictions accrue. Without this
+    # one-hot, an option_open row falls into no expression bucket and the GBM
+    # can't distinguish the two expressions (per-expression calibration).
     "prediction_type": ["directional_long", "directional_short",
-                          "exit_long", "exit_short"],
+                          "exit_long", "exit_short", "option_open"],
     "insider_direction": ["buying", "selling", "neutral"],
     "options_signal": ["bullish_flow", "bearish_flow", "neutral"],
     "vwap_position": ["above", "at", "below"],

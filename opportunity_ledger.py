@@ -34,6 +34,19 @@ logger = logging.getLogger(__name__)
 _LEDGER_ROWS = 14
 
 
+def _sector_of(symbol: Any) -> str:
+    """This symbol's internal sector key (cached ~7d), or "" on any failure —
+    fail-open so a sector lookup never blocks the ledger. Must match the sector
+    recorded at option-proposal time (same `get_sector`) so the veto discount
+    keys line up."""
+    try:
+        from sector_classifier import get_sector
+        return str(get_sector(str(symbol)) or "")
+    except Exception as exc:
+        logger.debug("sector lookup failed for %s: %s", symbol, exc)
+        return ""
+
+
 def _conviction_p_win(score: Any) -> float:
     """Cold-start P_win prior from ensemble conviction (design §Scoring):
     clip(0.50 + 0.06·|score|, 0.50, 0.68). |score|≥3 → 0.68 ceiling."""
@@ -197,6 +210,18 @@ def build_opportunities(
     options_enabled = bool(getattr(ctx, "enable_options", True))
     default_size_frac = float(getattr(ctx, "max_position_pct", 0.08) or 0.08)
 
+    # Per-(strategy x sector) veto-rate discount from THIS profile's own option
+    # history (P3): down-rank spreads the profile's specialists keep vetoing so
+    # the AI stops wasting picks on doomed proposals. Loaded ONCE per build;
+    # own-book, fail-open to {} (no data / any error → no discount).
+    _veto_discounts = {}
+    if options_enabled:
+        try:
+            from veto_feedback import load_veto_discounts
+            _veto_discounts = load_veto_discounts(getattr(ctx, "db_path", None))
+        except Exception as _vd_exc:
+            logger.debug("veto discounts unavailable (no discount): %s", _vd_exc)
+
     # --- option recs (own-book/budget/IV/priced), one batch, gated ---------
     option_recs_by_sym: Dict[str, List[Dict[str, Any]]] = {}
     if options_enabled:
@@ -268,6 +293,16 @@ def build_opportunities(
                                                  ref_dollars=ref_dollars)
                 if o:                          # None → unsizeable, refuse
                     o["symbol"] = sym
+                    # P3 veto-rate discount: down-rank this spread by the
+                    # profile's own historical P(veto) for (strategy, sector)
+                    # so specialist-doomed proposals don't crowd the ledger.
+                    if _veto_discounts:
+                        from veto_feedback import discount_for, apply_veto_discount
+                        d = discount_for(_veto_discounts, rec.get("strategy"),
+                                         _sector_of(sym))
+                        if d > 0:
+                            o["veto_discount"] = d
+                            o["rar"] = apply_veto_discount(o.get("rar", 0.0), d)
                     opps.append(o)
             except Exception as _ok_exc:
                 logger.debug("ledger option expr(%s) failed: %s", sym, _ok_exc)
