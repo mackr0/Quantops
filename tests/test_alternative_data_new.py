@@ -73,10 +73,17 @@ class TestCongressionalTrading:
 
     def test_parses_buy_transactions(self, tmp_db, monkeypatch):
         from alternative_data import get_congressional_trading
+        # Relative dates so both stay inside the parser's 90-day "recent"
+        # window regardless of when the suite runs — the hardcoded 2026-04
+        # dates aged out once wall-clock passed 90 days, silently dropping
+        # the count from 2 to 1.
+        from datetime import datetime, timedelta
+        d1 = (datetime.utcnow() - timedelta(days=10)).strftime("%Y-%m-%d")
+        d2 = (datetime.utcnow() - timedelta(days=5)).strftime("%Y-%m-%d")
         fake_data = json.dumps([
-            {"TransactionDate": "2026-04-01", "Transaction": "Purchase",
+            {"TransactionDate": d1, "Transaction": "Purchase",
              "Amount": "$1,001 - $15,000", "Representative": "Sen. Smith"},
-            {"TransactionDate": "2026-04-05", "Transaction": "Purchase",
+            {"TransactionDate": d2, "Transaction": "Purchase",
              "Amount": "$15,001 - $50,000", "Representative": "Rep. Jones"},
         ]).encode()
         mock_resp = MagicMock()
