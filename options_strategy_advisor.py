@@ -227,6 +227,90 @@ def evaluate_position_for_strategies(
     return recs
 
 
+# --- P1 (2026-07-01, selection-engine design): price option recs so the
+# risk-adjusted scorer has real max-loss/gain/breakeven, not just strikes.
+# See docs/SELECTION_ENGINE_DESIGN.md.
+_PREMIUM_CACHE: Dict[Any, Any] = {}
+_PREMIUM_CACHE_TTL = 45.0  # seconds
+
+
+def _cached_option_premium(occ_symbol: str, side: str) -> float:
+    """`client._fetch_option_premium` with a short TTL cache (avoids re-hitting
+    Alpaca for the same contract within a prompt build / adjacent cycles).
+    Market data only — own-book safe. Returns 0.0 on any failure."""
+    import time as _t
+    key = (occ_symbol, side)
+    now = _t.time()
+    hit = _PREMIUM_CACHE.get(key)
+    if hit is not None and (now - hit[0]) < _PREMIUM_CACHE_TTL:
+        return hit[1]
+    try:
+        from client import _fetch_option_premium
+        prem = float(_fetch_option_premium(occ_symbol, side=side) or 0.0)
+    except Exception:
+        prem = 0.0
+    _PREMIUM_CACHE[key] = (now, prem)
+    return prem
+
+
+def _price_option_rec(rec: Dict[str, Any]) -> None:
+    """Attach real dollar max-loss/max-gain/breakeven to a VERTICAL-spread rec
+    by pricing its two legs. Fail-open: on ANY failure keep the CONSERVATIVE
+    width×$100 max-loss (always >= the true loss) and leave max_gain/breakeven
+    None, so the scorer treats it conservatively and never admits unpriced risk
+    at $0. Non-verticals (condor/strangle) get the width fallback only (P1
+    scope). Own-book safe (market data only)."""
+    strat = rec.get("strategy", "")
+    strikes = rec.get("strikes") or {}
+    short_k = strikes.get("short")
+    long_k = strikes.get("long")
+    ks = [float(v) for v in strikes.values() if v is not None]
+    width = (abs(float(short_k) - float(long_k))
+             if short_k is not None and long_k is not None
+             else (max(ks) - min(ks) if len(ks) >= 2 else 0.0))
+    is_credit = strat in ("bull_put_spread", "bear_call_spread")
+    rec["spread_width_points"] = width
+    rec["is_credit"] = is_credit
+    if short_k is not None:
+        rec["short_strike"] = float(short_k)
+    # Conservative fallback — always set (the scorer relies on this).
+    rec["max_loss_per_contract"] = width * 100.0 if width > 0 else None
+    rec["max_gain_per_contract"] = None
+    rec["breakeven"] = None
+    rec["priced"] = False
+    if short_k is None or long_k is None:
+        return  # non-vertical — width fallback only
+    try:
+        from datetime import date as _date
+        from options_trader import format_occ_symbol
+        from options_multileg import _vertical_pl_bounds
+        right = "P" if strat in ("bull_put_spread", "bear_put_spread") else "C"
+        exp = _date.fromisoformat(rec["expiry"])
+        p_short = _cached_option_premium(
+            format_occ_symbol(rec["symbol"], exp, float(short_k), right), "sell")
+        p_long = _cached_option_premium(
+            format_occ_symbol(rec["symbol"], exp, float(long_k), right), "buy")
+        if p_short <= 0 or p_long <= 0:
+            return  # untrusted marks — keep width fallback
+        net_prem = abs(p_short - p_long)  # per-share, positive
+        bounds = _vertical_pl_bounds(width, net_prem, is_credit)
+        ml = bounds.get("max_loss_per_contract")
+        mg = bounds.get("max_gain_per_contract")
+        if ml and ml > 0:
+            rec["max_loss_per_contract"] = float(ml)
+            rec["max_gain_per_contract"] = float(mg) if mg else None
+            if is_credit:
+                rec["breakeven"] = (float(short_k) - net_prem if right == "P"
+                                    else float(short_k) + net_prem)
+            else:
+                rec["breakeven"] = (float(long_k) + net_prem if right == "C"
+                                    else float(long_k) - net_prem)
+            rec["priced"] = True
+    except Exception as exc:
+        logger.debug("option rec pricing failed (fail-open, width fallback): "
+                     "%s", exc)
+
+
 def evaluate_candidate_for_multileg(
     candidate: Dict[str, Any],
     iv_rank_pct: Optional[float] = None,
@@ -433,6 +517,11 @@ def evaluate_candidate_for_multileg(
                 ),
             })
 
+    # P1 — price every rec (real max-loss/gain/breakeven; fail-open to the
+    # conservative width×$100), so the risk-adjusted scorer ranks on real
+    # numbers rather than concreteness.
+    for _r in recs:
+        _price_option_rec(_r)
     return recs
 
 
