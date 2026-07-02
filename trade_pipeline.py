@@ -170,6 +170,70 @@ def check_multileg_specialist_veto(ctx, ai_trade, symbol):
     return False, ""
 
 
+def batch_check_multileg_specialist_vetoes(ctx, ai_trades):
+    """ONE specialist review for ALL of a cycle's MULTILEG_OPEN proposals
+    (2026-07-02 token/latency review): the ensemble already batches up to
+    15 candidates per specialist call — the per-proposal one-element calls
+    were the only caller not using it, costing 5 calls × N proposals per
+    cycle instead of ≤5 total. Returns {symbol: (vetoed, reason)} for the
+    dispatch loop to consume; symbols NOT in the map (duplicate-underlying
+    proposals — the ensemble keys verdicts by symbol, so a second spread on
+    the same name can't share a batch — or any failure) fall back to the
+    per-proposal `check_multileg_specialist_veto`. Fail-open like the solo
+    path: an infrastructure failure must never block trades."""
+    try:
+        proposals, seen, dupes = [], set(), set()
+        for t in ai_trades:
+            if not isinstance(t, dict):
+                continue
+            if (t.get("action") or "").upper() != "MULTILEG_OPEN":
+                continue
+            sym = t.get("symbol")
+            if not sym:
+                continue
+            if sym in seen:
+                dupes.add(sym)          # verdicts are symbol-keyed — solo it
+                continue
+            seen.add(sym)
+            p = dict(t)
+            p.setdefault("symbol", sym)
+            proposals.append(p)
+        proposals = [p for p in proposals if p["symbol"] not in dupes]
+        if len(proposals) < 2:
+            return {}                   # solo path is identical for 0/1
+        from pipelines import AIResult
+        from pipelines.option import OptionPipeline
+        verdict = OptionPipeline().route_to_specialists(
+            ctx, AIResult(proposals=proposals),
+        )
+        out = {}
+        vetoed_syms = {p.get("symbol") for p in (verdict.vetoed or [])}
+        reasons = {}
+        for line in (verdict.veto_log or []):
+            # "SYM: VETO (name) — reason" — key by the leading symbol
+            head = str(line).split(":", 1)[0].strip()
+            reasons.setdefault(head, str(line))
+        for p in proposals:
+            sym = p.get("symbol")
+            if sym in vetoed_syms:
+                out[sym] = (True, reasons.get(sym, "specialist veto"))
+            else:
+                out[sym] = (False, "")
+        logging.info(
+            "MULTILEG batch review: %d proposal(s) in one ensemble pass "
+            "(%d vetoed)%s", len(proposals), len(vetoed_syms),
+            f"; {len(dupes)} duplicate-underlying solo fallback(s)"
+            if dupes else "",
+        )
+        return out
+    except Exception as exc:
+        logging.warning(
+            "MULTILEG batch specialist review failed (%s) — falling back "
+            "to per-proposal review", exc,
+        )
+        return {}
+
+
 def _get_shared_political_context(ctx):
     """Return MAGA political context, cached for 30 minutes.
 
@@ -2565,6 +2629,38 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     _cycle_prompt = (
         ai_response.get("prompt", "") if isinstance(ai_response, dict) else ""
     )
+    # 2026-07-02 (storage dedupe) — persist the cycle's prompt + raw response
+    # ONCE, on the ai_cycles row, instead of duplicating both onto every
+    # ai_predictions row (measured 6.15x / ~31 MB/day byte-identical bloat).
+    # Written EARLY (minimal row) so a mid-loop crash can't lose the prompt
+    # the cycle's predictions join against; the full-stats INSERT OR REPLACE
+    # after the loop re-writes it with the complete cycle data.
+    _cycle_raw_response_json = None
+    try:
+        import json as _crj
+        if isinstance(ai_response, dict):
+            _cycle_raw_response_json = _crj.dumps(
+                {k: v for k, v in ai_response.items() if k != "prompt"},
+                default=str,
+            )
+        if ctx and getattr(ctx, "db_path", None):
+            from journal import _get_conn as _gc0
+            from contextlib import closing as _cl0
+            with _cl0(_gc0(ctx.db_path)) as _conn0:
+                _conn0.execute(
+                    "INSERT OR REPLACE INTO ai_cycles "
+                    "(cycle_id, profile_id, prompt_text, raw_response_json) "
+                    "VALUES (?, ?, ?, ?)",
+                    (cycle_id, getattr(ctx, "profile_id", None),
+                     _cycle_prompt or None, _cycle_raw_response_json),
+                )
+                _conn0.commit()
+    except Exception as _cp_exc:
+        logging.warning(
+            "cycle prompt persist failed (%s: %s) — fine-tune corpus for "
+            "this cycle will lack the prompt if the cycle also crashes",
+            type(_cp_exc).__name__, _cp_exc,
+        )
 
     ai_trades = ai_response.get("trades", [])
     # 2026-06-17 — ranked-alternate substitution. The AI also returns an
@@ -2656,7 +2752,16 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 k: v for k, v in c.items()
                 if k not in ("reason", "news", "votes", "rel_strength",
                               "alt_data", "social", "last_prediction",
-                              "earnings_warning", "track_record")
+                              "earnings_warning", "track_record",
+                              # 2026-07-02 storage diet: prompt-render stash
+                              # blobs (measured 81% of features_json,
+                              # ~11 MB/day). _market_context/_portfolio are
+                              # cycle-level context already persisted on
+                              # ai_cycles; _panel_verdicts is separately
+                              # persisted as rule_votes_json. Zero consumers
+                              # read them from features_json.
+                              "_market_context", "_portfolio",
+                              "_panel_verdicts")
             }
             # Ledger-RAR override metadata (decision #4): persist ON this real
             # prediction so the override_scorecard can later measure whether the
@@ -2780,13 +2885,14 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 strategy_type=strategy,
                 features=features_payload,
                 prediction_type=pred_type,
-                # Phase B1 fine-tune-quality fields
+                # Phase B1 fine-tune-quality fields. 2026-07-02: prompt_text
+                # + raw_response now live ONCE on the ai_cycles row (written
+                # at cycle mint above) — the dataset builder joins on
+                # cycle_id. Storing them per prediction duplicated the same
+                # bytes onto every candidate row of the cycle (6.15x bloat).
                 cycle_id=cycle_id,
-                prompt_text=_cycle_prompt,
-                raw_response={
-                    k: v for k, v in ai_response.items()
-                    if k not in ("prompt",)  # avoid duplicating prompt blob
-                } if isinstance(ai_response, dict) else None,
+                prompt_text=None,
+                raw_response=None,
                 meta_model_score=_meta_score,
                 online_meta_score=_online_meta_score,
                 # 2026-05-20 #185 — capture the deterministic-panel
@@ -3232,6 +3338,13 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
         key=lambda t: 0 if (t.get("action") or "").upper() in _CLOSE_ACTIONS else 1,
     ))
 
+    # 2026-07-02 — ONE batched specialist review for all MULTILEG_OPEN
+    # proposals this cycle (was 5 LLM calls PER proposal, sequential, at the
+    # dispatch site below). Trades whose symbol isn't in the cache (duplicate
+    # underlyings, backfilled alternates appended mid-loop, or batch failure)
+    # fall back to the per-proposal check unchanged.
+    _ml_veto_cache = batch_check_multileg_specialist_vetoes(ctx, ai_trades)
+
     for ai_trade in ai_trades:
         symbol = ai_trade["symbol"]
         action = ai_trade["action"]
@@ -3334,9 +3447,16 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
             # Failure tolerance: route_to_specialists failure → not
             # vetoed → trade proceeds (Phase 4b contract preserved).
             elif action == "MULTILEG_OPEN":
-                _phase4b_vetoed, _phase4b_veto_reason = (
-                    check_multileg_specialist_veto(ctx, ai_trade, symbol)
-                )
+                if symbol in _ml_veto_cache:
+                    # Batched review already covered this proposal (one
+                    # ensemble pass for the whole cycle's multileg set).
+                    _phase4b_vetoed, _phase4b_veto_reason = (
+                        _ml_veto_cache[symbol]
+                    )
+                else:
+                    _phase4b_vetoed, _phase4b_veto_reason = (
+                        check_multileg_specialist_veto(ctx, ai_trade, symbol)
+                    )
                 from pipelines import SpecialistVerdict
                 from pipelines.option import OptionPipeline
                 _proposal = dict(ai_trade)
@@ -3645,11 +3765,17 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
         "ai_reasoning": portfolio_reasoning,
     }
 
-    # Save cycle data for the web dashboard to display
+    # Save cycle data for the web dashboard to display. cycle_prompt /
+    # cycle_raw_response_json MUST be threaded through (2026-07-02 review
+    # H1): _save_cycle_data is module-level — referencing run_trade_cycle's
+    # locals inside it raised NameError every cycle and silently dropped
+    # the entire full ai_cycles row.
     _save_cycle_data(ctx, candidates_data, shortlist, ai_trades,
                      portfolio_reasoning, market_ctx, regime_info,
                      meta_stats=meta_stats, ensemble_result=ensemble_result,
-                     cycle_id=cycle_id)
+                     cycle_id=cycle_id,
+                     cycle_prompt=_cycle_prompt,
+                     cycle_raw_response_json=_cycle_raw_response_json)
 
     # Scope C: shadow-eval the new Pipeline.run_cycle path against
     # this legacy cycle. Read-only — no broker calls. Per-profile
@@ -3711,7 +3837,8 @@ def _ensemble_summary_for_cycle(ensemble_result):
 def _save_cycle_data(ctx, candidates_data, shortlist, ai_trades,
                      portfolio_reasoning, market_ctx, regime_info,
                      meta_stats=None, ensemble_result=None,
-                     cycle_id=None):
+                     cycle_id=None, cycle_prompt=None,
+                     cycle_raw_response_json=None):
     """Save the last cycle's AI decisions to a JSON file for the dashboard
     AND append a row to the ai_cycles history table (2026-05-19 Phase B1).
 
@@ -3811,8 +3938,10 @@ def _save_cycle_data(ctx, candidates_data, shortlist, ai_trades,
                             learned_patterns_json, meta_model_stats_json,
                             ensemble_summary_json, n_trades_selected,
                             n_candidates_in_shortlist,
-                            trades_selected_json)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            trades_selected_json,
+                            prompt_text, raw_response_json)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                   ?, ?)""",
                         (
                             cycle_id,
                             profile_id,
@@ -3831,6 +3960,13 @@ def _save_cycle_data(ctx, candidates_data, shortlist, ai_trades,
                             # for the AI-Brain history view (verbatim
                             # replay of past cycles).
                             _json.dumps(cycle_data["trades_selected"]),
+                            # 2026-07-02 — the REPLACE overwrites the whole
+                            # row, so the prompt/raw persisted at cycle mint
+                            # MUST be re-supplied here or they'd be NULLed.
+                            # Threaded in as parameters (review H1 — these
+                            # were run_trade_cycle locals, unresolvable here).
+                            cycle_prompt or None,
+                            cycle_raw_response_json,
                         ),
                     )
                     conn.commit()

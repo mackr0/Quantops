@@ -555,16 +555,24 @@ def _enumerate_chain_skip_reasons(primary_provider: str):
 
 
 def _call_provider(provider, prompt, model, api_key, max_tokens):
-    """Dispatch to provider-specific helper. Returns (text, in_tok, out_tok)."""
+    """Dispatch to provider-specific helper. Returns a NORMALIZED 4-tuple
+    (text, in_tok, out_tok, cached_tok) — providers whose helper returns the
+    legacy 3-tuple get cached_tok=0. cached_tok = prompt tokens served from
+    the provider's implicit cache (billed at a deep discount; captured for
+    honest cost-ledger pricing, 2026-07-02)."""
     if provider == "anthropic":
-        return _call_anthropic(prompt, model, api_key, max_tokens)
-    if provider == "openai":
-        return _call_openai(prompt, model, api_key, max_tokens)
-    if provider == "google":
-        return _call_google(prompt, model, api_key, max_tokens)
-    if provider == "deepseek":
-        return _call_deepseek(prompt, model, api_key, max_tokens)
-    raise ValueError(f"Unknown AI provider: {provider!r}")
+        result = _call_anthropic(prompt, model, api_key, max_tokens)
+    elif provider == "openai":
+        result = _call_openai(prompt, model, api_key, max_tokens)
+    elif provider == "google":
+        result = _call_google(prompt, model, api_key, max_tokens)
+    elif provider == "deepseek":
+        result = _call_deepseek(prompt, model, api_key, max_tokens)
+    else:
+        raise ValueError(f"Unknown AI provider: {provider!r}")
+    if isinstance(result, tuple) and len(result) == 3:
+        return result[0], result[1], result[2], 0
+    return result
 
 
 def _enforce_cost_cap(prompt: str, model: Optional[str], max_tokens: int,
@@ -769,10 +777,16 @@ def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1
                 )
                 _time.sleep(sleep_seconds)
             try:
-                response_text, in_tok, out_tok = _call_provider(
+                _pr = _call_provider(
                     attempt_provider, prompt, attempt_model,
                     attempt_key, max_tokens,
                 )
+                # Tolerate the legacy 3-tuple contract (tests and any
+                # external patcher of _call_provider) — cached tokens
+                # default to 0. Mock-signature-parity lesson, 2026-07-02.
+                if isinstance(_pr, tuple) and len(_pr) == 3:
+                    _pr = (_pr[0], _pr[1], _pr[2], 0)
+                response_text, in_tok, out_tok, cached_tok = _pr
                 per_call_last_exc = None
                 break  # success — drop out of the retry loop
             except Exception as call_exc:
@@ -841,7 +855,7 @@ def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1
                 from ai_cost_ledger import log_ai_call
                 log_ai_call(db_path, attempt_provider, attempt_model or "?",
                             in_tok, out_tok, purpose or "",
-                            call_id=call_id)
+                            call_id=call_id, cached_tokens=cached_tok)
             except Exception as exc:
                 logger.debug("cost ledger skipped: %s", exc)
         return cleaned_response
@@ -1083,4 +1097,9 @@ def _call_google(prompt, model, api_key, max_tokens):
     meta = getattr(response, "usage_metadata", None)
     in_tok = getattr(meta, "prompt_token_count", 0) if meta else 0
     out_tok = getattr(meta, "candidates_token_count", 0) if meta else 0
-    return response.text, in_tok, out_tok
+    # 2026-07-02 cost telemetry: implicit-cache hits (Gemini 2.5+/3.x) are
+    # reported here; cached prompt tokens bill at ~10% of the input rate.
+    # Without capturing this, any cache hit is silently priced at the full
+    # rate in the cost ledger (~10x overstatement on the cached share).
+    cached_tok = getattr(meta, "cached_content_token_count", 0) if meta else 0
+    return response.text, in_tok, out_tok, int(cached_tok or 0)

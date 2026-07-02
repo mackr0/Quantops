@@ -72,10 +72,22 @@ def cost_label(model: Optional[str]) -> Optional[str]:
         _fmt_price(p["input"]), _fmt_price(p["output"]))
 
 
+# Discount applied to prompt tokens served from a provider's IMPLICIT cache
+# (Gemini 2.5+/3.x: cached reads bill at ~10% of the input rate, e.g.
+# $0.025/M vs $0.25/M on gemini-3.1-flash-lite). Single conservative knob;
+# per-model overrides can move into PRICING if providers diverge.
+CACHED_INPUT_DISCOUNT = 0.10
+
+
 def estimate_cost_usd(model: Optional[str],
                       input_tokens: int,
-                      output_tokens: int) -> float:
+                      output_tokens: int,
+                      cached_tokens: int = 0) -> float:
     """Compute a USD cost estimate from token counts.
+
+    `cached_tokens` (2026-07-02) is the SUBSET of input_tokens the provider
+    served from its implicit cache, billed at CACHED_INPUT_DISCOUNT × the
+    input rate — without this a cache hit is overstated ~10x in the ledger.
 
     Returns 0.0 when both token counts are zero (e.g., a cached call).
     Falls back to FALLBACK_PRICING for unknown models — prefer reporting
@@ -83,6 +95,7 @@ def estimate_cost_usd(model: Optional[str],
     """
     input_tokens = max(0, int(input_tokens or 0))
     output_tokens = max(0, int(output_tokens or 0))
+    cached_tokens = max(0, min(int(cached_tokens or 0), input_tokens))
     if input_tokens == 0 and output_tokens == 0:
         return 0.0
 
@@ -90,6 +103,9 @@ def estimate_cost_usd(model: Optional[str],
     if not prices:
         prices = FALLBACK_PRICING
 
-    cost = (input_tokens * prices["input"] / 1_000_000.0
+    full_rate = input_tokens - cached_tokens
+    cost = (full_rate * prices["input"] / 1_000_000.0
+            + cached_tokens * prices["input"] * CACHED_INPUT_DISCOUNT
+              / 1_000_000.0
             + output_tokens * prices["output"] / 1_000_000.0)
     return round(cost, 6)

@@ -663,6 +663,31 @@ def monitor_symbol(symbol: str, db_path: str, ctx: Any = None,
 # Earnings Call Transcript Sentiment (Signal 6)
 # ---------------------------------------------------------------------------
 
+_SENTIMENT_BOILERPLATE = (
+    "announced its results", "quarter ended", "fiscal year ended",
+    "financial information and commentary", "press release",
+    "conference call", "webcast", "forward-looking statements",
+    "investor relations", "furnished herewith", "pursuant to",
+)
+
+
+def _filter_sentiment_phrases(phrases) -> list:
+    """Drop filing-header boilerplate the model quotes back as a 'key phrase'
+    and hard-cap length (2026-07-02 — junk like 'announced its results for
+    the quarter ended April 26, 2026, financial information and commentary
+    by ...' was rendered twice per candidate as POSITIVE evidence)."""
+    out = []
+    for p in (phrases or [])[:3]:
+        s = str(p).strip()
+        if not s:
+            continue
+        low = s.lower()
+        if any(b in low for b in _SENTIMENT_BOILERPLATE):
+            continue
+        out.append(s[:140])
+    return out
+
+
 def get_earnings_call_sentiment(symbol: str, ctx: Any = None) -> Dict[str, Any]:
     """Analyze management tone from the most recent 8-K earnings exhibit.
 
@@ -709,8 +734,14 @@ def get_earnings_call_sentiment(symbol: str, ctx: Any = None) -> Dict[str, Any]:
             _set_cached(cache_key, result)
             return result
 
-        # Truncate to keep AI cost low
-        excerpt = text[:3000]
+        # Truncate to keep AI cost low. 2026-07-02: the first ~1.5K chars of
+        # an 8-K are filing-header boilerplate ("announced its results for
+        # the quarter ended ... financial information and commentary by ..."),
+        # which the model was quoting back as "key phrases" — junk rendered
+        # into the batch prompt as POSITIVE evidence. Skip the header region
+        # (but never past the point that leaves <500 chars of body).
+        _skip = 1500 if len(text) > 2000 else 0
+        excerpt = text[_skip:_skip + 3000]
 
         if ctx is not None:
             try:
@@ -719,7 +750,10 @@ def get_earnings_call_sentiment(symbol: str, ctx: Any = None) -> Dict[str, Any]:
                 prompt = (
                     f"Analyze the tone of this earnings press release for {symbol}. "
                     f"Classify as: positive, neutral, cautious, or negative. "
-                    f"Extract 2-3 key phrases that indicate management sentiment.\n\n"
+                    f"Extract 2-3 SHORT key phrases (under 15 words each) that "
+                    f"indicate management's BUSINESS sentiment. Ignore filing "
+                    f"boilerplate, legal text, webcast/conference-call logistics, "
+                    f"and header/administrative sentences.\n\n"
                     f"Respond with ONLY a JSON object: "
                     f'{{"tone": "positive|neutral|cautious|negative", '
                     f'"key_phrases": ["phrase1", "phrase2"]}}\n\n'
@@ -738,7 +772,8 @@ def get_earnings_call_sentiment(symbol: str, ctx: Any = None) -> Dict[str, Any]:
                     parsed = _json.loads(ai_response)
                     if isinstance(parsed, dict):
                         result["tone"] = parsed.get("tone", "neutral")
-                        result["key_phrases"] = parsed.get("key_phrases", [])[:3]
+                        result["key_phrases"] = _filter_sentiment_phrases(
+                            parsed.get("key_phrases", []))
                         result["has_data"] = True
             except Exception as exc:
                 logger.debug("Transcript AI analysis failed for %s: %s", symbol, exc)

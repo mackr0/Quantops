@@ -464,15 +464,30 @@ def format_panel_for_prompt(verdicts: List[Dict[str, Any]]) -> str:
 
     Severity ordering: VETO > CAUTION > CONFIRM — the AI sees
     veto-level concerns first since they're the strongest signal.
-    """
+
+    2026-07-02 (token review): CONFIRM verdicts render as a NAME LIST, not
+    full prose. Measured: the panel was 63% of every candidate's prompt
+    block, and CONFIRM reasoning was largely verbatim repetition of facts
+    already in the candidate's own data lines (dark-pool shares,
+    earnings-beat streak, P/C ratio, insider lines...) — duplicated text
+    competing for the selector's attention. VETO/CAUTION reasoning stays
+    verbatim (the risk detail IS the signal). RENDER-ONLY change: the
+    structured verdicts (rule_votes_json for the fine-tune corpus, the
+    weight-tuner's predicates) are untouched — data purity intact."""
     if not verdicts:
         return ""
     severity_order = {"VETO": 0, "CAUTION": 1, "CONFIRM": 2}
     ranked = sorted(
         verdicts, key=lambda v: severity_order.get(v["severity"], 9))
     lines = []
+    confirms = []
     for v in ranked:
-        lines.append(f"  [{v['severity']}] {v['name']}: {v['reasoning']}")
+        if v.get("severity") == "CONFIRM":
+            confirms.append(v.get("name", "?"))
+        else:
+            lines.append(f"  [{v['severity']}] {v['name']}: {v['reasoning']}")
+    if confirms:
+        lines.append(f"  [CONFIRM x{len(confirms)}] {', '.join(confirms)}")
     return "\n".join(lines)
 
 

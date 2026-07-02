@@ -2114,13 +2114,14 @@ def _task_cost_check(ctx):
 _health_probe_last_run = 0.0
 _HEALTH_PROBE_INTERVAL_SEC = 600  # every 10 min
 
-# Per-cycle worker pool cap (2026-07-01). Raised 3 -> 6 so the scan queue
-# clears within the interval instead of stretching cadence out (at 3 on the
-# 13-profile fleet, profiles that came due together queued behind a wave,
-# pushing effective cadence to ~15-17min at a 10-min setting). Scans are
-# I/O-bound on LLM calls, so >CPU-count threads help even on the 2-CPU box.
-# Order-collision on the shared conduit is still serialized at submit time.
-_CYCLE_MAX_WORKERS = 6
+# Per-cycle worker pool cap (2026-07-01: 3 -> 6; 2026-07-02: 6 -> 13 so a
+# full 13-profile wave runs in ONE pool batch — the prerequisite for a clean
+# 5-minute cadence; at 6, a worst-case wave took 3 pool batches ≈ +3.4 min).
+# Scans are I/O-bound on LLM calls, so >CPU-count threads help even on the
+# 2-CPU box. Order-collision on the shared conduit is still serialized at
+# submit time. Watch the first full wave for broker 429s / DB write
+# contention; 10 is the fallback if either appears.
+_CYCLE_MAX_WORKERS = 13
 
 
 _auto_expiry_last_run_date = None

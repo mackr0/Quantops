@@ -18,6 +18,9 @@ from ai_pricing import estimate_cost_usd
 
 logger = logging.getLogger(__name__)
 
+# Once-per-process flag for the legacy-table INSERT fallback warning.
+_LEGACY_LEDGER_WARNED = False
+
 
 # ---------------------------------------------------------------------------
 # Write path
@@ -31,27 +34,60 @@ def log_ai_call(
     output_tokens: int,
     purpose: str = "",
     call_id: Optional[str] = None,
+    cached_tokens: int = 0,
 ) -> None:
     """Persist a single AI call. Non-raising — a ledger failure must never
     break the calling pipeline.
 
     `call_id` joins this row to any ai_shadow_calls rows produced by
     the shadow dispatcher for the same primary invocation.
+
+    `cached_tokens` (2026-07-02): prompt tokens the provider served from its
+    implicit cache — a SUBSET of input_tokens, billed at ~10% of the input
+    rate. Priced honestly here so a cache hit isn't overstated ~10x in the
+    ledger. Stored so caching claims are measurable, never assumed.
     """
     if not db_path:
         return
     try:
-        cost = estimate_cost_usd(model, input_tokens, output_tokens)
+        cached_tokens = max(0, min(int(cached_tokens or 0),
+                                   int(input_tokens or 0)))
+        cost = estimate_cost_usd(model, input_tokens, output_tokens,
+                                 cached_tokens=cached_tokens)
         conn = sqlite3.connect(db_path)
         try:
-            conn.execute(
-                """INSERT INTO ai_cost_ledger
-                     (provider, model, input_tokens, output_tokens,
-                      purpose, estimated_cost_usd, call_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (provider, model, int(input_tokens or 0),
-                 int(output_tokens or 0), purpose, cost, call_id),
-            )
+            try:
+                conn.execute(
+                    """INSERT INTO ai_cost_ledger
+                         (provider, model, input_tokens, output_tokens,
+                          purpose, estimated_cost_usd, call_id,
+                          cached_tokens)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (provider, model, int(input_tokens or 0),
+                     int(output_tokens or 0), purpose, cost, call_id,
+                     cached_tokens),
+                )
+            except sqlite3.OperationalError:
+                # Pre-migration table (hand-built test DBs / a DB that
+                # hasn't run init_db yet) — write the legacy shape rather
+                # than dropping the row. Warn ONCE per process so schema
+                # drift can't silently disable cached-token telemetry.
+                global _LEGACY_LEDGER_WARNED
+                if not _LEGACY_LEDGER_WARNED:
+                    _LEGACY_LEDGER_WARNED = True
+                    logger.warning(
+                        "ai_cost_ledger missing cached_tokens column on %s "
+                        "— writing legacy rows; run init_db to migrate "
+                        "(cached-token telemetry not recorded)", db_path,
+                    )
+                conn.execute(
+                    """INSERT INTO ai_cost_ledger
+                         (provider, model, input_tokens, output_tokens,
+                          purpose, estimated_cost_usd, call_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (provider, model, int(input_tokens or 0),
+                     int(output_tokens or 0), purpose, cost, call_id),
+                )
             conn.commit()
         finally:
             conn.close()

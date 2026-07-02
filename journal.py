@@ -341,7 +341,12 @@ def init_db(db_path=None):
                 output_tokens INTEGER NOT NULL DEFAULT 0,
                 purpose TEXT,
                 estimated_cost_usd REAL NOT NULL DEFAULT 0,
-                call_id TEXT
+                call_id TEXT,
+                -- 2026-07-02 — prompt tokens served from the provider's
+                -- implicit cache (subset of input_tokens; billed ~10% of the
+                -- input rate). Captured so cache hits price honestly and any
+                -- caching claim is measurable, never assumed.
+                cached_tokens INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_ai_cost_ts
                 ON ai_cost_ledger(timestamp DESC);
@@ -561,7 +566,15 @@ def init_db(db_path=None):
                 -- confidence, per-trade reasoning). Pre-existing rows
                 -- have NULL here; the history view falls back to the
                 -- count + cycle reasoning + trade_drops for those.
-                trades_selected_json TEXT
+                trades_selected_json TEXT,
+                -- 2026-07-02 (storage dedupe) — the cycle's batch prompt +
+                -- raw AI response stored ONCE here instead of duplicated on
+                -- every ai_predictions row of the cycle (measured 6.15x /
+                -- ~31 MB/day of byte-identical duplication). The fine-tune
+                -- dataset builder joins predictions -> ai_cycles on cycle_id;
+                -- pre-dedupe prediction rows keep their own copies.
+                prompt_text TEXT,
+                raw_response_json TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_ai_cycles_ts
                 ON ai_cycles(timestamp DESC);
@@ -974,6 +987,10 @@ def _migrate_all_columns(conn):
         # shadow eval feature shipped.
         "ai_cost_ledger": [
             ("call_id", "TEXT"),
+            # 2026-07-02 — cached-token telemetry. Without this ALTER on
+            # EXISTING DBs the ledger INSERT silently falls back to the
+            # legacy shape forever and cache hits are never measurable.
+            ("cached_tokens", "INTEGER NOT NULL DEFAULT 0"),
         ],
         # 2026-06-15 — full per-cycle decision list for the AI-Brain
         # history view. CREATE TABLE only adds it to fresh DBs; this
@@ -983,6 +1000,13 @@ def _migrate_all_columns(conn):
         # 'no such column'-errors on all current profiles).
         "ai_cycles": [
             ("trades_selected_json", "TEXT"),
+            # 2026-07-02 — once-per-cycle prompt/raw-response dedupe. Without
+            # these ALTERs on EXISTING DBs the cycle-mint insert fails every
+            # cycle and — with predictions no longer storing their own copy —
+            # the prompt would be PERMANENTLY LOST for every new prediction
+            # (perfect-data violation caught by adversarial review).
+            ("prompt_text", "TEXT"),
+            ("raw_response_json", "TEXT"),
         ],
     }
 
@@ -3359,10 +3383,20 @@ def get_specialist_veto_stats(db_paths, days=7):
       }
     Sorted by veto count descending.
     """
+    # 2026-07-02 (review M2): use the DERIVED authority set — the static
+    # constant alone would misreport every specialist that DECLARES authority
+    # (e.g. the structural option gate) as has_authority=False with 0
+    # effective vetoes, the exact silent-no-op misreport this stats function
+    # exists to expose.
     try:
-        from ensemble import VETO_AUTHORIZED
+        from ensemble import veto_authorized_names
+        from specialists import discover_specialists
+        VETO_AUTHORIZED = veto_authorized_names(discover_specialists())
     except Exception:
-        VETO_AUTHORIZED = {"risk_assessor", "adversarial_reviewer"}
+        try:
+            from ensemble import VETO_AUTHORIZED
+        except Exception:
+            VETO_AUTHORIZED = {"risk_assessor", "adversarial_reviewer"}
 
     counts = {}  # name -> {"total": int, "vetoes": int}
     for db_path in db_paths:

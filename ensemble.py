@@ -35,7 +35,25 @@ SPECIALIST_WEIGHTS = {
 # voices intentionally — risk_assessor frames as "what risks exist?"
 # while adversarial_reviewer frames as "what's the failure mode?".
 # Different framings catch different misses.
+#
+# 2026-07-02 (token/latency review): this static set is the LEGACY BASELINE,
+# kept for direct `_synthesize` callers (backtests). `run_ensemble` now
+# derives the live set dynamically from each specialist's declared
+# HAS_VETO_AUTHORITY — the hardcoded set had silently ignored
+# option_spread_risk's declared authority since Phase 4 ("Phase 4b will add
+# it" never landed), so the structural option gate (max-loss/IV-crush/gamma)
+# blocked NOTHING. Pinned by test_ensemble_topology_2026_07_02.
 VETO_AUTHORIZED = {"risk_assessor", "adversarial_reviewer"}
+
+
+def veto_authorized_names(specialists) -> set:
+    """The live veto-authority set: the legacy baseline PLUS every specialist
+    that declares HAS_VETO_AUTHORITY = True. Derived, never hardcoded, so a
+    new blocking specialist can't be silently ignored again (class fix)."""
+    return set(VETO_AUTHORIZED) | {
+        getattr(s, "NAME", "") for s in (specialists or [])
+        if getattr(s, "HAS_VETO_AUTHORITY", False)
+    }
 
 # Confidence floor below which a verdict is ignored (specialist was
 # genuinely unsure and shouldn't tilt the consensus).
@@ -44,8 +62,13 @@ CONFIDENCE_FLOOR = 25.0
 
 # Chunk size for specialist calls. With tool_use (Anthropic) the model
 # reliably returns every requested entry, so chunking is only a hedge.
-# With plain-prompt fallback, chunks of 5 help reduce drop rate.
+# With plain-prompt fallback, chunks of 5 help reduce drop rate — and since
+# 2026-07-02 the multileg dispatch BATCHES a cycle's option proposals into
+# one review, where a dropped verdict silently fails OPEN (missing symbol =
+# not vetoed). The plain-prompt path therefore uses the documented smaller
+# chunk (review M4); a cycle's option batch (~2-3 proposals) fits in one.
 CHUNK_SIZE = 15
+CHUNK_SIZE_PLAIN = 5
 
 
 # Some specialists don't have usable input data for certain markets.
@@ -188,8 +211,9 @@ def run_ensemble(
         return {"per_symbol": {}, "raw": {}, "cost_calls": 0}
 
     # Cap so a 200-candidate shortlist doesn't blow the specialist prompts.
+    # (Chunking into CHUNK_SIZE batches happens per-specialist inside
+    # _run_one_specialist — stage 2 runs on the smaller survivor list.)
     batch = candidates[:max_candidates]
-    chunks = [batch[i:i + CHUNK_SIZE] for i in range(0, len(batch), CHUNK_SIZE)]
 
     # Phase 4 of pipeline refactor: when a per-pipeline specialist list
     # is supplied, use it directly (it was already filtered by
@@ -257,39 +281,22 @@ def run_ensemble(
         batch, EARNINGS_ANALYST_WINDOW_DAYS
     )
 
-    for spec in specialists:
-        name = spec.NAME
+    use_tools = (ai_provider == "anthropic")
 
-        # Per-profile disabled list: skip the API call entirely.
-        # Synthesizer treats a missing specialist as ABSTAIN.
-        if name in disabled:
-            # INFO level so operators can verify the disable list is
-            # being respected each cycle (was logger.debug — invisible
-            # in journalctl, made the operational behavior look broken
-            # in verify_first_cycle even though it worked).
-            logger.info(
-                "ensemble: skipping %s — in profile disabled_specialists",
-                name,
-            )
-            continue
+    def _run_one_specialist(spec, cand_list):
+        """One specialist's full pass over `cand_list` (chunked). Returns
+        (name, combined_verdicts, calls_made). Exception-isolated per chunk —
+        safe to run concurrently (per-call API clients; the cost ledger uses
+        per-call SQLite connections in WAL mode, same concurrency the
+        multi-profile scheduler already exercises)."""
+        name = spec.NAME
         combined: List[Dict[str, Any]] = []
         seen_syms: set = set()
-
-        # Cost gate: skip earnings_analyst entirely when no candidate has
-        # earnings in the next EARNINGS_ANALYST_WINDOW_DAYS. The specialist
-        # produces ABSTAIN/short responses in those cases and costs input
-        # tokens for no signal.
-        if name == "earnings_analyst" and not earnings_in_window:
-            logger.debug(
-                "ensemble: skipping earnings_analyst — no candidate has "
-                "earnings in next %d days",
-                EARNINGS_ANALYST_WINDOW_DAYS,
-            )
-            continue
-
-        use_tools = (ai_provider == "anthropic")
-
-        for chunk in chunks:
+        calls = 0
+        _chunk = CHUNK_SIZE if use_tools else CHUNK_SIZE_PLAIN
+        spec_chunks = [cand_list[i:i + _chunk]
+                       for i in range(0, len(cand_list), _chunk)]
+        for chunk in spec_chunks:
             try:
                 prompt = spec.build_prompt(chunk, ctx)
             except Exception as exc:
@@ -311,7 +318,7 @@ def run_ensemble(
                         db_path=getattr(ctx, "db_path", None),
                         purpose=f"ensemble:{name}",
                     )
-                    cost_calls += 1
+                    calls += 1
                     if result and isinstance(result.get("verdicts"), list):
                         # Normalize shape — parse_response clamps/validates
                         from specialists._common import VALID_VERDICTS
@@ -349,7 +356,7 @@ def run_ensemble(
                         db_path=getattr(ctx, "db_path", None),
                         purpose=f"ensemble:{name}",
                     )
-                    cost_calls += 1
+                    calls += 1
                     verdicts = spec.parse_response(raw) or []
                 except Exception as exc:
                     logger.warning(
@@ -363,16 +370,112 @@ def run_ensemble(
                 if sym and sym not in seen_syms:
                     seen_syms.add(sym)
                     combined.append(v)
+        return name, combined, calls
 
-        raw_by_specialist[name] = combined
+    # Eligible specialists after the disabled / earnings gates.
+    eligible = []
+    for spec in specialists:
+        name = spec.NAME
+        # Per-profile disabled list: skip the API call entirely.
+        # Synthesizer treats a missing specialist as ABSTAIN.
+        if name in disabled:
+            # INFO level so operators can verify the disable list is
+            # being respected each cycle (was logger.debug — invisible
+            # in journalctl, made the operational behavior look broken
+            # in verify_first_cycle even though it worked).
+            logger.info(
+                "ensemble: skipping %s — in profile disabled_specialists",
+                name,
+            )
+            continue
+        # Cost gate: skip earnings_analyst entirely when no candidate has
+        # earnings in the next EARNINGS_ANALYST_WINDOW_DAYS. The specialist
+        # produces ABSTAIN/short responses in those cases and costs input
+        # tokens for no signal.
+        if name == "earnings_analyst" and not earnings_in_window:
+            logger.debug(
+                "ensemble: skipping earnings_analyst — no candidate has "
+                "earnings in next %d days",
+                EARNINGS_ANALYST_WINDOW_DAYS,
+            )
+            continue
+        eligible.append(spec)
+
+    # 2026-07-02 (token/latency review) — TWO-STAGE, PARALLEL execution.
+    # Stage 1: BLOCKERS (veto authority) run concurrently — wall time drops
+    # from N sequential round-trips to ~1. Stage 2: ADVISORS (no veto
+    # authority — they cannot block, so their verdict on an already-vetoed
+    # candidate is decoration) run concurrently on the SURVIVORS only; when
+    # every candidate is vetoed the advisor calls are skipped entirely. At
+    # the measured ~97% option veto rate this cuts ~2 of every 5 option-
+    # review calls with zero decision impact. Verdicts are synthesized only
+    # after all stages return, exactly as before (order-independent —
+    # _synthesize sorts specialist names).
+    veto_names = veto_authorized_names(eligible)
+    blockers = [s for s in eligible if s.NAME in veto_names]
+    advisors = [s for s in eligible if s.NAME not in veto_names]
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _run_stage(specs, cand_list):
+        nonlocal cost_calls
+        if not specs or not cand_list:
+            return
+        with ThreadPoolExecutor(max_workers=max(1, len(specs))) as pool:
+            futs = [pool.submit(_run_one_specialist, s, cand_list)
+                    for s in specs]
+            for fut in as_completed(futs):
+                try:
+                    name, combined, calls = fut.result()
+                except Exception as exc:
+                    logger.warning("ensemble: specialist task failed: %s", exc)
+                    continue
+                raw_by_specialist[name] = combined
+                cost_calls += calls
+
+    _run_stage(blockers, batch)
+
+    # Survivors: candidates NOT vetoed by any stage-1 blocker.
+    vetoed_syms = {
+        v.get("symbol")
+        for name in raw_by_specialist
+        if name in veto_names
+        for v in raw_by_specialist.get(name, [])
+        if v.get("verdict") == "VETO"
+    }
+    survivors = [c for c in batch if c.get("symbol") not in vetoed_syms]
+    # Advisor scope (2026-07-02 review M1): survivors-only is correct ONLY on
+    # the OPTION pipeline, where the caller consumes nothing but `vetoed` —
+    # an advisor verdict on a dead proposal is decoration. On the STOCK path
+    # a vetoed held-symbol exit candidate is veto-EXEMPT downstream (the veto
+    # rides along as ADVISORY context and the candidate stays in the prompt),
+    # so advisors must still opine on the FULL batch there — otherwise the
+    # prompt renders hollow ABSTAINs exactly on hold-vs-exit decisions. No
+    # blockers at all (crypto's pattern-only set) → advisors see everything.
+    if not blockers or pipeline_kind != "option":
+        advisor_batch = batch
+    else:
+        advisor_batch = survivors
+    if advisors and advisor_batch:
+        _run_stage(advisors, advisor_batch)
+    elif advisors:
+        logger.info(
+            "ensemble: %d advisor call(s) skipped — all %d candidate(s) "
+            "vetoed in the blocker stage",
+            len(advisors), len(batch),
+        )
 
     # Synthesize per-symbol consensus. pipeline_kind flows through
     # so the calibrator lookup uses the right (specialist, direction,
     # pipeline_kind) calibrator — stock pipeline gets stock-trained
     # calibration, option pipeline gets option-trained calibration.
+    # veto_authorized is the DERIVED set, so every specialist that declares
+    # HAS_VETO_AUTHORITY actually blocks (option_spread_risk's declared
+    # authority was a silent no-op under the hardcoded legacy set).
     per_symbol = _synthesize(batch, raw_by_specialist,
                               db_path=getattr(ctx, "db_path", None),
-                              pipeline_kind=pipeline_kind)
+                              pipeline_kind=pipeline_kind,
+                              veto_authorized=veto_names)
 
     return {
         "per_symbol": per_symbol,
@@ -384,7 +487,8 @@ def run_ensemble(
 def _synthesize(candidates: List[Dict[str, Any]],
                 raw_by_specialist: Dict[str, List[Dict[str, Any]]],
                 db_path: Optional[str] = None,
-                pipeline_kind: Optional[str] = None) -> Dict[str, Any]:
+                pipeline_kind: Optional[str] = None,
+                veto_authorized: Optional[set] = None) -> Dict[str, Any]:
     """Combine specialist verdicts into a per-symbol final consensus.
 
     Wave 3 / Fix #9 (METHODOLOGY_FIX_PLAN.md): when `db_path` is
@@ -398,7 +502,14 @@ def _synthesize(candidates: List[Dict[str, Any]],
     When the calibrator hasn't been fitted yet (insufficient resolved
     data), `apply_calibration` returns the raw value unchanged so
     the ensemble degrades gracefully to pre-fix behavior.
+
+    `veto_authorized`: the set of specialist names whose VETO blocks.
+    `run_ensemble` passes the DERIVED set (declared HAS_VETO_AUTHORITY +
+    legacy baseline); direct callers (backtests) default to the legacy
+    VETO_AUTHORIZED constant.
     """
+    if veto_authorized is None:
+        veto_authorized = VETO_AUTHORIZED
     # Reindex per (symbol, specialist) for fast lookup
     by_symbol_and_spec: Dict[Tuple[str, str], Dict[str, Any]] = {}
     for name, verdicts in raw_by_specialist.items():
@@ -500,10 +611,10 @@ def _synthesize(candidates: List[Dict[str, Any]],
                 "reasoning": v["reasoning"],
             })
 
-            # Apply VETO authority — any specialist in VETO_AUTHORIZED
-            # can block. First veto wins for the reason string; both
-            # are still recorded in symbol_verdicts.
-            if v["verdict"] == "VETO" and name in VETO_AUTHORIZED:
+            # Apply VETO authority — any specialist in the (derived)
+            # veto_authorized set can block. First veto wins for the
+            # reason string; all are still recorded in symbol_verdicts.
+            if v["verdict"] == "VETO" and name in veto_authorized:
                 if not vetoed:
                     veto_reason = v["reasoning"] or f"{name} veto"
                     vetoed_by = name

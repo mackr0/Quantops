@@ -889,6 +889,31 @@ def build_training_dataset(db_path=None, min_horizons_required=1,
         # counterfactuals (appended after this block) even with zero resolved
         # real predictions, and those must still reach the corpus.
 
+        # 2026-07-02 (storage dedupe): the cycle's prompt + raw response now
+        # live ONCE on ai_cycles (keyed cycle_id) instead of duplicated on
+        # every prediction row. Prefetch the map; per-row values below fall
+        # back to it when the row's own copy is NULL (post-dedupe rows).
+        # Pre-dedupe rows keep their inline copies. Guarded: old DBs may
+        # lack the columns.
+        cycle_prompt_map = {}
+        try:
+            for cr in conn.execute(
+                "SELECT cycle_id, prompt_text, raw_response_json "
+                "FROM ai_cycles WHERE prompt_text IS NOT NULL "
+                "OR raw_response_json IS NOT NULL"
+            ).fetchall():
+                cycle_prompt_map[cr[0]] = (cr[1], cr[2])
+        except Exception as _cpm_exc:
+            # LOAD-BEARING join of the prompt dedupe: a systematic failure
+            # here means every post-dedupe corpus row emits prompt_text=None
+            # — that must be VISIBLE, never silent (review M3).
+            logger.warning(
+                "build_training_dataset: cycle prompt prefetch failed "
+                "(%s: %s) — post-dedupe rows will lack prompt_text",
+                type(_cpm_exc).__name__, _cpm_exc,
+            )
+            cycle_prompt_map = {}
+
         # Bulk-load all outcome rows in one query and bucket by
         # prediction_id. Avoids the N+1 query problem on a dataset
         # with thousands of predictions.
@@ -950,10 +975,21 @@ def build_training_dataset(db_path=None, min_horizons_required=1,
                 "features": features,
                 "rule_votes": rule_votes,
                 "outcomes": outcomes,
-                "prompt_text": r["prompt_text"]
-                    if "prompt_text" in r.keys() else None,
-                "raw_response_json": r["raw_response_json"]
-                    if "raw_response_json" in r.keys() else None,
+                # Row's own copy (pre-dedupe rows) else the once-per-cycle
+                # copy from ai_cycles (post-dedupe rows join on cycle_id).
+                "prompt_text": (
+                    (r["prompt_text"] if "prompt_text" in r.keys() else None)
+                    or cycle_prompt_map.get(
+                        r["cycle_id"] if "cycle_id" in r.keys() else None,
+                        (None, None))[0]
+                ),
+                "raw_response_json": (
+                    (r["raw_response_json"]
+                     if "raw_response_json" in r.keys() else None)
+                    or cycle_prompt_map.get(
+                        r["cycle_id"] if "cycle_id" in r.keys() else None,
+                        (None, None))[1]
+                ),
                 "meta_model_score": r["meta_model_score"]
                     if "meta_model_score" in r.keys() else None,
                 "online_meta_score": r["online_meta_score"]
