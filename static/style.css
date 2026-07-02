@@ -83,6 +83,21 @@
     padding: 0.3rem 0.8rem;
     font-size: 0.8rem;
 }
+/* Mobile nav toggle — hidden on desktop; shown by the mobile media query.
+   Resets the framework's button chrome so it reads as a plain icon. */
+.qnav-toggle {
+    display: none;
+    background: none;
+    border: 0;
+    color: #fff;
+    font-size: 1.4rem;
+    line-height: 1;
+    width: auto;
+    margin: 0;
+    padding: 0.25rem 0.5rem;
+    cursor: pointer;
+    box-shadow: none;
+}
 
 /* ---------------------------------------------------------------------------
    P&L Colors
@@ -575,5 +590,69 @@ footer {
     .perf-tab {
         padding: 0.4rem 0.7rem;
         font-size: 0.8rem;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   Mobile nav collapse (2026-07-02). The full link row is wider than a phone
+   viewport, which made the WHOLE PAGE horizontally scrollable — swiping a
+   table dragged the page off-screen instead of scrolling the table. Below
+   this breakpoint (the 11-link row overflows well above phone width):
+     - links collapse behind the menu toggle into a dropdown panel;
+     - the page itself is clamped to the viewport (no page-level side-scroll);
+     - each data table becomes its OWN horizontal scroll container, so a
+       swipe pans the table and the page stays put.
+--------------------------------------------------------------------------- */
+@media (max-width: 900px) {
+    .qnav {
+        position: relative;
+    }
+    .qnav-toggle {
+        display: inline-flex;
+        align-items: center;
+    }
+    .qnav .qnav-links {
+        display: none;
+        position: absolute;
+        top: 100%;
+        left: 0;
+        right: 0;
+        z-index: 1000;
+        background: #1a1a2e;
+        flex-direction: column;
+        align-items: flex-start;
+        margin: 0;
+        padding: 0.25rem 1rem 0.75rem;
+        box-shadow: 0 10px 20px rgba(0, 0, 0, 0.35);
+    }
+    .qnav .qnav-links.open {
+        display: flex;
+    }
+    .qnav .qnav-links li {
+        width: 100%;
+        padding: 0;
+    }
+    .qnav .qnav-links a {
+        display: block;
+        padding: 0.55rem 0;
+    }
+    /* The framework-styled logout button needs breathing room in the
+       stacked panel so it doesn't overlap the last text link. */
+    .qnav .qnav-links a[role="button"] {
+        margin-top: 0.6rem;
+        text-align: center;
+    }
+    /* The page never pans sideways… */
+    html, body {
+        overflow-x: hidden;
+    }
+    /* …tables pan inside themselves instead. display:block + overflow-x on
+       the table element makes each one an independent scroll container
+       without touching any template markup. */
+    main.container table {
+        display: block;
+        max-width: 100%;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
     }
 }

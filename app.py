@@ -95,4 +95,7 @@ def create_app():
 
 
 if __name__ == "__main__":
-    create_app().run(debug=True, port=5000)
+    import os as _os
+    # PORT env override for local/preview runs (macOS ControlCenter squats
+    # on 5000); prod is gunicorn and never enters this branch.
+    create_app().run(debug=True, port=int(_os.environ.get("PORT", 5000)))

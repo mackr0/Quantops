@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}QuantOpsAI{% endblock %}</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-    <link rel="stylesheet" href="/static/style.css?v=20260415-sortable">
+    <link rel="stylesheet" href="/static/style.css?v=20260702-mobilenav">
     <!-- Shared price/number formatters (Issue 13). All inline JS
          `function fmt*` definitions in templates are blocked by the
          test_no_inline_js_formatters guardrail; use window.QF instead. -->
@@ -14,7 +14,7 @@
 <body>
     <nav class="container-fluid qnav">
         <ul><li><a href="/dashboard" class="brand"><strong>QUANTOPSAI</strong></a></li></ul>
-        <ul>
+        <ul class="qnav-links" id="qnav-links">
             {% if current_user.is_authenticated %}
             <li><a href="/dashboard">Dashboard</a></li>
             <li><a href="/trades">Trades</a></li>
@@ -29,7 +29,33 @@
             <li><a href="/logout" role="button" class="outline secondary btn-sm">Logout</a></li>
             {% endif %}
         </ul>
+        {% if current_user.is_authenticated %}
+        <button class="qnav-toggle" id="qnav-toggle" aria-label="Menu"
+                aria-expanded="false" aria-controls="qnav-links">&#9776;</button>
+        {% endif %}
     </nav>
+    <script>
+    // Mobile nav: the full link row is wider than a phone viewport, which
+    // made the whole page horizontally scrollable — swiping a table dragged
+    // the page instead. On narrow screens the links collapse behind this
+    // toggle (menu closes on any outside tap or link tap).
+    (function() {
+        var t = document.getElementById('qnav-toggle');
+        var l = document.getElementById('qnav-links');
+        if (!t || !l) return;
+        t.addEventListener('click', function(e) {
+            e.stopPropagation();
+            var open = l.classList.toggle('open');
+            t.setAttribute('aria-expanded', open ? 'true' : 'false');
+        });
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('.qnav') || e.target.closest('#qnav-links a')) {
+                l.classList.remove('open');
+                t.setAttribute('aria-expanded', 'false');
+            }
+        });
+    })();
+    </script>
     <main class="container">
         {% with messages = get_flashed_messages(with_categories=true) %}
         {% if messages %}
