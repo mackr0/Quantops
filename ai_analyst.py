@@ -1075,7 +1075,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context,
             iv_rank_lookup=_iv_rank_pct, regime=regime,
         )
         ledger_block, ledger_has_options = render_ledger_block(_opps)
-        # Expose the scored opportunities so the caller (analyze_batch) can tag
+        # Expose the scored opportunities so the caller (ai_select_trades) can tag
         # the AI's chosen trades with ledger-RAR override metadata (decision #4).
         if opportunities_out is not None:
             opportunities_out.extend(_opps)

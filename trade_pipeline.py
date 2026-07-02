@@ -4153,7 +4153,16 @@ def _rank_candidates(strategy_results, held_symbols, enable_shorts,
         except Exception:
             return abs(sig.get("score", 0) or 0)
 
-    long_key = lambda s: (_rar_score(s) * (1.0 - _div_penalty(s)),
+    def _penalized(score, penalty):
+        """Concentration haircut on the rank score — POSITIVE scores only.
+        Multiplying a NEGATIVE RAR by (1−penalty) would shrink it toward zero
+        and rank a concentrated bad candidate ABOVE a diversified equal-or-
+        better one (the same inversion veto_feedback.apply_veto_discount
+        guards against on the ledger side). A negative score is already
+        unattractive; concentration must never make it look better."""
+        return score * (1.0 - penalty) if score > 0 else score
+
+    long_key = lambda s: (_penalized(_rar_score(s), _div_penalty(s)),
                           abs(s.get("score", 0) or 0),
                           abs(s.get("rsi", 50) - 50))
     short_key = lambda s: (_rar_score(s),

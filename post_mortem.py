@@ -48,11 +48,27 @@ _DOMINANT_FEATURE_THRESHOLD = 0.6
 # Stop-words / fields that are noisy or already covered by existing
 # tuning layers — not useful as post-mortem patterns.
 _SKIP_FEATURES = {
-    "rsi", "stochrsi", "adx", "atr", "obv", "mfi", "cmf",  # raw indicators
+    # raw indicators ("stochrsi" was a dead key — the producer writes
+    # "stoch_rsi"; corrected 2026-07-02, it had never matched)
+    "rsi", "stoch_rsi", "adx", "atr", "obv", "mfi", "cmf",
     "price", "qty", "volume", "score", "confidence",        # meta
     "pe_trailing", "rel_strength_vs_sector",                # too varied
     "momentum_5d", "momentum_20d", "gap_pct",                # already tuned
     "volume_ratio",
+    # Selection-engine INTERNAL scores (2026-07-02 composed-system review):
+    # p_win is the ledger's own input, clipped to [0.50, 0.68] prior — nearly
+    # every candidate reads 'high', so after any losing week it becomes the #1
+    # bogus 'learned pattern' injected into the batch prompt, steering the AI
+    # with the engine's own metadata and crowding out a real pattern slot.
+    # Same self-corruption class the _ledger guard below prevents.
+    "p_win",
+    # SENTINEL-DOMINATED features (2026-07-02): their defaults bucket
+    # identically on virtually every candidate (days_to_earnings=-1 → 'low';
+    # app-store ranks default 999 → 'high'; nearest_fib_dist default 99 →
+    # 'high'; pct_from_52w_high is negative for nearly every name → 'low'),
+    # so they seize the 4 dominant-pattern slots and crowd out real patterns.
+    "days_to_earnings", "app_store_grossing_rank", "app_store_free_rank",
+    "nearest_fib_dist", "pct_from_52w_high", "roc_10",
 }
 
 
@@ -122,13 +138,15 @@ def _detect_dominant_features(
             continue
         for k, v in feats.items():
             if (k in _SKIP_FEATURES or k.startswith("vote_")
-                    or k.startswith("_ledger")):
-                # `_ledger_*` are selection-engine override-audit metadata
-                # (decision #4), NOT decision-feedback features. They must never
-                # become a "learned pattern" injected back into the batch prompt
-                # — that would let the ledger's own audit tags steer selection
-                # and self-corrupt the override-vs-aligned experiment. Class
-                # guard: any future `_ledger_*` key is excluded by construction.
+                    or k.startswith("_")):
+                # Underscore-prefixed keys are INTERNAL or MARKET-WIDE context
+                # (`_ledger_*` override-audit tags, `_regime`, the macro block
+                # `_yield_spread_10y2y`/`_cboe_skew`/`_curve_status`/...):
+                # identical across every candidate in a cycle, so they cannot
+                # discriminate losers from winners — they only seize dominant-
+                # pattern slots (and `_ledger_*` would let the engine's own
+                # audit metadata steer selection). Class guard by construction
+                # (2026-07-02 composed-system review).
                 continue
             label = _categorical_value(v)
             if label is None:

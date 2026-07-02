@@ -230,56 +230,65 @@ def evaluate_position_for_strategies(
 # --- P1 (2026-07-01, selection-engine design): price option recs so the
 # risk-adjusted scorer has real max-loss/gain/breakeven, not just strikes.
 # See docs/SELECTION_ENGINE_DESIGN.md.
-_PREMIUM_CACHE: Dict[Any, Any] = {}
-_PREMIUM_CACHE_TTL = 45.0  # seconds
+# ONE cached snapshot per leg serves BOTH the premium (mid → trade → close
+# ladder, via client._premium_from_snapshot) and the two-sided quote (for the
+# half-spread transaction cost) — worst case 2 HTTP fetches per priced
+# vertical, same as the pre-selection-engine baseline (2026-07-02
+# composed-system review; the previous split caches could double it).
+_SNAP_CACHE: Dict[Any, Any] = {}
+_SNAP_CACHE_TTL = 45.0  # seconds
+
+
+def _cached_option_snapshot(occ_symbol: str):
+    """Raw options snapshot for one leg, TTL-cached. None on any failure
+    (logged in client). Market data only — own-book safe."""
+    import time as _t
+    now = _t.time()
+    hit = _SNAP_CACHE.get(occ_symbol)
+    if hit is not None and (now - hit[0]) < _SNAP_CACHE_TTL:
+        return hit[1]
+    snap = None
+    try:
+        from client import _fetch_option_snapshot
+        snap = _fetch_option_snapshot(occ_symbol)
+    except Exception as exc:
+        logger.debug("option snapshot fetch failed for %s: %s",
+                     occ_symbol, exc)
+        snap = None
+    _SNAP_CACHE[occ_symbol] = (now, snap)
+    return snap
 
 
 def _cached_option_premium(occ_symbol: str, side: str) -> float:
-    """`client._fetch_option_premium` with a short TTL cache (avoids re-hitting
-    Alpaca for the same contract within a prompt build / adjacent cycles).
-    Market data only — own-book safe. Returns 0.0 on any failure."""
-    import time as _t
-    key = (occ_symbol, side)
-    now = _t.time()
-    hit = _PREMIUM_CACHE.get(key)
-    if hit is not None and (now - hit[0]) < _PREMIUM_CACHE_TTL:
-        return hit[1]
+    """Leg premium from the SHARED cached snapshot (same mid → trade → close →
+    conservative-side ladder as `client._fetch_option_premium`). Returns 0.0 on
+    any failure. Market data only — own-book safe."""
     try:
-        from client import _fetch_option_premium
-        prem = float(_fetch_option_premium(occ_symbol, side=side) or 0.0)
-    except Exception:
-        prem = 0.0
-    _PREMIUM_CACHE[key] = (now, prem)
-    return prem
-
-
-_QUOTE_CACHE: Dict[Any, Any] = {}
-_QUOTE_CACHE_TTL = 45.0  # seconds
+        from client import _premium_from_snapshot
+        return float(_premium_from_snapshot(
+            _cached_option_snapshot(occ_symbol), side) or 0.0)
+    except Exception as exc:
+        logger.debug("option premium derive failed for %s: %s",
+                     occ_symbol, exc)
+        return 0.0
 
 
 def _cached_option_quote(occ_symbol: str):
-    """Cached (bid, ask) for one option leg, or None when a two-sided market
-    isn't quotable. ONE fetch yields BOTH the mid (used as the leg premium) AND
-    the half-spread (used as the transaction cost), so `_price_option_rec` never
-    fetches the same leg's snapshot twice. Market data only — own-book safe."""
-    import time as _t
-    now = _t.time()
-    hit = _QUOTE_CACHE.get(occ_symbol)
-    if hit is not None and (now - hit[0]) < _QUOTE_CACHE_TTL:
-        return hit[1]
-    quote = None
+    """(bid, ask) for one leg from the SHARED cached snapshot, or None when a
+    genuine two-sided market isn't quotable. Includes the wide/stale-spread
+    sanity cap (ask > 3× bid → reject) so a bad overnight quote can't crater a
+    spread's RAR — the scorer then falls back to the fixed per-leg cost."""
     try:
-        from client import _fetch_option_quote
-        q = _fetch_option_quote(occ_symbol)
-        if q:
-            bid, ask = q
-            if ask > 0 and bid > 0 and ask >= bid:
-                quote = (bid, ask)
+        snap = _cached_option_snapshot(occ_symbol)
+        q = (snap or {}).get("latestQuote") or {}
+        ap = float(q.get("ap") or 0)
+        bp = float(q.get("bp") or 0)
+        if ap > 0 and bp > 0 and ap >= bp and ap <= 3.0 * bp:
+            return (bp, ap)
+        return None
     except Exception as exc:
-        logger.debug("option quote fetch failed for %s: %s", occ_symbol, exc)
-        quote = None
-    _QUOTE_CACHE[occ_symbol] = (now, quote)
-    return quote
+        logger.debug("option quote derive failed for %s: %s", occ_symbol, exc)
+        return None
 
 
 def _price_option_rec(rec: Dict[str, Any]) -> None:

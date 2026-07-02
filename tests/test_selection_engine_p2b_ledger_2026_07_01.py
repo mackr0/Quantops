@@ -59,16 +59,30 @@ def test_p_win_uses_realized_same_signal_winrate():
     assert ol.p_win_from_reputation(2.0, "SHORT", rep) == pytest.approx(0.10)
 
 
-def test_p_win_sell_reads_its_own_bucket_not_short():
-    # SELL and SHORT are DISTINCT reputation buckets; a SELL signal must read
-    # the SELL win-rate, not the SHORT one (2026-07-01 review finding).
+def test_p_win_sell_reads_pure_directional_short_bucket():
+    # PURE-DIRECTIONAL-BUCKET RULE (2026-07-02 composed-system review): a
+    # bearish SELL candidate reads the SHORT bucket (pure directional_short
+    # outcomes) — NEVER the SELL bucket, whose win-rate mixes exit-quality
+    # resolutions (win = 'flat/down after exit') with directional ones.
     rep = {"win_rate": 50, "total": 40,
            "by_signal": {"SELL": {"win_rate": 70, "total": 20},
                          "SHORT": {"win_rate": 20, "total": 20}}}
     prior = ol._conviction_p_win(2.0)
     w = min(1.0, 20 / 30.0)
-    expected = w * 0.70 + (1 - w) * prior          # SELL bucket, not SHORT
+    expected = w * 0.20 + (1 - w) * prior          # SHORT bucket, not SELL
     assert ol.p_win_from_reputation(2.0, "SELL", rep) == pytest.approx(expected)
+
+
+def test_p_win_never_reads_hold_dominated_aggregate():
+    # The HIGH from the composed-system review: a momentum name racks up HOLD
+    # 'losses' (|move|>=2% — including UP) in the symbol AGGREGATE. With no
+    # directional bucket, p_win must be the conviction prior — NEVER the
+    # HOLD-contaminated aggregate (which would crater a BUY's rank).
+    rep = {"win_rate": 8, "total": 36,          # aggregate: 33 HOLD losses
+           "by_signal": {"HOLD": {"win_rate": 3, "total": 33},
+                         "BUY": {"win_rate": 100, "total": 3}}}   # thin
+    assert ol.p_win_from_reputation(2.5, "BUY", rep) == \
+        pytest.approx(ol._conviction_p_win(2.5))
 
 
 def test_p_win_thin_sample_falls_back_to_prior():

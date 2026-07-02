@@ -58,36 +58,38 @@ def _conviction_p_win(score: Any) -> float:
 
 def p_win_from_reputation(score: Any, signal: Any,
                           rep: Optional[Dict[str, Any]]) -> float:
-    """Design §Scoring P_win: this profile's OWN realized same-signal win-rate
-    (cold-start) partial-blended toward the conviction prior when a meaningful
+    """Design §Scoring P_win: this profile's OWN realized SAME-DIRECTION
+    win-rate partial-blended toward the conviction prior when a meaningful
     sample exists, else the conviction prior alone.
 
     `rep` is a `symbol_reputation` entry — {win_rate (0-100), total,
-    by_signal:{SIG:{win_rate,total}}} — or None. Same-signal bucket preferred;
-    falls back to the symbol aggregate when that bucket is thin. Own-book only
-    (reputation is built from this profile's own resolved predictions)."""
+    by_signal:{SIG:{win_rate,total}}} — or None. Own-book only.
+
+    PURE-DIRECTIONAL-BUCKET RULE (2026-07-02 composed-system review): a
+    directional P(win) may ONLY be set by same-direction directional outcomes —
+    BUY reads the BUY bucket, bearish signals read the SHORT bucket. NEVER the
+    symbol AGGREGATE (dominated by HOLD predictions, whose win criterion is
+    |move|<2% — a momentum name racks up HOLD 'losses' by moving UP, which
+    would crater its BUY p_win) and NEVER the SELL bucket (mixed exit-quality
+    outcomes, win = 'flat/down after exit' — not a directional criterion).
+    Same defect class as the 2026-04-28 VALE confabulation. A thin directional
+    bucket falls back to the conviction prior — never to borrowed semantics."""
     prior = _conviction_p_win(score)
     if not isinstance(rep, dict):
         return prior
     sig = (str(signal) or "").upper()
-    # Reputation `by_signal` stores SELL and SHORT as DISTINCT buckets (they're
-    # separate entries in the per-signal breakdown), so prefer the literal
-    # bucket, then the directional fold, then the symbol aggregate. STRONG_*
-    # actions are re-labeled to BUY/SHORT before storage, so they fold directly.
-    if sig == "SELL":
-        keys = ["SELL", "SHORT"]
-    elif sig in ("SHORT", "STRONG_SELL", "STRONG_SHORT"):
-        keys = ["SHORT"]
-    elif sig in ("BUY", "STRONG_BUY"):
-        keys = ["BUY"]
+    if sig in ("BUY", "STRONG_BUY"):
+        key = "BUY"
+    elif sig in ("SHORT", "SELL", "STRONG_SELL", "STRONG_SHORT"):
+        # All bearish signals read the pure directional-short bucket. SELL
+        # candidates in the ranking context are directional-bearish theses;
+        # the SELL bucket itself is excluded (exit-quality contamination).
+        key = "SHORT"
     else:
-        keys = []
+        return prior
     try:
-        by_sig = rep.get("by_signal") or {}
-        # ordered: same-signal bucket(s) first, then the symbol aggregate
-        for b in [by_sig.get(k) for k in keys] + [rep]:
-            if not isinstance(b, dict):
-                continue
+        b = (rep.get("by_signal") or {}).get(key)
+        if isinstance(b, dict):
             total = int(b.get("total") or 0)
             wr = b.get("win_rate")
             if wr is not None and total >= 10:
@@ -303,6 +305,14 @@ def build_opportunities(
                         if d > 0:
                             o["veto_discount"] = d
                             o["rar"] = apply_veto_discount(o.get("rar", 0.0), d)
+                            # keep EV consistent with the discounted RAR — the
+                            # sort tie-breaks on ev_dollars, so a pre-discount
+                            # EV would rank a doomed spread over an equal peer.
+                            try:
+                                o["ev_dollars"] = round(
+                                    o["rar"] * float(o.get("risk_dollars", 0)), 2)
+                            except Exception as _ev_exc:
+                                logger.debug("ev recompute failed: %s", _ev_exc)
                     opps.append(o)
             except Exception as _ok_exc:
                 logger.debug("ledger option expr(%s) failed: %s", sym, _ok_exc)
@@ -337,18 +347,33 @@ def render_ledger_block(opps: List[Dict[str, Any]]) -> Tuple[str, bool]:
         return "", False
 
     has_option = any(o.get("expression") == "option" for o in opps)
-    lines = [
-        "",
-        "RISK-ADJUSTED OPPORTUNITY LEDGER — the stock and option expressions "
-        "of the flagged candidates, scored on ONE axis and ranked together:",
-        "  RAR = expected profit per $ at risk (higher is better; a negative "
-        "RAR means the edge doesn't cover the risk — skip it). This is the "
-        "ONLY ranking that matters. A stock routinely outranks an option and "
-        "vice-versa — there is NO preference for either expression. Propose "
-        "the best risk-adjusted setups; a healthy stock/option mix is the "
-        "natural OUTPUT of picking the best, never a target to hit.",
-        "   #   RAR    P(win)  risk$      reward$    trade",
-    ]
+    if has_option:
+        header = [
+            "RISK-ADJUSTED OPPORTUNITY LEDGER — the stock and option "
+            "expressions of the flagged candidates, scored on ONE axis and "
+            "ranked together:",
+            "  RAR = expected profit per $ at risk (higher is better; a "
+            "negative RAR means the edge doesn't cover the risk — skip it). "
+            "This is the ONLY ranking that matters. A stock routinely "
+            "outranks an option and vice-versa — there is NO preference for "
+            "either expression. Propose the best risk-adjusted setups; a "
+            "healthy stock/option mix is the natural OUTPUT of picking the "
+            "best, never a target to hit.",
+        ]
+    else:
+        # Stock-only ledger (options disabled for this profile, or no option
+        # expression survived the gates) — don't tell the AI to expect a
+        # stock/option mix it cannot produce.
+        header = [
+            "RISK-ADJUSTED OPPORTUNITY LEDGER — the stock expressions of the "
+            "flagged candidates, scored and ranked on one axis:",
+            "  RAR = expected profit per $ at risk (higher is better; a "
+            "negative RAR means the edge doesn't cover the risk — skip it). "
+            "This is the ONLY ranking that matters — propose the best "
+            "risk-adjusted setups.",
+        ]
+    lines = ["", *header,
+             "   #   RAR    P(win)  risk$      reward$    trade"]
     for i, o in enumerate(opps[:_LEDGER_ROWS], start=1):
         rar = o.get("rar", 0.0)
         pw = o.get("p_win", 0.0)

@@ -20,8 +20,11 @@ Both expressions sized to the **same capital-at-risk envelope** `REF$ = size_pct
 
 **Stock (BUY/SHORT):** `risk$ = REF$·(stop_loss_pct/100)`, `reward$ = REF$·(take_profit_pct/100)`
 (ATR-clamped stop/TP from `stock_strategy_advisor`), `cost$` = round-trip slippage,
-`P_win` = `meta_model.predict_probability` (cold-start: symbol reputation win-rate,
-else conviction prior `clip(0.50 + 0.06·|score|, 0.50, 0.68)`).
+`P_win` = this profile's OWN realized SAME-DIRECTION win-rate (the pure directional
+reputation bucket — BUY reads BUY, bearish reads SHORT; never the HOLD-dominated
+symbol aggregate, never the mixed-exit SELL bucket), partial-blended toward the
+conviction prior `clip(0.50 + 0.06·|score|, 0.50, 0.68)`; thin bucket → prior alone.
+(A meta-model probability is a data-gated future refinement, not consulted today.)
 `reward_net$ = reward$ − cost$`, `risk_net$ = risk$ + cost$`. This materializes the
 stock's dollar max-loss for the first time, erasing the option's phantom "defined-risk" edge.
 
@@ -30,12 +33,15 @@ stock's dollar max-loss for the first time, erasing the option's phantom "define
 `risk$ = max_loss_per_contract·qty` (fallback `OptionStrategy.total_max_loss` = width×$100×qty
 when the short-leg mark is untrusted — `value_parity` fuzziness), `reward$ = max_gain·qty`,
 `cost$` = per-leg half-spread — the REAL live-quote `(ask−bid)/2` per leg, round-trip
-(`_fetch_option_quote`), falling back to a conservative fixed per-leg cost only when a
-two-sided market isn't quotable. `P_win` (POP) = **min** of (a) short-strike delta rule and
+(derived from the same one-snapshot-per-leg fetch that prices the leg), falling back
+to a conservative fixed per-leg cost only when a two-sided market isn't quotable. `P_win` (POP) = **min** of (a) short-strike delta rule and
 (b) breakeven-distance ÷ implied-move — the conservative lower.
 
 Both land as the same dimensionless RAR. **Rank key** in `_rank_candidates`: replace
-`abs(score)` with `RAR·(1−_div_penalty)` desc, tie-break EV$. All existing suppressors
+`abs(score)` with reputation-aware RAR desc — the concentration haircut `(1−_div_penalty)`
+applied to POSITIVE scores only (a negative RAR is never made to look better by
+concentration) — tie-broken on |score| then RSI-extremity; the ledger's own sort
+tie-breaks on EV$. All existing suppressors
 (held-underlying, IV dead-zone, `_options_budget_exhausted`, short-quality, long/short
 reservation) preserved. The prompt's "capital-efficient / lower max-loss" option thumb is deleted.
 
@@ -54,7 +60,8 @@ reservation) preserved. The prompt's "capital-efficient / lower max-loss" option
    + its consumption live; the table's nullable resolution columns are ready for it.
 2. **Realized-RAR shrinkage** (nightly) — pull modeled option P_win toward this profile's own
    realized option win-rate. Primary guard against POP optimism.
-3. **Expression-aware meta-model** (P4) — add `pipeline_kind` one-hot + option-geometry features
+3. **Expression-aware meta-model** (P4) — `option_open` added to the existing
+   `prediction_type` one-hot (shipped), plus data-gated option-geometry features later,
    so stock-vs-spread of the same name get different P once ≥100 resolved rows accrue.
 
 ## Status (2026-07-01)
@@ -90,7 +97,7 @@ features, and pulling modeled option POP toward realized option win-rate.
 2. Per-expression floor/cap: **none** — pure RAR decides; monitor.
 3. Feedback aggressiveness: **partial blend**, ~30 resolved rows min, floored discount.
 4. AI override: **default-with-reason** (not hard rank); log overrides to measure if they beat the number.
-   *(IMPLEMENTED 2026-07-01: `opportunity_ledger.tag_overrides` flags trades that took a lower-RAR expression than the ledger's best; per-cycle count logged in `analyze_batch`; metadata persisted on the prediction; `override_scorecard(db_path)` compares realized override-vs-aligned outcomes.)*
+   *(IMPLEMENTED 2026-07-01: `opportunity_ledger.tag_overrides` flags trades that took a lower-RAR expression than the ledger's best; per-cycle count logged in `ai_select_trades`; metadata persisted on the prediction; `override_scorecard(db_path)` compares realized override-vs-aligned outcomes.)*
 5. Common notional: **same capital-at-risk envelope** for stock and option ("same bet").
 6. Premium fetch on the hot path: **yes — cached + fail-open** (skip the option row, keep the stock row on failure).
 

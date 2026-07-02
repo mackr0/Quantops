@@ -3645,7 +3645,13 @@ def _task_resolve_predictions(ctx):
         from veto_feedback import resolve_option_proposal_outcomes
         import market_data as _md
 
+        _spot_memo = {}   # (symbol, expiry) -> close|None; one fetch per pass
+
         def _spot_on(symbol, expiry_str):
+            key = (symbol, str(expiry_str))
+            if key in _spot_memo:
+                return _spot_memo[key]
+            _spot_memo[key] = None
             try:
                 if not symbol or not expiry_str:
                     return None
@@ -3663,7 +3669,8 @@ def _task_resolve_predictions(ctx):
                 bar_date = idx0.date() if hasattr(idx0, "date") else None
                 if bar_date is None or bar_date.isoformat() != exp.isoformat():
                     return None
-                return float(df["close"].iloc[0])
+                _spot_memo[key] = float(df["close"].iloc[0])
+                return _spot_memo[key]
             except Exception as _sp_exc:
                 logging.debug("veto-outcome spot lookup(%s,%s) failed: %s",
                               symbol, expiry_str, _sp_exc)

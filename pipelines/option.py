@@ -332,8 +332,12 @@ class OptionPipeline(Pipeline):
             self._record_veto(ctx, vetoed, sym, (veto_reason, vetoed_by))
             # P3 feedback: record the vetoed proposal keyed by (spread
             # strategy x sector) so the ledger can discount doomed spreads.
+            # ASYNC (2026-07-02 composed-system review): the capture prices the
+            # spread's legs (blocking HTTP) — a feedback write must never sit
+            # ahead of live order submission for later-ranked trades in the
+            # dispatch loop. Capture still happens AT veto time, off-thread.
             if isinstance(vetoed, dict):
-                self._record_option_outcome(
+                self._record_option_outcome_async(
                     ctx, vetoed, sym, vetoed_flag=1,
                     veto_reason=(f"{vetoed_by}: {veto_reason}"
                                  if vetoed_by else veto_reason))
@@ -355,7 +359,10 @@ class OptionPipeline(Pipeline):
             symbol = proposal.get("symbol", "")
             # P3 feedback: an approved proposal survived the specialist veto —
             # record it (vetoed=0) so P(veto) = vetoed / (vetoed + approved).
-            self._record_option_outcome(ctx, proposal, symbol, vetoed_flag=0)
+            # ASYNC: a cold sector lookup must never delay THIS trade's
+            # submission (the order goes to the broker right below).
+            self._record_option_outcome_async(ctx, proposal, symbol,
+                                              vetoed_flag=0)
             try:
                 if action == "MULTILEG_OPEN":
                     res = self._execute_multileg(ctx, proposal, symbol)
@@ -495,6 +502,42 @@ class OptionPipeline(Pipeline):
         except Exception as exc:
             logger.debug("vetoed-spread pricing failed (fields NULL): %s", exc)
             return {}
+
+    @staticmethod
+    def _record_option_outcome_async(ctx, proposal, symbol, *, vetoed_flag,
+                                     veto_reason=None):
+        """Spawn `_record_option_outcome` on a daemon thread so the feedback
+        capture (leg pricing / sector lookup — blocking HTTP) NEVER delays live
+        order dispatch. Returns the Thread (started) so tests can join it; the
+        write itself is fail-open + logged inside `_record_option_outcome`."""
+        import copy
+        import threading
+        # Deep-copy the proposal at spawn: the dispatch loop may mutate it
+        # after this returns (e.g. strike snapping during execution), and the
+        # recorder must capture the proposal AS VETOED/APPROVED, race-free.
+        try:
+            snap = copy.deepcopy(proposal) if isinstance(proposal, dict) \
+                else proposal
+        except Exception as _cp_exc:
+            # Fallback still copies the nested strikes dict — the exact field
+            # the dispatch loop mutates (strike snapping) — and is logged.
+            logger.warning("option-outcome snapshot deepcopy failed (%s: %s); "
+                           "using shallow copy + strikes copy",
+                           type(_cp_exc).__name__, _cp_exc)
+            if isinstance(proposal, dict):
+                snap = dict(proposal)
+                if isinstance(snap.get("strikes"), dict):
+                    snap["strikes"] = dict(snap["strikes"])
+            else:
+                snap = proposal
+        t = threading.Thread(
+            target=OptionPipeline._record_option_outcome,
+            args=(ctx, snap, symbol),
+            kwargs={"vetoed_flag": vetoed_flag, "veto_reason": veto_reason},
+            daemon=True, name="option-outcome-recorder",
+        )
+        t.start()
+        return t
 
     @staticmethod
     def _record_option_outcome(ctx, proposal, symbol, *, vetoed_flag,

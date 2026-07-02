@@ -204,6 +204,79 @@ def _is_occ_symbol(s):
     return True
 
 
+def _premium_from_snapshot(snap, side="buy"):
+    """Pure premium ladder over a raw options-snapshot dict — mid of a real
+    two-sided quote → latest trade → daily close → conservative holder's
+    exit-side (long→bid, short→ask) → 0.0. Extracted from
+    `_fetch_option_premium` (2026-07-02) so the strategy advisor can derive
+    premium AND half-spread from ONE snapshot fetch per leg without
+    duplicating (and drifting from) this ladder."""
+    if not snap:
+        return 0.0
+    try:
+        q = snap.get("latestQuote") or {}
+        ap = float(q.get("ap") or 0)
+        bp = float(q.get("bp") or 0)
+        if ap > 0 and bp > 0 and ap >= bp:
+            return (ap + bp) / 2
+        t = snap.get("latestTrade") or {}
+        tp = float(t.get("p") or 0)
+        if tp > 0:
+            return tp
+        bar = snap.get("dailyBar") or {}
+        cp = float(bar.get("c") or 0)
+        if cp > 0:
+            return cp
+        if side == "buy":
+            return bp if bp > 0 else 0.0
+        if side == "sell":
+            return ap if ap > 0 else 0.0
+        return 0.0
+    except Exception as exc:
+        import logging as _logging
+        _logging.getLogger(__name__).debug(
+            "premium ladder failed on snapshot: %s", exc)
+        return 0.0
+
+
+def _fetch_option_snapshot(occ_symbol):
+    """Raw Alpaca options snapshot (quote + last trade + daily bar) for one
+    contract, or None. Failures are LOGGED at debug — a systematic snapshot
+    failure silently reverting premiums/costs to their fallbacks must leave a
+    trace (no-silent-failures rule). Market data only — own-book safe."""
+    import requests
+    import logging as _logging
+    log = _logging.getLogger(__name__)
+    if not occ_symbol:
+        return None
+    try:
+        from options_chain_alpaca import _alpaca_headers, _ALPACA_DATA_BASE
+    except Exception as exc:
+        log.debug("option snapshot: alpaca config unavailable: %s", exc)
+        return None
+    occ_unpadded = occ_symbol.replace(" ", "")
+    if not occ_unpadded:
+        return None
+    try:
+        r = requests.get(
+            f"{_ALPACA_DATA_BASE}/v1beta1/options/snapshots",
+            headers=_alpaca_headers(),
+            params={"symbols": occ_unpadded, "feed": "indicative"},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            log.debug("option snapshot %s -> HTTP %s",
+                      occ_unpadded, r.status_code)
+            return None
+        snap = ((r.json() or {}).get("snapshots") or {}).get(occ_unpadded)
+        if not snap:
+            log.debug("option snapshot %s -> empty", occ_unpadded)
+        return snap
+    except Exception as exc:
+        log.debug("option snapshot %s failed: %s", occ_unpadded, exc)
+        return None
+
+
 def _fetch_option_premium(occ_symbol, side="buy"):
     """Latest premium for an option contract by OCC symbol.
 
@@ -256,78 +329,21 @@ def _fetch_option_premium(occ_symbol, side="buy"):
         snap = snaps.get(occ_unpadded)
         if not snap:
             return 0.0
-        q = snap.get("latestQuote") or {}
-        ap = float(q.get("ap") or 0)
-        bp = float(q.get("bp") or 0)
-        if ap > 0 and bp > 0 and ap >= bp:
-            return (ap + bp) / 2
-        # Last trade — best single estimate when the quote is
-        # one-sided / inverted / empty.
-        t = snap.get("latestTrade") or {}
-        tp = float(t.get("p") or 0)
-        if tp > 0:
-            return tp
-        # Daily bar close — second fallback for off-hours / illiquid.
-        bar = snap.get("dailyBar") or {}
-        cp = float(bar.get("c") or 0)
-        if cp > 0:
-            return cp
-        # Conservative side: use the holder's exit-side. A long
-        # would receive the bid; a short would pay the ask.
-        # Returning the OFFER side on a long position fakes a gain.
-        if side == "buy":
-            return bp if bp > 0 else 0.0
-        if side == "sell":
-            return ap if ap > 0 else 0.0
-        return 0.0
-    except Exception:
+        # Shared ladder: mid → last trade → daily close → conservative side.
+        return _premium_from_snapshot(snap, side)
+    except Exception as exc:
+        import logging as _logging
+        _logging.getLogger(__name__).debug(
+            "option premium fetch %s failed: %s", occ_symbol, exc)
         return 0.0
 
 
-def _fetch_option_quote(occ_symbol):
-    """Latest (bid, ask) for an option contract by OCC symbol, or None when a
-    two-sided market isn't available. Powers the REAL per-leg half-spread the
-    selection engine charges as an option's transaction cost (so a spread ranks
-    apples-to-apples with the cost-charged stock, not under-charged). Same
-    snapshot endpoint as `_fetch_option_premium`; market data only, own-book
-    safe. None on any failure — the caller falls back to a conservative fixed
-    per-leg cost, never zero."""
-    import requests
-    if not occ_symbol:
-        return None
-    try:
-        from options_chain_alpaca import _alpaca_headers, _ALPACA_DATA_BASE
-    except Exception:
-        return None
-    occ_unpadded = occ_symbol.replace(" ", "")
-    if not occ_unpadded:
-        return None
-    try:
-        r = requests.get(
-            f"{_ALPACA_DATA_BASE}/v1beta1/options/snapshots",
-            headers=_alpaca_headers(),
-            params={"symbols": occ_unpadded, "feed": "indicative"},
-            timeout=10,
-        )
-        if r.status_code != 200:
-            return None
-        snap = ((r.json() or {}).get("snapshots") or {}).get(occ_unpadded)
-        if not snap:
-            return None
-        q = snap.get("latestQuote") or {}
-        ap = float(q.get("ap") or 0)
-        bp = float(q.get("bp") or 0)
-        if not (ap > 0 and bp > 0 and ap >= bp):
-            return None         # not a real two-sided market
-        # Sanity/staleness guard: a pathologically WIDE market (ask more than
-        # ~3× bid, i.e. spread > ~100% of mid) is stale/illiquid, not a real
-        # cost — reject it so a bad overnight quote can't crater a spread's RAR.
-        # The caller then falls back to the conservative fixed per-leg cost.
-        if ap > 3.0 * bp:
-            return None
-        return (bp, ap)         # (bid, ask)
-    except Exception:
-        return None
+# NOTE (2026-07-02): the standalone `_fetch_option_quote` was removed — the
+# strategy advisor now derives BOTH the leg premium and the (bid, ask) quote
+# from ONE `_fetch_option_snapshot` per leg (see
+# options_strategy_advisor._cached_option_snapshot), restoring the pre-session
+# worst case of 2 HTTP fetches per priced vertical. The two-sided + wide-spread
+# sanity checks live in the advisor's quote derivation.
 
 
 def _make_price_fetcher(api):

@@ -167,8 +167,13 @@ def sweep_proactive_option_exits(
         reason = row.get("_exit_reason")
         if reason is None:
             # No time-exit fired; check the premium stop.
+            # NOTE (2026-07-02 composed-system review F1): this call passed
+            # `api` as the first positional arg since 2026-06-07 —
+            # `_fetch_option_premium(occ_symbol, side)` takes no api — so
+            # EVERY call raised TypeError and the premium stop NEVER fired
+            # in production (masked by a wrong-signature test mock).
             try:
-                current_mid = _fetch_option_premium(api, occ, side="buy")
+                current_mid = _fetch_option_premium(occ, side="buy")
             except Exception as exc:
                 logger.warning(
                     "proactive option exits: quote fetch failed for %s "
@@ -194,10 +199,18 @@ def sweep_proactive_option_exits(
             limit_price = current_mid
         else:
             # Time-exit: fetch a mid to use as the limit price (still
-            # better than market on a wide spread).
+            # better than market on a wide spread). Same F1 signature fix:
+            # the old `(api, occ, ...)` call ALWAYS raised, so time exits
+            # silently went to market on exactly the wide-spread contracts
+            # where market orders cost the most.
             try:
-                limit_price = _fetch_option_premium(api, occ, side="buy")
-            except Exception:
+                limit_price = _fetch_option_premium(occ, side="buy")
+            except Exception as exc:
+                logger.warning(
+                    "proactive option exits: limit-mid fetch failed for %s "
+                    "(%s: %s); falling back to MARKET close",
+                    occ, type(exc).__name__, exc,
+                )
                 limit_price = 0.0
         # Submit sell_to_close at the current mid. If the mid isn't
         # available, fall through to market — the position needs to

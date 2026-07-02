@@ -248,9 +248,13 @@ class TestSweepEndToEnd:
         import client as _client_mod
         import options_trader as _ot_mod
         import journal as _journal_mod
+        # Signature MUST match the real `_fetch_option_premium(occ_symbol,
+        # side="buy")` — the old `(api, occ, ...)` mock encoded the same wrong
+        # convention as the (broken) caller, masking a TypeError that kept the
+        # premium stop nonfunctional in prod from 2026-06-07 to 2026-07-02.
         monkeypatch.setattr(
             _client_mod, "_fetch_option_premium",
-            lambda api, occ, side="buy": mid_price,
+            lambda occ, side="buy": mid_price,
         )
         submit_mock = MagicMock(return_value=submit_returns)
         monkeypatch.setattr(_ot_mod, "submit_option_order", submit_mock)
