@@ -144,12 +144,17 @@ def score_option_opportunity(rec: Dict[str, Any], equity: float, p_win: float,
     risk = float(max_loss_c) * qty
     # unpriced max_gain (fail-open width fallback) → conservative reward=0
     reward = (float(max_gain_c) * qty) if max_gain_c else 0.0
-    # Transaction cost: per-leg half-spread on both open and close. Legs are
-    # read from the strike dict (vertical=2, condor/butterfly=4, straddle=2),
-    # defaulting to 2 when unknown.
-    strikes = rec.get("strikes")
-    n_legs = len(strikes) if isinstance(strikes, dict) and strikes else 2
-    cost = _OPTION_HALF_SPREAD_PER_LEG_USD * n_legs * 2 * qty  # ×2 = round trip
+    # Transaction cost: prefer the REAL per-leg half-spread round-trip stamped
+    # by `_price_option_rec` from live quotes; fall back to a conservative fixed
+    # per-leg model (per-leg half-spread × legs × open+close) when a two-sided
+    # market wasn't quotable. Never zero (charging zero over-ranks options).
+    rt_cost = rec.get("roundtrip_cost_per_contract")
+    if rt_cost is not None and float(rt_cost) > 0:
+        cost = float(rt_cost) * qty
+    else:
+        strikes = rec.get("strikes")
+        n_legs = len(strikes) if isinstance(strikes, dict) and strikes else 2
+        cost = _OPTION_HALF_SPREAD_PER_LEG_USD * n_legs * 2 * qty  # round trip
     reward_net = reward - cost
     risk_net = risk + cost
     score = rar(p_win, reward_net, risk_net)

@@ -74,7 +74,8 @@ class TestNoRestrictiveMultilegFraming:
         # Force the ledger to surface an option row so the MULTILEG_OPEN
         # note renders (P2b: the note is gated on ledger_has_options).
         cands = [_make_candidate_with_options()]
-        with patch("opportunity_ledger.render_opportunity_ledger",
+        with patch("opportunity_ledger.build_opportunities", return_value=[]), \
+             patch("opportunity_ledger.render_ledger_block",
                    return_value=(
                        "RISK-ADJUSTED OPPORTUNITY LEDGER\n"
                        "   1  +0.30   62%  $8,000  $2,400   AAPL bull_put_spread",
@@ -135,7 +136,8 @@ class TestEqualFirstClassFraming:
         from unittest.mock import patch
         from ai_analyst import _build_batch_prompt
         cands = [_make_candidate_with_options()]
-        with patch("opportunity_ledger.render_opportunity_ledger",
+        with patch("opportunity_ledger.build_opportunities", return_value=[]), \
+             patch("opportunity_ledger.render_ledger_block",
                    return_value=(
                        "RISK-ADJUSTED OPPORTUNITY LEDGER\n"
                        "   1  +0.30   62%  $8,000  $2,400   AAPL bull_put_spread",
@@ -170,7 +172,8 @@ class TestParallelStructureAcrossActions:
         from unittest.mock import patch
         from ai_analyst import _build_batch_prompt
         cands = [_make_candidate_with_options()]
-        with patch("opportunity_ledger.render_opportunity_ledger",
+        with patch("opportunity_ledger.build_opportunities", return_value=[]), \
+             patch("opportunity_ledger.render_ledger_block",
                    return_value=("", False)):  # no ledger option rows this test
             prompt = _build_batch_prompt(
                 cands,

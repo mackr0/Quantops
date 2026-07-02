@@ -284,6 +284,52 @@ def _fetch_option_premium(occ_symbol, side="buy"):
         return 0.0
 
 
+def _fetch_option_quote(occ_symbol):
+    """Latest (bid, ask) for an option contract by OCC symbol, or None when a
+    two-sided market isn't available. Powers the REAL per-leg half-spread the
+    selection engine charges as an option's transaction cost (so a spread ranks
+    apples-to-apples with the cost-charged stock, not under-charged). Same
+    snapshot endpoint as `_fetch_option_premium`; market data only, own-book
+    safe. None on any failure — the caller falls back to a conservative fixed
+    per-leg cost, never zero."""
+    import requests
+    if not occ_symbol:
+        return None
+    try:
+        from options_chain_alpaca import _alpaca_headers, _ALPACA_DATA_BASE
+    except Exception:
+        return None
+    occ_unpadded = occ_symbol.replace(" ", "")
+    if not occ_unpadded:
+        return None
+    try:
+        r = requests.get(
+            f"{_ALPACA_DATA_BASE}/v1beta1/options/snapshots",
+            headers=_alpaca_headers(),
+            params={"symbols": occ_unpadded, "feed": "indicative"},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return None
+        snap = ((r.json() or {}).get("snapshots") or {}).get(occ_unpadded)
+        if not snap:
+            return None
+        q = snap.get("latestQuote") or {}
+        ap = float(q.get("ap") or 0)
+        bp = float(q.get("bp") or 0)
+        if not (ap > 0 and bp > 0 and ap >= bp):
+            return None         # not a real two-sided market
+        # Sanity/staleness guard: a pathologically WIDE market (ask more than
+        # ~3× bid, i.e. spread > ~100% of mid) is stale/illiquid, not a real
+        # cost — reject it so a bad overnight quote can't crater a spread's RAR.
+        # The caller then falls back to the conservative fixed per-leg cost.
+        if ap > 3.0 * bp:
+            return None
+        return (bp, ap)         # (bid, ask)
+    except Exception:
+        return None
+
+
 def _make_price_fetcher(api):
     """Return a callable that gets the current price for a symbol,
     backed by a process-wide TTL cache populated by `_prefetch_prices`.

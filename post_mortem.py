@@ -121,7 +121,14 @@ def _detect_dominant_features(
         if not isinstance(feats, dict):
             continue
         for k, v in feats.items():
-            if k in _SKIP_FEATURES or k.startswith("vote_"):
+            if (k in _SKIP_FEATURES or k.startswith("vote_")
+                    or k.startswith("_ledger")):
+                # `_ledger_*` are selection-engine override-audit metadata
+                # (decision #4), NOT decision-feedback features. They must never
+                # become a "learned pattern" injected back into the batch prompt
+                # — that would let the ledger's own audit tags steer selection
+                # and self-corrupt the override-vs-aligned experiment. Class
+                # guard: any future `_ledger_*` key is excluded by construction.
                 continue
             label = _categorical_value(v)
             if label is None:

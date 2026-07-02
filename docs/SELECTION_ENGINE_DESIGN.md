@@ -29,7 +29,9 @@ stock's dollar max-loss for the first time, erasing the option's phantom "define
 → `max_loss/gain/contract`, `breakeven`. `qty = floor(REF$/max_loss_per_contract)` ≥1.
 `risk$ = max_loss_per_contract·qty` (fallback `OptionStrategy.total_max_loss` = width×$100×qty
 when the short-leg mark is untrusted — `value_parity` fuzziness), `reward$ = max_gain·qty`,
-`cost$` = per-leg half-spread. `P_win` (POP) = **min** of (a) short-strike delta rule and
+`cost$` = per-leg half-spread — the REAL live-quote `(ask−bid)/2` per leg, round-trip
+(`_fetch_option_quote`), falling back to a conservative fixed per-leg cost only when a
+two-sided market isn't quotable. `P_win` (POP) = **min** of (a) short-strike delta rule and
 (b) breakeven-distance ÷ implied-move — the conservative lower.
 
 Both land as the same dimensionless RAR. **Rank key** in `_rank_candidates`: replace
@@ -88,6 +90,7 @@ features, and pulling modeled option POP toward realized option win-rate.
 2. Per-expression floor/cap: **none** — pure RAR decides; monitor.
 3. Feedback aggressiveness: **partial blend**, ~30 resolved rows min, floored discount.
 4. AI override: **default-with-reason** (not hard rank); log overrides to measure if they beat the number.
+   *(IMPLEMENTED 2026-07-01: `opportunity_ledger.tag_overrides` flags trades that took a lower-RAR expression than the ledger's best; per-cycle count logged in `analyze_batch`; metadata persisted on the prediction; `override_scorecard(db_path)` compares realized override-vs-aligned outcomes.)*
 5. Common notional: **same capital-at-risk envelope** for stock and option ("same bet").
 6. Premium fetch on the hot path: **yes — cached + fail-open** (skip the option row, keep the stock row on failure).
 

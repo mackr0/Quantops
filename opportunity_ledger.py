@@ -319,13 +319,20 @@ def render_opportunity_ledger(
     iv_rank_lookup=None,
     regime: Optional[str] = None,
 ) -> Tuple[str, bool]:
-    """Render the single ranked ledger block. Returns (block, has_option_rows).
-    Empty block when there are no scored opportunities. has_option_rows drives
-    whether the MULTILEG_OPEN action + example are offered to the AI."""
+    """Build + render the single ranked ledger block. Returns (block,
+    has_option_rows). has_option_rows drives whether the MULTILEG_OPEN action +
+    example are offered to the AI."""
     if not candidates:
         return "", False
     opps = build_opportunities(candidates, ctx, equity,
                                iv_rank_lookup=iv_rank_lookup, regime=regime)
+    return render_ledger_block(opps)
+
+
+def render_ledger_block(opps: List[Dict[str, Any]]) -> Tuple[str, bool]:
+    """Render the ranked ledger block from PRE-BUILT opportunities, so a caller
+    that also needs the opps (e.g. override tagging) builds them once. Returns
+    (block, has_option_rows); empty block when there are no opps."""
     if not opps:
         return "", False
 
@@ -367,3 +374,166 @@ def render_opportunity_ledger(
     if hidden > 0:
         lines.append(f"  ... and {hidden} more lower-RAR expressions not shown")
     return "\n".join(lines), has_option
+
+
+# --- AI-override logging (operator decision #4) -----------------------------
+# The ledger's RAR ranking is the DEFAULT; the AI is the final chooser
+# (default-with-reason). An "override" is when the AI picks a LOWER-RAR
+# expression of a symbol than the ledger's best for that symbol (e.g. takes the
+# option when the stock scored higher, or vice-versa). We tag every chosen
+# trade with the ledger RARs so a later scorecard can measure whether the AI's
+# overrides actually BEAT the number — per decision #4, "log overrides to
+# measure if they beat the number". Pure/own-book; never affects selection.
+
+def _expr_of_action(action: Any) -> Optional[str]:
+    """The ledger EXPRESSION an executable action maps to. Only unambiguous
+    ENTRY actions map; bare SELL/STRONG_SELL are DELIBERATELY unmapped — SELL is
+    ambiguous (an EXIT of a held long vs a directional short), and the ledger
+    only scores entries, so tagging a SELL would mis-attribute an exit's outcome
+    to an entry-expression choice and corrupt the scorecard."""
+    a = (str(action) or "").upper()
+    if a in ("MULTILEG_OPEN", "OPTIONS"):
+        return "option"
+    if a in ("BUY", "STRONG_BUY", "SHORT", "STRONG_SHORT"):
+        return "stock"
+    return None
+
+
+def _direction_of(action: Any, strategy: Any = None) -> Optional[str]:
+    """Directional thesis of an action: long / short / neutral, or None when
+    ambiguous (SELL/exit/unknown). Options derive direction from the spread
+    strategy (bull_* → long, bear_* → short, condor/strangle → neutral)."""
+    a = (str(action) or "").upper()
+    if a in ("BUY", "STRONG_BUY"):
+        return "long"
+    if a in ("SHORT", "STRONG_SHORT"):
+        return "short"
+    if a in ("MULTILEG_OPEN", "OPTIONS"):
+        s = (str(strategy) or "").lower()
+        if s.startswith("bull"):
+            return "long"
+        if s.startswith("bear"):
+            return "short"
+        return "neutral"
+    return None
+
+
+def build_rar_index(opps: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """{symbol: {"stock", "option" (max), "option_by_strat", "best",
+    "best_expr", "direction"}}. A screener candidate carries ONE directional
+    thesis, so all its opps share a direction (captured for the tag-time
+    direction guard); `option_by_strat` keeps each spread's own RAR so an option
+    pick is scored against the exact spread it chose, not the best spread."""
+    idx: Dict[str, Dict[str, Any]] = {}
+    for o in opps or []:
+        sym = o.get("symbol")
+        expr = o.get("expression")
+        rar = o.get("rar")
+        if not sym or expr not in ("stock", "option") or rar is None:
+            continue
+        e = idx.setdefault(sym, {"stock": None, "option": None,
+                                 "option_by_strat": {}, "direction": None})
+        cur = e.get(expr)
+        e[expr] = rar if cur is None else max(cur, rar)
+        if expr == "option" and o.get("strategy"):
+            e["option_by_strat"][str(o["strategy"])] = rar
+        d = _direction_of(o.get("action"), o.get("strategy"))
+        if d and d != "neutral" and e["direction"] is None:
+            e["direction"] = d
+    for e in idx.values():
+        best, best_expr = None, None
+        for expr in ("stock", "option"):
+            v = e.get(expr)
+            if v is not None and (best is None or v > best):
+                best, best_expr = v, expr
+        e["best"], e["best_expr"] = best, best_expr
+    return idx
+
+
+def tag_overrides(trades: List[Dict[str, Any]],
+                  opps: List[Dict[str, Any]]) -> int:
+    """Stamp each chosen trade with ledger-RAR override metadata (decision #4):
+    `_ledger_rar` (RAR of the exact expression/spread the AI chose),
+    `_ledger_best_rar` (best RAR the ledger offered for that name+direction),
+    `_ledger_best_expr`, and `_ledger_is_override` (chose a lower-RAR expression
+    than the ledger's best). Returns the override count. Fail-safe: skips trades
+    it can't cleanly map — off-ledger names, exits (bare SELL), and DIRECTION
+    MISMATCHES (an AI BUY on a name the ledger only scored SHORT is a different
+    trade, not an override). Never mutates a trade's executable fields."""
+    idx = build_rar_index(opps)
+    n_over = 0
+    for t in trades or []:
+        if not isinstance(t, dict):
+            continue
+        e = idx.get(t.get("symbol"))
+        strat = t.get("strategy_name") or t.get("strategy")
+        expr = _expr_of_action(t.get("action"))
+        td = _direction_of(t.get("action"), strat)
+        if not e or expr is None or td is None:
+            continue
+        # direction guard: don't score a trade against an opp of the opposite
+        # thesis (the ledger never offered THIS trade).
+        if e.get("direction") and td != "neutral" and td != e["direction"]:
+            continue
+        # the exact spread's RAR when known, else the expression's best.
+        if expr == "option" and strat and str(strat) in e["option_by_strat"]:
+            chosen = e["option_by_strat"][str(strat)]
+        else:
+            chosen = e.get(expr)
+        best = e.get("best")
+        if chosen is None or best is None:
+            continue
+        is_override = (e.get("best_expr") != expr) and (best - chosen > 1e-9)
+        t["_ledger_rar"] = round(float(chosen), 4)
+        t["_ledger_best_rar"] = round(float(best), 4)
+        t["_ledger_best_expr"] = e.get("best_expr")
+        t["_ledger_is_override"] = bool(is_override)
+        if is_override:
+            n_over += 1
+    return n_over
+
+
+def override_scorecard(db_path) -> Dict[str, Any]:
+    """Measure whether the AI's ledger-overrides BEAT the number (decision #4):
+    over this profile's RESOLVED predictions that carried override metadata,
+    compare the realized win-rate + avg return of OVERRIDE picks vs LEDGER-ALIGNED
+    picks. Own-book (reads this profile's ai_predictions.features_json only —
+    the override tag is metadata ON a real prediction, never shadow data).
+    Returns counts + win-rates; {} on any error (fail-open)."""
+    import json as _json
+    out = {"override": {"n": 0, "wins": 0, "ret_sum": 0.0},
+           "aligned": {"n": 0, "wins": 0, "ret_sum": 0.0}}
+    try:
+        import sqlite3
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT features_json, actual_outcome, actual_return_pct "
+                "FROM ai_predictions WHERE status = 'resolved' "
+                "AND features_json IS NOT NULL"
+            ).fetchall()
+        for r in rows:
+            try:
+                feats = _json.loads(r["features_json"] or "{}")
+            except Exception as _fj_exc:
+                # a malformed features_json row can't be scored — skip it, but
+                # surface (never silent) so systematic corruption is visible.
+                logger.debug("override_scorecard: bad features_json: %s", _fj_exc)
+                continue
+            if "_ledger_is_override" not in feats:
+                continue
+            bucket = out["override"] if feats.get("_ledger_is_override") \
+                else out["aligned"]
+            bucket["n"] += 1
+            if r["actual_outcome"] == "win":
+                bucket["wins"] += 1
+            if r["actual_return_pct"] is not None:
+                bucket["ret_sum"] += float(r["actual_return_pct"])
+        for k in ("override", "aligned"):
+            b = out[k]
+            b["win_rate"] = round(100.0 * b["wins"] / b["n"], 1) if b["n"] else None
+            b["avg_return_pct"] = round(b["ret_sum"] / b["n"], 3) if b["n"] else None
+        return out
+    except Exception as exc:
+        logger.debug("override_scorecard unavailable (fail-open): %s", exc)
+        return {}

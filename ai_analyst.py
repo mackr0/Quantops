@@ -537,7 +537,10 @@ def ai_select_trades(candidates_data, portfolio_state, market_context, ctx=None)
         portfolio_reasoning: str
         pass_this_cycle: bool
     """
-    prompt = _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx)
+    _ledger_opps = []
+    prompt = _build_batch_prompt(candidates_data, portfolio_state,
+                                 market_context, ctx,
+                                 opportunities_out=_ledger_opps)
 
     provider = getattr(ctx, "ai_provider", "anthropic") if ctx else "anthropic"
     model = getattr(ctx, "ai_model", "claude-haiku-4-5-20251001") if ctx else "claude-haiku-4-5-20251001"
@@ -590,6 +593,20 @@ def ai_select_trades(candidates_data, portfolio_state, market_context, ctx=None)
     # keys.
     if isinstance(validated, dict):
         validated["prompt"] = prompt
+        # Tag chosen trades with ledger-RAR override metadata (decision #4) and
+        # log the count, so we can later measure if overrides beat the number.
+        try:
+            from opportunity_ledger import tag_overrides
+            _trades = validated.get("trades") or []
+            n_over = tag_overrides(_trades, _ledger_opps)
+            if _trades:
+                logger.info(
+                    "Ledger overrides this cycle: %d/%d chosen trades took a "
+                    "lower-RAR expression than the ledger's best for that name.",
+                    n_over, len(_trades),
+                )
+        except Exception as _ov_exc:
+            logger.debug("ledger override tagging failed: %s", _ov_exc)
     return validated
 
 
@@ -708,8 +725,14 @@ def _iv_rank_pct(sym):
     return None
 
 
-def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=None):
-    """Construct the prompt for the AI batch trade selector."""
+def _build_batch_prompt(candidates_data, portfolio_state, market_context,
+                        ctx=None, opportunities_out=None):
+    """Construct the prompt for the AI batch trade selector.
+
+    opportunities_out: optional list; when provided, it's extended with the
+    ledger's scored opportunity dicts so the caller can tag the AI's chosen
+    trades with ledger-RAR override metadata (decision #4). Non-breaking —
+    existing callers omit it."""
 
     max_pos_pct = getattr(ctx, "max_position_pct", 0.10) if ctx else 0.10
     max_positions = getattr(ctx, "max_total_positions", 10) if ctx else 10
@@ -1044,13 +1067,18 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     ledger_block = ""
     ledger_has_options = False
     try:
-        from opportunity_ledger import render_opportunity_ledger
+        from opportunity_ledger import build_opportunities, render_ledger_block
         regime = (market_context or {}).get("regime") if market_context else None
         equity_for_ledger = float(portfolio_state.get("equity") or 0)
-        ledger_block, ledger_has_options = render_opportunity_ledger(
+        _opps = build_opportunities(
             candidates_data or [], ctx, equity_for_ledger,
             iv_rank_lookup=_iv_rank_pct, regime=regime,
         )
+        ledger_block, ledger_has_options = render_ledger_block(_opps)
+        # Expose the scored opportunities so the caller (analyze_batch) can tag
+        # the AI's chosen trades with ledger-RAR override metadata (decision #4).
+        if opportunities_out is not None:
+            opportunities_out.extend(_opps)
     except (ImportError, KeyError, ValueError, AttributeError,
             TypeError, OSError, NameError) as _lg_exc:
         # AI-prompt enrichment; prompt continues without the ledger. Surface.

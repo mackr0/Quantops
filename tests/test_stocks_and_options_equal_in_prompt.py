@@ -116,8 +116,10 @@ class TestStocksAndOptionsEqualInPrompt:
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         with open(os.path.join(repo_root, "ai_analyst.py")) as f:
             ai_src = f.read()
-        assert "render_opportunity_ledger" in ai_src, (
-            "ai_analyst.py must build the risk-adjusted opportunity ledger."
+        assert ("build_opportunities" in ai_src
+                and "render_ledger_block" in ai_src), (
+            "ai_analyst.py must build the risk-adjusted opportunity ledger "
+            "(build_opportunities + render_ledger_block)."
         )
         assert 'f"{ledger_block}"' in ai_src or "{ledger_block}" in ai_src, (
             "The ledger block must appear in the prompt f-string body, not "

@@ -253,6 +253,35 @@ def _cached_option_premium(occ_symbol: str, side: str) -> float:
     return prem
 
 
+_QUOTE_CACHE: Dict[Any, Any] = {}
+_QUOTE_CACHE_TTL = 45.0  # seconds
+
+
+def _cached_option_quote(occ_symbol: str):
+    """Cached (bid, ask) for one option leg, or None when a two-sided market
+    isn't quotable. ONE fetch yields BOTH the mid (used as the leg premium) AND
+    the half-spread (used as the transaction cost), so `_price_option_rec` never
+    fetches the same leg's snapshot twice. Market data only — own-book safe."""
+    import time as _t
+    now = _t.time()
+    hit = _QUOTE_CACHE.get(occ_symbol)
+    if hit is not None and (now - hit[0]) < _QUOTE_CACHE_TTL:
+        return hit[1]
+    quote = None
+    try:
+        from client import _fetch_option_quote
+        q = _fetch_option_quote(occ_symbol)
+        if q:
+            bid, ask = q
+            if ask > 0 and bid > 0 and ask >= bid:
+                quote = (bid, ask)
+    except Exception as exc:
+        logger.debug("option quote fetch failed for %s: %s", occ_symbol, exc)
+        quote = None
+    _QUOTE_CACHE[occ_symbol] = (now, quote)
+    return quote
+
+
 def _price_option_rec(rec: Dict[str, Any]) -> None:
     """Attach real dollar max-loss/max-gain/breakeven to a VERTICAL-spread rec
     by pricing its two legs. Fail-open: on ANY failure keep the CONSERVATIVE
@@ -288,8 +317,15 @@ def _price_option_rec(rec: Dict[str, Any]) -> None:
         exp = _date.fromisoformat(rec["expiry"])
         occ_short = format_occ_symbol(rec["symbol"], exp, float(short_k), right)
         occ_long = format_occ_symbol(rec["symbol"], exp, float(long_k), right)
-        p_short = _cached_option_premium(occ_short, "sell")
-        p_long = _cached_option_premium(occ_long, "buy")
+        # ONE quote per leg → the mid (premium) AND the half-spread (cost), so
+        # we never fetch a leg's snapshot twice. Fall back to the premium
+        # fetch's richer one-sided logic only when a leg has no two-sided quote.
+        q_short = _cached_option_quote(occ_short)
+        q_long = _cached_option_quote(occ_long)
+        p_short = ((q_short[0] + q_short[1]) / 2.0 if q_short
+                   else _cached_option_premium(occ_short, "sell"))
+        p_long = ((q_long[0] + q_long[1]) / 2.0 if q_long
+                  else _cached_option_premium(occ_long, "buy"))
         if p_short <= 0 or p_long <= 0:
             return  # untrusted marks — keep width fallback
         net_prem = abs(p_short - p_long)  # per-share, positive
@@ -312,6 +348,15 @@ def _price_option_rec(rec: Dict[str, Any]) -> None:
             rec["entry_net_premium"] = round(net_prem * 100.0, 2)
             rec["legs"] = [{"occ": occ_short, "side": "sell"},
                            {"occ": occ_long, "side": "buy"}]
+            # REAL per-leg half-spread round-trip transaction cost (both legs,
+            # open + close) from the SAME two-sided quotes fetched above — the
+            # scorer prefers this over its conservative fixed per-leg fallback
+            # so a spread is charged its true cost, not under- or over-estimated.
+            if q_short and q_long:
+                hs_s = (q_short[1] - q_short[0]) / 2.0
+                hs_l = (q_long[1] - q_long[0]) / 2.0
+                rec["roundtrip_cost_per_contract"] = round(
+                    (hs_s + hs_l) * 100.0 * 2.0, 2)
     except Exception as exc:
         logger.debug("option rec pricing failed (fail-open, width fallback): "
                      "%s", exc)

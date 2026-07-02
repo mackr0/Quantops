@@ -2658,6 +2658,16 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                               "alt_data", "social", "last_prediction",
                               "earnings_warning", "track_record")
             }
+            # Ledger-RAR override metadata (decision #4): persist ON this real
+            # prediction so the override_scorecard can later measure whether the
+            # AI's overrides beat the number. NOT meta-model features (the
+            # `_ledger_` keys aren't in the extractor whitelist, so they're
+            # stored + queryable but never trained on).
+            if selected:
+                for _lk in ("_ledger_rar", "_ledger_best_rar",
+                            "_ledger_best_expr", "_ledger_is_override"):
+                    if _lk in selected:
+                        features_payload[_lk] = selected[_lk]
             # Include meta-signals separately (flattened)
             votes = c.get("votes", {})
             for strat_name, vote in votes.items():

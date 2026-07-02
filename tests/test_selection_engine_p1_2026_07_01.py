@@ -10,9 +10,19 @@ from __future__ import annotations
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
 
 import options_strategy_advisor as osa
+
+
+@pytest.fixture(autouse=True)
+def _no_live_option_quotes(monkeypatch):
+    # These tests drive pricing off patched _cached_option_premium; force the
+    # offline path (no live two-sided quote / network) so _price_option_rec
+    # uses the patched premium, not a real quote fetch.
+    monkeypatch.setattr(osa, "_cached_option_quote", lambda occ: None)
 
 
 def _rec(strategy="bull_put_spread", **strikes):

@@ -32,6 +32,8 @@ def _offline_options(monkeypatch):
     stream is reproducible without network/DB."""
     monkeypatch.setattr("options_strategy_advisor._cached_option_premium",
                         lambda occ, side: 2.0 if side == "sell" else 1.0)
+    monkeypatch.setattr("options_strategy_advisor._cached_option_quote",
+                        lambda occ: None)   # offline → premium fallback
     monkeypatch.setattr("options_strategy_advisor._own_book_held_underlyings",
                         lambda ctx: set())
     monkeypatch.setattr("options_strategy_advisor._options_budget_exhausted",

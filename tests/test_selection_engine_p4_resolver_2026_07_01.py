@@ -194,6 +194,8 @@ def test_option_open_is_a_distinct_meta_model_feature():
 def test_pipeline_prices_vetoed_spread(monkeypatch, _db):
     monkeypatch.setattr("options_strategy_advisor._cached_option_premium",
                         lambda occ, side: 2.0 if side == "sell" else 1.0)
+    monkeypatch.setattr("options_strategy_advisor._cached_option_quote",
+                        lambda occ: None)   # offline → premium fallback
     from pipelines.option import OptionPipeline
     ctx = SimpleNamespace(db_path=_db)
     proposal = {"symbol": "AAPL", "action": "MULTILEG_OPEN",

@@ -103,7 +103,19 @@ def _gather_profile_stats(
         "restored_strategies": [],
         "auto_strategy_transitions": [],
         "crisis_transitions": [],
+        "override_scorecard": None,
     }
+
+    # Selection-engine override audit (decision #4): over this profile's OWN
+    # resolved predictions, did the AI's ledger-RAR overrides beat the aligned
+    # picks? This is the "measure if they beat the number" readout. Own-book;
+    # fail-open — a missing scorecard must never break the digest.
+    try:
+        from opportunity_ledger import override_scorecard
+        stats["override_scorecard"] = override_scorecard(db_path)
+    except Exception as _osc_exc:
+        logger.debug("weekly summary: override scorecard unavailable for %s: %s",
+                     pid, _osc_exc)
 
     # --- per-profile DB queries ---
     conn = None
@@ -424,10 +436,14 @@ def render_html(summary: Dict[str, Any]) -> tuple:
 
     autonomy_html = _render_autonomy_summary(summary)
 
+    override_html = _render_override_audit(profiles)
+
     body = (
         _section("This Week at a Glance", headline)
         + _section("Autonomy Activity This Week", autonomy_html)
         + _section("Per-Profile Summary", profile_table)
+        + (_section("Ledger Overrides — Did the AI Beat the Number?",
+                    override_html) if override_html else "")
         + _section("Self-Tuning Changes", tuning_html)
         + _section("Strategy Deprecations & Restorations", decay_html)
         + _section("Auto-Strategy Lifecycle", auto_html)
@@ -441,6 +457,45 @@ def render_html(summary: Dict[str, Any]) -> tuple:
         body,
     )
     return subject, html
+
+
+def _render_override_audit(profiles: List[Dict[str, Any]]) -> str:
+    """Cross-profile ledger-override audit (decision #4): over all resolved
+    predictions, did the AI's overrides of the ledger's RAR ranking BEAT the
+    aligned picks? Aggregates each profile's `override_scorecard`. Empty string
+    until override data has accrued (no rows → nothing to show)."""
+    ov = {"n": 0, "wins": 0, "ret": 0.0}
+    al = {"n": 0, "wins": 0, "ret": 0.0}
+    for p in profiles:
+        sc = p.get("override_scorecard") or {}
+        for key, agg in (("override", ov), ("aligned", al)):
+            b = sc.get(key) or {}
+            agg["n"] += b.get("n", 0) or 0
+            agg["wins"] += b.get("wins", 0) or 0
+            agg["ret"] += b.get("ret_sum", 0.0) or 0.0
+    if ov["n"] == 0 and al["n"] == 0:
+        return ""
+
+    def _wr(a):
+        return f"{100.0 * a['wins'] / a['n']:.1f}%" if a["n"] else "—"
+
+    def _ar(a):
+        return f"{a['ret'] / a['n']:+.2f}%" if a["n"] else "—"
+
+    verdict = ""
+    if ov["n"] and al["n"]:
+        ov_wr = ov["wins"] / ov["n"]
+        al_wr = al["wins"] / al["n"]
+        verdict = (" — overrides <b>beat</b> the number"
+                   if ov_wr > al_wr else
+                   " — overrides <b>trailed</b> the number"
+                   if ov_wr < al_wr else " — overrides matched the number")
+    return (
+        f"<p>When the AI overrode the ledger's top risk-adjusted pick: "
+        f"<b>{ov['n']}</b> overrides at {_wr(ov)} win-rate ({_ar(ov)} avg) "
+        f"vs <b>{al['n']}</b> aligned at {_wr(al)} win-rate ({_ar(al)} avg)"
+        f"{verdict}.</p>"
+    )
 
 
 def _render_tuning_changes(profiles: List[Dict[str, Any]]) -> str:
