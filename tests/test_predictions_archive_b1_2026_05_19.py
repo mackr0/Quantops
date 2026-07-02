@@ -213,7 +213,10 @@ def test_archive_writes_jsonl_files_per_table(profile_db, tmp_path):
         archive_root=str(out_root),
         reset_timestamp="20260519_220000",
     )
-    assert counts == {"predictions": 3, "cycles": 2, "specialist_outcomes": 4}
+    # option_proposal_outcomes added 2026-07-01 (veto counterfactuals archived
+    # before resets); 0 rows on this fixture but the table is always dumped.
+    assert counts == {"predictions": 3, "cycles": 2, "specialist_outcomes": 4,
+                      "option_proposal_outcomes": 0}
 
     # Files exist on disk
     out_dir = out_root / "12" / "20260519_220000"

@@ -82,8 +82,9 @@ def archive_predictions(db_path: str, profile_id: int,
                          archive_root: str = "predictions_archive",
                          reset_timestamp: Optional[str] = None,
                          ) -> Dict[str, int]:
-    """Archive ai_predictions + ai_cycles + specialist_outcomes for one
-    profile to JSONL files under archive_root/{profile_id}/{ts}/.
+    """Archive ai_predictions + ai_cycles + specialist_outcomes +
+    option_proposal_outcomes (veto counterfactuals) for one profile to JSONL
+    files under archive_root/{profile_id}/{ts}/.
 
     Returns {table_name: rows_archived} so callers can verify the
     archive landed before wiping the source. Defensive: each table
@@ -116,6 +117,13 @@ def archive_predictions(db_path: str, profile_id: int,
             counts["specialist_outcomes"] = _dump_table_to_jsonl(
                 conn, "specialist_outcomes",
                 out_dir / "specialist_outcomes.jsonl",
+            )
+            # Selection-engine veto counterfactuals — the AI's proposed-then-
+            # vetoed spreads + their would-be P&L. High-value decision-quality
+            # data for the fine-tune corpus; archive it before a reset wipes it.
+            counts["option_proposal_outcomes"] = _dump_table_to_jsonl(
+                conn, "option_proposal_outcomes",
+                out_dir / "option_proposal_outcomes.jsonl",
             )
     except Exception as exc:
         logger.warning(

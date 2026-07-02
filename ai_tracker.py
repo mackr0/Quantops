@@ -816,7 +816,8 @@ def measure_horizon_outcomes(api=None, db_path=None,
 
 def build_training_dataset(db_path=None, min_horizons_required=1,
                             include_unresolved=False,
-                            include_tainted=False):
+                            include_tainted=False,
+                            include_veto_counterfactuals=True):
     """Return a list of per-prediction training rows ready for the
     fine-tune pipeline. This is the payoff of the multi-horizon
     outcomes schema — one call gives you a clean, trainable dataset
@@ -884,8 +885,9 @@ def build_training_dataset(db_path=None, min_horizons_required=1,
             f"""SELECT p.* FROM ai_predictions p{where_clause}
                 ORDER BY p.timestamp ASC"""
         ).fetchall()
-        if not pred_rows:
-            return []
+        # NOTE: no early return on empty pred_rows — a profile may have veto
+        # counterfactuals (appended after this block) even with zero resolved
+        # real predictions, and those must still reach the corpus.
 
         # Bulk-load all outcome rows in one query and bucket by
         # prediction_id. Avoids the N+1 query problem on a dataset
@@ -930,6 +932,11 @@ def build_training_dataset(db_path=None, min_horizons_required=1,
                     rule_votes = []
 
             out.append({
+                # Provenance: a REAL executed/observed prediction (as opposed to
+                # a veto counterfactual appended below). The fine-tune pipeline
+                # keys on is_real to weight/segregate modeled counterfactuals.
+                "source": "real",
+                "is_real": True,
                 "id": r["id"],
                 "timestamp": r["timestamp"],
                 "symbol": r["symbol"],
@@ -952,9 +959,54 @@ def build_training_dataset(db_path=None, min_horizons_required=1,
                 "online_meta_score": r["online_meta_score"]
                     if "online_meta_score" in r.keys() else None,
             })
-        return out
     finally:
         conn.close()
+
+    # Veto counterfactuals (selection-engine): the AI proposed these option
+    # spreads, its own specialists vetoed them, and they resolved to a TRUE
+    # would-be P&L. Rich decision-quality signal (was the rejected idea good?),
+    # appended as EXPLICITLY-LABELED counterfactuals — source="veto_counter
+    # factual"/is_real=False — from a table physically separate from
+    # ai_predictions, so they never contaminate the real-trade rows above while
+    # still reaching the fine-tune corpus. Own-book; fail-open.
+    if include_veto_counterfactuals:
+        try:
+            from journal import resolved_veto_counterfactuals
+            for r in resolved_veto_counterfactuals(db_path):
+                out.append({
+                    "source": "veto_counterfactual",
+                    "is_real": False,
+                    "timestamp": r.get("timestamp"),
+                    "symbol": r.get("symbol"),
+                    "predicted_signal": "MULTILEG_OPEN",
+                    "prediction_type": "option_open",
+                    "strategy_type": r.get("strategy"),
+                    "confidence": r.get("confidence"),
+                    "veto_reason": r.get("veto_reason"),
+                    "features": {
+                        "strategy": r.get("strategy"),
+                        "sector": r.get("sector"),
+                        "max_loss_per_contract": r.get("max_loss_per_contract"),
+                        "max_gain_per_contract": r.get("max_gain_per_contract"),
+                        "breakeven": r.get("breakeven"),
+                        "entry_net_premium": r.get("entry_net_premium"),
+                        "lo_strike": r.get("lo_strike"),
+                        "hi_strike": r.get("hi_strike"),
+                        "expiry": r.get("expiry"),
+                    },
+                    # would-be outcome (modeled intrinsic-at-expiry P&L)
+                    "outcomes": {"wouldbe": {
+                        "outcome_class": r.get("wouldbe_outcome"),
+                        "wouldbe_pnl": r.get("wouldbe_pnl"),
+                    }},
+                    "resolved_at": r.get("resolved_at"),
+                    "prompt_text": None,
+                    "raw_response_json": None,
+                })
+        except Exception as _vc_exc:
+            logger.debug("veto counterfactuals unavailable for training "
+                         "dataset (fail-open): %s", _vc_exc)
+    return out
 
 
 def _resolve_one(prediction, current_price):

@@ -1572,6 +1572,35 @@ def option_veto_quality_counts(db_path):
         return []
 
 
+def resolved_veto_counterfactuals(db_path):
+    """RESOLVED vetoed option proposals as would-be training examples: the AI
+    proposed the spread, the specialists vetoed it, and it resolved to a TRUE
+    would-be P&L. Returns a list of dicts for the fine-tune corpus builder.
+    Own-book; [] on any error (fail-open). These are COUNTERFACTUALS (modeled
+    intrinsic-at-expiry P&L, NOT real fills) — the caller MUST tag them so the
+    training pipeline never mistakes them for real executed trades."""
+    if not db_path:
+        return []
+    try:
+        with closing(_get_conn(db_path)) as conn:
+            rows = conn.execute(
+                "SELECT timestamp, symbol, strategy, sector, confidence, "
+                "       veto_reason, entry_net_premium, max_loss_per_contract, "
+                "       max_gain_per_contract, breakeven, lo_strike, hi_strike, "
+                "       expiry, wouldbe_outcome, wouldbe_pnl, resolved_at "
+                "FROM option_proposal_outcomes "
+                "WHERE vetoed = 1 AND status = 'resolved' "
+                "  AND wouldbe_outcome IS NOT NULL "
+                "ORDER BY timestamp ASC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception as exc:
+        import logging as _logging
+        _logging.getLogger(__name__).debug(
+            "resolved_veto_counterfactuals unavailable (fail-open): %s", exc)
+        return []
+
+
 def open_options_capital_at_risk(db_path=None) -> float:
     """Aggregate options CAPITAL-AT-RISK for this profile's OWN book, in $.
 
