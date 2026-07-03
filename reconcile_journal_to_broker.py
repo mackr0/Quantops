@@ -325,6 +325,214 @@ def _classify_short_phantom(api, row, broker_qty, used_cover_ids):
     }
 
 
+def _own_exit_fills_explain(api, conn, db_path, symbol: str,
+                             entry_side: str, memo: dict) -> bool:
+    """True when the symbol's phantom-close state is FULLY explained by
+    this profile's OWN verified exit fills — i.e. our own book is
+    self-consistently FLAT and every in-flight credit is broker-
+    confirmed; the only anomaly is the entry rows' terminal flip
+    lagging the exit fill by up to a sweep interval.
+
+    Guards the orphan_close safety-net halt against the entry-flip-lag
+    race (2026-07-02): p202 MSFT's own STRONG_SELL exit was journaled
+    14:22:35, the entry flip lagged, and the safety net halted the
+    whole profile at 14:24:31 anyway (VZ: same class via a trailing-
+    stop fill) — 21 fleet halt events in one day, each freezing ALL
+    trading on the profile for 25s-4min.
+
+    The check is SYMBOL-LEVEL ARITHMETIC against the system's own
+    position truth, not per-row existence (a single exit row must
+    never "explain" two phantom lots, and a resting UNFILLED
+    protective must never explain an externally-closed position):
+
+        suppress  iff  adjusted_own_net == 0
+                  AND  every gvp-credited exit row is broker-verified
+                       FILLED on OUR OWN order_id (aggregated per
+                       broker order — duplicate journal rows sharing
+                       one order_id are one fill, not two)
+                  AND  at least one verified own-exit fill exists
+                       (a corrupt journal whose offsetting lots net
+                       to zero with NO exit evidence still halts)
+
+    where own_net comes from get_virtual_positions (the canonical
+    FIFO), the candidate predicate is the COMPLEMENT of gvp's dead
+    statuses so it can never drift from what j_net credits, verified
+    protective fills (pending_protective, and for SHORTS the
+    side='buy' protective shape bracket_orders actually writes)
+    adjust the net toward flat, and 'closed' rows newer than the
+    oldest open entry (the phantom-closed-at-submit legacy class) are
+    verified too. Replace chains (Alpaca silently replaces trailing
+    stops) are walked forward on our own ids. The criterion is
+    deliberately OWN-BOOK ONLY — never the conduit's aggregate qty,
+    which siblings share; aggregate parity is the decomposition
+    gate's job.
+
+    Only OUR OWN order_ids are ever queried: no fuzzy matching, no
+    sibling attribution (A3 intact). Any unverifiable row, non-exit
+    broker order, arithmetic residue, or error → False, and the
+    safety net halts (fail-CLOSED). Memoized per (symbol, direction)
+    for the pass so N phantom lots of one symbol cost one
+    evaluation."""
+    is_short = (entry_side or "").lower() == "short"
+    key = (symbol, is_short)
+    if key in memo:
+        return memo[key]
+    result = False
+    try:
+        # Canonical journal net position (own DB, own FIFO), computed
+        # once per pass. Option positions keep their OCC key, so the
+        # plain-symbol lookup is stock-only by construction.
+        vpos = memo.get("__vpos__")
+        if vpos is None:
+            from journal import get_virtual_positions
+            vpos = {}
+            for p in get_virtual_positions(db_path=db_path):
+                if p["occ_symbol"]:
+                    continue
+                vpos[(p["symbol"] or "").upper()] = float(p["qty"] or 0)
+            memo["__vpos__"] = vpos
+        j_net = vpos.get((symbol or "").upper(), 0.0)
+
+        # OWN exit-evidence rows whose fill must be verified. The
+        # predicate is the COMPLEMENT of get_virtual_positions' dead
+        # set — anything gvp could credit (or a protective placeholder
+        # whose verified fill adjusts the net) is selected, so the
+        # candidate set can never silently drift from what j_net
+        # counts (an unlisted status like auto_reconciled_phantom_
+        # close must be VERIFIED, not ignored). Stock rows only
+        # (occ_symbol IS NULL — option legs are contracts, not shares,
+        # and are owned by reconcile_option_orphans), clean rows only
+        # (data_quality IS NULL). 'closed' rows older than every open
+        # entry are settled history — their FIFO consumption is
+        # already inside j_net. SHORT positions include side='buy'
+        # rows: protectives for shorts are journaled side='buy'
+        # (bracket_orders close_side), and gvp never nets buys
+        # against short lots (closed buys are dropped unconsumed), so
+        # their broker-verified fills adjust like pending_protective.
+        exit_sides = ("'cover'", "'buy'") if is_short else ("'sell'",)
+        broker_exit_side = "buy" if is_short else "sell"
+        cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(trades)").fetchall()}
+        occ_clause = " AND occ_symbol IS NULL" if "occ_symbol" in cols \
+            else ""
+        dq_clause = " AND data_quality IS NULL" if "data_quality" in cols \
+            else ""
+        oldest_open = conn.execute(
+            "SELECT MIN(timestamp) FROM trades WHERE symbol = ? "
+            "AND side IN ('buy', 'short') "
+            "AND COALESCE(status,'open') = 'open'" + occ_clause + dq_clause,
+            (symbol,),
+        ).fetchone()[0]
+        rows = conn.execute(
+            "SELECT order_id, side, qty, "
+            "COALESCE(status,'open') AS status "
+            "FROM trades WHERE symbol = ? "
+            f"AND side IN ({', '.join(exit_sides)}) "
+            "AND COALESCE(status,'open') NOT IN "
+            "    ('canceled', 'expired', 'rejected', 'done_for_day') "
+            "AND (COALESCE(status,'open') != 'closed' "
+            "     OR datetime(timestamp) >= datetime(?))"
+            + occ_clause + dq_clause,
+            (symbol, oldest_open or ""),
+        ).fetchall()
+
+        # Aggregate by broker order_id FIRST: duplicate journal rows
+        # sharing one order_id (a documented live race — the bracket-
+        # child exemption + the A0 minimal-INSERT fallback are both
+        # second writers) must be explained by ONE broker fill, never
+        # verified independently against the same fill twice.
+        by_order: dict = {}
+        all_verified = True
+        for row in rows:
+            side_r = (row["side"] or "").lower()
+            status_r = row["status"]
+            if status_r == "pending_protective":
+                bucket = "vpp"      # not credited in j_net
+            elif is_short and side_r == "buy":
+                if status_r == "closed":
+                    bucket = "vpp"  # gvp drops unconsumed closed buys
+                else:
+                    # a live long-entry lot coexisting with our short
+                    # — not exit evidence; arithmetic can't be trusted
+                    all_verified = False
+                    break
+            else:
+                bucket = "credited"  # gvp credits full journal qty
+            oid = row["order_id"]
+            if not oid:
+                if bucket == "credited":
+                    all_verified = False  # credited but unverifiable
+                    break
+                continue  # id-less placeholder: no credit, no fill
+            agg = by_order.setdefault(oid, {"credited": 0.0, "vpp": False})
+            if bucket == "credited":
+                agg["credited"] += float(row["qty"] or 0)
+            else:
+                agg["vpp"] = True
+
+        v_pp = 0.0
+        total_verified_fill = 0.0
+        if all_verified:
+            for oid, agg in by_order.items():
+                # walk_replace_chain_forward returns the row's own
+                # order when it's already terminal (depth 0) and
+                # follows replaced_by on OUR ids otherwise.
+                order, _depth = walk_replace_chain_forward(api, oid)
+                if order is None:
+                    all_verified = False  # unverifiable → halt
+                    break
+                o_side = (getattr(order, "side", "") or "").lower()
+                if o_side != broker_exit_side:
+                    # the journal row points at a non-exit broker
+                    # order (e.g. a synthesized row carrying an entry
+                    # id) — never fill-evidence for a close. A
+                    # side-less order object is unverifiable, not a
+                    # pass (fail-CLOSED).
+                    all_verified = False
+                    break
+                filled = float(getattr(order, "filled_qty", 0) or 0)
+                if agg["credited"] > 0 and \
+                        filled < agg["credited"] - 1e-6:
+                    # j_net credits these rows' FULL journal qty (gvp
+                    # skips only qty<=0/price<=0 rows, which fail
+                    # toward halt here) — trust needs a full fill
+                    all_verified = False
+                    break
+                total_verified_fill += filled
+                if agg["vpp"]:
+                    # fill explains the credited qty first; only the
+                    # remainder adjusts the net (never journal qty —
+                    # a replaced-down protective fills less than the
+                    # row says)
+                    v_pp += max(0.0, filled - agg["credited"])
+
+        if all_verified:
+            # OWN-BOOK criterion: suppress only when OUR book is
+            # fully self-explained — adjusted own net == 0 AND at
+            # least one broker-verified own-exit FILL exists. The
+            # fill floor blocks vacuous truth: a corrupt journal
+            # whose offsetting lots (e.g. a pre-entry oversell
+            # remnant, or a zombie buy+short pair) net to zero with
+            # NO exit evidence must still halt for operator review —
+            # every legitimate flap has a filled own exit by
+            # definition. Never compare against the conduit's
+            # AGGREGATE qty: on a shared account a sibling's holding
+            # could mask our genuinely-missing shares (false
+            # suppress) or a sibling's short could force a needless
+            # halt. Aggregate parity belongs to the decomposition
+            # gate.
+            adjusted = j_net + v_pp if is_short else j_net - v_pp
+            result = abs(adjusted) <= 1e-3 and total_verified_fill > 1e-9
+    except Exception as exc:
+        logger.warning(
+            "own-exit-fill check failed for %s (%s) — treating as "
+            "unexplained (safety net will halt)", symbol, exc,
+        )
+        result = False
+    memo[key] = result
+    return result
+
+
 def _all_journal_sell_order_ids(profile_ids: Iterable[int]) -> set:
     """Collect every order_id referenced by a SELL or COVER row across
     every profile's journal. Used to dedup the fallback match path so
@@ -1344,6 +1552,11 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
         used_sell_ids: set = set(cross_profile_used_ids or set())
         used_cover_ids: set = set(cross_profile_used_ids or set())
 
+        # Per-pass memo for the own-exit-fill flap guard: one
+        # get_virtual_positions snapshot + one verdict per
+        # (symbol, entry_side), shared across all phantom lots.
+        _own_exit_memo: dict = {}
+
         for r in rows:
             # Option legs are owned by reconcile_option_orphans (above)
             # + the expiry sweep + fill-confirmation — skip them here so
@@ -1547,6 +1760,36 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
                         "live journal (closed after the snapshot) — "
                         "not an orphan, skipping.",
                         sym, str(_oc_oid)[:8],
+                    )
+                    continue
+                # OWN-EXIT-IN-FLIGHT check (2026-07-02, MSFT/VZ flap
+                # class): the entry row's terminal flip can lag its
+                # exit fill by up to a sweep interval (measured live:
+                # p202 MSFT — own STRONG_SELL journaled 14:22:35,
+                # entry flip lagged, safety net halted the profile at
+                # 14:24:31 anyway; VZ same via a trailing-stop fill).
+                # If the symbol's journal-vs-broker state is FULLY
+                # explained by this profile's OWN broker-verified exit
+                # fills (symbol-level arithmetic against
+                # get_virtual_positions truth — see the helper), the
+                # broker-flat close is an in-flight own exit whose
+                # entry flip is lagging, not an orphan. Deterministic
+                # own-journal + own-order-id evidence ONLY: no fuzzy
+                # matching, no sibling attribution — the A3 tripwire
+                # for genuinely unexplained closes (external / manual
+                # / sibling, a resting UNFILLED protective on an
+                # externally-closed position, or one exit row "shared"
+                # across two phantom lots) is untouched. The normal
+                # sweep completes the entry flip; the next pass
+                # verifies clean.
+                if _own_exit_fills_explain(api, conn, db_path, sym,
+                                           side, _own_exit_memo):
+                    logger.info(
+                        "Reconcile: %s broker-flat close is explained "
+                        "by this profile's OWN in-flight exit row "
+                        "(entry flip lagging the fill) — not an "
+                        "orphan, no halt; sweep completes the flip.",
+                        sym,
                     )
                     continue
                 actions["orphan_close"].append({

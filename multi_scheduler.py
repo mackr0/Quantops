@@ -1641,7 +1641,30 @@ def _task_update_fills(ctx):
                 and _occ_net_position(
                     conn, trade["occ_symbol"], trade["id"]) < -1e-6
             )
-            if ((trade["status"] in ("pending_fill", "pending_protective")
+            # STOCK 'open' exits included 2026-07-02: trader journals
+            # an exit with status='open' when its pnl estimate is
+            # unavailable at submit. Those rows were polled here
+            # (fill_price IS NULL) but never matched this branch, so
+            # their fill got a fill_price backfill and then fell out
+            # of the query forever — exit confirmed at the broker,
+            # entry lot open in the journal for good. Position math
+            # is unchanged (get_virtual_positions credits 'open' and
+            # 'closed' exits identically) and pnl is trued by
+            # recompute_realized_pnl like every other NULL-pnl exit.
+            # The filled_avg_price gate above means only genuinely
+            # FILLED orders reach here, so a resting 'open' exit is
+            # untouched. STOCK-ONLY (occ_symbol NULL): an option
+            # sell-to-open leg is also side='sell' status='open' —
+            # flipping IT to 'closed' on fill would re-create the
+            # 2026-06-05 broker_orphan drift class this loop's occ
+            # guards exist to prevent.
+            _stock_open_exit = (
+                (trade["status"] or "open") == "open"
+                and not trade["occ_symbol"]
+            )
+            if (((trade["status"] in ("pending_fill",
+                                      "pending_protective")
+                    or _stock_open_exit)
                     and trade["side"] in ("sell", "cover"))
                     or _opt_buy_to_close):
                 conn.execute(
