@@ -38,6 +38,7 @@ import os
 import sqlite3
 import sys
 from contextlib import closing
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -77,10 +78,17 @@ def journal_db(tmp_path):
     return db
 
 
-def _fake_api_with_order_id(order_id: str = "test-order-123"):
+def _fake_api_with_order_id(order_id: str = "test-order-123",
+                            broker_qty=100):
     """Build a MagicMock Alpaca API whose submit_order returns an
-    object with .id == order_id."""
+    object with .id == order_id.
+
+    `broker_qty` is the signed live broker position backing the
+    protective (the 2026-07-07 broker-backing gate reads it via
+    get_position before any placement). Mirrors the real Alpaca
+    surface: a Position object with .qty as a string."""
     api = MagicMock()
+    api.get_position.return_value = SimpleNamespace(qty=str(broker_qty))
     order = MagicMock()
     order.id = order_id
     api.submit_order.return_value = order
@@ -126,7 +134,7 @@ class TestPlacementJournals:
 
     def test_take_profit_writes_pending_row(self, journal_db):
         from bracket_orders import submit_protective_take_profit
-        api = _fake_api_with_order_id("tp-oid-1")
+        api = _fake_api_with_order_id("tp-oid-1", broker_qty=50)
         out = submit_protective_take_profit(
             api, "MSFT", qty=50, side="sell",
             limit_price=420.0, db_path=journal_db,
@@ -140,7 +148,7 @@ class TestPlacementJournals:
 
     def test_trailing_stop_writes_pending_row_with_null_price(self, journal_db):
         from bracket_orders import submit_protective_trailing
-        api = _fake_api_with_order_id("trail-oid-1")
+        api = _fake_api_with_order_id("trail-oid-1", broker_qty=25)
         out = submit_protective_trailing(
             api, "NVDA", qty=25, side="sell",
             trail_percent=5.0, db_path=journal_db,
@@ -161,7 +169,8 @@ class TestPlacementJournals:
         """For a short position, the protective stop is a BUY-to-cover.
         Journal row should reflect side='buy'."""
         from bracket_orders import submit_protective_stop
-        api = _fake_api_with_order_id("short-stop-oid")
+        # Broker is SHORT 50 TSLA — the buy-to-cover protective is backed
+        api = _fake_api_with_order_id("short-stop-oid", broker_qty=-50)
         submit_protective_stop(
             api, "TSLA", qty=50, side="buy",  # buy-to-cover
             stop_price=320.0, db_path=journal_db,
@@ -177,7 +186,7 @@ class TestPlacementJournals:
 class TestEntryTradeIdLinkage:
     def test_reason_includes_entry_trade_id_when_provided(self, journal_db):
         from bracket_orders import submit_protective_trailing
-        api = _fake_api_with_order_id("trail-with-entry")
+        api = _fake_api_with_order_id("trail-with-entry", broker_qty=25)
         submit_protective_trailing(
             api, "NVDA", qty=25, side="sell",
             trail_percent=5.0, db_path=journal_db,
@@ -190,7 +199,7 @@ class TestEntryTradeIdLinkage:
         """Back-compat: callers that don't pass entry_trade_id still
         get the row, just without the linkage in the reason."""
         from bracket_orders import submit_protective_trailing
-        api = _fake_api_with_order_id("trail-no-entry")
+        api = _fake_api_with_order_id("trail-no-entry", broker_qty=25)
         submit_protective_trailing(
             api, "NVDA", qty=25, side="sell",
             trail_percent=5.0, db_path=journal_db,
@@ -211,6 +220,9 @@ class TestOrderFailureNoJournal:
         references a non-existent order."""
         from bracket_orders import submit_protective_stop
         api = MagicMock()
+        # Position backs the order — the failure under test is the broker
+        # reject at submit time, not a backing-gate refusal.
+        api.get_position.return_value = SimpleNamespace(qty="100")
         api.submit_order.side_effect = Exception("broker error")
         out = submit_protective_stop(
             api, "AAPL", qty=100, side="sell",

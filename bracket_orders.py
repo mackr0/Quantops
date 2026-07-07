@@ -52,6 +52,91 @@ def _is_htb_rejection(exc) -> bool:
     )
 
 
+def _is_occ_symbol(symbol: str) -> bool:
+    """OCC option symbols look like UNDERLYING + 6-digit date + P/C.
+    Same heuristic as order_guard's option bypass."""
+    s = (symbol or "").upper()
+    return len(s) > 6 and any(c.isdigit() for c in s[1:7])
+
+
+def _broker_position_qty(api, symbol: str):
+    """Signed broker position qty for the CONDUIT (aggregate, read-only)
+    — 0.0 when flat (404), None when unreadable (caller decides the
+    fail direction; never guess a position on an API error)."""
+    try:
+        pos = api.get_position(symbol)
+        return float(getattr(pos, "qty", 0) or 0)
+    except Exception as exc:
+        msg = str(exc).lower()
+        if "position does not exist" in msg or \
+                getattr(exc, "status_code", None) == 404:
+            return 0.0
+        logger.warning(
+            "broker position read failed for %s: %s", symbol, exc)
+        return None
+
+
+def _broker_backs_protective(api, symbol: str, side: str, qty) -> tuple:
+    """(backed, detail) — may a protective for `qty` shares rest at the
+    broker without risk of firing into a position that isn't there?
+
+    2026-07-07 wipe lesson (accounts 52/53/54): Alpaca zeroed positions
+    and cash overnight with journals intact; the sweep re-armed sell
+    stops from journal faith and the resting ones fired into the flat
+    book, manufacturing real shorts (MARA −6,501, RIVN −690, ...). The
+    oversell door can't help — it runs journal-only by design, and a
+    resting order can't be vetoed at all, only never placed.
+
+    Backing rule — POSITION-ONLY, deliberately: a sell protective
+    requires the conduit's live long qty >= this order's qty; a buy
+    protective (short cover) requires short coverage (position <=
+    -qty). Resting-order reservations are NOT counted: on a shared
+    conduit the resting sells include SIBLING profiles' slice stops,
+    and blocking our placement on a sibling's orders is exactly the
+    cross-profile interference the 2026-06-09 per-profile rewrite
+    killed (pinned by test_protective_per_profile_isolation) — it
+    would also refuse every replace/tighten while our own old stop
+    rests. Per-slice over-arming has its own owner (one sell-side
+    order per slice, the 5b04416 double-reservation fix). This gate
+    owns ONE thing: no protective may be born when the position it
+    protects does not exist at the broker (the wipe shape reads
+    position 0/flipped, so everything refuses there).
+
+    Fail-CLOSED toward never-creating-involuntary-positions: an
+    unreadable broker position refuses placement (the polling exit
+    check backstops the position for the cycle; the sweep retries
+    next pass). Known accepted window: a PARTIALLY-filled entry (say
+    40 of 100 filled) refuses the full-qty stop until the entry
+    completes — the 40 live shares ride on polling exits for those
+    cycles. Refusal-not-trimming is deliberate (sizing a stop to the
+    partial would mask the difference between a filling entry and
+    real drift — the no-size-to-available rule).
+    """
+    try:
+        want = float(qty or 0)
+        pos_qty = _broker_position_qty(api, symbol)
+        if pos_qty is None:
+            return (False, "broker position unreadable — not arming on "
+                    "unknown state; retried next sweep")
+        if side == "sell":
+            backed = pos_qty >= want - 1e-6
+        else:  # buy protective covers a short
+            backed = pos_qty <= -want + 1e-6
+        if backed:
+            return (True, "ok")
+        return (False, (
+            f"broker does not back a {side} protective of {want:g} "
+            f"{symbol}: position={pos_qty:g}. NOT armed — a stop "
+            "resting beyond the live position fires into thin air and "
+            "mints an involuntary short/long (2026-07-07 wipe class). "
+            "Polling exits backstop this cycle; the sweep retries "
+            "next pass."
+        ))
+    except Exception as exc:
+        return (False, f"backing check failed ({type(exc).__name__}: "
+                f"{exc}) — not arming on unknown state")
+
+
 def _submit_protective(api, kwargs: dict, db_path, symbol: str, describe: str):
     """Submit a protective order GTC, retrying as a DAY order when the
     broker refuses the GTC because the asset is hard-to-borrow.
@@ -69,7 +154,22 @@ def _submit_protective(api, kwargs: dict, db_path, symbol: str, describe: str):
     ``describe`` is the human phrase for logs, e.g.
     ``trailing stop for SPCX (qty=106, trail=5.00%)``. Returns the broker
     order object, or None if it could not be placed.
+
+    BROKER-BACKING GATE (2026-07-07): every protective placement first
+    verifies the conduit's live position actually backs it (see
+    _broker_backs_protective). Protectives historically bypassed the
+    oversell door's checks; after the account wipe that bypass was the
+    short factory. Stock symbols only — option legs carry Alpaca-side
+    position_intent enforcement.
     """
+    _side = (kwargs.get("side") or "").lower()
+    if _side in ("sell", "buy") and not _is_occ_symbol(symbol):
+        backed, detail = _broker_backs_protective(
+            api, symbol, _side, kwargs.get("qty"))
+        if not backed:
+            logger.warning(
+                "Protective %s NOT placed — %s", describe, detail)
+            return None
     try:
         return api.submit_order(time_in_force="gtc", **kwargs)
     except Exception as exc:
@@ -1857,15 +1957,39 @@ def cancel_orphaned_protective_orders(api, db_path: str) -> dict:
                     if not oid:
                         continue
                     out["checked"] += 1
-                    if _broker_status(oid) == "filled":
+                    _st = _broker_status(oid)
+                    if _st == "filled":
                         # The protective fired and closed the slice;
                         # leave the pointer for the fill state machine.
                         out["filled_kept"] += 1
                         continue
-                    # Still working (or unconfirmed) — cancel it and
-                    # clear the stale pointer so it can never fire on a
-                    # flat position.
-                    cancel_protective_stop(api, oid)
+                    if _st not in _TERMINAL_UNFILLED_STATUSES:
+                        # Still working (or unconfirmed) — cancel, then
+                        # VERIFY before touching the journal. The
+                        # cancel helper's bool is not proof (its
+                        # lenient matcher reads 'not cancelable' and
+                        # 'filled' errors as success); clearing the
+                        # pointer on an unconfirmed cancel leaves the
+                        # order resting WITH ITS TEETH while the
+                        # journal forgets it (2026-07-07 wipe-class
+                        # review, C3).
+                        cancel_protective_stop(api, oid)
+                        _st = _broker_status(oid)
+                        if _st == "filled":
+                            out["filled_kept"] += 1
+                            continue
+                        if _st == "" or \
+                                _st not in _TERMINAL_UNFILLED_STATUSES:
+                            logger.error(
+                                "cancel_orphaned_protective_orders: %s "
+                                "— cancel of %s on closed entry #%s "
+                                "NOT yet broker-confirmed (status=%r); "
+                                "pointer kept, retrying next cycle.",
+                                row["symbol"], str(oid)[:8], row["id"],
+                                _st,
+                            )
+                            continue
+                    # CONFIRMED terminal-unfilled — safe to clear.
                     out["canceled"] += 1
                     cancelled_oids.add(oid)
                     conn.execute(
@@ -1938,8 +2062,26 @@ def cancel_orphaned_protective_orders(api, db_path: str) -> dict:
                     out["filled_kept"] += 1
                     continue
                 if status not in _TERMINAL_UNFILLED_STATUSES:
-                    # Still working (or unconfirmed) — cancel it.
+                    # Still working (or unconfirmed) — cancel it, then
+                    # VERIFY before flipping the row: an unconfirmed
+                    # cancel with a terminal row = the order rests
+                    # untracked and can still fire into a flat
+                    # position (the 2026-07-07 short factory, C3).
                     cancel_protective_stop(api, oid)
+                    status = _broker_status(oid)
+                    if status == "filled":
+                        out["filled_kept"] += 1
+                        continue
+                    if status == "" or \
+                            status not in _TERMINAL_UNFILLED_STATUSES:
+                        logger.error(
+                            "cancel_orphaned_protective_orders: %s — "
+                            "cancel of pending_protective #%s (order "
+                            "%s) NOT yet broker-confirmed (status=%r); "
+                            "row kept, retrying next cycle.",
+                            sym, prow["id"], str(oid)[:8], status,
+                        )
+                        continue
                     out["canceled"] += 1
                     logger.warning(
                         "cancel_orphaned_protective_orders: %s — "
@@ -1947,9 +2089,10 @@ def cancel_orphaned_protective_orders(api, db_path: str) -> dict:
                         "stock position; cancelled the resting order.",
                         sym, prow["id"], str(oid)[:8],
                     )
-                # Mark the row terminal either way (cancelled now, or
-                # already terminal at the broker). pnl = NULL: a
-                # terminal protective realized nothing (p121 invariant).
+                # Mark the row terminal (broker-confirmed cancelled
+                # now, or already terminal at the broker). pnl = NULL:
+                # a terminal protective realized nothing (p121
+                # invariant).
                 term = status if status in _TERMINAL_UNFILLED_STATUSES \
                     else "canceled"
                 conn.execute(
@@ -1963,6 +2106,323 @@ def cancel_orphaned_protective_orders(api, db_path: str) -> dict:
     except Exception as exc:
         logger.warning(
             "cancel_orphaned_protective_orders failed (%s: %s)",
+            type(exc).__name__, exc,
+        )
+    return out
+
+
+def revoke_unbacked_protective_orders(api, db_path: str) -> dict:
+    """Cancel THIS profile's resting protective orders whose broker
+    position has VANISHED while the journal entry is still OPEN — the
+    2026-07-07 wipe shape, and the exact complement of
+    cancel_orphaned_protective_orders (which handles journal-closed /
+    journal-flat; this handles broker-flat-with-journal-open).
+
+    THE INCIDENT: Alpaca zeroed positions and cash on all three
+    conduits overnight with journals intact (second no-trail wipe in
+    25 days). The resting GTC sell stops that legitimately protected
+    Monday's longs fired into Tuesday's flat book and manufactured
+    real shorts (MARA −6,501, RIVN −690, CRCL −654, ...). Cancelling
+    by hand was whack-a-mole — the sweep re-armed 10 stops within one
+    cycle — because nothing verified BROKER backing, only journal
+    state.
+
+    Revocation rule, deliberately race-safe:
+      • FULL-wipe shape only: journal holds an OPEN long (short) and
+        the broker position is <= 0 (>= 0). Nothing backs ANY resting
+        sell (buy) protective, so cancelling every OWN one is safe —
+        there is no position left to protect.
+      • ENTRY-EVIDENCE required: a wipe is declared only when at least
+        one open entry's OWN order is VERIFIED FILLED at the broker (a
+        position provably existed) and NO entry order is still
+        in-flight. A pending bracket entry has the identical journal
+        shape — open row, pending_protective children, broker flat —
+        because the position doesn't exist YET; cancelling its held
+        children would strip protection from a position about to
+        exist. Unverifiable entries (no order_id, lookup failure) →
+        skip, never cancel on a guess.
+      • Own-exit-in-flight exception: if this profile's OWN verified
+        exit fills explain the flatness (we just exited; entry flip
+        lagging), this is NOT a wipe — skip; cancel-on-close cleans up
+        after the reconcile flips the rows.
+      • PARTIAL mismatch (broker holds some, less than journal): DON'T
+        cancel — an in-flight own fill can look identical for a cycle,
+        and cancelling a live protective by mistake is the naked-
+        position class. The integrity gate owns halting on drift; the
+        submit-time gate in _submit_protective refuses NEW over-arming.
+      • Broker unreadable: skip the symbol (leaving a resting order
+        one more cycle is the pre-incident status quo; cancelling on
+        unknown state could strip live protection during an API blip).
+      • CANCEL-CONFIRMED before any journal mutation: pointers are
+        NULLed and rows terminated only after a re-read shows the
+        order terminal-unfilled at the broker. An unconfirmed cancel
+        leaves ALL state intact and retries next pass — mutating on
+        the cancel helper's lenient bool would let the order rest
+        WITH ITS TEETH while the journal forgets it exists.
+
+    Per-profile, own-order-id only (A1/order-id-truth): every id
+    touched comes from THIS profile's own journal (pending_protective
+    rows + protective pointers on OPEN entries). The broker position
+    is read at AGGREGATE level as a safety floor only — never
+    attributed to a profile. Aggregate-sign poisoning by a SIBLING's
+    opposite-direction position in the same symbol (round-1 review
+    H1) cannot arise through order flow: Alpaca enforces cross-
+    direction at the ACCOUNT level ("cannot open a long buy while a
+    short sell order..." — the documented cross-profile-conflict
+    rejection in trade_pipeline), so one conduit never simultaneously
+    carries a long and a short book in one symbol; the entry-evidence
+    requirement below covers the wipe-created residue. Already-FILLED protectives keep their
+    rows (fill state machine). Terminal rows get pnl=NULL (p121
+    invariant). A revocation writes an audit alert so /issues surfaces
+    the wipe loudly; the state is self-limiting (next pass finds no
+    resting ids, so no alert spam once cancels CONFIRM; an
+    unconfirmed/uncancelable zombie stays alert-loud every pass by
+    design — a resting order with teeth must never go quiet).
+
+    Returns {"symbols_checked", "canceled", "filled_kept",
+    "rows_terminated", "alerts", "skipped_unreadable",
+    "skipped_own_exit"}.
+    """
+    out = {"symbols_checked": 0, "canceled": 0, "filled_kept": 0,
+           "rows_terminated": 0, "alerts": 0, "skipped_unreadable": 0,
+           "skipped_own_exit": 0, "cancel_pending": 0,
+           "symbols_revoked": 0}
+    if not db_path:
+        return out
+    _PTR_COLS = ("protective_stop_order_id",
+                 "protective_tp_order_id",
+                 "protective_trailing_order_id")
+    try:
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+
+            # Open stock entries by direction. 'long' entries are
+            # protected by sell-side orders, 'short' by buy-side.
+            try:
+                open_entries = conn.execute(
+                    "SELECT id, symbol, side, qty, order_id, "
+                    "       protective_stop_order_id, "
+                    "       protective_tp_order_id, "
+                    "       protective_trailing_order_id "
+                    "FROM trades "
+                    "WHERE COALESCE(status,'open') = 'open' "
+                    "  AND occ_symbol IS NULL "
+                    "  AND side IN ('buy', 'short')"
+                ).fetchall()
+            except sqlite3.OperationalError:
+                open_entries = []  # minimal-schema fixture
+            try:
+                pend_rows = conn.execute(
+                    "SELECT id, symbol, side, order_id FROM trades "
+                    "WHERE status = 'pending_protective' "
+                    "  AND occ_symbol IS NULL "
+                    "  AND order_id IS NOT NULL AND order_id != ''"
+                ).fetchall()
+            except sqlite3.OperationalError:
+                pend_rows = []
+
+            # (symbol, direction) -> {"oids": set, "entry_ids": [...],
+            #                          "entry_oids": [...]}
+            book: dict = {}
+            for er in open_entries:
+                sym = (er["symbol"] or "").upper()
+                direction = "short" if er["side"] == "short" else "long"
+                slot = book.setdefault((sym, direction),
+                                       {"oids": set(), "entry_ids": [],
+                                        "entry_oids": []})
+                slot["entry_ids"].append(er["id"])
+                slot["entry_oids"].append(er["order_id"])
+                for col in _PTR_COLS:
+                    if er[col]:
+                        slot["oids"].add(er[col])
+            for pr in pend_rows:
+                sym = (pr["symbol"] or "").upper()
+                p_side = (pr["side"] or "").lower()
+                # long protection is journaled side='sell'; short
+                # protection side='buy' (bracket_orders close_side) or
+                # legacy 'cover'
+                direction = "long" if p_side == "sell" else "short"
+                if (sym, direction) in book:
+                    book[(sym, direction)]["oids"].add(pr["order_id"])
+
+            def _broker_status(oid) -> str:
+                try:
+                    return (getattr(api.get_order(oid), "status", "")
+                            or "").lower()
+                except Exception:
+                    return ""
+
+            memo: dict = {}
+            for (sym, direction), slot in book.items():
+                if not slot["oids"]:
+                    continue
+                out["symbols_checked"] += 1
+                pos_qty = _broker_position_qty(api, sym)
+                if pos_qty is None:
+                    out["skipped_unreadable"] += 1
+                    continue
+                wiped = (pos_qty <= 1e-6) if direction == "long" \
+                    else (pos_qty >= -1e-6)
+                if not wiped:
+                    continue
+                # ENTRY-IN-FLIGHT is NOT a wipe (round-1 review C2): a
+                # bracket entry that hasn't FILLED yet has the exact
+                # journal shape of a wipe — open entry row, pending_
+                # protective children, broker position 0 — because the
+                # position doesn't exist YET, not because it vanished.
+                # Cancelling its held bracket children would strip
+                # protection from a position about to exist (the
+                # naked-position class). Verify OUR OWN entry orders at
+                # the broker: any non-terminal unfilled entry → skip.
+                # A wipe is only declared when an entry order VERIFIED
+                # FILLED has no position behind it (own-order-id
+                # evidence a position existed — which also hardens the
+                # trigger against aggregate-sign noise, review H1).
+                entry_evidence = False
+                entry_in_flight = False
+                for e_oid in slot["entry_oids"]:
+                    if not e_oid:
+                        entry_in_flight = True  # unverifiable → skip
+                        logger.warning(
+                            "revoke_unbacked: %s open entry has no "
+                            "order_id — cannot verify a position ever "
+                            "existed; skipping (no cancel on guesses).",
+                            sym,
+                        )
+                        break
+                    e_status = _broker_status(e_oid)
+                    if e_status == "filled":
+                        entry_evidence = True
+                    elif e_status in _TERMINAL_UNFILLED_STATUSES:
+                        pass  # never became a position; not evidence,
+                        # but not in-flight either
+                    else:
+                        # new/accepted/held/partially_filled/unknown('')
+                        entry_in_flight = True
+                        break
+                if entry_in_flight or not entry_evidence:
+                    continue
+                # Own-exit-in-flight is NOT a wipe (same evidence rule
+                # as the reconciler safety net: own order_ids, broker-
+                # verified fills, own-book arithmetic only).
+                try:
+                    from reconcile_journal_to_broker import \
+                        _own_exit_fills_explain
+                    entry_side = "buy" if direction == "long" else "short"
+                    if _own_exit_fills_explain(api, conn, db_path, sym,
+                                               entry_side, memo):
+                        out["skipped_own_exit"] += 1
+                        continue
+                except ImportError:
+                    pass  # standalone use — treat as unexplained
+                canceled_here = 0
+                pending_here = 0
+                for oid in sorted(slot["oids"]):
+                    status = _broker_status(oid)
+                    if status == "filled":
+                        out["filled_kept"] += 1
+                        continue
+                    if status == "":
+                        # unknown (lookup failed) — never mutate on a
+                        # guess; retried next pass (round-1 M1: a
+                        # correlated API blip must not flip a FILLED
+                        # stop's row and lose the fill)
+                        pending_here += 1
+                        out["cancel_pending"] += 1
+                        continue
+                    if status not in _TERMINAL_UNFILLED_STATUSES:
+                        # live at the broker — cancel, then VERIFY.
+                        # cancel_protective_stop's bool is not proof
+                        # (its lenient matcher reads 'not cancelable'
+                        # and even 'filled' errors as success); only a
+                        # re-read showing terminal state may mutate
+                        # the journal (round-1 C3 — a failed cancel
+                        # with mutated journal = the resting order
+                        # keeps its teeth while we forget it exists).
+                        cancel_protective_stop(api, oid)
+                        status = _broker_status(oid)
+                        if status == "filled":
+                            out["filled_kept"] += 1
+                            continue
+                        if status == "" or \
+                                status not in _TERMINAL_UNFILLED_STATUSES:
+                            pending_here += 1
+                            out["cancel_pending"] += 1
+                            logger.error(
+                                "revoke_unbacked: %s — cancel of "
+                                "unbacked protective %s NOT yet "
+                                "confirmed at the broker (status=%r); "
+                                "journal untouched, retrying next "
+                                "pass.", sym, str(oid)[:8], status,
+                            )
+                            continue
+                    # CONFIRMED terminal-unfilled — now safe to mutate
+                    out["canceled"] += 1
+                    canceled_here += 1
+                    for eid in slot["entry_ids"]:
+                        for col in _PTR_COLS:
+                            conn.execute(
+                                f"UPDATE trades SET {col} = NULL "
+                                f"WHERE id = ? AND {col} = ?",
+                                (eid, oid),
+                            )
+                    cur = conn.execute(
+                        "UPDATE trades SET status = 'canceled', "
+                        "pnl = NULL WHERE status = 'pending_protective' "
+                        "AND order_id = ?", (oid,),
+                    )
+                    out["rows_terminated"] += cur.rowcount
+                    logger.error(
+                        "revoke_unbacked_protective_orders: %s — broker "
+                        "position is GONE (%s dir, broker=%g) while the "
+                        "journal entry is still open; cancelled resting "
+                        "protective %s so it cannot fire into thin air "
+                        "(2026-07-07 wipe class).",
+                        sym, direction, pos_qty, str(oid)[:8],
+                    )
+                if canceled_here or pending_here:
+                    out["symbols_revoked"] += 1
+                    # release our write txn BEFORE the alert helper
+                    # opens its own connection to this same DB file —
+                    # otherwise its INSERT blocks on our lock
+                    conn.commit()
+                    try:
+                        from halt_helpers import _write_audit_alert
+                        _pending_note = (
+                            f" {pending_here} order(s) not yet broker-"
+                            "confirmed cancelled (cancel unconfirmed, "
+                            "or status unverifiable this pass) — "
+                            "journal untouched for those, retried "
+                            "every pass until confirmed."
+                            if pending_here else ""
+                        )
+                        _write_audit_alert(
+                            db_path, "broker_backing_revoked", "critical",
+                            f"{sym}: resting protective(s) revoked — "
+                            "broker position vanished",
+                            (f"Broker shows {pos_qty:g} {sym} while this "
+                             f"profile's journal holds an open {direction} "
+                             f"position whose entry order VERIFIED FILLED "
+                             f"at the broker, with no own-exit "
+                             f"explanation. Cancelled {canceled_here} "
+                             "resting protective order(s) (broker-"
+                             "confirmed) before they could fire into a "
+                             "position that is not there (the 2026-07-07 "
+                             f"wipe manufactured real shorts this way)."
+                             f"{_pending_note} The journal entry was NOT "
+                             "modified — the integrity gate owns the "
+                             "halt; repair via certify_books."),
+                        )
+                        out["alerts"] += 1
+                    except Exception as _alert_exc:
+                        logger.warning(
+                            "revoke_unbacked: audit alert write failed "
+                            "for %s: %s", sym, _alert_exc,
+                        )
+            conn.commit()
+    except Exception as exc:
+        logger.warning(
+            "revoke_unbacked_protective_orders failed (%s: %s)",
             type(exc).__name__, exc,
         )
     return out

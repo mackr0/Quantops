@@ -10,11 +10,24 @@ from __future__ import annotations
 import os
 import sqlite3
 import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+
+def _backed_api(qty):
+    """api mock whose get_position mirrors the REAL Alpaca surface for the
+    broker position each scenario declares (signed qty; Alpaca returns qty
+    as a string on a Position object). The 2026-07-07 broker-backing gate
+    in _submit_protective reads it before arming any protective — a bare
+    MagicMock's auto-generated get_position floats to 1.0 and the gate
+    (correctly) refuses to arm."""
+    api = MagicMock()
+    api.get_position.return_value = SimpleNamespace(qty=str(qty))
+    return api
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +63,7 @@ def test_submit_calls_alpaca_with_stop_order(tmp_db):
     specified — type='market' would defeat the whole purpose.
     db_path is required (2026-06-04 atomic-placement contract)."""
     from bracket_orders import submit_protective_stop
-    api = MagicMock()
+    api = _backed_api(100)
     api.submit_order.return_value = MagicMock(id="abc-123")
     order_id = submit_protective_stop(
         api, "AAPL", qty=100, side="sell", stop_price=95.50,
@@ -80,7 +93,7 @@ def test_submit_returns_none_on_invalid_inputs():
 def test_submit_returns_none_on_broker_error():
     """Failure must not kill the caller — polling fallback exists."""
     from bracket_orders import submit_protective_stop
-    api = MagicMock()
+    api = _backed_api(100)  # position backs the order — failure is the broker reject
     api.submit_order.side_effect = Exception("broker rejected")
     order_id = submit_protective_stop(api, "AAPL", 100, "sell", 95.0)
     assert order_id is None
@@ -176,7 +189,7 @@ def _seed_open_buy(db, symbol, qty, price, order_id="entry-1",
 def test_sweep_places_stop_on_unprotected_position(tmp_db):
     from bracket_orders import ensure_protective_stops
     _seed_open_buy(tmp_db, "AAPL", 100, 150.0)
-    api = MagicMock()
+    api = _backed_api(100)
     api.submit_order.return_value = MagicMock(id="stop-xyz")
     positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0}]
 
@@ -200,7 +213,7 @@ def test_sweep_skips_position_with_active_stop(tmp_db):
     order is still active, no new submit happens."""
     from bracket_orders import ensure_protective_stops
     _seed_open_buy(tmp_db, "AAPL", 100, 150.0, existing_stop_id="stop-1")
-    api = MagicMock()
+    api = _backed_api(100)  # backed, so ONLY the active-stop skip prevents a submit
     # Active order — broker reports 'new' status
     api.get_order.return_value = MagicMock(status="new")
     positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0}]
@@ -213,7 +226,7 @@ def test_sweep_resubmits_when_existing_order_is_stale(tmp_db):
     """Cancelled/filled orders aren't 'active' — sweep must replace them."""
     from bracket_orders import ensure_protective_stops
     _seed_open_buy(tmp_db, "AAPL", 100, 150.0, existing_stop_id="dead-stop")
-    api = MagicMock()
+    api = _backed_api(100)
     api.get_order.return_value = MagicMock(status="filled")  # stale
     api.submit_order.return_value = MagicMock(id="fresh-stop")
     positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0}]
@@ -240,7 +253,7 @@ def test_sweep_handles_short_positions_with_buy_to_close(tmp_db):
     conn.commit()
     conn.close()
 
-    api = MagicMock()
+    api = _backed_api(-50)  # broker short 50 TSLA backs the buy-to-cover stop
     api.submit_order.return_value = MagicMock(id="cover-stop")
     positions = [{"symbol": "TSLA", "qty": -50, "avg_entry_price": 200.0}]
 
@@ -305,7 +318,7 @@ def test_submit_take_profit_uses_limit_order_type(tmp_db):
     target price or better — won't slip past on gaps.
     db_path is required (2026-06-04 atomic-placement contract)."""
     from bracket_orders import submit_protective_take_profit
-    api = MagicMock()
+    api = _backed_api(100)
     api.submit_order.return_value = MagicMock(id="tp-123")
     order_id = submit_protective_take_profit(
         api, "AAPL", qty=100, side="sell", limit_price=110.50,
@@ -326,7 +339,7 @@ def test_sweep_places_one_order_per_position_static_stop(tmp_db):
     because the first order reserves all shares."""
     from bracket_orders import ensure_protective_stops
     _seed_open_buy(tmp_db, "AAPL", 100, 150.0)
-    api = MagicMock()
+    api = _backed_api(100)
     api.submit_order.return_value = MagicMock(id="stop-id")
     ctx = _make_ctx(stop_loss_pct=0.05, take_profit_pct=0.10,
                        use_trailing_stops=False)
@@ -347,7 +360,7 @@ def test_sweep_prefers_trailing_when_enabled(tmp_db):
     avoids the qty-conflict that triple-order placement caused."""
     from bracket_orders import ensure_protective_stops
     _seed_open_buy(tmp_db, "AAPL", 100, 150.0)
-    api = MagicMock()
+    api = _backed_api(100)
     api.submit_order.return_value = MagicMock(id="trail-id")
     ctx = _make_ctx(stop_loss_pct=0.05, take_profit_pct=0.10,
                        use_trailing_stops=True)
@@ -365,7 +378,7 @@ def test_sweep_skips_when_conviction_override_is_active(tmp_db):
     no protective order, polling stop-loss is the only guard.'"""
     from bracket_orders import ensure_protective_stops
     _seed_open_buy(tmp_db, "TSLA", 100, 100.0)
-    api = MagicMock()
+    api = _backed_api(100)  # backed, so ONLY the conviction override prevents a submit
     api.submit_order.return_value = MagicMock(id="should-not-fire")
     ctx = _make_ctx(stop_loss_pct=0.05, take_profit_pct=0.10,
                        use_trailing_stops=True)
@@ -444,7 +457,7 @@ def test_submit_trailing_uses_trailing_stop_order_type(tmp_db):
     reversals (the IBM tiny-win pattern).
     db_path is required (2026-06-04 atomic-placement contract)."""
     from bracket_orders import submit_protective_trailing
-    api = MagicMock()
+    api = _backed_api(100)
     api.submit_order.return_value = MagicMock(id="trail-xyz")
     order_id = submit_protective_trailing(
         api, "AAPL", qty=100, side="sell", trail_percent=5.0,
@@ -462,7 +475,7 @@ def test_sweep_picks_trailing_over_static_stop(tmp_db):
     static stop placement (would conflict on qty)."""
     from bracket_orders import ensure_protective_stops
     _seed_open_buy(tmp_db, "AAPL", 100, 150.0)
-    api = MagicMock()
+    api = _backed_api(100)
     api.submit_order.return_value = MagicMock(id="trail-id")
     ctx = _make_ctx(stop_loss_pct=0.05, use_trailing_stops=True)
     positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0}]
@@ -476,7 +489,7 @@ def test_sweep_falls_back_to_static_stop_when_trailing_disabled(tmp_db):
     """No trailing → place static stop (single order)."""
     from bracket_orders import ensure_protective_stops
     _seed_open_buy(tmp_db, "AAPL", 100, 150.0)
-    api = MagicMock()
+    api = _backed_api(100)
     api.submit_order.return_value = MagicMock(id="stop-id")
     ctx = _make_ctx(stop_loss_pct=0.05, use_trailing_stops=False)
     positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0}]
@@ -505,7 +518,7 @@ def test_sweep_cancels_legacy_stop_and_tp_when_placing_trailing(tmp_db):
     conn.commit()
     conn.close()
 
-    api = MagicMock()
+    api = _backed_api(100)
     api.submit_order.return_value = MagicMock(id="new-trail")
     ctx = _make_ctx(stop_loss_pct=0.05, use_trailing_stops=True)
     positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0}]

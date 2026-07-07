@@ -3320,6 +3320,37 @@ def _task_reconcile_trade_statuses(ctx):
             seg_label, type(_orphan_exc).__name__, _orphan_exc,
         )
 
+    # 2026-07-07 — BROKER-BACKING revocation, the complement of
+    # cancel-on-close above: that sweep cancels protectives whose
+    # JOURNAL entry closed; this one cancels protectives whose BROKER
+    # position vanished while the journal entry is still open (the
+    # account-wipe shape — Alpaca zeroed positions overnight, journals
+    # intact, and the resting stops fired into the flat book minting
+    # real shorts: MARA −6,501). Runs every cycle regardless of halts/
+    # kill switch — disarming is exactly what must keep working while
+    # trading is stopped.
+    try:
+        from bracket_orders import revoke_unbacked_protective_orders
+        from client import get_api as _get_api_revoke
+        revoked = revoke_unbacked_protective_orders(
+            _get_api_revoke(ctx), ctx.db_path)
+        if revoked["canceled"] or revoked["cancel_pending"]:
+            logging.error(
+                "[%s] Broker-backing revocation: %d confirmed cancel(s) "
+                "+ %d pending confirmation on %d broker-vanished "
+                "symbol(s) (terminated %d row(s), kept %d filled). The "
+                "broker position disappeared without own exits — see "
+                "/issues.",
+                seg_label, revoked["canceled"], revoked["cancel_pending"],
+                revoked["symbols_revoked"], revoked["rows_terminated"],
+                revoked["filled_kept"],
+            )
+    except Exception as _revoke_exc:
+        logging.warning(
+            "[%s] broker-backing revocation failed (%s: %s)",
+            seg_label, type(_revoke_exc).__name__, _revoke_exc,
+        )
+
     # 2026-06-04 — PROACTIVE chain-walk sweep. Closes gap #3 from the
     # post-reset orphan-prevention list. For each pending_protective
     # row, advance its order_id through Alpaca's replace chain so the
@@ -5262,6 +5293,89 @@ def _split_due_for_fast_exits(due_profiles):
     return non_scan, scan_due
 
 
+#: date (of the market open) the pre-open disarm sweep last ran for —
+#: one sweep per market day, in the window before stops can fire.
+_last_preopen_disarm_date = None
+
+
+def _preopen_disarm_sweep(now):
+    """Run the broker-backing revocation for every active profile once
+    per market day, inside [next_open − 20 min, next_open).
+
+    Overnight is when a broker-side wipe (2026-07-07) leaves resting
+    GTC protectives unbacked; stops cannot execute before the open, so
+    a sweep in this window disarms them with zero fire risk. The
+    per-cycle revocation in _task_reconcile_trade_statuses covers
+    intraday wipes; this covers the open itself. Runs regardless of
+    halts/kill switch — disarming must work precisely when trading is
+    stopped. Per-profile, own-order-ids only (the sweep itself
+    enforces that).
+
+    MUST be reachable from the closed-market SLEEP loop: a market-
+    hours-only fleet parks in that inner 60s loop all night and only
+    exits AT the open, so a call gated on the outer iteration alone is
+    dead code in exactly the incident window (round-1 review C1). The
+    window/date checks run first and are cheap — profiles and contexts
+    load only after they pass, so the 60s wake-ups cost nothing."""
+    global _last_preopen_disarm_date
+    try:
+        nxt = next_market_open(now)
+    except Exception as exc:
+        logging.warning("pre-open disarm: next_market_open failed: %s", exc)
+        return
+    if nxt is None:
+        return
+    seconds_to_open = (nxt - now).total_seconds()
+    if not (0 < seconds_to_open <= 20 * 60):
+        return
+    open_date = nxt.date()
+    if _last_preopen_disarm_date == open_date:
+        return
+    profiles = _load_active_profiles()
+    from models import build_user_context_from_profile
+    from client import get_api
+    from bracket_orders import revoke_unbacked_protective_orders
+    total_canceled = 0
+    failures = 0
+    for prof in profiles:
+        pid = prof.get("id")
+        try:
+            ctx = build_user_context_from_profile(pid)
+            revoked = revoke_unbacked_protective_orders(
+                get_api(ctx), ctx.db_path)
+            total_canceled += revoked["canceled"]
+            if revoked["canceled"]:
+                logging.error(
+                    "pre-open disarm [profile %s]: cancelled %d resting "
+                    "protective(s) whose broker position vanished "
+                    "overnight — they would have fired at the open.",
+                    pid, revoked["canceled"],
+                )
+        except Exception as exc:
+            failures += 1
+            logging.warning(
+                "pre-open disarm failed for profile %s (%s: %s)",
+                pid, type(exc).__name__, exc,
+            )
+    # Mark the day DONE only after a fully clean sweep. A transient
+    # failure (master-DB blip → empty profile list, or one profile's
+    # ctx/API error) must not forfeit the day — the sweep is
+    # idempotent and the 60s wake-ups retry it for free until the
+    # open (round-2 review M1: this window is the whole point).
+    if profiles and failures == 0:
+        _last_preopen_disarm_date = open_date
+        logging.info(
+            "Pre-open disarm sweep done for %s (%d profile(s), %d "
+            "cancellation(s)).", open_date, len(profiles), total_canceled,
+        )
+    else:
+        logging.warning(
+            "Pre-open disarm sweep for %s incomplete (%d profile(s) "
+            "loaded, %d failure(s)) — retrying on the next wake-up.",
+            open_date, len(profiles), failures,
+        )
+
+
 def main_loop(active_segments=None, legacy_mode=False):
     """Run the multi-account scheduling loop.
 
@@ -5662,6 +5776,24 @@ def main_loop(active_segments=None, legacy_mode=False):
             # ── Profile-based iteration ──────────────────────────────
             profiles = _load_active_profiles()
 
+            # 2026-07-07 — PRE-OPEN DISARM. The account wipe happened
+            # OVERNIGHT: broker positions vanished while GTC stops from
+            # the prior session kept resting, and at 09:30 they fired
+            # into the flat book before the first in-session sweep
+            # could run. This window is the only one the per-cycle
+            # revocation can't cover, so in the ~20 minutes before the
+            # open (once per market day) every profile's resting
+            # protectives are verified against live broker positions
+            # and unbacked ones are cancelled while orders CANNOT fire.
+            if not market_open:
+                try:
+                    _preopen_disarm_sweep(now)
+                except Exception as _pd_exc:
+                    logging.warning(
+                        "pre-open disarm sweep failed (%s: %s)",
+                        type(_pd_exc).__name__, _pd_exc,
+                    )
+
             # Check BEFORE timing logic if any profile has a non-market-hours schedule
             has_always_on = False
             for prof in profiles:
@@ -5902,6 +6034,20 @@ def main_loop(active_segments=None, legacy_mode=False):
                 now = datetime.now(ET)
                 if is_market_open(now):
                     break
+                # PRE-OPEN DISARM must fire from HERE: a market-hours
+                # fleet spends every night/weekend parked in this loop
+                # and exits only AT the open — the outer-loop call
+                # alone never sees the [open−20m, open) window
+                # (2026-07-07 wipe class; round-1 review C1). Cheap:
+                # the helper's window/date checks reject in O(1) on
+                # every other wake-up.
+                try:
+                    _preopen_disarm_sweep(now)
+                except Exception as _pd_exc:
+                    logging.warning(
+                        "pre-open disarm sweep failed (%s: %s)",
+                        type(_pd_exc).__name__, _pd_exc,
+                    )
                 time.sleep(60)
         else:
             # Sleep 30 seconds between checks

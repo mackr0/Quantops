@@ -72,15 +72,22 @@ def _row(db, rid):
 
 def _fake_api(statuses):
     """api.get_order(oid) reports statuses[oid] (default 'new'=live);
-    api.cancel_order records the ids it was asked to cancel."""
+    api.cancel_order records the ids and — mock-parity with the real
+    broker — flips the order's status so subsequent reads show
+    'canceled' (cancel-on-close now VERIFIES the cancel by re-reading
+    status before touching the journal; a mock whose status never
+    changes would model a broker that ignores cancels)."""
     api = MagicMock()
 
     def _get_order(oid, *a, **k):
         from types import SimpleNamespace
         return SimpleNamespace(id=oid, status=statuses.get(oid, "new"))
 
+    def _cancel_order(oid, *a, **k):
+        statuses[oid] = "canceled"
+
     api.get_order.side_effect = _get_order
-    api.cancel_order.return_value = None
+    api.cancel_order.side_effect = _cancel_order
     return api
 
 

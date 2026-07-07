@@ -82,6 +82,9 @@ class TestBracketOrdersUsesIsOption:
         from bracket_orders import ensure_protective_stops
 
         api = MagicMock()
+        # Broker holds the 100 AAPL long the scenario declares (the
+        # 2026-07-07 backing gate reads .qty as a string, per Alpaca).
+        api.get_position.return_value = SimpleNamespace(qty="100")
         api.submit_order.return_value = MagicMock(id="order-1")
         positions = [_stock_pos()]
         ctx = MagicMock()

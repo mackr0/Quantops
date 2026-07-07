@@ -107,7 +107,13 @@ class TestProtectiveSweepIgnoresSiblingCoverage:
         db = str(tmp_path / "p.db")
         _seed_pavs_entry(db, qty=1164)
 
+        from types import SimpleNamespace
         api = MagicMock()
+        # Shared-conduit aggregate: this profile's 1164 + siblings' 10605
+        # = 11769 PAVS long at the broker. The 2026-07-07 backing gate
+        # reads the CONDUIT position (string qty, real Alpaca surface),
+        # which comfortably backs our 1164-share protective.
+        api.get_position.return_value = SimpleNamespace(qty="11769")
         # Broker has 10605 PAVS trailing — placed by a sibling
         api.list_orders.return_value = [
             _stub_broker_order(

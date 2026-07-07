@@ -93,6 +93,12 @@ def _api_with_orders(by_id: dict, positions=None):
     list_positions / list_orders return empty (force broker_coverage
     to find nothing → exercises the journal-side dedup path)."""
     api = MagicMock()
+    # Broker holds the 100 NVDA long the scenario declares — the
+    # 2026-07-07 backing gate reads it, so ONLY the journal-side dedup
+    # under test can keep submit_order uncalled (never a gate refusal
+    # on garbage mock state).
+    api.get_position = MagicMock(
+        return_value=SimpleNamespace(qty="100"))
     api.get_order = lambda oid: by_id.get(oid)
     api.list_positions = MagicMock(return_value=positions or [])
     api.list_orders = MagicMock(return_value=[])
@@ -189,6 +195,10 @@ def test_skip_when_broker_check_fails_to_avoid_duplicate(
     def _fail(oid):
         raise RuntimeError("broker timeout")
     api = MagicMock()
+    # Position itself is readable and backs the order — only the
+    # ORDER check times out, which is the skip reason under test.
+    api.get_position = MagicMock(
+        return_value=SimpleNamespace(qty="100"))
     api.get_order = _fail
     api.submit_order = MagicMock(side_effect=AssertionError(
         "Must NOT submit when broker can't verify the existing "
@@ -241,6 +251,10 @@ def test_terminal_pending_protective_is_marked_then_replaced(
     conn.close()
 
     api = MagicMock()
+    # Broker still holds the 100 NVDA long (the protective was canceled,
+    # not filled) — the fresh placement must pass the backing gate.
+    api.get_position = MagicMock(
+        return_value=SimpleNamespace(qty="100"))
     api.get_order = lambda oid: SimpleNamespace(
         id=oid, status="canceled",
     )
@@ -305,6 +319,11 @@ def test_filled_pending_protective_skips_placement(
     conn.close()
 
     api = MagicMock()
+    # The protective FILLED → the broker is genuinely FLAT NVDA. Real
+    # Alpaca surface: get_position raises for a missing position.
+    def _no_position(symbol):
+        raise Exception("position does not exist")
+    api.get_position = MagicMock(side_effect=_no_position)
     api.get_order = lambda oid: SimpleNamespace(
         id=oid, status="filled", filled_qty="100",
         filled_avg_price="498.50",
@@ -326,3 +345,9 @@ def test_filled_pending_protective_skips_placement(
         db_path=db_path,
     )
     api.submit_order.assert_not_called()
+    # Discrimination pin (round-2 review): the filled-row dedup must
+    # short-circuit BEFORE the broker-backing gate ever runs. The
+    # broker is flat here, so the gate would ALSO refuse — without
+    # this pin the test would keep passing with the dedup regressed.
+    # If the gate did the refusing, the position was read.
+    api.get_position.assert_not_called()

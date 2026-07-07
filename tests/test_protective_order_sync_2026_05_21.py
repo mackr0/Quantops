@@ -22,6 +22,7 @@ import os
 import sqlite3
 import sys
 from contextlib import closing
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -138,6 +139,10 @@ class TestBrokerTruthSkipAndHeal:
         conn.close()
 
         api = MagicMock()
+        # Broker holds the 418 FCX long — placement, if (wrongly)
+        # attempted, would pass the backing gate, so ONLY the
+        # coverage-skip under test can keep submit_order uncalled.
+        api.get_position.return_value = SimpleNamespace(qty="418")
         api.list_orders.return_value = [
             _order("FCX", "sell", 418, "trailing_stop", oid="fcx-live"),
         ]
@@ -178,6 +183,10 @@ class TestBrokerTruthSkipAndHeal:
         conn.close()
 
         api = MagicMock()
+        # Broker holds the 418 FCX long — placement, if (wrongly)
+        # attempted, would pass the backing gate, so ONLY the
+        # coverage-skip under test can keep submit_order uncalled.
+        api.get_position.return_value = SimpleNamespace(qty="418")
         api.list_orders.return_value = [
             _order("FCX", "sell", 418, "trailing_stop", oid="fcx-live"),
         ]
@@ -196,6 +205,9 @@ class TestBrokerTruthSkipAndHeal:
         conn.close()
 
         api = MagicMock()
+        # Broker holds the 100 AAPL long (backs the protective; the
+        # 2026-07-07 gate reads .qty as Alpaca serves it — a string).
+        api.get_position.return_value = SimpleNamespace(qty="100")
         api.list_orders.return_value = []  # no coverage
         api.submit_order.return_value = MagicMock(id="new-trail")
         positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0}]

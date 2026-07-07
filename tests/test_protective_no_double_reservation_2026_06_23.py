@@ -90,11 +90,25 @@ def _entry_with(db_path, *, symbol="BMNR", qty=2977, take_profit=None,
             conn.commit()
 
 
-def _fake_api(active_ids=()):
+def _fake_api(active_ids=(), broker_positions=None):
     """api whose get_order reports `active_ids` as live (status=new),
     everything else as canceled; submit_order returns a fresh order
-    echoing the requested qty; records submit/cancel calls."""
+    echoing the requested qty; records submit/cancel calls.
+
+    `broker_positions` is {symbol: signed_qty} — get_position mirrors the
+    REAL Alpaca surface (Position object with .qty as a string; raises
+    'position does not exist' when flat) so the 2026-07-07 broker-backing
+    gate in _submit_protective reads the scenario's declared position."""
     api = MagicMock()
+
+    pos_map = {k: str(v) for k, v in (broker_positions or {}).items()}
+
+    def _get_position(symbol):
+        if symbol in pos_map:
+            return SimpleNamespace(symbol=symbol, qty=pos_map[symbol])
+        raise Exception("position does not exist")
+
+    api.get_position.side_effect = _get_position
 
     def _get_order(oid, *a, **k):
         if oid in active_ids:
@@ -140,7 +154,7 @@ def _run(api, db_path, ctx, position, monkeypatch, coverage=None):
 def test_trailing_mode_places_one_order_no_tp_limit(tmp_path, monkeypatch):
     db = str(tmp_path / "p.db")
     _entry_with(db, take_profit=24.0)          # a TP target IS set...
-    api = _fake_api()
+    api = _fake_api(broker_positions={"BMNR": 2977})
     _run(api, db, _mk_ctx(use_trailing=True), _mk_position(), monkeypatch)
 
     types = _submitted_types(api)
@@ -160,7 +174,7 @@ def test_trailing_mode_places_one_order_no_tp_limit(tmp_path, monkeypatch):
 def test_static_mode_places_one_order_no_tp_limit(tmp_path, monkeypatch):
     db = str(tmp_path / "p.db")
     _entry_with(db, take_profit=24.0)
-    api = _fake_api()
+    api = _fake_api(broker_positions={"BMNR": 2977})
     _run(api, db, _mk_ctx(use_trailing=False), _mk_position(), monkeypatch)
 
     types = _submitted_types(api)
@@ -181,7 +195,8 @@ def test_lingering_broker_tp_is_cancelled_and_cleared(tmp_path, monkeypatch):
     db = str(tmp_path / "p.db")
     _entry_with(db, take_profit=24.0,
                 trailing_id="trail-live", tp_id="tp-stale")
-    api = _fake_api(active_ids=("trail-live",))
+    api = _fake_api(active_ids=("trail-live",),
+                    broker_positions={"BMNR": 2977})
     _run(api, db, _mk_ctx(use_trailing=True), _mk_position(), monkeypatch)
 
     api.cancel_order.assert_any_call("tp-stale")
@@ -205,7 +220,8 @@ def test_tp_sunset_runs_even_when_position_already_covered(tmp_path, monkeypatch
     db = str(tmp_path / "p.db")
     _entry_with(db, take_profit=24.0,
                 trailing_id="trail-live", tp_id="tp-stale")
-    api = _fake_api(active_ids=("trail-live",))
+    api = _fake_api(active_ids=("trail-live",),
+                    broker_positions={"BMNR": 2977})
     # broker_coverage reports the trailing fully covers the slice → the
     # coverage check would `continue` early; the sunset must already have run.
     coverage = {("BMNR", "sell"): [

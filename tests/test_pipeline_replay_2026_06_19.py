@@ -19,6 +19,7 @@ from __future__ import annotations
 import sqlite3
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -59,6 +60,15 @@ class FakeBroker:
 
     def list_positions(self):
         return list(self._positions)
+
+    def get_position(self, symbol):
+        """Real-surface parity: serve the configured position, raise the
+        Alpaca 'position does not exist' error when flat — the 2026-07-07
+        broker-backing gate reads this before arming any protective."""
+        for p in self._positions:
+            if getattr(p, "symbol", None) == symbol:
+                return p
+        raise Exception("position does not exist")
 
     def get_account(self):
         class _A:
@@ -127,7 +137,8 @@ def test_sweep_still_arms_a_genuinely_held_long(tmp_path):
     _seed(db, [("HELD", "buy", 100, 10.0, "open")])
     positions = _positions(db)
     assert any(p.get("symbol") == "HELD" for p in positions)
-    api = FakeBroker()
+    # The broker genuinely holds the long — the backing gate must see it.
+    api = FakeBroker(positions=[SimpleNamespace(symbol="HELD", qty="100")])
     ensure_protective_stops(api, positions, _Ctx(db), db)
     assert any(o.get("symbol") == "HELD" for o in api.submitted), (
         "a genuinely-held long must still get a protective order")
@@ -177,7 +188,10 @@ def test_rearm_prevented_solely_by_snapshot_netting(tmp_path):
     # entry-status filter would NOT save us — it WOULD arm.
     phantom = [{"symbol": "NETZ", "qty": 100, "occ_symbol": None,
                 "avg_entry_price": 10.0, "side": "long"}]
-    api2 = FakeBroker()
+    # Broker declared long here so the 2026-07-07 backing gate (a separate,
+    # newer guard) stays neutral — this counterfactual isolates the
+    # snapshot-netting guard vs the entry-status filter only.
+    api2 = FakeBroker(positions=[SimpleNamespace(symbol="NETZ", qty="100")])
     ensure_protective_stops(api2, phantom, _Ctx(db), db)
     assert any(o.get("symbol") == "NETZ" for o in api2.submitted), (
         "with an 'open' entry, only get_virtual's netting prevents the "

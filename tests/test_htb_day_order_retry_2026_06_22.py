@@ -36,8 +36,13 @@ def _order(oid="ord-day-1"):
 
 def _gtc_rejects_day_ok_api():
     """api whose submit_order raises the HTB error on time_in_force='gtc'
-    and succeeds on time_in_force='day' (the real broker behavior)."""
+    and succeeds on time_in_force='day' (the real broker behavior).
+    The broker holds the 100-share SPCX long every scenario protects —
+    get_position mirrors the real surface (qty is a string) so the
+    2026-07-07 broker-backing gate sees the position and lets the
+    protective through to the HTB retry path under test."""
     api = MagicMock()
+    api.get_position.return_value = SimpleNamespace(qty="100")
 
     def _submit(**kwargs):
         if kwargs.get("time_in_force") == "gtc":
@@ -74,6 +79,7 @@ def test_submit_protective_gtc_success_no_retry_no_learn(tmp_path):
     db = str(tmp_path / "p.db")
     journal.init_db(db)
     api = MagicMock()
+    api.get_position.return_value = SimpleNamespace(qty="100")  # backs the 100 SPCX
     api.submit_order.return_value = _order("ord-gtc")
     order = bracket_orders._submit_protective(
         api, _kwargs_trailing(), db, "SPCX", "trailing stop for SPCX")
@@ -99,6 +105,7 @@ def test_submit_protective_non_htb_does_not_retry_or_learn(tmp_path):
     db = str(tmp_path / "p.db")
     journal.init_db(db)
     api = MagicMock()
+    api.get_position.return_value = SimpleNamespace(qty="10")  # backs the 10 AAPL
     api.submit_order.side_effect = Exception("insufficient buying power")
     order = bracket_orders._submit_protective(
         api,
@@ -117,6 +124,7 @@ def test_submit_protective_learns_even_when_day_also_fails(tmp_path):
     db = str(tmp_path / "p.db")
     journal.init_db(db)
     api = MagicMock()
+    api.get_position.return_value = SimpleNamespace(qty="100")  # backs the 100 SPCX
     api.submit_order.side_effect = Exception(HTB_MSG)   # both gtc and day fail
     order = bracket_orders._submit_protective(
         api, _kwargs_trailing(), db, "SPCX", "trailing stop for SPCX")
