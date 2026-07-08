@@ -125,6 +125,27 @@ ALLOWED_STRING_VALUES_FOR: dict = {
 # Fields that legitimately return None (not-yet-computed, no data
 # for this profile). Each entry needs written rationale.
 ALLOWED_NULL_FIELDS: dict = {
+    # /api/symbol-info: every data source degrades independently by
+    # design — an unreachable source nulls its fields, never the
+    # modal (2026-07-08). Off-hours snapshots can also carry no bar.
+    ("/api/symbol-info", "price"):
+        "Null when the live snapshot is unavailable (source degraded "
+        "or market data gap).",
+    ("/api/symbol-info", "day_change_pct"):
+        "Null when price or previous close is unavailable.",
+    ("/api/symbol-info", "volume"):
+        "Null when the daily bar is unavailable (off-hours/degraded).",
+    ("/api/symbol-info", "prev_close"):
+        "Null when the previous daily bar is unavailable.",
+    ("/api/symbol-info", "week52_high"):
+        "Null when daily-bar history is unavailable.",
+    ("/api/symbol-info", "week52_low"):
+        "Null when daily-bar history is unavailable.",
+    ("/api/symbol-info", "avg_volume"):
+        "Null when daily-bar history is unavailable.",
+    ("/api/symbol-info", "market_cap"):
+        "Null when the company-fundamentals source has no market cap "
+        "for the symbol (ETFs, some foreign listings).",
     ("/api/", "veto_reason"):
         "Null when no specialist vetoed the trade.",
     ("/api/", "vetoed_by"):

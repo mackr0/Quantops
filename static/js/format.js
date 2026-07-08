@@ -102,5 +102,26 @@
         return (v >= 0 ? '+' : '') + v.toFixed(dp) + '%';
     };
 
+    // "4.60T" / "2.9B" / "62.6M" / "845K" — compact large number, em
+    // dash when unknown. Use case: market caps, share volumes (the
+    // symbol-info modal). Prefix "$" at the call site for money.
+    QF.compact = function (n) {
+        var v = _toNum(n);
+        if (v === null) return '—';
+        var a = Math.abs(v);
+        if (a >= 1e12) return (v / 1e12).toFixed(2) + 'T';
+        if (a >= 1e9) return (v / 1e9).toFixed(2) + 'B';
+        if (a >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+        if (a >= 1e3) return (v / 1e3).toFixed(0) + 'K';
+        return String(Math.round(v));
+    };
+
+    // "$195.50" or em dash when unknown — dollars2 returns '' on null,
+    // but table-style read-outs want a visible placeholder.
+    QF.dollars2OrDash = function (n) {
+        var s = QF.dollars2(n);
+        return s === '' ? '—' : s;
+    };
+
     root.QF = QF;
 })(window);

@@ -4807,6 +4807,21 @@ def api_kill_switch_set():
     return jsonify({"enabled": enabled, "reason": current_reason})
 
 
+@views_bp.route("/api/symbol-info/<symbol>")
+@login_required
+def api_symbol_info(symbol):
+    """Standard company snapshot for the tap-a-ticker modal: name,
+    exchange, price, day change, 52-week range, volume, market cap,
+    sector, industry. Alpaca-first; fundamentals via the cached
+    company-profile lookup. 404 for symbols that aren't real
+    tradeable assets (or option contract identifiers)."""
+    from symbol_info import get_symbol_info
+    info = get_symbol_info(symbol)
+    if info is None:
+        return jsonify({"error": "Unknown symbol"}), 404
+    return jsonify(info)
+
+
 @views_bp.route("/api/macro-data")
 @login_required
 def api_macro_data():

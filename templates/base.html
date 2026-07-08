@@ -5,11 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}QuantOpsAI{% endblock %}</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-    <link rel="stylesheet" href="/static/style.css?v=20260702-mobilenav">
+    <link rel="stylesheet" href="/static/style.css?v=20260708-symmodal">
     <!-- Shared price/number formatters (Issue 13). All inline JS
          `function fmt*` definitions in templates are blocked by the
          test_no_inline_js_formatters guardrail; use window.QF instead. -->
-    <script src="/static/js/format.js?v=20260510"></script>
+    <script src="/static/js/format.js?v=20260708"></script>
 </head>
 <body>
     <nav class="container-fluid qnav">
@@ -137,6 +137,126 @@
                 }
             })
             .catch(function() { /* silent — badge just stays hidden */ });
+    })();
+    </script>
+    <!-- Tap-a-ticker company info modal (2026-07-08). Any element with
+         class="sym-link" and data-sym="XYZ" (or ticker text content)
+         opens it; wired by delegation so JS-rendered tables get it
+         for free. -->
+    <div id="sym-modal-backdrop" class="sym-modal-backdrop" hidden>
+        <div class="sym-modal" role="dialog" aria-modal="true"
+             aria-labelledby="sym-modal-title">
+            <div class="sym-modal-head">
+                <div>
+                    <span id="sym-modal-title" class="sym-modal-sym"></span>
+                    <span id="sym-modal-name" class="sym-modal-name"></span>
+                </div>
+                <button type="button" class="sym-modal-close"
+                        aria-label="Close">&times;</button>
+            </div>
+            <div id="sym-modal-body" class="sym-modal-body">
+                <div class="sym-modal-loading">Loading…</div>
+            </div>
+        </div>
+    </div>
+    <script>
+    (function() {
+        var backdrop = document.getElementById('sym-modal-backdrop');
+        var body = document.getElementById('sym-modal-body');
+        var titleEl = document.getElementById('sym-modal-title');
+        var nameEl = document.getElementById('sym-modal-name');
+        if (!backdrop) return;
+
+        function esc(s) {
+            var d = document.createElement('div');
+            d.textContent = (s == null ? '' : String(s));
+            return d.innerHTML;
+        }
+        // Formatting via the shared QF helpers (static/js/format.js) —
+        // inline fmt* definitions are banned (formatter-drift guardrail).
+        function row(label, value) {
+            return '<div class="sym-row"><span>' + esc(label) +
+                   '</span><span>' + value + '</span></div>';
+        }
+        function render(d) {
+            nameEl.textContent = d.name || '';
+            var chg = '—';
+            if (d.day_change_pct != null) {
+                var v = Number(d.day_change_pct);
+                chg = '<span class="' + (v >= 0 ? 'sym-up' : 'sym-down') +
+                      '">' + (v >= 0 ? '+' : '') + v.toFixed(2) + '%</span>';
+            }
+            var range = (d.week52_low != null && d.week52_high != null)
+                ? QF.dollars2OrDash(d.week52_low) + ' – ' +
+                  QF.dollars2OrDash(d.week52_high) : '—';
+            body.innerHTML =
+                row('Price', QF.dollars2OrDash(d.price) + '&nbsp;&nbsp;' + chg) +
+                row('Market cap', d.market_cap != null
+                    ? '$' + QF.compact(d.market_cap) : '—') +
+                row('Sector', esc(d.sector || '—')) +
+                row('Industry', esc(d.industry || '—')) +
+                row('Exchange', esc(d.exchange || '—')) +
+                row('52-week range', range) +
+                row("Today's volume", QF.compact(d.volume)) +
+                row('Average volume (30 day)', QF.compact(d.avg_volume)) +
+                row('Previous close', QF.dollars2OrDash(d.prev_close));
+        }
+        function open(sym) {
+            titleEl.textContent = sym;
+            nameEl.textContent = '';
+            body.innerHTML =
+                '<div class="sym-modal-loading">Loading…</div>';
+            backdrop.hidden = false;
+            document.body.style.overflow = 'hidden';
+            fetch('/api/symbol-info/' + encodeURIComponent(sym),
+                  {credentials: 'same-origin'})
+                .then(function(r) {
+                    if (r.status === 404) throw new Error('unknown');
+                    if (!r.ok) throw new Error('unavailable');
+                    return r.json();
+                })
+                .then(render)
+                .catch(function(err) {
+                    body.innerHTML =
+                        '<div class="sym-modal-loading">' +
+                        (err.message === 'unknown'
+                         ? 'No company information found for this symbol.'
+                         : 'Company information is unavailable right now.') +
+                        '</div>';
+                });
+        }
+        function close() {
+            backdrop.hidden = true;
+            document.body.style.overflow = '';
+        }
+        // CAPTURE phase: many tables put symbols inside rows that have
+        // their own onclick (expanders) — the modal tap must win and
+        // not also toggle the row.
+        document.addEventListener('click', function(e) {
+            var link = e.target.closest('.sym-link');
+            if (link) {
+                var sym = (link.getAttribute('data-sym') ||
+                           link.textContent || '').trim().toUpperCase();
+                if (sym) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    open(sym);
+                }
+                return;
+            }
+            if (e.target.closest('.sym-modal-close') ||
+                    (e.target === backdrop)) close();
+        }, true);
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape' && !backdrop.hidden) close();
+        });
+        // helper for JS-rendered tables (dashboard live feeds)
+        window.symLink = function(sym) {
+            var s = (sym == null ? '' : String(sym)).trim();
+            if (!s) return '';
+            return '<span class="sym-link" role="button" tabindex="0">' +
+                   esc(s.toUpperCase()) + '</span>';
+        };
     })();
     </script>
     {% block scripts %}{% endblock %}

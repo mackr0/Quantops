@@ -656,3 +656,55 @@ footer {
         -webkit-overflow-scrolling: touch;
     }
 }
+
+/* ---- Tap-a-ticker company info modal (2026-07-08) ---- */
+.sym-link {
+    cursor: pointer;
+    text-decoration: underline dotted;
+    text-underline-offset: 2px;
+    font-weight: inherit;
+}
+.sym-link:hover { color: #3b6fd4; }
+.sym-modal-backdrop {
+    position: fixed; inset: 0; z-index: 1000;
+    background: rgba(10, 12, 30, 0.55);
+    display: flex; align-items: center; justify-content: center;
+    padding: 16px;
+}
+.sym-modal {
+    background: #fff; color: #222;
+    border-radius: 10px;
+    width: 100%; max-width: 420px;
+    max-height: 85vh; overflow-y: auto;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+.sym-modal-head {
+    display: flex; align-items: flex-start;
+    justify-content: space-between;
+    padding: 14px 16px 10px;
+    border-bottom: 1px solid #eee;
+}
+.sym-modal-sym { font-size: 1.15rem; font-weight: 700; }
+.sym-modal-name {
+    display: block; font-size: 0.85rem; color: #777;
+    margin-top: 2px; max-width: 320px;
+}
+.sym-modal-close {
+    background: none; border: none; font-size: 1.5rem;
+    line-height: 1; color: #999; cursor: pointer;
+    padding: 0 4px; margin: 0;
+    width: auto;
+}
+.sym-modal-close:hover { color: #333; }
+.sym-modal-body { padding: 10px 16px 16px; }
+.sym-modal-loading { padding: 24px 0; text-align: center; color: #888; }
+.sym-row {
+    display: flex; justify-content: space-between; gap: 12px;
+    padding: 7px 0; border-bottom: 1px solid #f4f4f4;
+    font-size: 0.92rem;
+}
+.sym-row:last-child { border-bottom: none; }
+.sym-row > span:first-child { color: #888; }
+.sym-row > span:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+.sym-up { color: #00953b; }
+.sym-down { color: #c62828; }

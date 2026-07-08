@@ -273,3 +273,114 @@ def get_sector(symbol: str, db_path: str = MASTER_DB) -> str:
         return fb
 
     return _DEFAULT_SECTOR
+
+
+# ---------------------------------------------------------------------------
+# Company profile (name / industry / market cap) — same yfinance payload
+# ---------------------------------------------------------------------------
+# The symbol-info modal needs fundamentals Alpaca does not carry (market
+# cap, industry). This module is the ONE sanctioned yfinance touchpoint
+# (Alpaca-first rule), and `yf.Ticker(sym).info` — already fetched above
+# for the sector — carries them in the same payload, so the profile
+# cache adds ZERO new yfinance call sites and zero extra HTTP when a
+# lookup also warms the sector cache. Own table (company_profile_cache),
+# same 7-day TTL; sector_cache's shape and readers are untouched.
+
+_PROFILE_TTL_SECONDS = _TTL_SECONDS
+
+
+def _init_profile_schema(db_path: str) -> None:
+    if not db_path:
+        return
+    with _schema_lock:
+        if ("profile", db_path) in _schema_initialized:
+            return
+        try:
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS company_profile_cache (
+                        symbol     TEXT PRIMARY KEY,
+                        name       TEXT,
+                        industry   TEXT,
+                        market_cap REAL,
+                        gics_sector TEXT,
+                        fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    )
+                """)
+                conn.commit()
+            _schema_initialized.add(("profile", db_path))
+        except Exception as exc:
+            logger.warning("Failed to init company_profile_cache: %s", exc)
+
+
+def get_company_profile(symbol: str,
+                        db_path: str = MASTER_DB) -> dict:
+    """Company fundamentals for the symbol-info modal:
+    {name, industry, market_cap, gics_sector} — any field may be None.
+
+    Cache-first (7-day TTL). On miss, ONE yf.Ticker().info fetch
+    (guarded by is_alpaca_active, like the sector path) fills this
+    cache AND warms sector_cache when the GICS sector maps — the
+    modal and the trading path share the payload. Negative results
+    are cached too (all-None row) so an unknown symbol doesn't
+    re-fetch on every tap. Fail-open: any error returns all-None."""
+    empty = {"name": None, "industry": None, "market_cap": None,
+             "gics_sector": None}
+    if not symbol or not db_path:
+        return dict(empty)
+    sym = symbol.upper()
+    _init_profile_schema(db_path)
+    try:
+        with closing(sqlite3.connect(db_path)) as conn:
+            row = conn.execute(
+                "SELECT name, industry, market_cap, gics_sector, "
+                "fetched_at FROM company_profile_cache WHERE symbol = ?",
+                (sym,),
+            ).fetchone()
+        if row:
+            try:
+                ts = datetime.fromisoformat(row[4])
+                if datetime.utcnow() - ts <= timedelta(
+                        seconds=_PROFILE_TTL_SECONDS):
+                    return {"name": row[0], "industry": row[1],
+                            "market_cap": row[2], "gics_sector": row[3]}
+            except Exception as exc:
+                logger.debug("company profile cache timestamp malformed "
+                             "for %s (%s) — refetching", sym, exc)
+    except Exception as exc:
+        logger.debug("company profile cache read failed for %s: %s",
+                     sym, exc)
+
+    result = dict(empty)
+    try:
+        from screener import is_alpaca_active
+        if is_alpaca_active(sym):
+            import yfinance as yf
+            info = yf.Ticker(sym).info or {}
+            result = {
+                "name": info.get("longName") or info.get("shortName"),
+                "industry": info.get("industry"),
+                "market_cap": info.get("marketCap"),
+                "gics_sector": info.get("sector"),
+            }
+            # same payload warms the trading path's sector cache
+            mapped = _GICS_TO_INTERNAL.get(info.get("sector") or "")
+            if mapped:
+                _write_cache(sym, mapped, db_path)
+    except Exception as exc:
+        logger.debug("company profile fetch failed for %s: %s", sym, exc)
+
+    try:
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO company_profile_cache "
+                "(symbol, name, industry, market_cap, gics_sector, "
+                " fetched_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
+                (sym, result["name"], result["industry"],
+                 result["market_cap"], result["gics_sector"]),
+            )
+            conn.commit()
+    except Exception as exc:
+        logger.debug("company profile cache write failed for %s: %s",
+                     sym, exc)
+    return result

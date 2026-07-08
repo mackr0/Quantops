@@ -535,7 +535,7 @@
             <tbody id="pending-orders-{{ prof.id }}">
                 {% for o in prof.pending_orders %}
                 <tr>
-                    <td><strong>{{ o.symbol }}</strong></td>
+                    <td><strong><span class="sym-link" role="button" tabindex="0">{{ o.symbol }}</span></strong></td>
                     <td><span class="badge badge-{{ 'buy' if o.side == 'buy' else 'sell' }}">{{ o.side|upper }}</span></td>
                     <td>{{ o.qty|int }}</td>
                     <td>{{ o.order_type|humanize }}</td>
@@ -1120,7 +1120,7 @@ function showOpTab(event, profileId, which) {
                         html += '<span style="color:' +
                                 (didntExecute ? '#999' : '#00c853') + ';' +
                                 (didntExecute ? 'text-decoration:line-through;' : '') +
-                                '">' + escapeHtml(t.action || '') + ' ' + escapeHtml(t.symbol || '') + '</span>' + badge + convertBadge + blockBadge +
+                                '">' + escapeHtml(t.action || '') + ' ' + symLink(t.symbol || '') + '</span>' + badge + convertBadge + blockBadge +
                                 ' (' + detail + (t.confidence != null ? t.confidence + '% confidence' : 'confidence n/a') + ')<br>' +
                                 (outcomeNote
                                     ? '<small style="display:block;margin:0.1rem 0 0.15rem 0.75rem;color:' +
@@ -1143,7 +1143,7 @@ function showOpTab(event, profileId, which) {
                     if (c.options_signal && c.options_signal !== 'neutral') alt.push('Opts: ' + c.options_signal);
                     if (c.reddit_mentions > 0) alt.push('Reddit: ' + c.reddit_mentions);
                     if (c.news && c.news.length) alt.push(c.news.length + ' news');
-                    tbl += '<tr><td><strong>' + escapeHtml(c.symbol||'') + '</strong></td><td>' + escapeHtml(c.signal||'') + '</td><td>' + (c.score || 0) + '/4</td><td>' + (c.rsi||0).toFixed(0) + '</td><td>' + (c.adx||0).toFixed(0) + '</td><td>' + (c.mfi||0).toFixed(0) + '</td><td>' + (c.volume_ratio||0).toFixed(1) + 'x</td><td>' + escapeHtml(c.track_record||'new') + '</td><td style="font-size:0.75rem;">' + (alt.join('<br>')||'-') + '</td></tr>';
+                    tbl += '<tr><td><strong>' + symLink(c.symbol||'') + '</strong></td><td>' + escapeHtml(c.signal||'') + '</td><td>' + (c.score || 0) + '/4</td><td>' + (c.rsi||0).toFixed(0) + '</td><td>' + (c.adx||0).toFixed(0) + '</td><td>' + (c.mfi||0).toFixed(0) + '</td><td>' + (c.volume_ratio||0).toFixed(1) + 'x</td><td>' + escapeHtml(c.track_record||'new') + '</td><td style="font-size:0.75rem;">' + (alt.join('<br>')||'-') + '</td></tr>';
                 });
                 tbl += '</tbody></table>';
                 listEl.innerHTML = tbl;

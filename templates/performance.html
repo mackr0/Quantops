@@ -397,12 +397,12 @@
         <article>
             <header><h4>Largest Win</h4></header>
             <strong class="pnl-pos" style="font-size:1.5rem;">${{ "{:,.2f}".format(m.largest_win) }}</strong>
-            <small class="muted">{{ m.largest_win_symbol }}</small>
+            <small class="muted"><span class="sym-link" role="button" tabindex="0">{{ m.largest_win_symbol }}</span></small>
         </article>
         <article>
             <header><h4>Largest Loss</h4></header>
             <strong class="pnl-neg" style="font-size:1.5rem;">${{ "{:,.2f}".format(m.largest_loss) }}</strong>
-            <small class="muted">{{ m.largest_loss_symbol }}</small>
+            <small class="muted"><span class="sym-link" role="button" tabindex="0">{{ m.largest_loss_symbol }}</span></small>
         </article>
     </div>
 

@@ -64,7 +64,13 @@ def test_mobile_css_collapses_nav_and_scopes_table_scroll():
 
 
 def test_stylesheet_cache_version_bumped():
+    # Forward-compatible: later features legitimately bump the version
+    # again (20260708 symbol modal did) — the pin is that it never
+    # falls BEHIND the mobile-nav CSS, or phones keep the stale sheet.
+    import re
     base = open(os.path.join(REPO, "templates", "base.html")).read()
-    assert "style.css?v=20260702" in base, (
-        "style.css cache-bust version must be bumped with the mobile-nav "
-        "CSS or phones keep the stale cached sheet")
+    m = re.search(r"style\.css\?v=(\d{8})", base)
+    assert m, "style.css must carry a dated cache-bust version"
+    assert int(m.group(1)) >= 20260702, (
+        "style.css cache-bust version must not fall behind the "
+        "mobile-nav CSS or phones keep the stale cached sheet")
