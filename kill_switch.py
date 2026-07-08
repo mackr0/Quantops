@@ -106,7 +106,16 @@ def activate(reason: str, set_by: str = "manual",
     now_iso = datetime.utcnow().isoformat()
     conn = _conn(db_path)
     try:
-        already, prev_reason = is_active(db_path)
+        # Read the prior state on THIS connection, not via is_active():
+        # its fail-OPEN (False, '') on a transient DB error would fake
+        # an OFF→ON transition here (duplicate history rows) — and the
+        # mirror bug in deactivate() would SKIP a real release's
+        # history row, under-counting the flap latch.
+        row = conn.execute(
+            "SELECT enabled, COALESCE(reason,'') FROM kill_switch_state "
+            "WHERE id = 1").fetchone()
+        already = bool(row and row[0])
+        prev_reason = row[1] if row else ""
         conn.execute(
             "UPDATE kill_switch_state SET enabled = 1, reason = ?, "
             "set_at = ?, set_by = ? WHERE id = 1",
@@ -134,7 +143,13 @@ def deactivate(set_by: str = "manual",
     _ensure_table(db_path)
     conn = _conn(db_path)
     try:
-        already, _ = is_active(db_path)
+        # In-connection state read (see activate() — is_active()'s
+        # fail-open would skip the history row for a real release,
+        # under-counting the flap latch).
+        row = conn.execute(
+            "SELECT enabled FROM kill_switch_state WHERE id = 1"
+        ).fetchone()
+        already = bool(row and row[0])
         conn.execute(
             # Clear the reason on release too — a lingering reason string
             # after enabled=0 misleads any surface that reads it (and made
@@ -154,6 +169,74 @@ def deactivate(set_by: str = "manual",
         return True
     finally:
         conn.close()
+
+
+#: A flap = the integrity gate auto-releasing this many times inside
+#: the window and then tripping AGAIN. At that release decision the
+#: halt LATCHES instead (operator clear only). 2 prior releases means
+#: the latch engages on the THIRD trip of an episode.
+INTEGRITY_LATCH_RELEASES = 2
+INTEGRITY_LATCH_WINDOW_MIN = 60
+
+
+def integrity_release_latched(db_path: Optional[str] = None) -> bool:
+    """True when auto-releasing the integrity halt AGAIN would continue
+    a flap: >= INTEGRITY_LATCH_RELEASES integrity_auto deactivations
+    already sit inside the trailing window.
+
+    THE FLAP (2026-07-06, the Alpaca wipe's first day): the gate
+    kill-switched at 09:38, ONE clean pass auto-released it at ~09:43,
+    entries resumed against corrupting books, drift re-tripped the
+    switch, repeat — each release window bought positions that the
+    overnight wipe then turned into real shorts. One clean pass is NOT
+    evidence a progressive broker-side event is over. Auto-release
+    counting (not activation counting) is deliberate: activation
+    history rows are also written on reason CHANGES during one
+    sustained halt (evolving findings), which would over-count; a
+    deactivate row is only ever written on a true ON→OFF transition.
+
+    A MANUAL clear fences the window: only auto-releases AFTER the
+    operator's most recent non-auto deactivation count. Clearing the
+    switch by hand is a deliberate act — the fresh episode gets its
+    normal first auto-release instead of insta-latching on residue
+    from the episode the operator just adjudicated.
+
+    Accepted shapes, deliberately (tune the constants to change):
+      • a SLOW flap (trips ≥ ~35 min apart) never latches — each
+        release there follows a long stretch of genuinely clean
+        books, materially unlike the 5-minute flap;
+      • a sustained-dirty stretch produces no release decisions (the
+        halt is simply up), so its eventual first clean pass releases
+        normally — entries were blocked the whole time.
+
+    Fail-CLOSED: any error reads as LATCHED — keeping the switch up a
+    cycle too long is recoverable, releasing into a flap is not. The
+    operator can always clear manually from the dashboard's
+    kill-switch banner; the latch only governs the AUTO-release
+    path."""
+    try:
+        _ensure_table(db_path)
+        conn = _conn(db_path)
+        try:
+            n = conn.execute(
+                "SELECT COUNT(*) FROM kill_switch_history "
+                "WHERE action = 'deactivate' "
+                "  AND set_by = 'integrity_auto' "
+                "  AND set_at >= datetime('now', ?) "
+                "  AND set_at > COALESCE((SELECT MAX(set_at) "
+                "      FROM kill_switch_history "
+                "      WHERE action = 'deactivate' "
+                "        AND set_by != 'integrity_auto'), '')",
+                (f"-{INTEGRITY_LATCH_WINDOW_MIN} minutes",),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        return int(n or 0) >= INTEGRITY_LATCH_RELEASES
+    except Exception:
+        logger.exception(
+            "integrity latch check failed — treating as LATCHED "
+            "(fail-closed: the switch stays up; operator can clear)")
+        return True
 
 
 def get_history(limit: int = 20, db_path: Optional[str] = None):

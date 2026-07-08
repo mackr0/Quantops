@@ -63,6 +63,13 @@ def patched(monkeypatch):
         kill_switch, "deactivate",
         lambda set_by="manual", db_path=None:
         state["calls"].update(deactivate=set_by) or True)
+    # 2026-07-07 flap latch: default False = no recent auto-release
+    # flap, preserving the pre-latch release behavior these tests pin.
+    # (The latch's own semantics are pinned in
+    # test_kill_switch_latch_2026_07_07.py.)
+    monkeypatch.setattr(
+        kill_switch, "integrity_release_latched",
+        lambda db_path=None: state.get("latched", False))
     monkeypatch.setattr(
         notifications, "send_email",
         lambda *a, **k: state.update(emails=state["emails"] + 1) or True)

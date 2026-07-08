@@ -3199,8 +3199,61 @@ def _run_integrity_gate():
     try:
         on, why = is_active()
         if on and str(why).startswith(_INTEGRITY_REASON_PREFIX):
-            deactivate(set_by="integrity_auto")
-            logging.info("Book integrity clean — integrity halt released.")
+            # FLAP LATCH (2026-07-07, the wipe's first-day lesson): on
+            # 07-06 the gate released after ONE clean pass at 09:43,
+            # entries resumed against corrupting books, and the switch
+            # re-tripped minutes later — repeatedly. Each release
+            # window bought positions the overnight wipe turned into
+            # real shorts. If this would be the flap's 3rd+ release
+            # (>=2 integrity_auto deactivations already inside the
+            # trailing hour), LATCH instead: re-stamp with a reason
+            # that does NOT carry the integrity prefix, so this very
+            # branch can never auto-lift it again — only the operator
+            # (dashboard kill-switch banner / admin API) can. Books-clean
+            # is still
+            # returned truthfully; the ACTIVE switch is what keeps
+            # entries blocked.
+            from kill_switch import integrity_release_latched
+            if integrity_release_latched():
+                latched_reason = (
+                    "Book integrity LATCHED — repeated drift trips "
+                    "within an hour (the 2026-07-06 flap pattern: one "
+                    "clean pass is not evidence a progressive broker-"
+                    "side event is over). Clear it from the "
+                    "dashboard's kill-switch banner once you've "
+                    "confirmed the underlying event is over. Last "
+                    "integrity reason: " + str(why)[:300]
+                )
+                activate(latched_reason, set_by="integrity_latch")
+                logging.error(
+                    "INTEGRITY LATCH — books read clean but the switch "
+                    "stays UP after repeated trips; operator clear "
+                    "required.")
+                # once per episode by construction: the LATCHED reason
+                # lacks the FAILED prefix, so this branch never runs
+                # again until the operator clears and a new episode
+                # trips fresh
+                try:
+                    from notifications import send_email
+                    send_email(
+                        "QuantOpsAI — kill switch LATCHED "
+                        "(repeated integrity trips)",
+                        "The book-integrity gate tripped repeatedly "
+                        "within an hour. The kill switch is now "
+                        "LATCHED and will NOT auto-release on a "
+                        "clean pass — clear it from the dashboard's "
+                        "kill-switch banner once you've confirmed "
+                        "the underlying event is over.\n\n"
+                        + latched_reason,
+                    )
+                except Exception:
+                    logging.warning(
+                        "integrity latch: operator email failed",
+                        exc_info=True)
+            else:
+                deactivate(set_by="integrity_auto")
+                logging.info(
+                    "Book integrity clean — integrity halt released.")
     except Exception:
         logging.exception("integrity gate: release check failed")
     return True
