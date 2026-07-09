@@ -40,11 +40,16 @@ def fresh_db():
         pass
 
 
-def test_internal_sectors_are_seven():
-    """The 7-key taxonomy is part of the contract — strategies and
-    relative-strength code depend on it."""
+def test_internal_sectors_are_the_full_eleven():
+    """The full 11-GICS taxonomy is part of the contract (2026-07-08
+    funnel rework — the old 7-bucket map made utilities/staples/
+    materials/real-estate unrepresentable in the candidate funnel).
+    Keys must match market_data.SECTOR_ETFS exactly so the rotation
+    signal joins without a mapping layer."""
     import sector_classifier as sc
-    assert len(sc.INTERNAL_SECTORS) == 7
+    from market_data import SECTOR_ETFS
+    assert len(sc.INTERNAL_SECTORS) == 11
+    assert set(SECTOR_ETFS.keys()) == sc.INTERNAL_SECTORS
 
 
 def test_cache_hit_returns_cached_value(fresh_db):
@@ -95,14 +100,19 @@ def test_yfinance_failure_falls_back_to_static_map(fresh_db):
     assert result == "tech"
 
 
-def test_unknown_symbol_returns_tech_default(fresh_db):
-    """A symbol that's not in yfinance and not in the fallback map
-    returns 'tech' (matches the prior behavior of `_guess_sector`)."""
+def test_unknown_symbol_returns_unclassified_default(fresh_db):
+    """A symbol that's not in yfinance and not in the fallback map is
+    honestly UNKNOWN. The old 'tech' default silently inflated the
+    perceived tech share of the universe (2026-07-08 funnel diagnosis:
+    31 of 100 universe slots were uncached and all read as tech)."""
     import sector_classifier as sc
 
     with patch("sector_classifier._yfinance_sector", return_value=None):
         result = sc.get_sector("ZZZUNKNOWNZZZ", db_path=fresh_db)
-    assert result == "tech"
+    assert result == "unclassified"
+    # deliberately NOT a real sector: never gets a stratification
+    # floor, never pollutes sector_cache
+    assert "unclassified" not in sc.INTERNAL_SECTORS
 
 
 def test_stale_cache_is_bypassed_and_refreshed(fresh_db):

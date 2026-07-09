@@ -308,6 +308,14 @@ class TestScreenerUsesAlpaca:
         assert len(result) >= 1
 
     def test_fallback_universe_filters_dead_symbols(self, monkeypatch, tmp_path):
+        # NETWORK SEAM (funnel-review H1 proof): the stratifier now
+        # classifies the pool, and this test's 150+ fake ALIVE* assets
+        # would each trigger a LIVE fundamentals lookup (the mocked
+        # api makes is_alpaca_active approve them) — 52s of real Yahoo
+        # calls for nonexistent tickers. Pin the lookup shut: offline
+        # classification only (cache + fallback map).
+        monkeypatch.setattr("sector_classifier._yfinance_sector",
+                            lambda sym: None)
         """The fallback universe must be intersected with Alpaca's active-asset
         list before it's merged into the sample. Otherwise stale hand-curated
         tickers (e.g. SQ→XYZ, PARA→PSKY, acquired/delisted names) flow into
@@ -352,7 +360,12 @@ class TestScreenerUsesAlpaca:
         # Bypass the ">=100 assets" floor so the rest of the function runs.
         orig = screener.screen_dynamic_universe
         import inspect
-        assert "Too few assets" in inspect.getsource(orig), \
+        # the build body moved into _screen_dynamic_universe_locked
+        # (single-flight lock, funnel-review H3) — the guard contract
+        # is unchanged, just relocated
+        import screener as _scr
+        assert "Too few assets" in inspect.getsource(
+            _scr._screen_dynamic_universe_locked), \
             "Expected asset-count guard to exist"
 
         # Patch the ValueError guard out for this test by monkey-patching
@@ -528,7 +541,10 @@ class TestMigrationContract:
     def test_screener_tries_alpaca_before_yfinance(self):
         """Same invariant for the screener."""
         import inspect, screener
-        src = inspect.getsource(screener.screen_dynamic_universe)
+        # public entry + locked builder together: the Alpaca-first
+        # ordering contract lives in the builder since the H3 split
+        src = inspect.getsource(screener.screen_dynamic_universe) + \
+            inspect.getsource(screener._screen_dynamic_universe_locked)
         alpaca_idx = src.find("get_snapshots")
         yfinance_idx = src.find("yf_lock.download")
         assert alpaca_idx > 0

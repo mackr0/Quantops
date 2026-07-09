@@ -4244,9 +4244,13 @@ def _rank_candidates(strategy_results, held_symbols, enable_shorts,
     if _div_on and held_symbols:
         try:
             from collections import Counter
-            from sector_classifier import get_sector
+            from sector_classifier import INTERNAL_SECTORS, get_sector
+            # real sectors only: 'unclassified' is not a sector, and
+            # counting it would haircut unrelated unknowns against
+            # each other (funnel-review M3)
             _held_sector_counts = Counter(
-                s for s in (get_sector(h) for h in held_symbols) if s)
+                s for s in (get_sector(h) for h in held_symbols)
+                if s in INTERNAL_SECTORS)
         except Exception as _hs_exc:
             logger.debug("held-sector precompute failed: %s", _hs_exc)
             _held_sector_counts = {}

@@ -78,6 +78,9 @@ class TestETFFilter:
         from screener import screen_dynamic_universe
         import inspect
         src = inspect.getsource(screen_dynamic_universe)
+        # build body moved into the single-flight builder (funnel H3)
+        import screener as _scr
+        src += inspect.getsource(_scr._screen_dynamic_universe_locked)
         for etf in ("SOXL", "TQQQ", "SQQQ", "SPY", "QQQ", "AMZD", "NVDL"):
             assert etf in src, f"{etf} should be in the ETF blocklist"
 

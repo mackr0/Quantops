@@ -168,7 +168,7 @@ def probe_sector_classifier() -> bool:
     try:
         from sector_classifier import get_sector
         sector = get_sector("AAPL")
-        if not sector or sector == "unknown":
+        if not sector or sector in ("unknown", "unclassified"):
             _record(
                 "sector_classifier", False,
                 f"get_sector('AAPL') returned '{sector}' — "

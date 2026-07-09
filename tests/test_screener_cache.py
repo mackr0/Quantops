@@ -46,8 +46,11 @@ class TestStaleFallback:
     def test_exception_path_returns_stale_cache(self, monkeypatch):
         import screener
 
-        # Seed a stale cache entry (simulates a previous successful run)
-        cache_key = "stocks_50.0_500.0_1000000"
+        # Seed a stale cache entry (simulates a previous successful run).
+        # _v2 = the funnel-rework cache-key version (2026-07-08): the
+        # stale-fallback path reads the CURRENT key, so the seed must
+        # match it — an old-format seed correctly reads as absent.
+        cache_key = "stocks_50.0_500.0_1000000_v2"
         stale_symbols = ["AAPL", "MSFT", "GOOG"]
         screener._dynamic_cache = {
             cache_key: (time.time() - 7200, stale_symbols),  # 2 hrs old

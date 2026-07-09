@@ -590,7 +590,7 @@ def _guess_sector(symbol):
         from sector_classifier import get_sector
         return get_sector(symbol)
     except Exception:
-        return "tech"
+        return "unclassified"  # honest unknown — never counted as tech
 
 
 def get_snapshot(symbol, api=None):

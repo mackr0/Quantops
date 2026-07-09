@@ -126,10 +126,14 @@ def compute_book_fit(
     same_sector = 0
     sector: Optional[str] = None
     try:
-        from sector_classifier import get_sector
+        from sector_classifier import INTERNAL_SECTORS, get_sector
         sector = get_sector(symbol)
-        if sector:
+        # 'unclassified' is not a sector — two unknowns sharing it says
+        # nothing about concentration (funnel-review M3)
+        if sector in INTERNAL_SECTORS:
             same_sector = sum(1 for h in held if get_sector(h) == sector)
+        else:
+            sector = None
     except Exception as exc:
         logger.debug("book_fit sector failed for %s: %s", symbol, exc)
 

@@ -29,11 +29,13 @@ Lookup order
    classification rarely changes for stable names. Most lookups
    hit cache and never touch yfinance.
 2. **yfinance** on cache miss — `Ticker(sym).info["sector"]` returns
-   a GICS sector string we map to our 7 internal keys.
+   a GICS sector string we map to our 11 internal keys.
 3. **Static fallback map** for the top ~100 symbols when yfinance is
    unreachable or returns nothing useful (offline mode safety net).
-4. **`"tech"` default** when nothing else lands (matches prior
-   behavior of `_guess_sector`).
+4. **`"unclassified"` default** when nothing else lands — honest
+   unknown, negative-cached so unmappable names don't re-fetch on
+   every call (the old `"tech"` default silently inflated the
+   perceived tech share of the universe).
 
 Cold yfinance lookups happen only on brand-new tickers — 1-3/week as
 the universe rotates. Production load is negligible.
@@ -62,10 +64,18 @@ MASTER_DB = os.environ.get("QUANTOPSAI_MASTER_DB", "quantopsai.db")
 _schema_lock = threading.Lock()
 _schema_initialized: set = set()
 
-# Internal seven-key taxonomy used by the sector momentum strategy.
+# Internal taxonomy — the full 11 GICS sectors (2026-07-08, universe-
+# funnel rework). The old 7-bucket map folded utilities/staples/
+# materials/real-estate into industrial/consumer_disc/finance, which
+# made defensive sectors literally unrepresentable in the candidate
+# funnel: the AI was told "rotate into utilities" by its own market
+# context while no utilities name could ever reach its menu. Keys
+# deliberately match market_data.SECTOR_ETFS exactly, so the sector-
+# momentum rotation signal joins against these with no mapping layer.
 INTERNAL_SECTORS = {
     "tech", "finance", "energy", "healthcare",
     "consumer_disc", "industrial", "comm_services",
+    "consumer_staples", "utilities", "materials", "real_estate",
 }
 
 # GICS / yfinance sector strings → internal key.
@@ -79,11 +89,13 @@ _GICS_TO_INTERNAL = {
     "Healthcare": "healthcare",
     "Consumer Cyclical": "consumer_disc",
     "Consumer Discretionary": "consumer_disc",
-    "Consumer Defensive": "consumer_disc",
+    "Consumer Defensive": "consumer_staples",
+    "Consumer Staples": "consumer_staples",
     "Industrials": "industrial",
-    "Basic Materials": "industrial",
-    "Real Estate": "finance",   # closest fit; no separate REIT key
-    "Utilities": "industrial",  # closest fit
+    "Basic Materials": "materials",
+    "Materials": "materials",
+    "Real Estate": "real_estate",
+    "Utilities": "utilities",
 }
 
 # Hand-curated fallback for the top ~100 symbols. Used only when
@@ -126,9 +138,34 @@ _FALLBACK_MAP = {
         "NFLX", "DIS", "ROKU", "SNAP", "PINS", "RBLX", "DKNG", "TMUS",
         "T", "VZ", "CMCSA", "WBD", "PARA", "LYV",
     },
+    "consumer_staples": {
+        "KO", "PEP", "PG", "WMT", "COST", "CL", "KMB", "GIS", "K",
+        "MO", "PM", "STZ", "TGT", "DG", "DLTR", "KR", "SYY", "KDP",
+        "MDLZ", "HSY", "TSN",
+    },
+    "utilities": {
+        "NEE", "DUK", "SO", "D", "AEP", "EXC", "SRE", "XEL", "ED",
+        "PCG", "WEC", "ES", "PEG", "CEG", "VST", "NRG", "AES",
+    },
+    "materials": {
+        "LIN", "APD", "SHW", "FCX", "NEM", "NUE", "ECL", "DOW", "DD",
+        "VALE", "AA", "CLF", "X", "STLD", "MP", "ALB", "GOLD", "SCCO",
+    },
+    "real_estate": {
+        "PLD", "AMT", "EQIX", "SPG", "O", "PSA", "CCI", "DLR", "WELL",
+        "AVB", "EQR", "VTR", "IRM", "VICI",
+    },
 }
 
-_DEFAULT_SECTOR = "tech"
+# Unknown symbols are honestly UNKNOWN — the old "tech" default
+# silently inflated the perceived tech share of the universe (31 of
+# today's 100 universe slots were uncached and all read as tech).
+# "unclassified" is deliberately NOT in INTERNAL_SECTORS: it never
+# gets a stratification floor and the concentration counters skip it
+# (an unknown shared by two holdings says nothing). It IS written to
+# sector_cache as a NEGATIVE entry (funnel M5) so unmappable names
+# don't re-fetch on every stratifier refresh.
+_DEFAULT_SECTOR = "unclassified"
 
 
 # ---------------------------------------------------------------------------
@@ -184,13 +221,18 @@ def _read_cache(symbol: str, db_path: str = MASTER_DB) -> Optional[str]:
     except Exception:
         # If timestamp is malformed, treat as stale.
         return None
-    if sector in INTERNAL_SECTORS:
-        return sector
+    if sector in INTERNAL_SECTORS or sector == _DEFAULT_SECTOR:
+        return sector  # negative entries are hits too (funnel M5)
     return None
 
 
 def _write_cache(symbol: str, sector: str, db_path: str = MASTER_DB) -> None:
-    if not symbol or not sector or sector not in INTERNAL_SECTORS:
+    # 'unclassified' is a valid NEGATIVE entry (funnel-review M5): an
+    # unmappable name would otherwise burn a live lookup on every
+    # stratifier refresh, forever. Same 7-day TTL — a later listing/
+    # classification change heals within a week.
+    if not symbol or not sector or (
+            sector not in INTERNAL_SECTORS and sector != _DEFAULT_SECTOR):
         return
     if not db_path:
         return
@@ -252,7 +294,8 @@ def get_sector(symbol: str, db_path: str = MASTER_DB) -> str:
     1. Cache hit (≤ 7 days old)
     2. yfinance GICS lookup (writes cache on success)
     3. Fallback map (writes cache on success)
-    4. Default "tech"
+    4. Default "unclassified" (negative-cached so unmappable names
+       don't re-fetch on every call)
     """
     if not symbol:
         return _DEFAULT_SECTOR
@@ -272,7 +315,53 @@ def get_sector(symbol: str, db_path: str = MASTER_DB) -> str:
         _write_cache(sym, fb, db_path)
         return fb
 
+    _write_cache(sym, _DEFAULT_SECTOR, db_path)  # negative cache (M5)
     return _DEFAULT_SECTOR
+
+
+def get_sectors_cached_bulk(symbols, db_path: str = MASTER_DB) -> dict:
+    """{symbol: sector} for CACHE HITS ONLY — one SELECT, zero network.
+
+    Built for the universe stratifier, which classifies hundreds of
+    candidates per refresh: calling get_sector() per symbol there
+    would stampede the fundamentals source on cache misses. Misses
+    are simply absent from the result (callers treat them as
+    unclassified); the bounded full-lookup pass that follows the
+    stratifier's provisional cut fills the cache over time. Respects
+    the same TTL as get_sector; falls back to the hardcoded map for
+    misses (offline parity). Fail-open: errors return {}."""
+    out = {}
+    syms = [s.upper() for s in (symbols or []) if s]
+    if not syms:
+        return out
+    _init_schema(db_path)
+    try:
+        with closing(sqlite3.connect(db_path)) as conn:
+            placeholders = ",".join("?" for _ in syms)
+            rows = conn.execute(
+                f"SELECT symbol, sector, fetched_at FROM sector_cache "
+                f"WHERE symbol IN ({placeholders})", syms,
+            ).fetchall()
+        cutoff = datetime.utcnow() - timedelta(seconds=_TTL_SECONDS)
+        for sym, sector, fetched_at in rows:
+            try:
+                if datetime.fromisoformat(fetched_at) >= cutoff and (
+                        sector in INTERNAL_SECTORS or
+                        sector == _DEFAULT_SECTOR):
+                    out[sym] = sector
+            except Exception as exc:
+                logger.debug("bulk sector cache row malformed for %s: %s",
+                             sym, exc)
+    except Exception as exc:
+        logger.warning("bulk sector cache read failed: %s — stratifier "
+                       "will treat all symbols as cache misses this "
+                       "refresh", exc)
+    for sym in syms:
+        if sym not in out:
+            fb = _fallback_sector(sym)
+            if fb:
+                out[sym] = fb
+    return out
 
 
 # ---------------------------------------------------------------------------

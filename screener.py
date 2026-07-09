@@ -7,6 +7,7 @@ equity endpoint) and as a last-resort fallback in the dynamic screener.
 
 import logging
 import sys
+import threading
 from datetime import datetime
 
 import pandas as pd
@@ -124,6 +125,161 @@ def _dedup(symbols):
     return unique
 
 
+# ---------------------------------------------------------------------------
+# Fund/ETF detection + sector-stratified universe selection (2026-07-08)
+# ---------------------------------------------------------------------------
+
+# High-precision fund tokens for Alpaca's registered asset names. Two
+# classes: (a) suffix/context tokens every fund carries (" ETF", " ETN",
+# an explicit commodity/crypto trust), (b) pure-play fund ISSUERS that
+# have no publicly-traded stock of their own (so the token can never
+# hit a real company). Deliberately absent: bare "TRUST" (Northern
+# Trust is a bank), "INVESCO" (IVZ is the manager's own listed stock),
+# "FUND" alone (e.g. closed-end managers' operating companies).
+#: Publicly-listed FUND ISSUERS whose own corporate stock would match
+#: an issuer token (round-1 review M2: WisdomTree, Inc. trades as WT —
+#: the WISDOMTREE token must not bar the operating company; dropping
+#: the token instead would reopen recall, since WisdomTree products
+#: are named "...Fund", not "...ETF").
+_FUND_ISSUER_STOCK_ALLOWLIST = {"WT"}
+
+_FUND_NAME_TOKENS = (
+    " ETF", " ETN", "INDEX FUND", "BITCOIN TRUST", "ETHEREUM TRUST",
+    "GOLD TRUST", "SILVER TRUST", "ISHARES", "PROSHARES", "VANGUARD",
+    "SPDR", "DIREXION", "WISDOMTREE", "GRANITESHARES", "KRANESHARES",
+    "VANECK", "GLOBAL X ", "XTRACKERS", "FLEXSHARES",
+)
+
+
+def _is_fund_name(name) -> bool:
+    """True when an Alpaca registered asset name identifies an
+    ETF/ETN/fund/trust product rather than an operating company."""
+    n = (str(name or "")).upper()
+    if not n:
+        return False
+    return any(tok in n for tok in _FUND_NAME_TOKENS)
+
+
+#: Single-flight guard for the dynamic-universe build (round-1 review
+#: H3): 13 profile workers share one universe; on daily cache expiry
+#: only the first thread in may build, the rest re-check the cache.
+_dynamic_build_lock = threading.Lock()
+
+#: Stratification pool: the provisional dollar-volume cut whose members
+#: get sector-classified. Bounded so first-day cache misses can't
+#: stampede the fundamentals source (the 24h universe cache means this
+#: runs about once a day; by day 2-3 nearly every lookup is a 7-day
+#: cache hit).
+_STRATIFY_POOL_SIZE = 300
+#: Wall-clock budget for the live sector-lookup pass. The 150-call cap
+#: bounds COUNT, not TIME: on a slow/rate-limited fundamentals day each
+#: lookup can hang for seconds and the once-daily refresh would stall
+#: the trading cycle (round-1 review H1). Same pattern as
+#: _DYNAMIC_YF_BUDGET_SEC for the bulk-download fallback.
+_STRATIFY_LOOKUP_BUDGET_SEC = 60
+#: Bounded live sector lookups per refresh for pool members the cache
+#: doesn't know yet; the rest stay unclassified until a later refresh.
+_STRATIFY_MAX_LIVE_LOOKUPS = 150
+#: Guaranteed universe slots per sector (11 sectors), filled by each
+#: sector's most dollar-liquid names that passed the operator floors.
+_SECTOR_FLOOR_SLOTS = 5
+#: Extra slots for each of the market's top-3 momentum sectors — the
+#: same rotation signal the AI prompt already renders, so "rotate into
+#: energy" and "energy is in the menu" finally agree.
+_ROTATION_BONUS_SLOTS = 3
+
+
+def _stratify_by_sector(pool, max_symbols):
+    """Sector-stratified pick from `pool` (list of (symbol, avg_volume,
+    last_price) tuples ALREADY sorted by dollar volume descending).
+
+    Round-robin across sectors up to each sector's quota (floor +
+    rotation bonus), then global dollar-volume rank fills the rest.
+    Round-robin (not sector-by-sector) so a small max_symbols degrades
+    fairly instead of exhausting the alphabet's first sectors.
+    Unclassified names get no floor — they compete only in the global
+    remainder. Fail-open everywhere: no sector data → pure dollar-
+    volume top-N (the pre-2026-07-08 behavior, minus the share-count
+    distortion)."""
+    ordered = [p[0] for p in pool]
+    if max_symbols <= 0 or not ordered:
+        return []
+    try:
+        from sector_classifier import (INTERNAL_SECTORS, get_sector,
+                                       get_sectors_cached_bulk)
+        sectors = get_sectors_cached_bulk(ordered)
+        live_budget = _STRATIFY_MAX_LIVE_LOOKUPS
+        unresolved = 0
+        import time as _t
+        _live_deadline = _t.monotonic() + _STRATIFY_LOOKUP_BUDGET_SEC
+        for sym in ordered:
+            if sym in sectors:
+                continue
+            if live_budget <= 0 or _t.monotonic() > _live_deadline:
+                unresolved += 1
+                continue
+            live_budget -= 1
+            try:
+                sec = get_sector(sym)
+            except Exception as exc:
+                logger.debug("stratifier sector lookup failed for %s: %s",
+                             sym, exc)
+                continue
+            if sec in INTERNAL_SECTORS:
+                sectors[sym] = sec
+        if unresolved:
+            logger.info(
+                "stratifier: %d pool symbol(s) unclassified this "
+                "refresh (live-lookup budget %d spent) — they compete "
+                "in the global remainder and classify on later "
+                "refreshes", unresolved, _STRATIFY_MAX_LIVE_LOOKUPS)
+
+        quotas = {sec: _SECTOR_FLOOR_SLOTS for sec in INTERNAL_SECTORS}
+        try:
+            from macro_data import get_sector_momentum_ranking
+            for sec in (get_sector_momentum_ranking() or {}).get("top_3", []):
+                if sec in quotas:
+                    quotas[sec] += _ROTATION_BONUS_SLOTS
+        except Exception as exc:
+            logger.debug("stratifier rotation bonus unavailable: %s", exc)
+
+        by_sector = {}
+        for sym in ordered:
+            sec = sectors.get(sym)
+            if sec in quotas:
+                by_sector.setdefault(sec, []).append(sym)
+
+        picked, seen = [], set()
+        rank = 0
+        while len(picked) < max_symbols:
+            advanced = False
+            for sec in sorted(quotas):
+                if rank >= quotas[sec]:
+                    continue
+                names = by_sector.get(sec, [])
+                if rank < len(names) and len(picked) < max_symbols:
+                    sym = names[rank]
+                    if sym not in seen:
+                        picked.append(sym)
+                        seen.add(sym)
+                    advanced = True
+            rank += 1
+            if not advanced:
+                break
+        for sym in ordered:
+            if len(picked) >= max_symbols:
+                break
+            if sym not in seen:
+                picked.append(sym)
+                seen.add(sym)
+        return picked[:max_symbols]
+    except Exception as exc:
+        logger.warning(
+            "stratifier failed (%s: %s) — falling back to dollar-volume "
+            "top-%d", type(exc).__name__, exc, max_symbols)
+        return ordered[:max_symbols]
+
+
 def to_yfinance_symbol(symbol):
     """Convert Alpaca symbol to yfinance format. E.g. 'BTC/USD' -> 'BTC-USD'."""
     return symbol.replace("/", "-")
@@ -202,7 +358,11 @@ def screen_by_price_range(min_price=10.0, max_price=20.0, min_volume=500_000,
     print(f"  Found {len(results)} stocks in ${min_price}-${max_price} "
           f"with {min_volume:,}+ vol and ${min_adv/1e6:.1f}M+ ADV")
 
-    results.sort(key=lambda x: x["volume"], reverse=True)
+    # Dollar-ADV rank, not raw share count (2026-07-08): share-count
+    # sorting let a $3 stock churning 50M shares outrank KO every day,
+    # compounding the growth-monoculture the stratified universe now
+    # prevents upstream. adv_dollar is already computed above.
+    results.sort(key=lambda x: x["adv_dollar"], reverse=True)
     return results[:limit]
 
 
@@ -864,21 +1024,47 @@ def screen_dynamic_universe(min_price=10.0, max_price=20.0, min_volume=500_000,
 
     Returns list of symbol strings.
     """
-    cache_key = f"{market_type}_{min_price}_{max_price}_{min_volume}"
+    # _v2: cache-key version — the funnel rework (stratified sectors,
+    # fund exclusion) must not serve yesterday's ETF-laden disk cache
+    # for its first 24h after deploy (round-1 review L7).
+    cache_key = f"{market_type}_{min_price}_{max_price}_{min_volume}_v2"
     cached = _dynamic_cache.get(cache_key)
     if cached and (_time.time() - cached[0]) < _DYNAMIC_TTL:
         return cached[1]
 
+    # SINGLE-FLIGHT: 13 profile workers share one universe. Without a
+    # lock, the daily cache expiry made every simultaneous misser run
+    # its OWN build — N x 150 live sector lookups (round-1 review H3).
+    # First thread in builds; the rest block briefly, then hit the
+    # fresh cache on the re-check.
+    with _dynamic_build_lock:
+        cached = _dynamic_cache.get(cache_key)
+        if cached and (_time.time() - cached[0]) < _DYNAMIC_TTL:
+            return cached[1]
+        return _screen_dynamic_universe_locked(
+            cache_key, market_type, min_price, max_price, min_volume,
+            max_symbols, ctx, fallback_universe)
+
+
+def _screen_dynamic_universe_locked(cache_key, market_type, min_price,
+                                    max_price, min_volume, max_symbols,
+                                    ctx, fallback_universe):
     try:
         # Step 1: Get all tradable assets from Alpaca
         from client import get_api
         api = get_api(ctx)
         assets = api.list_assets(status="active")
 
-        # Filter to US exchanges, tradable, no OTC, no ETFs/leveraged products
-        # ETFs like SOXL, AMZD, SRTY, SLV flood yfinance errors since they
-        # don't have fundamentals data and aren't individual stocks.
-        _ETF_SUFFIXES = {"L", "S", "D", "X"}  # common leveraged ETF endings
+        # Filter to US exchanges, tradable, no OTC, no ETFs/leveraged
+        # products. The hand-typed _KNOWN_ETFS list alone leaked ~30
+        # funds into the 100-slot universe (IBIT, ETHA, GDX, FXI, KWEB,
+        # SGOV... all received real AI evaluations — 2026-07-08
+        # diagnosis): a quarter of the menu wasted on non-companies.
+        # Alpaca's own registered asset NAME is the reliable signal —
+        # fund names carry their issuer or an explicit fund token (see
+        # _is_fund_name). The old single-letter _ETF_SUFFIXES idea was
+        # defined here but never wired, deliberately: it would have
+        # killed NFLX/FDX/CAT-class tickers; it is now removed.
         _KNOWN_ETFS = {
             "SOXL", "SOXS", "TQQQ", "SQQQ", "SRTY", "SPXL", "SPXS",
             "UVXY", "SVXY", "AMZD", "MSFU", "MSFL", "NVDL", "TSLL",
@@ -889,14 +1075,24 @@ def screen_dynamic_universe(min_price=10.0, max_price=20.0, min_volume=500_000,
             "JPST", "RSP", "SRTY", "SOXS", "LABU", "LABD",
         }
         equity_symbols = []
+        excluded_funds = 0
         for a in assets:
-            if (a.tradable and a.exchange in ("NYSE", "NASDAQ", "ARCA", "AMEX")
+            if not (a.tradable and a.exchange in ("NYSE", "NASDAQ",
+                                                  "ARCA", "AMEX")
                     and not a.symbol.endswith(".W")
-                    and "." not in a.symbol
-                    and a.symbol not in _KNOWN_ETFS):
-                equity_symbols.append(a.symbol)
+                    and "." not in a.symbol):
+                continue
+            if a.symbol not in _FUND_ISSUER_STOCK_ALLOWLIST and (
+                    a.symbol in _KNOWN_ETFS or
+                    _is_fund_name(getattr(a, "name", ""))):
+                excluded_funds += 1
+                continue
+            equity_symbols.append(a.symbol)
 
-        _dyn_logger.info(f"Dynamic screener: {len(equity_symbols)} tradable assets from Alpaca")
+        _dyn_logger.info(
+            f"Dynamic screener: {len(equity_symbols)} tradable assets "
+            f"from Alpaca ({excluded_funds} fund/ETF products excluded "
+            f"by registered name)")
 
         if len(equity_symbols) < 100:
             raise ValueError(f"Too few assets ({len(equity_symbols)}), using fallback")
@@ -957,7 +1153,7 @@ def screen_dynamic_universe(min_price=10.0, max_price=20.0, min_volume=500_000,
                     continue
 
                 if min_price <= last_price <= max_price and avg_volume >= min_volume:
-                    results.append((sym, avg_volume))
+                    results.append((sym, avg_volume, last_price))
             alpaca_worked = True
             _dyn_logger.info(
                 "Dynamic screener: Alpaca snapshots returned "
@@ -1016,7 +1212,7 @@ def screen_dynamic_universe(min_price=10.0, max_price=20.0, min_volume=500_000,
                     last_price = float(close_data.iloc[-1])
                     avg_volume = float(vol_data.mean())
                     if min_price <= last_price <= max_price and avg_volume >= min_volume:
-                        results.append((sym, avg_volume))
+                        results.append((sym, avg_volume, last_price))
                 except (KeyError, ValueError, AttributeError, TypeError,
                         IndexError) as _ue_exc:
                     # Per-symbol price/volume eligibility loop in
@@ -1028,9 +1224,21 @@ def screen_dynamic_universe(min_price=10.0, max_price=20.0, min_volume=500_000,
                     )
                     continue
 
-        # Sort by volume (most active first), take top N
-        results.sort(key=lambda x: x[1], reverse=True)
-        symbols = [r[0] for r in results[:max_symbols]]
+        # Sector-stratified selection on DOLLAR volume (2026-07-08).
+        # Raw share-volume top-N was a one-dimensional leaderboard that
+        # mega-cap tech / crypto-momentum names owned permanently: the
+        # diagnosis measured a 14-symbol/day fleet-wide candidate pool,
+        # 34.6% empty shortlists, zero energy names in three days, and
+        # defensive sectors unrepresentable. Every sector now gets
+        # guaranteed slots (its most dollar-liquid names that passed
+        # the operator floors), the market's leading sectors get bonus
+        # slots (the same rotation signal the AI prompt already
+        # shows), and the remainder goes to global dollar-volume rank.
+        # This widens what can COMPETE — the momentum sub-screens and
+        # the AI still decide what gets bought.
+        results.sort(key=lambda x: x[1] * x[2], reverse=True)
+        symbols = _stratify_by_sector(results[:_STRATIFY_POOL_SIZE],
+                                      max_symbols)
 
         _dyn_logger.info(f"Dynamic screener: {len(symbols)} symbols match "
                          f"${min_price}-${max_price}, vol>={min_volume:,}")

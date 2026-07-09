@@ -86,7 +86,12 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
     for symbol in universe:
         try:
             sector = get_sector(symbol) if callable(get_sector) else None
-            etf = _SECTOR_ETF.get(sector or "", "SPY")
+            # market_data.SECTOR_ETFS keys by INTERNAL sector names —
+            # the old GICS-keyed local map never matched get_sector()
+            # output, so every symbol compared against SPY since
+            # inception (funnel-review M4)
+            from market_data import SECTOR_ETFS
+            etf = SECTOR_ETFS.get(sector or "", "SPY")
             sec_ret = _sector_5d_return(etf)
             if sec_ret < 2.0:
                 continue  # sector not strong enough — pattern doesn't apply
