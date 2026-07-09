@@ -4,8 +4,25 @@
 {% block content %}
 <hgroup>
     <h1>Dashboard</h1>
-    <p>Welcome back{% if current_user.display_name %}, {{ current_user.display_name }}{% endif %}</p>
+    <p>Welcome back{% if current_user.display_name %}, {{ current_user.display_name }}{% endif %}
+        <span id="et-clock" class="muted" style="margin-left:0.6rem; font-variant-numeric:tabular-nums;"></span></p>
 </hgroup>
+<script>
+// Live Eastern Time clock — market hours run on ET, so the operator can
+// see at a glance where the session stands.
+(function() {
+    var el = document.getElementById('et-clock');
+    if (!el) return;
+    var fmt = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York',
+        weekday: 'short', hour: 'numeric', minute: '2-digit',
+        second: '2-digit', hour12: true,
+    });
+    function tick() { el.textContent = fmt.format(new Date()) + ' ET'; }
+    tick();
+    setInterval(tick, 1000);
+})();
+</script>
 
 <!-- Master kill switch banner. Viewers see the state but can NOT toggle —
      the toggle endpoint is @admin-gated server-side AND the activate /

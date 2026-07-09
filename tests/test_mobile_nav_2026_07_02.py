@@ -74,3 +74,13 @@ def test_stylesheet_cache_version_bumped():
     assert int(m.group(1)) >= 20260702, (
         "style.css cache-bust version must not fall behind the "
         "mobile-nav CSS or phones keep the stale cached sheet")
+
+
+def test_dashboard_has_live_et_clock():
+    # 2026-07-09 — operator-requested: a live Eastern Time clock next
+    # to the dashboard greeting (market hours run on ET). Pin the
+    # element, the timezone, and the ticking interval.
+    dash = open(os.path.join(REPO, "templates", "dashboard.html")).read()
+    assert 'id="et-clock"' in dash
+    assert "America/New_York" in dash
+    assert "setInterval(tick, 1000)" in dash
