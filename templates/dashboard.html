@@ -535,7 +535,7 @@
             <tbody id="pending-orders-{{ prof.id }}">
                 {% for o in prof.pending_orders %}
                 <tr>
-                    <td><strong><span class="sym-link" role="button" tabindex="0">{{ o.symbol }}</span></strong></td>
+                    <td><strong><span class="sym-link">{{ o.symbol }}</span></strong></td>
                     <td><span class="badge badge-{{ 'buy' if o.side == 'buy' else 'sell' }}">{{ o.side|upper }}</span></td>
                     <td>{{ o.qty|int }}</td>
                     <td>{{ o.order_type|humanize }}</td>

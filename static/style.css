@@ -658,11 +658,28 @@ footer {
 }
 
 /* ---- Tap-a-ticker company info modal (2026-07-08) ---- */
-.sym-link {
+.sym-link,
+.sym-link:hover,
+.sym-link:focus,
+.sym-link:active {
+    /* PLAIN INLINE TEXT, deliberately: role="button" was removed from
+       these spans because Pico CSS styles [role=button] as a full
+       primary button (big blue squares all over the tables,
+       2026-07-09). The explicit resets below are the belt against
+       any framework selector ever matching these spans again. */
+    display: inline;
+    background: none;
+    border: none;
+    box-shadow: none;
+    padding: 0;
+    margin: 0;
+    color: inherit;
+    font-size: inherit;
+    font-weight: inherit;
+    line-height: inherit;
     cursor: pointer;
     text-decoration: underline dotted;
     text-underline-offset: 2px;
-    font-weight: inherit;
 }
 .sym-link:hover { color: #3b6fd4; }
 .sym-modal-backdrop {

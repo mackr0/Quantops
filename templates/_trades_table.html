@@ -121,7 +121,7 @@
                     <tr class="multileg-header-row" style="background:#ede7f6;border-top:2px solid #7e57c2;border-left:4px solid #7e57c2;">
                         <td colspan="{{ 9 if show_profile else 8 }}" style="padding:0.4rem 0.75rem;font-size:0.8rem;">
                             <span style="display:inline-block;background:#5e35b1;color:white;font-size:0.65rem;font-weight:700;padding:0.1rem 0.4rem;border-radius:3px;letter-spacing:0.05em;margin-right:0.5rem;">SPREAD</span>
-                            <strong><span class="sym-link" role="button" tabindex="0">{{ t.symbol }}</span></strong>
+                            <strong><span class="sym-link">{{ t.symbol }}</span></strong>
                             <span style="margin-left:0.4rem;color:#5e35b1;font-weight:600;">{{ t.option_strategy|humanize }}</span>
                             {% if t.expiry %}<span class="muted" style="margin-left:0.4rem;">· exp {{ t.expiry }}</span>{% endif %}
                             <span class="muted" style="margin-left:0.4rem;">· {{ _group_legs|length }} legs</span>
@@ -174,10 +174,10 @@
                     <td>
                         {% if is_option %}
                             <span style="display:inline-block;background:#7e57c2;color:white;font-size:0.65rem;font-weight:600;padding:0.05rem 0.3rem;border-radius:3px;vertical-align:middle;margin-right:0.25rem;">OPT</span>
-                            <strong><span class="sym-link" role="button" tabindex="0">{{ t.symbol }}</span></strong>
+                            <strong><span class="sym-link">{{ t.symbol }}</span></strong>
                             <br><small class="muted" style="font-size:0.75rem;">{{ t.occ_symbol|format_occ }}</small>
                         {% else %}
-                            <strong><span class="sym-link" role="button" tabindex="0">{{ t.symbol }}</span></strong>
+                            <strong><span class="sym-link">{{ t.symbol }}</span></strong>
                         {% endif %}
                         {% if is_excluded_dq %}
                             <span title="Excluded from analytics aggregates due to a known incident. The trade is shown here for audit transparency but doesn't count toward slippage, win-rate, Sharpe, CVaR, or any other displayed metric. See CHANGELOG for incident details." style="display:inline-block;background:#888;color:#fff;font-size:0.6rem;font-weight:600;padding:0.05rem 0.35rem;border-radius:3px;vertical-align:middle;margin-left:0.25rem;letter-spacing:0.05em;">EXCLUDED</span>
