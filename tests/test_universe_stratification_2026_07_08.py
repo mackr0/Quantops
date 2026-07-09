@@ -229,13 +229,20 @@ def test_live_lookup_budget_bounded(fake_sectors, monkeypatch):
 
 # ------------------------------------------------- price-range sort
 
-def test_screen_by_price_range_ranks_by_dollar_adv(monkeypatch):
+def test_screen_by_price_range_preserves_stratified_input_order(monkeypatch):
+    # 2026-07-09, the first-live-session lesson: the dynamic universe
+    # arrives PRIORITY-ORDERED by the sector stratifier — ANY global
+    # re-sort here (share volume before, dollar-ADV briefly) un-
+    # stratifies it ahead of the top-`limit` cut, and the fleet's
+    # first morning re-narrowed to 18/18 tech candidates. The output
+    # must follow the INPUT order, whatever the liquidity ranks say.
     import pandas as pd
 
     def _bars(universe, limit=30):
         out = {}
-        for sym, price, vol in (("CHEAP", 3.0, 5_000_000),
-                                ("PRICEY", 60.0, 1_000_000)):
+        for sym, price, vol in (("UTIL", 40.0, 2_000_000),   # $80M ADV
+                                ("MEGATECH", 60.0, 50_000_000),  # $3B ADV
+                                ("STAPLE", 30.0, 3_000_000)):    # $90M ADV
             if sym in universe:
                 out[sym] = pd.DataFrame({
                     "close": [price] * 30, "volume": [vol] * 30,
@@ -246,11 +253,28 @@ def test_screen_by_price_range_ranks_by_dollar_adv(monkeypatch):
     monkeypatch.setattr(screener, "_get_bars_for_symbols", _bars)
     res = screener.screen_by_price_range(
         min_price=1.0, max_price=100.0, min_volume=100_000,
-        min_adv=5_000_000, limit=10, universe=["CHEAP", "PRICEY"])
+        min_adv=5_000_000, limit=10,
+        universe=["UTIL", "MEGATECH", "STAPLE"])  # stratified order
     syms = [r["symbol"] for r in res]
-    # $60 x 1M = $60M ADV beats $3 x 5M = $15M ADV — share count
-    # sorting would have inverted this
-    assert syms == ["PRICEY", "CHEAP"]
+    # a liquidity re-sort would put MEGATECH first; stratified
+    # priority order must survive
+    assert syms == ["UTIL", "MEGATECH", "STAPLE"]
+
+
+def test_scheduler_candidate_cut_preserves_priority_order():
+    # The [:30] cut used to run on an arbitrary-order set() — the
+    # second place the first live session re-narrowed to tech. It
+    # must iterate "candidates" (stratified order) first and cut a
+    # LIST, never a set.
+    src = _read("multi_scheduler.py")
+    region = src.split('for cat in ("candidates", "volume_surges",')[0]
+    assert region.rstrip().endswith("symbols = []\n    _seen = set()".rstrip()) or \
+        "symbols = []" in region[-400:], (
+        "the screener union must be an order-preserving list")
+    assert "result = symbols[:30]" in src, (
+        "the 30-cut must operate on the ordered list")
+    assert "result = list(symbols)[:30]" not in src, (
+        "the arbitrary set-order cut must stay dead")
 
 
 # ------------------------------------------------- round-2 review pins

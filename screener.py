@@ -358,11 +358,19 @@ def screen_by_price_range(min_price=10.0, max_price=20.0, min_volume=500_000,
     print(f"  Found {len(results)} stocks in ${min_price}-${max_price} "
           f"with {min_volume:,}+ vol and ${min_adv/1e6:.1f}M+ ADV")
 
-    # Dollar-ADV rank, not raw share count (2026-07-08): share-count
-    # sorting let a $3 stock churning 50M shares outrank KO every day,
-    # compounding the growth-monoculture the stratified universe now
-    # prevents upstream. adv_dollar is already computed above.
-    results.sort(key=lambda x: x["adv_dollar"], reverse=True)
+    # PRESERVE THE INPUT UNIVERSE'S ORDER (2026-07-09). The dynamic
+    # universe arrives PRIORITY-ORDERED by the sector stratifier
+    # (round-robin: one name per sector per rank, then global dollar-
+    # volume remainder) — ANY global re-sort here un-stratifies it
+    # before the top-`limit` cut. Proven live on the first session:
+    # the diverse 100-name universe re-narrowed to mega-cap tech at
+    # this exact line (then an arbitrary set-order cut downstream
+    # finished the job) and the fleet's first-morning candidates were
+    # 18/18 tech again. Consumers re-rank or are order-insensitive
+    # (verified in the funnel review), so input order is safe for the
+    # curated-universe callers too.
+    _order = {sym: i for i, sym in enumerate(universe)}
+    results.sort(key=lambda x: _order.get(x["symbol"], len(_order)))
     return results[:limit]
 
 

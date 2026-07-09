@@ -891,10 +891,20 @@ def _get_shared_candidates(ctx, seg, is_crypto):
     else:
         screen_results = run_full_screen_for_segment(ctx, seg)
 
-    symbols = set()
+    # ORDER-PRESERVING union (2026-07-09): this used to be a set()
+    # whose arbitrary hash order fed the [:30] cut below — which threw
+    # away the stratifier's sector-diverse priority order and let the
+    # first live session re-narrow to tech. "candidates" comes first
+    # (it carries the stratified order); the momentum buckets append
+    # their extras after.
+    symbols = []
+    _seen = set()
     for cat in ("candidates", "volume_surges", "momentum", "breakouts"):
         for s in screen_results.get(cat, []):
-            symbols.add(s["symbol"])
+            sym = s["symbol"]
+            if sym not in _seen:
+                _seen.add(sym)
+                symbols.append(sym)
 
     # MAGA Mode oversold scan — also shared
     maga_mode = ctx.maga_mode if ctx is not None else False
@@ -924,7 +934,7 @@ def _get_shared_candidates(ctx, seg, is_crypto):
         logging.info(f"[{ctx.display_name}] MAGA Mode: scanning for oversold opportunities...")
         maga_added = 0
         for sym in universe:
-            if sym in symbols:
+            if sym in _seen:
                 continue
             try:
                 bars = get_bars(sym, limit=30)
@@ -951,7 +961,8 @@ def _get_shared_candidates(ctx, seg, is_crypto):
                         and m_volume >= ctx.min_volume
                         and m_adv >= ctx.min_adv):
                     continue
-                symbols.add(sym)
+                _seen.add(sym)
+                symbols.append(sym)
                 maga_added += 1
             except (KeyError, ValueError, AttributeError, TypeError,
                     IndexError, OSError) as _ms_exc:
@@ -964,7 +975,14 @@ def _get_shared_candidates(ctx, seg, is_crypto):
                 continue
         logging.info(f"[{ctx.display_name}] MAGA oversold scan: added {maga_added}, {len(symbols)} total")
 
-    result = list(symbols)[:30]
+    # The cut itself keeps the stratified priority order — the first
+    # ~30 of the round-robin ordering hold 2-3 names per sector.
+    if len(symbols) > 30:
+        logging.info(
+            "[%s] screener union: %d candidates, keeping the first 30 "
+            "in stratified priority order",
+            ctx.display_name if ctx else "?", len(symbols))
+    result = symbols[:30]
     _screener_cache[cache_key] = result
     return list(result)
 
