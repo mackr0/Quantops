@@ -1166,8 +1166,20 @@ def execute_multileg_strategy(
             })
             return result
 
-    # All legs submitted successfully via sequential path
-    leg_order_ids = [s["order_id"] for s in submitted]
+    # All legs submitted successfully via sequential path.
+    #
+    # 2026-07-09 — ALIGN order ids to strategy.legs, NOT submission
+    # order. Sequential submission sorts buys first (the uncovered-
+    # short 403 fix above), but _log_strategy_legs walks
+    # strategy.legs (shorts-first for credit spreads) and pairs BY
+    # INDEX — zipping the two different orderings crossed every
+    # sequential credit spread's leg↔order↔price association: the
+    # journal recorded p215's MRVL put spread as a $4,040 DEBIT when
+    # the broker collected a $4,040 CREDIT ($8,076 cash drift, caught
+    # by the aggregate cash-parity audit). Map ids back through the
+    # leg object identities the submission loop carried.
+    _id_by_leg = {id(s["leg"]): s["order_id"] for s in submitted}
+    leg_order_ids = [_id_by_leg.get(id(lg)) for lg in strategy.legs]
     if log and db_path:
         try:
             _log_strategy_legs(
@@ -2167,9 +2179,30 @@ def _log_strategy_legs(strategy: OptionStrategy,
                 and order_id != combo_order_id:
             try:
                 o = api.get_order(order_id)
-                fap = getattr(o, "filled_avg_price", None)
-                if fap is not None:
-                    leg_price = float(fap)
+                # BELT (2026-07-09, the MRVL crossing): this order id is
+                # about to be journaled AS this leg, and update_fills
+                # will forever true this row's price FROM this id — a
+                # crossed association poisons the row permanently. If
+                # the broker order isn't for this leg's contract,
+                # REFUSE the association: journal the leg unlinked
+                # (order_id/price NULL) so nothing can backfill poison,
+                # and say so loudly.
+                o_sym = getattr(o, "symbol", None)
+                if o_sym and o_sym != leg.occ_symbol:
+                    logger.error(
+                        "MULTILEG LEG/ORDER MISMATCH: order %s is for "
+                        "%s but was about to be journaled as leg %s of "
+                        "%s — refusing the association (row written "
+                        "unlinked; reconciler will surface it). This "
+                        "is the crossed-pairing class the sequential-"
+                        "path alignment fix eliminates at the source.",
+                        order_id, o_sym, leg.occ_symbol, strategy.name,
+                    )
+                    order_id = None
+                else:
+                    fap = getattr(o, "filled_avg_price", None)
+                    if fap is not None:
+                        leg_price = float(fap)
             except Exception as exc:
                 # Best-effort: paper-account fills usually need
                 # 50-500ms after submit, so this often returns None

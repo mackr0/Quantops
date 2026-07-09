@@ -575,10 +575,20 @@ class TestExecuteMultilegStrategy:
             MagicMock(), spec, self._ctx(), use_combo=False,
         )
         assert result["action"] == "MULTILEG_OPEN"
-        assert result["leg_order_ids"] == ["leg-A", "leg-B"]
+        # 2026-07-09 — leg_order_ids follow STRATEGY.LEGS order, not
+        # submission order. A bear call spread's legs are shorts-first
+        # (sell 150C, buy 160C) while sequential submission reorders
+        # buys-first (the uncovered-short 403 fix), so the buy leg got
+        # id 'leg-A' and the sell leg 'leg-B'. The old pin asserted
+        # submission order — the exact index-zip contract that crossed
+        # every sequential credit spread's journal rows (p215 MRVL,
+        # $8,076 cash drift).
+        assert result["leg_order_ids"] == ["leg-B", "leg-A"]
         assert len(captured) == 2  # no combo attempt
         assert "legs" not in captured[0]
         assert "legs" not in captured[1]
+        # premise: submission really was buys-first
+        assert captured[0]["side"] == "buy"
 
     def test_empty_strategy_returns_error(self):
         from options_multileg import OptionStrategy, execute_multileg_strategy

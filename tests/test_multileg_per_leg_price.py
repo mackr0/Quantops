@@ -148,12 +148,20 @@ class TestComboPathPerLegPrice:
 
             def get_order(oid):
                 o = MagicMock()
+                # mock-parity (2026-07-09): real orders carry `symbol`
+                # = the leg's OCC contract; the journal writer now
+                # REFUSES an association whose order is for a different
+                # contract (the crossed-pairing belt), and a MagicMock
+                # auto-attribute reads as a truthy wrong symbol.
                 if oid == "leg-short":
                     o.filled_avg_price = 3.15
+                    o.symbol = "RTX260618P00170000"
                 elif oid == "leg-long":
                     o.filled_avg_price = 1.74
+                    o.symbol = "RTX260618P00160000"
                 else:
                     o.filled_avg_price = None
+                    o.symbol = None
                 o.legs = []
                 return o
             api.get_order.side_effect = get_order

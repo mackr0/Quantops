@@ -145,7 +145,11 @@ JOURNAL_MARKERS = (
 # _log_strategy_legs, pushing the marker to ~110 lines out. The
 # journaling is still atomic (same function, no early success-path
 # return); only the scan window needed to follow the code.
-MAX_LINES_TO_JOURNAL = 130  # accommodates ADV+slippage enrichment + multileg error handling between submit and journal
+# 2026-07-09 — widened 130 → 145: the sequential-path leg↔order
+# ALIGNMENT fix (p215 MRVL crossing, $8,076 cash drift) added the
+# id-by-leg-identity mapping + its incident comment between the
+# sequential submit and _log_strategy_legs.
+MAX_LINES_TO_JOURNAL = 145  # ADV+slippage enrichment + multileg error handling + leg-id alignment between submit and journal
 
 
 # 2026-05-21 — Bracket-order submission USED to have a different
