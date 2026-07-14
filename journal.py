@@ -2070,7 +2070,7 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
                     "     COALESCE(status, 'open') NOT IN "
                     "     ('canceled', 'expired', 'rejected', "
                     "      'done_for_day', 'pending_protective', "
-                    "      'auto_reconciled_phantom_close')"
+                    "      'auto_reconciled_phantom_close', 'auto_closed_external')"
                     # 2026-06-18 — INCLUDE closed STOCK buys (occ NULL) in
                     # the FIFO timeline so a sell that closed them is
                     # matched in order, and a real oversell (a sell beyond
@@ -2085,9 +2085,19 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
                     "          OR (side = 'buy' AND occ_symbol IS NULL)))"
                     "    OR "
                     "    (side IN ('sell', 'cover') AND "
+                    # 2026-07-14 — 'auto_reconciled_phantom_close'
+                    # joined the EXIT-side dead set. It means "the
+                    # broker never filled this — no money moved"; cash
+                    # and the realized recompute already exclude it,
+                    # and the exit side crediting it was the last
+                    # engine asymmetry: one mislabeled row became
+                    # permanent equity-identity drift (p214 CVX put,
+                    # +$122.50 — a broker-FILLED buy falsely marked
+                    # phantom, then genuinely sold next day).
                     "     COALESCE(status, 'open') NOT IN "
                     "     ('canceled', 'expired', 'rejected', "
-                    "      'done_for_day', 'pending_protective'))"
+                    "      'done_for_day', 'pending_protective', "
+                    "      'auto_reconciled_phantom_close', 'auto_closed_external'))"
                     ")"
                     f"{_dq_clause} "
                     "ORDER BY timestamp ASC, id ASC"
@@ -2130,12 +2140,22 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
                     "     COALESCE(status, 'open') NOT IN "
                     "     ('canceled', 'expired', 'rejected', "
                     "      'done_for_day', 'closed', 'pending_protective', "
-                    "      'auto_reconciled_phantom_close'))"
+                    "      'auto_reconciled_phantom_close', 'auto_closed_external'))"
                     "    OR "
                     "    (side IN ('sell', 'cover') AND "
+                    # 2026-07-14 — 'auto_reconciled_phantom_close'
+                    # joined the EXIT-side dead set. It means "the
+                    # broker never filled this — no money moved"; cash
+                    # and the realized recompute already exclude it,
+                    # and the exit side crediting it was the last
+                    # engine asymmetry: one mislabeled row became
+                    # permanent equity-identity drift (p214 CVX put,
+                    # +$122.50 — a broker-FILLED buy falsely marked
+                    # phantom, then genuinely sold next day).
                     "     COALESCE(status, 'open') NOT IN "
                     "     ('canceled', 'expired', 'rejected', "
-                    "      'done_for_day', 'pending_protective'))"
+                    "      'done_for_day', 'pending_protective', "
+                    "      'auto_reconciled_phantom_close', 'auto_closed_external'))"
                     ")"
                     f"{_dq_clause} "
                     "ORDER BY timestamp ASC, id ASC"
@@ -2262,8 +2282,11 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
             #     phantom-close leg is a RESOLVED short and must not spawn
             #     a phantom (the expired-multileg-short orphan, 2026-06-17).
             if (remaining > 0
-                    and not (occ_symbol and row_status in (
-                        "closed", "auto_reconciled_phantom_close"))):
+                    and not (occ_symbol and row_status == "closed")):
+                # (pre-2026-07-14 this tuple also named the phantom-
+                # close status; arpc and auto_closed_external rows are
+                # now excluded from the row stream entirely by the
+                # exit-side dead set, so only 'closed' legs reach here)
                 short_lots.setdefault(key, []).append(
                     [remaining, price]
                 )
@@ -2483,7 +2506,11 @@ def get_virtual_account_info(db_path=None, initial_capital=100000.0,
             _cash_excluded = (
                 "'pending_protective', 'canceled', 'expired', "
                 "'rejected', 'done_for_day', "
-                "'auto_reconciled_phantom_close'"
+                "'auto_reconciled_phantom_close', "
+                # filled-then-externally-closed legs: their real cash
+                # is booked by the broker-activities pass, never by
+                # the leg row itself (2026-07-14 status split)
+                "'auto_closed_external'"
             )
             _price_expr = (
                 "COALESCE(NULLIF(fill_price, 0), price)"
@@ -2677,7 +2704,7 @@ def recompute_realized_pnl(db_path=None):
                 "WHERE COALESCE(status, 'open') NOT IN "
                 "('pending_protective', 'canceled', 'expired', "
                 " 'rejected', 'done_for_day', "
-                " 'auto_reconciled_phantom_close') "
+                " 'auto_reconciled_phantom_close', 'auto_closed_external') "
                 f"{dq_guard} "
                 "ORDER BY timestamp ASC, id ASC"
             ).fetchall()

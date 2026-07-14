@@ -517,6 +517,7 @@ def _close_journal_phantom(
         db_path = f"quantopsai_profile_{profile['id']}.db"
         if not os.path.exists(db_path):
             continue
+        api = None  # built lazily; own-profile credentials only
         try:
             with closing(sqlite3.connect(db_path)) as conn:
                 conn.row_factory = sqlite3.Row
@@ -526,25 +527,120 @@ def _close_journal_phantom(
                 # guard via `timestamp < ?` skips just-submitted rows
                 # that the broker hasn't yet registered.
                 rows = conn.execute(
-                    "SELECT id, symbol, side, qty, price FROM trades "
+                    "SELECT id, symbol, side, qty, price, order_id "
+                    "FROM trades "
                     "WHERE (symbol = ? OR occ_symbol = ?) "
                     "  AND COALESCE(status,'open') = 'open' "
                     "  AND timestamp < ?",
                     (symbol, symbol, cutoff),
                 ).fetchall()
                 for r in rows:
+                    # FILL-EVIDENCE GUARD (2026-07-14). 'auto_
+                    # reconciled_phantom_close' means "the broker
+                    # never filled this — no money moved", and every
+                    # accounting engine excludes such rows from cash.
+                    # Marking a row that DID fill therefore mints
+                    # permanent equity-identity drift (p214's CVX put:
+                    # a broker-FILLED $122 option buy was branded
+                    # phantom nine minutes after fill because the
+                    # contract wasn't visible in list_positions yet —
+                    # the same option-visibility lag class the
+                    # aggregate audit's $-parity is already scoped
+                    # around; the position was then genuinely SOLD the
+                    # next day). Verify the row's OWN order before
+                    # declaring no-money-moved: any fill evidence, or
+                    # any inability to verify, REFUSES the mark — a
+                    # real divergence stays loud via the integrity
+                    # gate instead of being silently absorbed as a
+                    # false zero.
+                    oid = r["order_id"]
+                    if not oid:
+                        log.error(
+                            "  REFUSE journal_phantom: profile %d row "
+                            "#%d %s %s has no order id — cannot verify "
+                            "the broker never filled it; never marking "
+                            "no-money-moved on a guess.",
+                            profile["id"], r["id"], r["side"].upper(),
+                            symbol,
+                        )
+                        continue
+                    try:
+                        if api is None:
+                            from models import (
+                                build_user_context_from_profile,
+                            )
+                            api = build_user_context_from_profile(
+                                profile["id"]).get_alpaca_api()
+                        # Walk replace chains: the original id of a
+                        # replaced order reads filled_qty=0 forever
+                        # while the fill lives on its successor —
+                        # judging the stale id would phantom-close a
+                        # REAL fill (round-2 review H1).
+                        from reconcile_journal_to_broker import (
+                            walk_replace_chain_forward,
+                        )
+                        o, _depth = walk_replace_chain_forward(api, oid)
+                        if o is None:
+                            raise RuntimeError(
+                                "replace-chain walk found no terminal "
+                                "order")
+                        filled = float(
+                            getattr(o, "filled_qty", 0) or 0)
+                        o_status = str(getattr(o, "status", "")).lower()
+                    except Exception as exc:
+                        log.error(
+                            "  REFUSE journal_phantom: profile %d row "
+                            "#%d %s %s — order %s unverifiable (%s: "
+                            "%s); leaving the row open for the next "
+                            "pass.",
+                            profile["id"], r["id"], r["side"].upper(),
+                            symbol, str(oid)[:8],
+                            type(exc).__name__, exc,
+                        )
+                        continue
+                    # TERMINAL-UNFILLED ALLOWLIST (round-2 review H1):
+                    # "unfilled RIGHT NOW" is not "never filled" — a
+                    # resting DAY/GTC limit older than the age guard
+                    # reads status='new', filled=0, and would have
+                    # been branded no-money-moved while still LIVE,
+                    # then filled later (the exact drift class again).
+                    # Only an order the broker says is DEAD and
+                    # zero-filled may be phantom-closed.
+                    if not (o_status in ("canceled", "expired",
+                                         "rejected", "done_for_day")
+                            and filled == 0):
+                        log.error(
+                            "  REFUSE journal_phantom: profile %d row "
+                            "#%d %s %s — order %s is NOT terminal-"
+                            "unfilled (status=%s, filled=%.4g). A "
+                            "working order may still fill; a filled "
+                            "one is a real position (visibility lag). "
+                            "The integrity gate owns any genuine "
+                            "divergence.",
+                            profile["id"], r["id"], r["side"].upper(),
+                            symbol, str(oid)[:8], o_status or "?",
+                            filled,
+                        )
+                        continue
                     log.info(
                         "  %s journal_phantom: profile %d row #%d "
-                        "%s %s qty=%.4f price=%.4f → auto_reconciled_phantom_close",
+                        "%s %s qty=%.4f price=%.4f (order %s broker-"
+                        "verified terminal-unfilled: %s) → "
+                        "auto_reconciled_phantom_close",
                         "WRITE" if apply else "DRY",
                         profile["id"], r["id"], r["side"].upper(),
                         symbol, r["qty"], r["price"] or 0,
+                        str(oid)[:8], o_status,
                     )
                     if apply:
+                        # pnl NULL, not 0: a never-filled order
+                        # realized NOTHING — pnl=0 reads as a scratch
+                        # loss to every pnl-IS-NOT-NULL consumer
+                        # (win rates, tuning) (round-2 review M2).
                         conn.execute(
                             "UPDATE trades SET status = "
                             "'auto_reconciled_phantom_close', "
-                            "pnl = 0 WHERE id = ?",
+                            "pnl = NULL WHERE id = ?",
                             (r["id"],),
                         )
                     n_marked += 1

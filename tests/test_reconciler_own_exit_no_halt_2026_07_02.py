@@ -263,18 +263,20 @@ def test_phantom_closed_sell_does_not_suppress(db):
     assert _explain(api, db, "NKE") is False
 
 
-def test_auto_reconciled_phantom_close_sell_is_verified_not_ignored(db):
-    # Round-2 HIGH: gvp's exit side CREDITS auto_reconciled_phantom_close
-    # sells (its dead set omits them), so the candidate predicate — the
-    # complement of that dead set — must select and verify them. A
-    # never-filled one can therefore never support suppression.
+def test_auto_reconciled_phantom_close_sell_is_dead_everywhere(db):
+    # 2026-07-14 (engine unification): 'auto_reconciled_phantom_close'
+    # means "no money moved" and is now in EVERY engine's dead set —
+    # gvp's exit side stopped crediting it (the p214 CVX identity
+    # drift), so the helper's complement-predicate excludes it too.
+    # The arpc sell contributes nothing: the entry lot stays intact,
+    # own net != 0, halt — and the dead row is never even fetched.
     conn, _ = db
     _add(conn, T0, "GT", "buy", 10, "entry015", "open")
     _add(conn, T1, "GT", "sell", 10, "arpc0001",
          "auto_reconciled_phantom_close")
     api = FakeApi({"arpc0001": FakeOrder("canceled", 0, side="sell")})
     assert _explain(api, db, "GT") is False
-    assert api.calls == ["arpc0001"]  # verified, not silently trusted
+    assert api.calls == []  # dead rows are not candidates at all
 
 
 def test_partial_broker_fill_not_trusted_for_full_credit(db):
@@ -436,15 +438,23 @@ def test_candidate_predicate_matches_gvp_dead_set():
     helper_body = helper_src.split("def _own_exit_fills_explain")[1]
     helper_body = helper_body.split("\ndef ")[0]
     assert ("NOT IN "
-            "    ('canceled', 'expired', 'rejected', 'done_for_day') "
+            "    ('canceled', 'expired', 'rejected', 'done_for_day', "
+            "     'auto_reconciled_phantom_close', "
+            "     'auto_closed_external') "
             .replace(" ", "") in helper_body.replace("\"", "")
             .replace("\n", "").replace(" ", "")), (
         "helper dead set changed — re-derive from gvp's exit-side list")
     gvp_src = open(os.path.join(os.path.dirname(__file__), os.pardir,
                                 "journal.py")).read()
-    exit_block = gvp_src.split("(side IN ('sell', 'cover') AND ")[1][:400]
-    for status in ("canceled", "expired", "rejected", "done_for_day",
-                   "pending_protective"):
+    # BOTH query variants (primary + legacy-schema fallback) must
+    # stay unified — a de-unified fallback re-creates the drift on
+    # legacy DBs (round-2 review L2)
+    parts = gvp_src.split("(side IN ('sell', 'cover') AND ")
+    assert len(parts) >= 3, "expected two gvp exit-side branches"
+    for exit_block in (parts[1][:900], parts[2][:900]):
+      for status in ("canceled", "expired", "rejected", "done_for_day",
+                     "pending_protective", "auto_reconciled_phantom_close",
+                     "auto_closed_external"):
         assert status in exit_block, (
             f"gvp exit-side exclusion lost '{status}' — helper must be "
             "re-aligned (its dead set is gvp's minus pending_protective)")

@@ -523,7 +523,7 @@ def _safe_pending_orders(ctx):
 # order-id-isolation work, and the dashboard stays authoritative.)
 _FINALIZED_TRADE_STATUSES = (
     "closed", "canceled", "expired", "rejected", "done_for_day",
-    "auto_reconciled_phantom_close",
+    "auto_reconciled_phantom_close", "auto_closed_external",
 )
 # Statuses for orders that never filled — counted separately on the
 # trades page so the user can see they are noise, not P&L.

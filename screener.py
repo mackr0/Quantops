@@ -875,7 +875,7 @@ def _ensure_persisted_cache_table() -> None:
     """Idempotent. Single-row table: id=1, symbols_json blob, refreshed_at."""
     try:
         import sqlite3
-        with sqlite3.connect(_PERSISTED_CACHE_PATH) as conn:
+        with sqlite3.connect(_PERSISTED_CACHE_PATH, timeout=15) as conn:
             conn.execute(
                 f"CREATE TABLE IF NOT EXISTS {_PERSISTED_CACHE_TABLE} ("
                 "  id INTEGER PRIMARY KEY,"
@@ -898,7 +898,7 @@ def _read_persisted_active_symbols(max_age_seconds: int = 86400) -> set:
     import sqlite3
     import json
     try:
-        with sqlite3.connect(_PERSISTED_CACHE_PATH) as conn:
+        with sqlite3.connect(_PERSISTED_CACHE_PATH, timeout=15) as conn:
             row = conn.execute(
                 f"SELECT refreshed_at, symbols_json FROM "
                 f"{_PERSISTED_CACHE_TABLE} WHERE id=1"
@@ -928,7 +928,7 @@ def _write_persisted_active_symbols(symbols: set) -> None:
     import json
     _ensure_persisted_cache_table()
     try:
-        with sqlite3.connect(_PERSISTED_CACHE_PATH) as conn:
+        with sqlite3.connect(_PERSISTED_CACHE_PATH, timeout=15) as conn:
             conn.execute(
                 f"INSERT OR REPLACE INTO {_PERSISTED_CACHE_TABLE} "
                 "(id, refreshed_at, symbols_json) VALUES (1, ?, ?)",

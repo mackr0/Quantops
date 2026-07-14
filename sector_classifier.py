@@ -179,7 +179,7 @@ def _init_schema(db_path: str = MASTER_DB) -> None:
         if db_path in _schema_initialized:
             return
         try:
-            with closing(sqlite3.connect(db_path)) as conn:
+            with closing(sqlite3.connect(db_path, timeout=15)) as conn:
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS sector_cache (
                         symbol     TEXT PRIMARY KEY,
@@ -204,7 +204,7 @@ def _read_cache(symbol: str, db_path: str = MASTER_DB) -> Optional[str]:
         return None
     _init_schema(db_path)
     try:
-        with closing(sqlite3.connect(db_path)) as conn:
+        with closing(sqlite3.connect(db_path, timeout=15)) as conn:
             row = conn.execute(
                 "SELECT sector, fetched_at FROM sector_cache WHERE symbol = ?",
                 (symbol.upper(),),
@@ -238,7 +238,7 @@ def _write_cache(symbol: str, sector: str, db_path: str = MASTER_DB) -> None:
         return
     _init_schema(db_path)
     try:
-        with closing(sqlite3.connect(db_path)) as conn:
+        with closing(sqlite3.connect(db_path, timeout=15)) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO sector_cache "
                 "(symbol, sector, fetched_at) VALUES (?, ?, datetime('now'))",
@@ -336,7 +336,7 @@ def get_sectors_cached_bulk(symbols, db_path: str = MASTER_DB) -> dict:
         return out
     _init_schema(db_path)
     try:
-        with closing(sqlite3.connect(db_path)) as conn:
+        with closing(sqlite3.connect(db_path, timeout=15)) as conn:
             placeholders = ",".join("?" for _ in syms)
             rows = conn.execute(
                 f"SELECT symbol, sector, fetched_at FROM sector_cache "
@@ -385,7 +385,7 @@ def _init_profile_schema(db_path: str) -> None:
         if ("profile", db_path) in _schema_initialized:
             return
         try:
-            with closing(sqlite3.connect(db_path)) as conn:
+            with closing(sqlite3.connect(db_path, timeout=15)) as conn:
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS company_profile_cache (
                         symbol     TEXT PRIMARY KEY,
@@ -420,7 +420,7 @@ def get_company_profile(symbol: str,
     sym = symbol.upper()
     _init_profile_schema(db_path)
     try:
-        with closing(sqlite3.connect(db_path)) as conn:
+        with closing(sqlite3.connect(db_path, timeout=15)) as conn:
             row = conn.execute(
                 "SELECT name, industry, market_cap, gics_sector, "
                 "fetched_at FROM company_profile_cache WHERE symbol = ?",
@@ -460,7 +460,7 @@ def get_company_profile(symbol: str,
         logger.debug("company profile fetch failed for %s: %s", sym, exc)
 
     try:
-        with closing(sqlite3.connect(db_path)) as conn:
+        with closing(sqlite3.connect(db_path, timeout=15)) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO company_profile_cache "
                 "(symbol, name, industry, market_cap, gics_sector, "

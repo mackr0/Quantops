@@ -602,13 +602,22 @@ class TestBrokerAvgEntryPrimary:
 
 class TestJournalPhantomClose:
     def test_existing_open_row_gets_closed(self, tmp_path, monkeypatch):
+        # 2026-07-14 — the mark now REQUIRES broker-verified-unfilled
+        # evidence on the row's own order (the fill-evidence guard: a
+        # broker-FILLED option buy was falsely phantom-closed on p214
+        # and minted +$122.50 of permanent equity-identity drift).
+        # This scenario supplies that evidence; the no-evidence shapes
+        # are pinned in test_phantom_close_fill_evidence_2026_07_14.
+        from unittest.mock import MagicMock
         from reconcile_aggregate_drift import reconcile
         db = tmp_path / "quantopsai_profile_1.db"
         _create_trades_db(str(db))
         with sqlite3.connect(str(db)) as conn:
             conn.execute(
-                "INSERT INTO trades (symbol, side, qty, price, status) "
-                "VALUES ('SM260618P00027500', 'buy', 1, 1.50, 'open')"
+                "INSERT INTO trades (symbol, side, qty, price, status, "
+                "order_id) "
+                "VALUES ('SM260618P00027500', 'buy', 1, 1.50, 'open', "
+                "'dead-order-1')"
             )
             conn.commit()
         monkeypatch.chdir(tmp_path)
@@ -621,6 +630,12 @@ class TestJournalPhantomClose:
             ],
             "accounts": {}, "errored": [],
         }
+        fake_api = MagicMock()
+        _dead = MagicMock(status="canceled", filled_qty=0)
+        _dead.replaced_by = None  # real surface: walk stops here
+        fake_api.get_order.return_value = _dead  # terminal-unfilled
+        fake_ctx = MagicMock()
+        fake_ctx.get_alpaca_api.return_value = fake_api
         with patch(
             "aggregate_audit.audit_aggregate_drift",
             return_value=fake_audit,
@@ -628,6 +643,9 @@ class TestJournalPhantomClose:
             "reconcile_aggregate_drift._profiles_sharing_account",
             return_value=[{"id": 1, "name": "p1", "enabled": True,
                            "alpaca_account_id": "acct1"}],
+        ), patch(
+            "models.build_user_context_from_profile",
+            return_value=fake_ctx,
         ):
             counters = reconcile(apply=True)
 
@@ -635,8 +653,9 @@ class TestJournalPhantomClose:
             conn.row_factory = sqlite3.Row
             r = conn.execute("SELECT * FROM trades").fetchone()
         assert r["status"] == "auto_reconciled_phantom_close"
-        assert r["pnl"] == 0
+        assert r["pnl"] is None  # never-filled realizes NOTHING
         assert counters["journal_phantom_closed"] == 1
+        fake_api.get_order.assert_called_with("dead-order-1")
 
 
 class TestProfileAttribution:

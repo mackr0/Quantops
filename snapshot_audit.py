@@ -83,6 +83,11 @@ from typing import Dict, List, Optional, Sequence, Tuple
 _NEVER_FILLED = (
     "canceled", "expired", "rejected", "done_for_day",
     "pending_protective", "auto_reconciled_phantom_close",
+    # auto_closed_external legs DID fill, but the position was later
+    # offset by an orderless external event (assignment/exercise) —
+    # the own-fill sum must skip them just like the phantom class or
+    # every assigned spread reads as permanent drift (2026-07-14)
+    "auto_closed_external",
 )
 # The only TERMINAL-FILLED status in this schema (grounded in the real
 # cohort: statuses are open/canceled/pending_protective/closed/expired). A

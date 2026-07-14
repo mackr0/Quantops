@@ -1849,7 +1849,8 @@ def _occ_net_position(conn, occ_symbol, exclude_id):
             "FROM trades WHERE occ_symbol = ? AND id != ? "
             "  AND COALESCE(status, 'open') NOT IN "
             "      ('canceled', 'rejected', 'expired', 'done_for_day', "
-            "       'auto_reconciled_phantom_close')",
+            "       'auto_reconciled_phantom_close', "
+            "       'auto_closed_external')",
             (occ_symbol, exclude_id),
         ).fetchone()
         return float(row[0] or 0) if row else 0.0

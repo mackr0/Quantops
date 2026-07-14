@@ -398,8 +398,11 @@ def _own_exit_fills_explain(api, conn, db_path, symbol: str,
         # set — anything gvp could credit (or a protective placeholder
         # whose verified fill adjusts the net) is selected, so the
         # candidate set can never silently drift from what j_net
-        # counts (an unlisted status like auto_reconciled_phantom_
-        # close must be VERIFIED, not ignored). Stock rows only
+        # counts. 2026-07-14: 'auto_reconciled_phantom_close' (and its
+        # filled-then-externally-closed sibling 'auto_closed_external')
+        # are DEAD here like everywhere else — "no money moved" /
+        # "cash booked via activities" rows are never exit evidence
+        # and never fetched. Stock rows only
         # (occ_symbol IS NULL — option legs are contracts, not shares,
         # and are owned by reconcile_option_orphans), clean rows only
         # (data_quality IS NULL). 'closed' rows older than every open
@@ -429,7 +432,9 @@ def _own_exit_fills_explain(api, conn, db_path, symbol: str,
             "FROM trades WHERE symbol = ? "
             f"AND side IN ({', '.join(exit_sides)}) "
             "AND COALESCE(status,'open') NOT IN "
-            "    ('canceled', 'expired', 'rejected', 'done_for_day') "
+            "    ('canceled', 'expired', 'rejected', 'done_for_day', "
+            "     'auto_reconciled_phantom_close', "
+            "     'auto_closed_external') "
             "AND (COALESCE(status,'open') != 'closed' "
             "     OR datetime(timestamp) >= datetime(?))"
             + occ_clause + dq_clause,
@@ -1038,8 +1043,8 @@ def reconcile_option_orphans(api, conn, positions, today,
     the two never touch the same leg.
 
     Journal-side ONLY: never cancels or submits a broker order. P&L is
-    NOT fabricated — the leg is flipped to 'auto_reconciled_phantom_close'
-    (pnl=0), a status get_virtual_positions already excludes, so the
+    NOT fabricated — the leg is flipped to 'auto_closed_external'
+    (pnl=NULL), a status get_virtual_positions excludes, so the
     orphan leaves the book immediately; the real assignment/exercise
     cash is booked idempotently by the broker-activities pass.
 
@@ -1109,8 +1114,18 @@ def reconcile_option_orphans(api, conn, positions, today,
         # position (early close / assignment / exercise → auto-closed).
         # The entry-order fetch happens ONLY for the few account-flat
         # legs, never for held ones (the qty check above short-circuits).
-        new_status = "auto_reconciled_phantom_close"
-        new_pnl = 0.0
+        # 2026-07-14 — renamed from 'auto_reconciled_phantom_close':
+        # these legs FILLED and were later closed externally
+        # (assignment/exercise/early close) — money moved, booked by
+        # the broker-activities pass. Sharing a status with "the
+        # broker never filled this" gave one label two contradictory
+        # meanings and broke the fill-evidence invariant the phantom-
+        # close guard enforces. pnl stays NULL: this row realizes
+        # nothing ITSELF (the activities pass owns the real P&L), and
+        # pnl=0 would read as a scratch loss to every
+        # pnl-IS-NOT-NULL consumer (win rates, tuning).
+        new_status = "auto_closed_external"
+        new_pnl = None
         kind = "auto_closed"
         reason = ("reconcile: broker flat for this OCC (early close / "
                   "assignment / exercise) — option leg auto-closed; "

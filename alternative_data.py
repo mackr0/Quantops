@@ -73,7 +73,7 @@ _http_lock = threading.Lock()
 
 def _ensure_cache_table():
     try:
-        with closing(sqlite3.connect(_DB_PATH)) as conn:
+        with closing(sqlite3.connect(_DB_PATH, timeout=15)) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS alt_data_cache (
                     cache_key TEXT PRIMARY KEY,
@@ -100,7 +100,7 @@ def _get_cached(key, ttl_type="insider"):
         _ensure_cache_table()
         _table_ensured = True
     try:
-        with closing(sqlite3.connect(_DB_PATH)) as conn:
+        with closing(sqlite3.connect(_DB_PATH, timeout=15)) as conn:
             row = conn.execute(
                 "SELECT data_json, fetched_at FROM alt_data_cache WHERE cache_key=?",
                 (key,)
@@ -124,7 +124,7 @@ def _set_cached(key, value):
         _ensure_cache_table()
         _table_ensured = True
     try:
-        with closing(sqlite3.connect(_DB_PATH)) as conn:
+        with closing(sqlite3.connect(_DB_PATH, timeout=15)) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO alt_data_cache (cache_key, data_json, fetched_at) "
                 "VALUES (?, ?, ?)",
@@ -2150,7 +2150,7 @@ def _ensure_app_store_history_table():
     """One-time DDL — daily snapshots of best ranks per ticker.
     Snapshots come from the daily scheduler task."""
     try:
-        with closing(sqlite3.connect(_DB_PATH)) as conn:
+        with closing(sqlite3.connect(_DB_PATH, timeout=15)) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS app_store_history (
                     snapshot_date TEXT NOT NULL,
@@ -2180,7 +2180,7 @@ def snapshot_app_store_rankings_for_all_tickers() -> int:
     today = _dt.utcnow().date().isoformat()
     written = 0
     try:
-        with closing(sqlite3.connect(_DB_PATH)) as conn:
+        with closing(sqlite3.connect(_DB_PATH, timeout=15)) as conn:
             for ticker in APP_STORE_TICKER_OVERRIDES.keys():
                 r = get_app_store_ranking(ticker)
                 if not r.get("has_data"):
@@ -2218,7 +2218,7 @@ def _get_wow_change(ticker: str):
     Negative delta = rank improved (lower number = better)."""
     _ensure_app_store_history_table()
     try:
-        with closing(sqlite3.connect(_DB_PATH)) as conn:
+        with closing(sqlite3.connect(_DB_PATH, timeout=15)) as conn:
             row = conn.execute(
                 """SELECT best_grossing_rank, best_free_rank
                 FROM app_store_history

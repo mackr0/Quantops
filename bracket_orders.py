@@ -1866,6 +1866,7 @@ def cancel_for_symbol(api, db_path: str, symbol: str) -> bool:
 _CLOSED_ENTRY_STATUSES = frozenset({
     "closed", "canceled", "cancelled", "expired", "rejected",
     "done_for_day", "pending_protective", "auto_reconciled_phantom_close",
+    "auto_closed_external",
 })
 # Terminal-but-unfilled broker statuses: the order is already gone, so
 # there is nothing to cancel — only the stale journal row needs syncing.
