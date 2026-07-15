@@ -477,7 +477,7 @@
         {% set profile_pnl = prof.account.equity - prof.initial_capital %}
         {% set profile_pnl_pct = (profile_pnl / prof.initial_capital * 100) if prof.initial_capital else 0 %}
         <div class="stat-card">
-            <small class="muted"><span class="tip" data-tip="Total profile P&L = current equity − initial capital (since profile start / last reset). Green when up, red when down.">Profile P&L</span></small>
+            <small class="muted"><span class="tip" data-tip="Total profile P&L = current equity − initial capital (since profile start / last reset), marked LIVE at page load. The Performance page's Total Return is measured through the last end-of-day snapshot, so the two can differ during the trading day. Green when up, red when down.">Profile P&L <span style="opacity:0.65;">· live</span></span></small>
             <strong id="pnl-{{ prof.id }}" class="{% if profile_pnl > 0 %}pnl-pos{% elif profile_pnl < 0 %}pnl-neg{% endif %}">
                 {% if profile_pnl >= 0 %}+{% endif %}${{ "{:,.2f}".format(profile_pnl) }}
             </strong>

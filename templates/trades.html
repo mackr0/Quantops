@@ -64,14 +64,16 @@
     <small class="muted" style="font-size:0.8rem;">Show:</small>
     <div class="perf-tabs" style="margin:0;">
         <a href="?{{ _qs_base }}{{ _qs_keep_kind }}sort={{ sort_by }}&dir={{ sort_dir }}{{ _qs_search }}" class="perf-tab {{ 'active' if not view else '' }}">All</a>
-        <a href="?{{ _qs_base }}{{ _qs_keep_kind }}view=realized&sort={{ sort_by }}&dir={{ sort_dir }}{{ _qs_search }}" class="perf-tab {{ 'active' if view == 'realized' else '' }}">Realized</a>
-        <a href="?{{ _qs_base }}{{ _qs_keep_kind }}view=unrealized&sort={{ sort_by }}&dir={{ sort_dir }}{{ _qs_search }}" class="perf-tab {{ 'active' if view == 'unrealized' else '' }}">Unrealized</a>
+        <a href="?{{ _qs_base }}{{ _qs_keep_kind }}view=realized&sort={{ sort_by }}&dir={{ sort_dir }}{{ _qs_search }}" class="perf-tab {{ 'active' if view == 'realized' else '' }}">Closed (realized)</a>
+        <a href="?{{ _qs_base }}{{ _qs_keep_kind }}view=unrealized&sort={{ sort_by }}&dir={{ sort_dir }}{{ _qs_search }}" class="perf-tab {{ 'active' if view == 'unrealized' else '' }}">Open (unrealized)</a>
     </div>
 </div>
 <p class="muted" style="font-size:0.8rem;margin:0 0 0.6rem 0;">
-    <strong>Realized</strong> = closed trades with locked-in profit or loss.
-    <strong>Unrealized</strong> = positions you still hold, valued at the latest price.
+    These tabs filter the <strong>list of rows</strong> below.
+    <strong>Closed (realized)</strong> = trades with locked-in profit or loss.
+    <strong>Open (unrealized)</strong> = positions you still hold, valued at the latest price.
     Cancelled / expired orders never filled, so they carry no P&amp;L and show only under <strong>All</strong>.
+    The P&amp;L summary bar underneath always shows all three money totals — it doesn't change with the tab.
 </p>
 {% if pnl_summary %}
 <div style="display:flex;flex-wrap:wrap;gap:0.4rem 1.4rem;align-items:baseline;
@@ -87,7 +89,14 @@
     </span>
     <span><span class="muted">Total</span>
         <strong class="{{ 'pnl-pos' if pnl_summary.total >= 0 else 'pnl-neg' }}">{{ pnl_summary.total_str }}</strong>
-        <span class="muted" style="font-size:0.82rem;">· matches the dashboard</span>
+        <span class="muted" style="font-size:0.82rem;">· live · matches the dashboard</span>
+    </span>
+    {% elif pnl_summary.total_unavailable_reason %}
+    {# An unreadable live valuation must say so — silently hiding the
+       Unrealized/Total spans made a broken equity lookup look like a
+       stuck filter for a week (caught by the operator 2026-07-15). #}
+    <span class="muted" style="font-size:0.82rem;">
+        Unrealized / Total unavailable — {{ pnl_summary.total_unavailable_reason }}
     </span>
     {% endif %}
     {% if pnl_summary.never_filled_n %}

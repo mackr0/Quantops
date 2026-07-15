@@ -5,6 +5,7 @@ import sqlite3
 import json
 from contextlib import closing
 from datetime import datetime, date, timedelta
+from typing import Any, Dict
 
 import config
 
@@ -1692,7 +1693,13 @@ def open_options_capital_at_risk(db_path=None) -> float:
             ).fetchone()
             return float(row[0] or 0.0) if row else 0.0
     except Exception as exc:
-        _logging.warning(
+        # module-level `logging` — `_logging` was never imported in
+        # this function, so the very handler meant to log the failure
+        # raised NameError instead, broke the fail-open 0.0 contract,
+        # and let the caller's best-effort wrapper silently skip the
+        # options risk budget (2026-07-15 undefined-name sweep — the
+        # same masked-error class as the trades-page equity NameError).
+        logging.warning(
             "open_options_capital_at_risk failed (fail-open, returning 0): %s",
             exc,
         )

@@ -616,9 +616,17 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
     if snapshots:
         first_eq = combined_initial_capital
         last_eq = snapshots[-1].get("equity", combined_initial_capital) or combined_initial_capital
+        # As-of stamp for every snapshot-derived figure: total return
+        # is measured THROUGH the last daily snapshot (yesterday's
+        # close during a session), while the dashboard marks live —
+        # the two legitimately differ intraday, and unstamped numbers
+        # read as contradictions (operator caught the 6.2%-vs-5.46%
+        # confusion on p216, 2026-07-15).
+        result["as_of_date"] = snapshots[-1].get("date")
     else:
         first_eq = combined_initial_capital
         last_eq = combined_initial_capital
+        result["as_of_date"] = None
 
     total_pnl = sum(t.get("pnl", 0) or 0 for t in trades)
     result["total_pnl"] = round(total_pnl, 2)

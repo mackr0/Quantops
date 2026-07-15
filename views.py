@@ -580,22 +580,34 @@ def _trades_pnl_summary(profile_ids, account_equity_by_pid=None,
         "never_filled_n": never_filled_n,
         "total": None, "total_str": None,
         "unrealized": None, "unrealized_str": None,
+        # When total stays None the template SHOWS this reason — a
+        # silently missing Unrealized/Total pair read as a stuck
+        # filter for a week (the get_account_info NameError,
+        # 2026-07-15). Missing money columns must explain themselves.
+        "total_unavailable_reason": None,
     }
     # Equity-based total only when a single profile's equity is known —
     # mirrors the dashboard's `equity − initial_capital`, so the split
     # reconciles exactly.
-    if (account_equity_by_pid and initial_capital_by_pid
-            and len(profile_ids) == 1):
-        pid = profile_ids[0]
-        eq = account_equity_by_pid.get(pid)
-        cap = initial_capital_by_pid.get(pid)
-        if eq is not None and cap and cap > 0:
-            total = float(eq) - float(cap)
-            unreal = total - realized
-            out["total"] = round(total, 2)
-            out["total_str"] = _money(total)
-            out["unrealized"] = round(unreal, 2)
-            out["unrealized_str"] = _money(unreal)
+    if len(profile_ids) != 1:
+        out["total_unavailable_reason"] = (
+            "select a single profile to see the live Unrealized and "
+            "Total split")
+        return out
+    pid = profile_ids[0]
+    eq = (account_equity_by_pid or {}).get(pid)
+    cap = (initial_capital_by_pid or {}).get(pid)
+    if eq is not None and cap and cap > 0:
+        total = float(eq) - float(cap)
+        unreal = total - realized
+        out["total"] = round(total, 2)
+        out["total_str"] = _money(total)
+        out["unrealized"] = round(unreal, 2)
+        out["unrealized_str"] = _money(unreal)
+    else:
+        out["total_unavailable_reason"] = (
+            "the live account valuation could not be fetched for this "
+            "page load; refresh to retry")
     return out
 
 
@@ -2505,6 +2517,15 @@ def trades():
                 cap_by[selected_profile_int] = float(
                     sel_prof.get("initial_capital") or 0)
                 try:
+                    # Local import — this name was NEVER imported in
+                    # this scope, so every single render since the
+                    # header shipped raised NameError here, the except
+                    # ate it as a warning, and the Unrealized/Total
+                    # spans silently never appeared (operator caught it
+                    # 2026-07-15: "all three views show the same
+                    # number"). The swallowed-error-hides-dead-feature
+                    # class again.
+                    from client import get_account_info
                     _sctx = build_user_context_from_profile(selected_profile_int)
                     _acct = get_account_info(ctx=_sctx)
                     equity_by[selected_profile_int] = float(
@@ -3178,6 +3199,34 @@ def performance_dashboard():
     metrics = calculate_all_metrics(db_paths, initial_capital=total_initial_capital,
                                      capital_by_db=capital_by_db)
 
+    # Live reconciliation for the single-profile view (2026-07-15):
+    # the headline Total Return is as-of the LAST SNAPSHOT (yesterday's
+    # close during a session) while the dashboard marks live — showing
+    # the live split here lets the three surfaces (trades header,
+    # dashboard, this page) visibly agree instead of reading as three
+    # contradictory numbers. Fail-soft: an unreachable valuation just
+    # omits the line.
+    live_recon = None
+    if selected_profile_int:
+        try:
+            from client import get_account_info
+            _lctx = build_user_context_from_profile(selected_profile_int)
+            _lacct = get_account_info(ctx=_lctx)
+            _leq = float(_lacct.get("equity") or 0)
+            if _leq > 0 and total_initial_capital > 0:
+                _ltotal = _leq - total_initial_capital
+                live_recon = {
+                    "total": round(_ltotal, 2),
+                    "realized": round(metrics.get("total_pnl", 0.0), 2),
+                    "unrealized": round(
+                        _ltotal - metrics.get("total_pnl", 0.0), 2),
+                }
+        except Exception as _lr_exc:
+            logger.warning(
+                "performance(): live reconciliation failed (profile "
+                "%s): %s", selected_profile_int, _lr_exc,
+            )
+
     # Scalability tab data — TWO sections:
     #   1. Per-profile breakdown: real measured slippage / return for
     #      each profile we actually run. No projection math.
@@ -3812,6 +3861,7 @@ def performance_dashboard():
 
     return render_template("performance.html",
                            m=metrics,
+                           live_recon=live_recon,
                            profiles=profiles,
                            selected_profile=selected_profile_int,
                            selected_profile_name=selected_profile_name,

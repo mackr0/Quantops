@@ -3,6 +3,7 @@
 import json
 import logging
 import re
+from typing import Optional
 
 import config
 from ai_providers import call_ai
