@@ -486,3 +486,43 @@ class TestReviewRoundGateChain:
             "review #18: the earnings gate must exempt held names like "
             "its recent-exit and learned-HTB siblings — exits matter "
             "MOST in the pre-earnings window")
+
+
+class TestAIKnowsTheBar:
+    """Operator design rule: these mechanisms INFORM the AI so it
+    trades best — the gate must be a stated rule of the game, not a
+    hidden trap that silently discards sub-bar work."""
+
+    def test_bar_block_states_threshold_exits_and_honesty(self):
+        from unittest.mock import MagicMock
+        from ai_analyst import _confidence_bar_block
+        ctx = MagicMock()
+        ctx.ai_confidence_threshold = 60
+        block = _confidence_bar_block(ctx)
+        assert ">= 60" in block
+        assert "exits are never gated" in block
+        assert "Rate honestly" in block, (
+            "the anti-gaming clause is load-bearing: confidence feeds "
+            "the tracker's calibration, the tuner's band logic, and "
+            "the meta-model's training data")
+        assert "quality bar, not a brake" in block
+
+    def test_bar_block_empty_without_ctx_or_bar(self):
+        from unittest.mock import MagicMock
+        from ai_analyst import _confidence_bar_block
+        assert _confidence_bar_block(None) == ""
+        ctx = MagicMock()
+        ctx.ai_confidence_threshold = 0
+        assert _confidence_bar_block(ctx) == ""
+
+    def test_bar_block_woven_into_the_decision_prompt(self):
+        import inspect
+        import ai_analyst
+        src = inspect.getsource(ai_analyst._build_batch_prompt)
+        assert "_confidence_bar_block(ctx)" in src
+        assert '{confidence_bar_block}' in src
+        # self-contained: renders even when the risk-limits enrichment
+        # fails (it sits OUTSIDE that try/except)
+        idx = src.find("confidence_bar_block = _confidence_bar_block")
+        rl_except = src.find('"risk_limits_block build failed')
+        assert idx > rl_except > 0

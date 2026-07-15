@@ -725,6 +725,40 @@ def _iv_rank_pct(sym):
     return None
 
 
+def _confidence_bar_block(ctx) -> str:
+    """The profile's entry confidence bar, rendered for the decision
+    prompt's risk section.
+
+    2026-07-15 — the STEP 4.85 gate executes new entries only at
+    confidence ≥ the profile's ai_confidence_threshold. The AI must
+    KNOW that rule (operator design: mechanisms inform the AI so it
+    trades best); with the bar stated, the AI selects its strongest
+    ideas at-or-above it instead of having sub-bar work silently
+    discarded, and the hard gate becomes a backstop. The honesty
+    clause matters: confidence is calibration DATA (the tracker scores
+    every prediction, the tuner moves this very bar on realized
+    win-rates by band, the meta-model trains on it) — an inflated
+    number games the gate once and degrades the profile's own
+    learning permanently. Empty string when no ctx/bar (legacy
+    paths)."""
+    try:
+        bar = int(getattr(ctx, "ai_confidence_threshold", 0) or 0) \
+            if ctx is not None else 0
+    except (TypeError, ValueError):
+        return ""
+    if bar <= 0:
+        return ""
+    return (
+        f"\n  Entry confidence bar (system-enforced): NEW positions "
+        f"(BUY / SHORT / options) execute only at confidence >= {bar}; "
+        f"exits are never gated. This is a quality bar, not a brake — "
+        f"spend your picks on the ideas you genuinely rate at or above "
+        f"it. Rate honestly: every prediction's confidence is scored "
+        f"against its real outcome, and inflated confidence corrupts "
+        f"this profile's own calibration and drives the bar higher."
+    )
+
+
 def _build_batch_prompt(candidates_data, portfolio_state, market_context,
                         ctx=None, opportunities_out=None):
     """Construct the prompt for the AI batch trade selector.
@@ -1288,6 +1322,15 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context,
             type(_rl_exc).__name__, _rl_exc,
         )
 
+    # 2026-07-15 — the entry confidence bar is a RULE OF THE GAME the
+    # AI must know, not a hidden trap (operator design: these
+    # mechanisms inform the AI so it trades BEST — they don't silently
+    # discard its work). With the bar in the prompt, the AI spends its
+    # picks on ideas it genuinely rates above it and the STEP 4.85
+    # gate demotes to a rarely-firing backstop. Self-contained so it
+    # renders even when the risk-limits enrichment above fails.
+    confidence_bar_block = _confidence_bar_block(ctx)
+
     portfolio_section = (
         f"PORTFOLIO STATE:\n"
         f"  Equity: ${portfolio_state.get('equity', 0):,.0f} | "
@@ -1296,6 +1339,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context,
         f"{positions_text}\n"
         f"  Drawdown: {dd_pct:.1f}% from peak ({dd_action})"
         f"{risk_limits_block}"
+        f"{confidence_bar_block}"
         f"{swap_directive_block}"
         f"{exposure_block}"
         f"{beta_target_block}"
