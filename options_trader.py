@@ -31,6 +31,20 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+# Canonical single-leg strategy → (option right, order side) table —
+# THE one source of leg semantics for the executor AND the specialist
+# preflight (pipelines._enrich_option_proposal imports it). A duplicate
+# token-matching derivation priced protective_put as a CREDIT
+# (2026-07-15 review #5/#14); with one table, a new single-leg
+# strategy is either here with explicit semantics or it is rejected.
+SINGLE_LEG_LEG_SPEC = {
+    "covered_call": ("C", "sell"),
+    "protective_put": ("P", "buy"),
+    "long_call": ("C", "buy"),
+    "long_put": ("P", "buy"),
+    "cash_secured_put": ("P", "sell"),
+}
+
 # Risk-free rate proxy. Doesn't move enough day-to-day to matter for
 # our IV/Greek calcs at the precision we need; revisit when adding
 # longer-dated strategies. Pinned to recent 3-month T-bill yield.
@@ -394,8 +408,7 @@ def execute_option_strategy(
     # spread strategies (bull_put_spread, bear_call_spread, iron_condor,
     # etc.) must use action='MULTILEG_OPEN' so the multileg builder +
     # bracket-via-MLEG pipeline runs instead of the single-leg path.
-    _SINGLE_LEG = ("covered_call", "protective_put", "long_call",
-                   "long_put", "cash_secured_put")
+    _SINGLE_LEG = tuple(SINGLE_LEG_LEG_SPEC)
     _MULTILEG_NAMES = ("bull_put_spread", "bull_call_spread",
                        "bear_put_spread", "bear_call_spread",
                        "iron_condor", "iron_butterfly",
@@ -435,17 +448,12 @@ def execute_option_strategy(
         result["reason"] = f"Expiry {expiry_str} is not in the future"
         return result
 
-    # Strategy → option right + side
-    if strategy == "covered_call":
-        right, side = "C", "sell"
-    elif strategy == "protective_put":
-        right, side = "P", "buy"
-    elif strategy == "long_call":
-        right, side = "C", "buy"
-    elif strategy == "long_put":
-        right, side = "P", "buy"
-    elif strategy == "cash_secured_put":
-        right, side = "P", "sell"
+    # Strategy → option right + side (SINGLE_LEG_LEG_SPEC is the one
+    # canonical table — the preflight enrichment imports it too, so a
+    # new single-leg strategy can never be priced with a guessed side
+    # again; that token-matching duplicate mispriced protective_put as
+    # a credit, 2026-07-15 review #5/#14).
+    right, side = SINGLE_LEG_LEG_SPEC[strategy]
 
     # Sizing constraints — abort cleanly if the proposal exceeds them.
     # Re-read positions / account from ctx; we need accurate state.
@@ -532,6 +540,77 @@ def execute_option_strategy(
             "single-leg OCC snap failed for %s (using built symbol "
             "%s): %s", underlying, occ, _snap_exc,
         )
+
+    # 2026-07-15 (review #2) — VIRTUAL-CASH floor for BUY-side single
+    # legs. The 1%-of-EQUITY premium cap above is a RISK bound, not a
+    # cash bound: an equity-rich/cash-poor profile could buy a $2,400
+    # long call on $50 cash — the p217 overdraw class through the
+    # third sibling path (stock door and multileg floor cover the
+    # other two). Priced from the snapped contract's own quote (or
+    # the limit price); FAIL-CLOSED when unpriceable — a debit whose
+    # cost we cannot establish is never bought on hope. Sell-side
+    # single legs ADD cash (covered_call/CSP have their own gates).
+    _est_leg_premium = None
+    if side == "buy":
+        if limit_price is not None:
+            try:
+                if float(limit_price) > 0:
+                    _est_leg_premium = float(limit_price)
+            except (TypeError, ValueError):
+                _est_leg_premium = None
+        if _est_leg_premium is None:
+            try:
+                from options_strategy_advisor import (
+                    _cached_option_premium,
+                )
+                _p = _cached_option_premium(occ, "buy")
+                if _p and _p > 0:
+                    _est_leg_premium = float(_p)
+            except Exception as _pf_exc:
+                logger.debug(
+                    "single-leg premium fetch failed for %s: %s: %s",
+                    occ, type(_pf_exc).__name__, _pf_exc)
+        if _est_leg_premium is None:
+            result["action"] = "SKIP"
+            result["reason"] = (
+                f"Cash floor: the premium of {strategy} {occ} could "
+                f"not be priced — not submitted")
+            logger.error(
+                "OPTION CASH FLOOR: cannot price single-leg debit %s "
+                "%s — refusing (fail-closed).", strategy, occ)
+            return result
+        try:
+            import config as _cfg
+            from journal import get_virtual_cash as _gvc
+            _cash = _gvc(
+                getattr(ctx, "db_path", None) if ctx else None,
+                initial_capital=getattr(ctx, "initial_capital",
+                                        100000.0))
+            _reserve = (0.0 if limit_price is not None
+                        else _cfg.MARKET_BUY_SLIPPAGE_RESERVE_PCT)
+            _needed = (_est_leg_premium * 100.0 * contracts
+                       * (1 + _reserve))
+            if _cash is None or _needed > _cash + 0.01:
+                result["action"] = "SKIP"
+                result["reason"] = (
+                    f"Cash floor: {strategy} debit "
+                    f"${_est_leg_premium * 100.0 * contracts:,.2f} "
+                    f"exceeds this account's available cash")
+                logger.error(
+                    "OPTION CASH FLOOR blocked %s %s: debit $%.2f vs "
+                    "virtual cash %s.", strategy, occ,
+                    _est_leg_premium * 100.0 * contracts,
+                    "unreadable" if _cash is None else f"${_cash:,.2f}")
+                return result
+        except Exception:
+            logger.error(
+                "OPTION CASH FLOOR evaluation failed for %s %s — "
+                "refusing (fail-closed).", strategy, occ, exc_info=True)
+            result["action"] = "SKIP"
+            result["reason"] = (
+                f"Cash floor: could not verify cash for {strategy} — "
+                f"not submitted")
+            return result
 
     # Duplicate-position guard — same shape as the multileg dup guard
     # added 2026-05-06. Without this, a strategy that proposes the
@@ -751,6 +830,12 @@ def execute_option_strategy(
         "strike": float(strike),
         "reason": (proposal.get("reasoning", "") or "")[:200],
     })
+    # Estimated debit for the in-cycle cash adjuster (buy-side legs
+    # only — the leg row journals price-pending, so without this a
+    # later same-cycle stock BUY sizes against cash this premium has
+    # already committed; same shape as the multileg estimated_cost).
+    if side == "buy" and _est_leg_premium:
+        result["estimated_cost"] = _est_leg_premium * 100.0 * contracts
     return result
 
 

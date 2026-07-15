@@ -262,11 +262,20 @@ def _apply_param_change(profile_id: int, user_id: int,
                 "an operator seed outside bounds; step clamps still "
                 "applied", param_name, old_value,
             )
-    except Exception as _bc_exc:
-        # String-typed params (cast fall-through) can't be compared to
-        # numeric bounds — keep the cast value, note it for debugging.
+    except (KeyError, TypeError, ValueError) as _bc_exc:
+        # EXPECTED fall-through: string-typed params (cast returns the
+        # raw string) can't be compared to numeric bounds.
         logger.debug(
             "PARAM_BOUNDS clamp skipped for %s=%r: %s: %s",
+            param_name, cast_value, type(_bc_exc).__name__, _bc_exc,
+        )
+        bounded_value = cast_value
+    except Exception as _bc_exc:
+        # UNEXPECTED: a broken bounds table (the duplicate-key bug was
+        # exactly that) must not silently degrade the safety clamp.
+        logger.warning(
+            "PARAM_BOUNDS clamp FAILED for %s=%r (clamp skipped — "
+            "investigate the bounds table): %s: %s",
             param_name, cast_value, type(_bc_exc).__name__, _bc_exc,
         )
         bounded_value = cast_value

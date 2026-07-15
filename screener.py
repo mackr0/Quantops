@@ -818,6 +818,18 @@ _dynamic_cache = {}  # {market_type: (timestamp, [symbols])}
 _DYNAMIC_TTL = 86400  # 24 hours — absolute max age backstop
 
 
+def _universe_cache_key(market_type, min_price, max_price,
+                        min_volume) -> str:
+    """THE dynamic-universe cache key. One builder — a version bump
+    (_v2 → _v3) edited in only one of two hand-built copies would make
+    the warm probe permanently report stale while the real cache was
+    fresh (review 2026-07-15 #10). _v2: cache-key version — the funnel
+    rework (stratified sectors, fund exclusion) must not serve
+    yesterday's ETF-laden disk cache for its first 24h after deploy
+    (round-1 review L7)."""
+    return f"{market_type}_{min_price}_{max_price}_{min_volume}_v2"
+
+
 def universe_cache_fresh_for(market_type, min_price, max_price,
                              min_volume) -> bool:
     """Public probe: is the persisted dynamic universe for these
@@ -828,8 +840,9 @@ def universe_cache_fresh_for(market_type, min_price, max_price,
     build failures into a stale-cache/fallback return, so the caller
     cannot tell success from failure by the return value alone
     (review 2026-07-15 #16)."""
-    cache_key = f"{market_type}_{min_price}_{max_price}_{min_volume}_v2"
-    return _universe_cache_fresh(_dynamic_cache.get(cache_key))
+    return _universe_cache_fresh(_dynamic_cache.get(
+        _universe_cache_key(market_type, min_price, max_price,
+                            min_volume)))
 
 
 def _universe_cache_fresh(cached) -> bool:
@@ -1125,10 +1138,10 @@ def screen_dynamic_universe(min_price=10.0, max_price=20.0, min_volume=500_000,
 
     Returns list of symbol strings.
     """
-    # _v2: cache-key version — the funnel rework (stratified sectors,
-    # fund exclusion) must not serve yesterday's ETF-laden disk cache
-    # for its first 24h after deploy (round-1 review L7).
-    cache_key = f"{market_type}_{min_price}_{max_price}_{min_volume}_v2"
+    # Key format (incl. the _v2 version tag) lives in
+    # _universe_cache_key — one builder shared with the warm probe.
+    cache_key = _universe_cache_key(market_type, min_price, max_price,
+                                    min_volume)
     cached = _dynamic_cache.get(cache_key)
     if _universe_cache_fresh(cached):
         return cached[1]

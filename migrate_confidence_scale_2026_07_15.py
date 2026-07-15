@@ -284,42 +284,53 @@ def repair_profile_dbs(apply: bool) -> list:
                 # veto_reason-only variants below reference no missing
                 # column (review finding 2026-07-15 #3: the first cut
                 # errored on every profile DB in exactly that ordering).
+                # The osr match uses the recorder's two STRUCTURED
+                # formats only ("vetoed_by: reason" prefix / parsed-log
+                # "VETO (name)" tag) — a reason merely MENTIONING the
+                # specialist must never re-key (hack-hunt #3), and only
+                # class-less rows are candidates on a re-run.
+                _osr_match = (
+                    "(veto_reason LIKE 'option_spread_risk:%' OR "
+                    "veto_reason LIKE '%VETO (option_spread_risk)%')")
                 if has_vc:
                     n_osr = conn.execute(
                         "SELECT COUNT(*) FROM option_proposal_outcomes "
-                        "WHERE vetoed=1 AND veto_reason LIKE "
-                        "'%option_spread_risk%' AND "
-                        "COALESCE(veto_class,'') != 'invalid_input'"
-                    ).fetchone()[0]
+                        "WHERE vetoed=1 AND veto_class IS NULL AND "
+                        + _osr_match).fetchone()[0]
                     n_risk = conn.execute(
                         "SELECT COUNT(*) FROM option_proposal_outcomes "
-                        "WHERE vetoed=1 AND veto_class IS NULL AND "
-                        "veto_reason NOT LIKE '%option_spread_risk%'"
-                    ).fetchone()[0]
+                        "WHERE vetoed=1 AND veto_class IS NULL AND NOT "
+                        + _osr_match).fetchone()[0]
                 else:
                     n_osr = conn.execute(
                         "SELECT COUNT(*) FROM option_proposal_outcomes "
-                        "WHERE vetoed=1 AND veto_reason LIKE "
-                        "'%option_spread_risk%'").fetchone()[0]
+                        "WHERE vetoed=1 AND " + _osr_match
+                    ).fetchone()[0]
                     n_risk = conn.execute(
                         "SELECT COUNT(*) FROM option_proposal_outcomes "
-                        "WHERE vetoed=1 AND veto_reason NOT LIKE "
-                        "'%option_spread_risk%'").fetchone()[0]
+                        "WHERE vetoed=1 AND NOT " + _osr_match
+                    ).fetchone()[0]
                 if n_osr or n_risk:
                     findings.append(
                         f"{path}: {n_osr} option_spread_risk veto(s) -> "
                         f"invalid_input; {n_risk} other veto(s) -> risk")
                 if apply:
-                    if "veto_class" not in cols or n_osr:
-                        conn.execute(
-                            "UPDATE option_proposal_outcomes SET "
-                            "veto_class='invalid_input' WHERE vetoed=1 "
-                            "AND veto_reason LIKE '%option_spread_risk%'")
-                    if "veto_class" not in cols or n_risk:
-                        conn.execute(
-                            "UPDATE option_proposal_outcomes SET "
-                            "veto_class='risk' WHERE vetoed=1 AND "
-                            "veto_class IS NULL")
+                    # RE-RUN SAFETY (hack-hunt #3): only rows with NO
+                    # class yet are ever re-keyed — post-fix live rows
+                    # carry veto_class at insert, and a re-run must
+                    # never reclassify a genuine 'risk' judgment. The
+                    # match is the recorder's two STRUCTURED formats
+                    # ("vetoed_by: reason" prefix / the parsed-log
+                    # "VETO (name)" tag), never a bare substring that a
+                    # reason merely MENTIONING the specialist would hit.
+                    conn.execute(
+                        "UPDATE option_proposal_outcomes SET "
+                        "veto_class='invalid_input' WHERE vetoed=1 "
+                        "AND veto_class IS NULL AND " + _osr_match)
+                    conn.execute(
+                        "UPDATE option_proposal_outcomes SET "
+                        "veto_class='risk' WHERE vetoed=1 AND "
+                        "veto_class IS NULL")
                     conn.commit()
         except sqlite3.Error as exc:
             findings.append(f"{path}: ERROR {type(exc).__name__}: {exc}")
@@ -403,9 +414,9 @@ def verify() -> int:
                     continue
                 n = conn.execute(
                     "SELECT COUNT(*) FROM option_proposal_outcomes "
-                    "WHERE vetoed=1 AND veto_reason LIKE "
-                    "'%option_spread_risk%' AND "
-                    "COALESCE(veto_class,'') != 'invalid_input'"
+                    "WHERE vetoed=1 AND veto_class IS NULL AND "
+                    "(veto_reason LIKE 'option_spread_risk:%' OR "
+                    "veto_reason LIKE '%VETO (option_spread_risk)%')"
                 ).fetchone()[0]
                 if n:
                     print(f"VIOLATION: {path} has {n} un-keyed "

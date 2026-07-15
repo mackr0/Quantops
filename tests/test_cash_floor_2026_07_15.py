@@ -421,3 +421,75 @@ class TestReviewRoundCashDoor:
         assert "log_trade(" in region, (
             "review #7: a live half-pair leg-A order must be journaled "
             "on the leg-B failure path, not left to the recovery ledger")
+
+
+class TestHackHuntRound:
+    def test_single_leg_table_is_the_one_source(self):
+        """Hunt #5: the executor's strategy→(right, side) table is
+        canonical; the preflight imports it — a token heuristic here
+        priced protective_put as a CREDIT once already."""
+        from options_trader import SINGLE_LEG_LEG_SPEC
+        assert SINGLE_LEG_LEG_SPEC["protective_put"] == ("P", "buy")
+        assert SINGLE_LEG_LEG_SPEC["covered_call"] == ("C", "sell")
+        assert SINGLE_LEG_LEG_SPEC["long_call"] == ("C", "buy")
+        assert SINGLE_LEG_LEG_SPEC["cash_secured_put"] == ("P", "sell")
+        import inspect
+        import pipelines
+        src = inspect.getsource(pipelines._enrich_option_proposal)
+        assert "SINGLE_LEG_LEG_SPEC" in src
+        assert '"buy" if ("long"' not in src, "token heuristic must stay dead"
+        import options_trader
+        exec_src = inspect.getsource(options_trader.execute_option_strategy)
+        assert "SINGLE_LEG_LEG_SPEC[strategy]" in exec_src
+
+    def test_multileg_floor_classifies_by_spec_is_credit(self):
+        """Hunt #1: credit/debit comes from spec.is_credit — a
+        hardcoded 2-vertical list refused the whole condor family."""
+        import inspect
+        import pipelines.option as po
+        src = inspect.getsource(po.OptionPipeline._execute_multileg)
+        assert 'getattr(spec, "is_credit", False)' in src
+        assert 'strategy_name in (\n                "bull_put_spread"' \
+            not in src
+        # iron_condor builders declare credit — the floor must skip them
+        from options_multileg import build_iron_condor
+        from datetime import date, timedelta
+        spec = build_iron_condor(
+            "SPY", date.today() + timedelta(days=30),
+            90.0, 95.0, 105.0, 110.0, qty=1)
+        assert spec.is_credit is True, (
+            "the builder declares condors CREDIT — the floor must "
+            "classify from the spec, not a vertical name list")
+
+    def test_single_leg_debit_cash_floor_fail_closed(self):
+        """Hunt #2: buy-side single legs were the third sibling with
+        no cash floor (1%-of-EQUITY is a risk cap, not a cash bound).
+        Source pins on the executor: floor present, fail-closed,
+        estimated_cost exposed for the cycle-cash adjuster."""
+        import inspect
+        import options_trader
+        src = inspect.getsource(options_trader.execute_option_strategy)
+        assert "OPTION CASH FLOOR" in src
+        assert "get_virtual_cash" in src
+        assert 'result["estimated_cost"]' in src
+
+    def test_options_open_estimated_cost_feeds_cycle_cash(self):
+        from trade_pipeline import _adjust_cycle_cash
+        r = 1 + config.MARKET_BUY_SLIPPAGE_RESERVE_PCT
+        acct = {"cash": 5_000.0}
+        _adjust_cycle_cash(acct, {"action": "OPTIONS_OPEN",
+                                  "estimated_cost": 350.0})
+        assert acct["cash"] == pytest.approx(5_000.0 - 350.0 * r)
+        acct = {"cash": 5_000.0}
+        assert _adjust_cycle_cash(
+            acct, {"action": "OPTIONS_OPEN"}) == 0.0  # sell legs: no-op
+
+    def test_unparseable_qty_fails_closed(self, profile_db):
+        """Hunt #14: the buy door's doctrine is fail-closed — an order
+        whose qty can't even be parsed must not be waved through."""
+        import order_guard
+        kwargs = {"symbol": "AAPL", "side": "buy",
+                  "qty": object()}  # unparseable
+        with pytest.raises(order_guard.CashFloorGuardError):
+            order_guard.assert_buy_within_own_cash(
+                _api(last_price=100.0), _ctx(profile_db), kwargs)

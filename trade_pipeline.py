@@ -610,8 +610,110 @@ DEFAULT_TAKE_PROFIT_PCT = 0.10
 # (ai_review removed 2026-07-15 — it was the only consumer of
 # ai_confidence_threshold but had ZERO callers, which meant the
 # confidence filter never gated a single live trade. The live gate now
-# lives in run_trade_cycle STEP 4.85.)
+# lives in run_trade_cycle STEP 4.85 via _apply_confidence_gate.)
 # ---------------------------------------------------------------------------
+
+# NEW-ENTRY action set — THE single source for "this action opens or
+# increases risk" across run_trade_cycle's gates (confidence gate,
+# intraday-risk halt). Exits (SELL/COVER/*_CLOSE) are never in it.
+# One constant, not per-gate literals: the set has grown before
+# (OPTIONS, MULTILEG_OPEN, PAIR_TRADE were each added later) and two
+# hand-maintained copies WILL drift.
+NEW_ENTRY_ACTIONS = frozenset({
+    "BUY", "SHORT", "OPTIONS", "MULTILEG_OPEN", "PAIR_TRADE",
+})
+
+
+def _apply_confidence_gate(ai_trades, ctx, cycle_id, details):
+    """STEP 4.85 — drop NEW ENTRIES whose final (post-meta-blend)
+    confidence sits below the profile's resolved ai_confidence_threshold.
+
+    2026-07-15: the first time this parameter has ever gated the live
+    path (its previous home, ai_review, had zero callers). The
+    threshold resolves through the tuner's full per-symbol > per-regime
+    > per-TOD > global override chain. Blocked entries are recorded as
+    CONFIDENCE_GATE trade drops and surfaced as CONFIDENCE_BLOCKED
+    details; their STEP 4 prediction rows stay recorded so the tracker
+    keeps learning from gated ideas. Exits are NEVER gated — positions
+    must always be able to close. Returns the filtered trade list;
+    mutates `details` in place (same contract as the sibling gates)."""
+    kept = []
+    blocked = []
+    for t in ai_trades:
+        action = (t.get("action") or "").upper()
+        if action not in NEW_ENTRY_ACTIONS:
+            kept.append(t)
+            continue
+        sym = t.get("symbol", "")
+        try:
+            from regime_overrides import resolve_for_current_regime
+            min_confidence = resolve_for_current_regime(
+                ctx, "ai_confidence_threshold",
+                default=ctx.ai_confidence_threshold,
+                symbol=sym)
+        except Exception as _rc_exc:
+            # Loud: a persistent failure here silently turns the
+            # tuner's confidence overrides into dead knobs — the exact
+            # failure shape the 2026-07-15 repair exists to prevent.
+            logging.warning(
+                "confidence-gate override resolve failed for %s "
+                "(using the profile global %s): %s: %s",
+                sym, ctx.ai_confidence_threshold,
+                type(_rc_exc).__name__, _rc_exc,
+            )
+            min_confidence = ctx.ai_confidence_threshold
+        conf = t.get("confidence")
+        conf = 0 if conf is None else conf
+        if conf < min_confidence:
+            blocked.append((sym, action, conf, min_confidence))
+            logging.info(
+                f"  Confidence gate BLOCKED {action} {sym}: "
+                f"confidence {conf} < threshold {min_confidence} — "
+                f"prediction stays recorded for learning."
+            )
+            if getattr(ctx, "db_path", None):
+                try:
+                    from journal import record_trade_drop
+                    record_trade_drop(
+                        db_path=ctx.db_path,
+                        symbol=sym,
+                        side=action.lower() or None,
+                        drop_code="CONFIDENCE_GATE",
+                        drop_reason=(
+                            f"AI confidence {conf} is below this "
+                            f"profile's minimum of {min_confidence} "
+                            f"for new positions. The idea stays "
+                            f"recorded and scored, but no money "
+                            f"moves on it."
+                        ),
+                        cycle_id=cycle_id,
+                        ai_confidence=conf,
+                        ai_reasoning=t.get("reasoning"),
+                    )
+                except Exception as _cg_exc:
+                    logging.debug(
+                        "confidence-gate drop record failed for "
+                        "%s: %s", sym, _cg_exc,
+                    )
+            continue
+        kept.append(t)
+    if blocked:
+        print(
+            f"  Confidence gate: blocked "
+            f"{len(blocked)} low-confidence entries "
+            f"({', '.join(b[0] for b in blocked)})"
+        )
+        for _sym, _action, _conf, _minc in blocked:
+            details.append({
+                "symbol": _sym,
+                "action": "CONFIDENCE_BLOCKED",
+                "reason": (
+                    f"AI wanted {_action} at confidence {_conf}, "
+                    f"below this profile's minimum of {_minc} for "
+                    f"new positions."
+                ),
+            })
+    return kept
 # Live position-count maintenance during the STEP 5 dispatch loop
 # ---------------------------------------------------------------------------
 
@@ -777,14 +879,14 @@ def _adjust_cycle_cash(account, trade_result):
         delta = -notional * _reserve
     elif action in ("SELL", "SHORT"):
         delta = notional / _reserve
-    elif (action == "MULTILEG_OPEN"
+    elif (action in ("MULTILEG_OPEN", "OPTIONS_OPEN")
           and trade_result.get("estimated_cost")):
-        # 2026-07-15 (review #5) — a net-DEBIT spread's cash leaves the
-        # account now, but its legs journal price=NULL until the fill
-        # backfill, so without this a later same-cycle stock BUY sizes
-        # against money the spread already spent. The option executor
-        # sets estimated_cost ONLY for debit spreads; credits never
-        # fund same-cycle buys. (notional already resolved to
+        # 2026-07-15 (review #5, #2) — a net-DEBIT option's cash leaves
+        # the account now, but its leg rows journal price-pending until
+        # the fill backfill, so without this a later same-cycle stock
+        # BUY sizes against money the option already spent. Both option
+        # executors set estimated_cost ONLY on debit entries; credits
+        # never fund same-cycle buys. (notional already resolved to
         # estimated_cost above.)
         delta = -notional * _reserve
     else:
@@ -3001,85 +3103,12 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
 
     # ── STEP 4.85: Confidence gate ────────────────────────────────────
     # 2026-07-15 — the profile's ai_confidence_threshold finally gates
-    # the LIVE path. The old site (ai_review) had zero callers, so the
-    # threshold — seeded, displayed in Settings, and "tuned" by the
-    # self-tuner — never filtered a single trade. NEW ENTRIES whose
-    # final (post-meta-blend) confidence is below the resolved threshold
-    # are dropped here; the prediction row from STEP 4 stays recorded so
-    # the tracker keeps learning from gated ideas, same philosophy as
-    # the blacklist gate below. Exits are NEVER gated — positions must
-    # always be able to close.
+    # the LIVE path (the old site, ai_review, had zero callers). Logic
+    # lives in _apply_confidence_gate so tests exercise the REAL gate,
+    # not a replica.
     if ctx is not None and ai_trades:
-        _conf_entry_actions = {"BUY", "SHORT", "OPTIONS",
-                               "MULTILEG_OPEN", "PAIR_TRADE"}
-        _conf_kept = []
-        _conf_blocked = []
-        for t in ai_trades:
-            action = (t.get("action") or "").upper()
-            if action not in _conf_entry_actions:
-                _conf_kept.append(t)
-                continue
-            sym = t.get("symbol", "")
-            try:
-                from regime_overrides import resolve_for_current_regime
-                min_confidence = resolve_for_current_regime(
-                    ctx, "ai_confidence_threshold",
-                    default=ctx.ai_confidence_threshold,
-                    symbol=sym)
-            except Exception:
-                min_confidence = ctx.ai_confidence_threshold
-            conf = t.get("confidence")
-            conf = 0 if conf is None else conf
-            if conf < min_confidence:
-                _conf_blocked.append((sym, action, conf, min_confidence))
-                logging.info(
-                    f"  Confidence gate BLOCKED {action} {sym}: "
-                    f"confidence {conf} < threshold {min_confidence} — "
-                    f"prediction stays recorded for learning."
-                )
-                if getattr(ctx, "db_path", None):
-                    try:
-                        from journal import record_trade_drop
-                        record_trade_drop(
-                            db_path=ctx.db_path,
-                            symbol=sym,
-                            side=action.lower() or None,
-                            drop_code="CONFIDENCE_GATE",
-                            drop_reason=(
-                                f"AI confidence {conf} is below this "
-                                f"profile's minimum of {min_confidence} "
-                                f"for new positions. The idea stays "
-                                f"recorded and scored, but no money "
-                                f"moves on it."
-                            ),
-                            cycle_id=cycle_id,
-                            ai_confidence=conf,
-                            ai_reasoning=t.get("reasoning"),
-                        )
-                    except Exception as _cg_exc:
-                        logging.debug(
-                            "confidence-gate drop record failed for "
-                            "%s: %s", sym, _cg_exc,
-                        )
-                continue
-            _conf_kept.append(t)
-        if _conf_blocked:
-            print(
-                f"  Confidence gate: blocked "
-                f"{len(_conf_blocked)} low-confidence entries "
-                f"({', '.join(b[0] for b in _conf_blocked)})"
-            )
-            for _sym, _action, _conf, _minc in _conf_blocked:
-                details.append({
-                    "symbol": _sym,
-                    "action": "CONFIDENCE_BLOCKED",
-                    "reason": (
-                        f"AI wanted {_action} at confidence {_conf}, "
-                        f"below this profile's minimum of {_minc} for "
-                        f"new positions."
-                    ),
-                })
-        ai_trades = _conf_kept
+        ai_trades = _apply_confidence_gate(ai_trades, ctx, cycle_id,
+                                           details)
 
     # ── STEP 4.9: Crisis gate (Phase 10) ─────────────────────────────
     # Capital preservation override. At `crisis` or `severe` levels, new
@@ -3254,8 +3283,7 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
 
     if (risk_gate_enabled and ai_trades
             and (intraday_halt_action or halted_sectors)):
-        new_entry_actions = {"BUY", "SHORT", "OPTIONS",
-                              "MULTILEG_OPEN", "PAIR_TRADE"}
+        new_entry_actions = NEW_ENTRY_ACTIONS
         before_count = len(ai_trades)
 
         # Portfolio-wide blocks short-circuit per-sector logic.
@@ -3500,8 +3528,20 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 if _phase4b_vetoed:
                     _verdict = SpecialistVerdict(
                         approved=[], vetoed=[_proposal],
+                        # When the routed review already returned a
+                        # canonical "SYM: VETO (attribution) — reason"
+                        # log line, pass it through UNWRAPPED — the old
+                        # re-wrap nested it inside a second "SYM: VETO —"
+                        # prefix, which destroyed the parsed attribution
+                        # (vetoed_by) downstream and forced consumers
+                        # into text scans. Bare reasons (the fallback
+                        # "specialist veto" string) still get the
+                        # canonical prefix.
                         veto_log=[
-                            f"{symbol}: VETO — {_phase4b_veto_reason}"
+                            _phase4b_veto_reason
+                            if str(_phase4b_veto_reason).startswith(
+                                f"{symbol}:")
+                            else f"{symbol}: VETO — {_phase4b_veto_reason}"
                         ],
                     )
                     print(f"  MULTILEG_OPEN {symbol}: VETOED by "
@@ -3604,13 +3644,18 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                     "Trade NOT submitted for %s (%s): action=%s reason=%s",
                     symbol, action, ta, drop_reason,
                 )
-                _already_recorded = "input_incomplete" in str(drop_reason)
                 # The option preflight already recorded the precise
-                # OPTION_INPUT_INCOMPLETE drop for such proposals; a
-                # second SPECIALIST_VETOED row here would show the same
-                # dropped spread twice in the AI Brain under two codes
-                # (review 2026-07-15 #13). Only the record is skipped —
-                # the loop's later bookkeeping still runs.
+                # OPTION_INPUT_INCOMPLETE drop for proposals it dropped;
+                # a second SPECIALIST_VETOED row here would show the
+                # same dropped spread twice in the AI Brain under two
+                # codes (review 2026-07-15 #13). Detected STRUCTURALLY
+                # via the result's parsed vetoed_by attribution — never
+                # a substring scan of the reason text. Only the record
+                # is skipped; the loop's later bookkeeping still runs.
+                _already_recorded = (
+                    isinstance(trade_result, dict)
+                    and trade_result.get("vetoed_by") == "input_incomplete"
+                )
                 # 2026-06-09 — persist the drop so the AI Brain panel's
                 # BLOCKED badge can show WHY (not just THAT) a trade
                 # didn't make it to the broker. Every doomsday gate

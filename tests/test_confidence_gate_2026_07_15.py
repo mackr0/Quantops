@@ -129,60 +129,66 @@ class TestLiveGateSource:
     def test_gate_uses_the_override_resolve_chain(self):
         """The tuner writes per-symbol/regime/TOD overrides — the gate
         must consult resolve_for_current_regime or those override
-        writers are dead knobs again."""
+        writers are dead knobs again. Tested against the REAL extracted
+        function."""
         import trade_pipeline
-        src = inspect.getsource(trade_pipeline)
-        idx = src.find("STEP 4.85: Confidence gate")
-        gate_src = src[idx:idx + 4000]
-        assert "resolve_for_current_regime" in gate_src
-        assert 'default=ctx.ai_confidence_threshold' in gate_src
+        src = inspect.getsource(trade_pipeline._apply_confidence_gate)
+        assert "resolve_for_current_regime" in src
+        assert 'default=ctx.ai_confidence_threshold' in src
+        assert "run_trade_cycle" not in src  # it IS the gate, not a copy
+        # and run_trade_cycle actually calls it on the live path
+        cycle_src = inspect.getsource(trade_pipeline.run_trade_cycle)
+        assert "_apply_confidence_gate(ai_trades, ctx, cycle_id" in cycle_src
 
-    def test_gate_scope_matches_the_entry_action_set(self):
-        """The gate's entry set must equal the intraday-risk gate's
-        new_entry_actions — entries gated, exits (SELL/COVER/CLOSE)
-        never."""
+    def test_gate_scope_is_the_single_entry_action_constant(self):
+        """ONE constant governs 'this action opens risk' for BOTH the
+        confidence gate and the intraday-risk gate — two hand-kept
+        copies drifted before (hack-hunt #6)."""
         import trade_pipeline
-        src = inspect.getsource(trade_pipeline)
-        idx = src.find("STEP 4.85: Confidence gate")
-        gate_src = src[idx:idx + 4000]
-        for action in ("BUY", "SHORT", "OPTIONS", "MULTILEG_OPEN",
-                       "PAIR_TRADE"):
-            assert f'"{action}"' in gate_src
-        assert '"SELL"' not in gate_src.split("_conf_entry_actions")[1][:300], (
-            "SELL must not be in the gated entry-action set")
+        assert trade_pipeline.NEW_ENTRY_ACTIONS == frozenset(
+            {"BUY", "SHORT", "OPTIONS", "MULTILEG_OPEN", "PAIR_TRADE"})
+        gate_src = inspect.getsource(trade_pipeline._apply_confidence_gate)
+        assert "NEW_ENTRY_ACTIONS" in gate_src
+        cycle_src = inspect.getsource(trade_pipeline.run_trade_cycle)
+        assert "new_entry_actions = NEW_ENTRY_ACTIONS" in cycle_src, (
+            "the intraday-risk gate must share the constant")
+        # no second inline literal of the set anywhere in the module
+        module_src = inspect.getsource(trade_pipeline)
+        assert module_src.count(
+            '"BUY", "SHORT", "OPTIONS"') == 1, (
+            "a second hand-maintained entry-action literal appeared")
 
 
 class TestLiveGateBehavior:
-    """Faithful replica of the STEP 4.85 filter (same pattern as
-    test_blacklist_at_execution — the source pins above catch drift)."""
+    """Behavioral tests against the REAL _apply_confidence_gate (the
+    gate was extracted from run_trade_cycle precisely so no replica is
+    needed; the wiring pin above proves the live path calls it)."""
 
-    ENTRY_ACTIONS = {"BUY", "SHORT", "OPTIONS", "MULTILEG_OPEN",
-                     "PAIR_TRADE"}
-
-    def _gate(self, trades, threshold):
-        kept, blocked = [], []
-        for t in trades:
-            action = (t.get("action") or "").upper()
-            if action not in self.ENTRY_ACTIONS:
-                kept.append(t)
-                continue
-            conf = t.get("confidence")
-            conf = 0 if conf is None else conf
-            if conf < threshold:
-                blocked.append(t)
-                continue
-            kept.append(t)
-        return kept, blocked
+    def _gate(self, trades, threshold, monkeypatch=None):
+        from unittest.mock import MagicMock
+        import trade_pipeline
+        ctx = MagicMock()
+        ctx.ai_confidence_threshold = threshold
+        ctx.db_path = None  # no drop-recording DB in the unit test
+        details = []
+        # resolve chain falls through to the ctx global when the
+        # override modules aren't seeded — exercised as-is.
+        kept = trade_pipeline._apply_confidence_gate(
+            trades, ctx, cycle_id=None, details=details)
+        blocked = [t for t in trades if t not in kept]
+        return kept, blocked, details
 
     def test_low_confidence_entry_blocked(self):
-        kept, blocked = self._gate(
+        kept, blocked, details = self._gate(
             [{"symbol": "A", "action": "BUY", "confidence": 55},
              {"symbol": "B", "action": "BUY", "confidence": 72}], 60)
         assert [t["symbol"] for t in kept] == ["B"]
         assert [t["symbol"] for t in blocked] == ["A"]
+        assert details and details[0]["action"] == "CONFIDENCE_BLOCKED"
+        assert "below this profile's minimum" in details[0]["reason"]
 
     def test_exits_never_gated(self):
-        kept, blocked = self._gate(
+        kept, blocked, _ = self._gate(
             [{"symbol": "A", "action": "SELL", "confidence": 5},
              {"symbol": "B", "action": "COVER", "confidence": 0},
              {"symbol": "C", "action": "MULTILEG_CLOSE", "confidence": 1}],
@@ -190,21 +196,65 @@ class TestLiveGateBehavior:
         assert len(kept) == 3 and not blocked
 
     def test_option_entries_gated_like_stock_entries(self):
-        kept, blocked = self._gate(
+        kept, blocked, _ = self._gate(
             [{"symbol": "A", "action": "MULTILEG_OPEN", "confidence": 58},
              {"symbol": "B", "action": "OPTIONS", "confidence": 70}], 60)
         assert [t["symbol"] for t in blocked] == ["A"]
         assert [t["symbol"] for t in kept] == ["B"]
 
     def test_missing_confidence_reads_as_zero(self):
-        kept, blocked = self._gate(
+        kept, blocked, _ = self._gate(
             [{"symbol": "A", "action": "BUY"}], 25)
         assert blocked and not kept
 
     def test_boundary_is_inclusive_pass(self):
-        kept, blocked = self._gate(
+        kept, blocked, _ = self._gate(
             [{"symbol": "A", "action": "BUY", "confidence": 60}], 60)
         assert kept and not blocked
+
+    def test_blocked_entry_records_a_confidence_gate_drop(
+            self, monkeypatch, tmp_path):
+        """The AI Brain surface: a gated entry writes a
+        CONFIDENCE_GATE trade-drop row with the gated confidence."""
+        from unittest.mock import MagicMock
+        import journal
+        import trade_pipeline
+        drops = []
+        monkeypatch.setattr(journal, "record_trade_drop",
+                            lambda **kw: drops.append(kw))
+        ctx = MagicMock()
+        ctx.ai_confidence_threshold = 60
+        ctx.db_path = str(tmp_path / "p.db")
+        trade_pipeline._apply_confidence_gate(
+            [{"symbol": "FCEL", "action": "BUY", "confidence": 41,
+              "reasoning": "momentum"}],
+            ctx, cycle_id=7, details=[])
+        assert drops and drops[0]["drop_code"] == "CONFIDENCE_GATE"
+        assert drops[0]["ai_confidence"] == 41
+        assert drops[0]["cycle_id"] == 7
+
+    def test_resolve_chain_failure_is_loud_and_falls_back(
+            self, monkeypatch, caplog):
+        """Hack-hunt #7: a resolve failure silently disabling the
+        tuner's overrides is the exact dead-knob class this fix pack
+        repaired — it must WARN, then gate at the profile global."""
+        import logging
+        from unittest.mock import MagicMock
+        import regime_overrides
+        import trade_pipeline
+        monkeypatch.setattr(
+            regime_overrides, "resolve_for_current_regime",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+        ctx = MagicMock()
+        ctx.ai_confidence_threshold = 60
+        ctx.db_path = None
+        with caplog.at_level(logging.WARNING):
+            kept = trade_pipeline._apply_confidence_gate(
+                [{"symbol": "A", "action": "BUY", "confidence": 55}],
+                ctx, cycle_id=None, details=[])
+        assert kept == []  # gated at the global 60
+        assert any("override resolve failed" in r.message
+                   for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------

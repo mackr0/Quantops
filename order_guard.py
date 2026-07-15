@@ -753,9 +753,11 @@ def assert_buy_within_own_cash(api, ctx, kwargs: dict,
     covers an own-journal short is likewise position-reducing; only
     the portion beyond the short — new long exposure — is
     cash-checked. Options (OCC symbols) return early like the sell
-    door: their cash budget is enforced in the options pipeline. Real
-    (non-virtual) accounts return early too — the broker enforces
-    their buying power."""
+    door: their cash floors live in the option executors themselves
+    (net-debit spreads in OptionPipeline._execute_multileg; buy-side
+    single legs in options_trader.submit_option_strategy — both added
+    2026-07-15, both fail-closed). Real (non-virtual) accounts return
+    early too — the broker enforces their buying power."""
     side = str(kwargs.get("side") or "").lower()
     symbol = kwargs.get("symbol")
     if side != "buy" or not symbol:
@@ -770,7 +772,17 @@ def assert_buy_within_own_cash(api, ctx, kwargs: dict,
     try:
         qty = int(float(kwargs.get("qty") or 0))
     except (TypeError, ValueError):
-        return
+        # This door's doctrine is FAIL-CLOSED: an order whose qty we
+        # cannot even parse cannot be cash-checked, so it must not be
+        # sent (no live call site produces this shape — reaching here
+        # means a new caller is malformed and should be fixed, not
+        # waved through silently).
+        logger.error(
+            "CASH DOOR: unparseable qty %r on BUY %s — refusing "
+            "(fail-closed).", kwargs.get("qty"), sym)
+        raise CashFloorGuardError(
+            "BUY %s refused: unparseable qty %r" % (
+                sym, kwargs.get("qty")))
     if qty <= 0:
         return
     db_path = getattr(ctx, "db_path", None)

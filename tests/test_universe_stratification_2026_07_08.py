@@ -286,44 +286,41 @@ def test_candidate_window_core_plus_deterministic_rotation():
     # 2026-07-15 — the fixed first-30 cut froze the same 30 names for
     # a whole day fleet-wide, leaving every other floor-passer
     # structurally unreachable (prod 07-14: 47 passers, back 17 never
-    # scanned). Contract: the head of the stratified order is ALWAYS
-    # scanned; the remaining slots rotate deterministically with the
-    # bucket index; every tail name appears within a bounded number of
+    # scanned). Contract, tested against the REAL _rotation_window
+    # (extracted as a pure function precisely so this is not a
+    # replica): the head of the stratified order is ALWAYS scanned;
+    # the remaining slots rotate deterministically with the bucket
+    # index; every tail name appears within a bounded number of
     # buckets; output size never exceeds the pool bound.
-    import multi_scheduler as ms
+    from multi_scheduler import (_rotation_window, _CANDIDATE_CORE_SLOTS,
+                                 _CANDIDATE_POOL_SIZE)
 
     symbols = [f"S{i:02d}" for i in range(47)]
-    core_n = ms._CANDIDATE_CORE_SLOTS
-    pool_n = ms._CANDIDATE_POOL_SIZE
-    rot = pool_n - core_n
-    tail = symbols[core_n:]
-
-    def window(bucket):
-        offset = (bucket * rot) % len(tail)
-        return symbols[:core_n] + [
-            tail[(offset + i) % len(tail)] for i in range(rot)]
+    tail = symbols[_CANDIDATE_CORE_SLOTS:]
 
     seen_tail = set()
     prev = None
     for b in range(10):
-        w = window(b)
-        assert len(w) == pool_n
-        assert w[:core_n] == symbols[:core_n], "core must never rotate"
+        w, offset = _rotation_window(symbols, b)
+        assert offset is not None, "47 passers must rotate"
+        assert len(w) == _CANDIDATE_POOL_SIZE
+        assert w[:_CANDIDATE_CORE_SLOTS] == symbols[:_CANDIDATE_CORE_SLOTS], \
+            "core must never rotate"
         assert len(set(w)) == len(w), "window must not repeat a name"
         # deterministic: same bucket → same window
-        assert window(b) == w
+        assert _rotation_window(symbols, b)[0] == w
         if prev is not None:
             assert w != prev, "consecutive buckets must advance the window"
         prev = w
-        seen_tail.update(w[core_n:])
+        seen_tail.update(w[_CANDIDATE_CORE_SLOTS:])
     assert seen_tail == set(tail), (
         "every floor-passer beyond the core must be scanned within a "
         "few buckets — that is the whole point of the rotation")
 
-    # And the shipped code implements exactly this shape.
-    src = _read("multi_scheduler.py")
-    assert "offset = (now_bucket * rot_slots) % len(tail)" in src
-    assert "[tail[(offset + i) % len(tail)] for i in range(rot_slots)]" in src
+    # Small pools don't rotate — everything fits.
+    small = [f"T{i}" for i in range(20)]
+    w, offset = _rotation_window(small, 7)
+    assert w == small and offset is None
 
 
 def test_second_cut_at_screen_by_price_range_is_gone():
@@ -385,8 +382,16 @@ def test_universe_build_is_single_flight():
     locked_region = entry.split("with _dynamic_build_lock:")[1]
     assert "_dynamic_cache.get(cache_key)" in locked_region
     # cache-key versioned so the pre-rework disk cache can't serve
-    # the old ETF-laden universe for its first 24h (review L7)
-    assert '_v2"' in entry
+    # the old ETF-laden universe for its first 24h (review L7).
+    # 2026-07-15: the key format lives in ONE builder shared with the
+    # pre-open warm probe — assert both call it and the version tag
+    # lives there.
+    from screener import _universe_cache_key
+    assert _universe_cache_key("stocks", 10.0, 10000.0, 100000) == \
+        "stocks_10.0_10000.0_100000_v2"
+    assert "_universe_cache_key(market_type, min_price, max_price," in entry
+    probe = src.split("def universe_cache_fresh_for(")[1].split("\ndef ")[0]
+    assert "_universe_cache_key(" in probe
 
 
 def test_wisdomtree_the_company_is_not_barred(fake_sectors):

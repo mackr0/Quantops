@@ -306,29 +306,81 @@ class TestVetoClassStorage:
         conn.close()
         assert option_veto_quality_counts(outcomes_db) == []
 
-    def test_recorder_falls_back_to_reason_text_marker(
+    def test_execute_threads_veto_class_structurally(
             self, outcomes_db, monkeypatch):
         """The legacy dispatch path rebuilds the proposal dict and loses
-        the in-place _veto_class marker; only the veto_log text (with
-        the 'input_incomplete' attribution) survives. The recorder must
-        classify from that text."""
+        the in-place _veto_class marker — the class must arrive via the
+        PARSED vetoed_by attribution of the canonical veto_log format
+        ("SYM: VETO (input_incomplete) — …"), threaded explicitly from
+        execute() into the recorder. Never a substring scan of reason
+        text (the first cut did exactly that and was replaced)."""
         import sector_classifier
         monkeypatch.setattr(sector_classifier, "get_sector",
                             lambda *a, **k: "staples")
+        from pipelines import SpecialistVerdict
         from pipelines.option import OptionPipeline
         ctx = MagicMock()
         ctx.db_path = outcomes_db
         proposal = _complete_proposal()  # NO _veto_class marker
-        OptionPipeline._record_option_outcome(
-            ctx, proposal, "COST", vetoed_flag=1,
-            veto_reason=("input_incomplete: VETO (input_incomplete) — "
-                         "option proposal missing usable strikes"))
+        recorded = {}
+
+        def _capture(c, p, s, *, vetoed_flag, veto_reason=None,
+                     veto_class=None):
+            recorded["veto_class"] = veto_class
+            OptionPipeline._record_option_outcome(
+                c, p, s, vetoed_flag=vetoed_flag,
+                veto_reason=veto_reason, veto_class=veto_class)
+
+        monkeypatch.setattr(OptionPipeline,
+                            "_record_option_outcome_async",
+                            staticmethod(_capture))
+        verdict = SpecialistVerdict(
+            approved=[], vetoed=[proposal],
+            veto_log=["COST: VETO (input_incomplete) — option proposal "
+                      "missing usable strikes; dropped before "
+                      "specialist review"])
+        OptionPipeline().execute(ctx, verdict)
+        assert recorded["veto_class"] == "invalid_input"
         conn = sqlite3.connect(outcomes_db)
         vc = conn.execute(
             "SELECT veto_class FROM option_proposal_outcomes "
             "ORDER BY id DESC LIMIT 1").fetchone()[0]
         conn.close()
         assert vc == "invalid_input"
+
+    def test_recorder_never_scans_reason_text_for_class(self, outcomes_db):
+        """A genuine risk veto whose free-text reason HAPPENS to contain
+        the marker words must stay 'risk' — classification is
+        structural, not textual."""
+        from pipelines.option import OptionPipeline
+        ctx = MagicMock()
+        ctx.db_path = outcomes_db
+        proposal = _complete_proposal()
+        OptionPipeline._record_option_outcome(
+            ctx, proposal, "COST", vetoed_flag=1,
+            veto_reason=("option_spread_risk: the AI's own rationale "
+                         "mentioned input_incomplete data upstream — "
+                         "vetoing on credit ratio"))
+        conn = sqlite3.connect(outcomes_db)
+        vc = conn.execute(
+            "SELECT veto_class FROM option_proposal_outcomes "
+            "ORDER BY id DESC LIMIT 1").fetchone()[0]
+        conn.close()
+        assert vc == "risk"
+
+    def test_legacy_dispatch_passes_canonical_log_lines_unwrapped(self):
+        """The dispatch branch used to nest the routed review's
+        canonical line inside a second 'SYM: VETO —' prefix, destroying
+        the parsed attribution downstream. Canonical lines now pass
+        through unwrapped; bare fallback reasons still get the prefix."""
+        import inspect
+        import trade_pipeline
+        src = inspect.getsource(trade_pipeline)
+        idx = src.find("pass it through UNWRAPPED")
+        assert idx > 0
+        region = src[idx:idx + 1200]
+        assert '.startswith(' in region
+        assert 'f"{symbol}: VETO — {_phase4b_veto_reason}"' in region
 
 
 # ---------------------------------------------------------------------------
@@ -413,13 +465,19 @@ class TestReviewRoundPreflight:
         assert econ["max_loss_per_contract"] == pytest.approx(250.0)
 
     def test_dispatch_recorder_skips_preflight_duplicates(self):
+        """Review #13, structural form: the duplicate-skip keys on the
+        result's parsed vetoed_by field — never a substring scan of
+        the reason text."""
         import inspect
         import trade_pipeline
         src = inspect.getsource(trade_pipeline)
-        assert '_already_recorded = "input_incomplete" in str(drop_reason)' \
-            in src, (
+        assert ('trade_result.get("vetoed_by") == "input_incomplete"'
+                in src), (
             "review #13: a preflight-dropped proposal must not be "
-            "double-recorded as SPECIALIST_VETOED")
+            "double-recorded as SPECIALIST_VETOED (structural check)")
+        assert '"input_incomplete" in str(drop_reason)' not in src, (
+            "the substring-scan version of the duplicate skip must "
+            "stay dead")
 
     def test_prompt_formula_matches_dollar_render(self):
         """Review #11: the prompt told the specialist to multiply a

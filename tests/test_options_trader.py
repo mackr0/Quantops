@@ -345,6 +345,9 @@ class TestExecuteOptionStrategy:
     def _ctx(self, db_path=None):
         ctx = MagicMock()
         ctx.db_path = db_path
+        # numeric, not MagicMock — the 2026-07-15 single-leg cash
+        # floor does real arithmetic on it
+        ctx.initial_capital = 100_000.0
         return ctx
 
     def _patch_account_state(self, monkeypatch, positions, account):
@@ -438,8 +441,21 @@ class TestExecuteOptionStrategy:
         assert result["action"] == "SKIP"
         assert "1%" in result["reason"]
 
-    def test_successful_long_call_returns_options_open(self, monkeypatch):
+    def test_successful_long_call_returns_options_open(
+            self, monkeypatch, tmp_path):
+        import sqlite3
         from options_trader import execute_option_strategy
+        # a readable (empty) journal — the cash floor is a legitimate
+        # precondition of the buy path since 2026-07-15
+        db_path = str(tmp_path / "p.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE trades (id INTEGER PRIMARY KEY, symbol TEXT, "
+            "side TEXT, qty REAL, price REAL, fill_price REAL, "
+            "data_quality TEXT, status TEXT, occ_symbol TEXT, "
+            "option_strategy TEXT)")
+        conn.commit()
+        conn.close()
         self._patch_account_state(monkeypatch, [],
             {"equity": 100000, "buying_power": 100000})
         captured = []
@@ -456,7 +472,7 @@ class TestExecuteOptionStrategy:
             "strike": 150, "expiry": "2099-01-01", "contracts": 1,
             "limit_price": 2.55, "confidence": 65,
             "reasoning": "test setup",
-        }, ctx=self._ctx(), log=False)
+        }, ctx=self._ctx(db_path=db_path), log=False)
         assert result["action"] == "OPTIONS_OPEN"
         assert result["order_id"] == "opt-1234"
         assert result["option_strategy"] == "long_call"
@@ -484,6 +500,7 @@ class TestExecuteOptionStrategy:
             CREATE TABLE trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT, side TEXT, qty REAL,
+                price REAL, fill_price REAL, data_quality TEXT,
                 status TEXT DEFAULT 'open',
                 occ_symbol TEXT, option_strategy TEXT
             )
@@ -521,6 +538,7 @@ class TestExecuteOptionStrategy:
             CREATE TABLE trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT, side TEXT, qty REAL,
+                price REAL, fill_price REAL, data_quality TEXT,
                 status TEXT DEFAULT 'open',
                 occ_symbol TEXT, option_strategy TEXT
             )

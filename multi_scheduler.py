@@ -669,12 +669,16 @@ def run_full_screen_for_segment(ctx, seg):
         # so this can't block an exit. min_adv is operator policy, never
         # auto-tuned.
         min_adv=ctx.min_adv,
-        # 2026-07-15 — no second cut here: limit=50 was a latent
-        # un-stratifying truncation (on a day when >50 of the 100
-        # stratified names pass the floors, it silently discarded the
-        # stratified back half BEFORE the candidate window). The pool
-        # bound lives in ONE place — _get_shared_candidates' core+
-        # rotating window — so let every floor-passer through.
+        # 2026-07-15 — no second cut on the DYNAMIC path: limit=50 was
+        # a latent un-stratifying truncation (on a day when >50 of the
+        # 100 stratified names pass the floors, it silently discarded
+        # the stratified back half BEFORE the candidate window); the
+        # pool bound for that path lives only in _get_shared_candidates'
+        # core+rotating window. When the dynamic universe is EMPTY
+        # (screener outage → hardcoded fallback universe), the
+        # historical 50-cap is kept deliberately: that list is
+        # unstratified anyway and unbounded scanning it would blow the
+        # cycle budget on an already-degraded day.
         limit=len(universe) if universe else 50,
         universe=universe,
     )
@@ -877,6 +881,25 @@ _CANDIDATE_POOL_SIZE = 30
 _CANDIDATE_CORE_SLOTS = 15
 
 
+def _rotation_window(symbols, bucket):
+    """CORE + ROTATING candidate window over the ordered floor-passers.
+
+    Returns (window, offset_or_None). The first _CANDIDATE_CORE_SLOTS
+    of the stratified priority order are scanned EVERY bucket; the
+    remaining slots rotate deterministically through the tail by the
+    30-min bucket index, so every passer is scanned within a few
+    buckets while per-cycle cost stays bounded at _CANDIDATE_POOL_SIZE.
+    Pure function so tests exercise the REAL window math."""
+    core = symbols[:_CANDIDATE_CORE_SLOTS]
+    tail = symbols[_CANDIDATE_CORE_SLOTS:]
+    rot_slots = _CANDIDATE_POOL_SIZE - len(core)
+    if len(tail) <= rot_slots:
+        return core + tail, None
+    offset = (bucket * rot_slots) % len(tail)
+    window = [tail[(offset + i) % len(tail)] for i in range(rot_slots)]
+    return core + window, offset
+
+
 def _get_screener_cache_key(market_type):
     return market_type
 
@@ -993,28 +1016,19 @@ def _get_shared_candidates(ctx, seg, is_crypto):
     # cut. The fixed cut froze the SAME 30 names for the whole day,
     # fleet-wide: every floor-passer beyond position 30 was structurally
     # unreachable for 24h at a time (prod 07-14: 47 passers, the back 17
-    # never scanned; fleet breadth pinned at ~14-25 distinct/day). The
-    # window keeps the top _CANDIDATE_CORE_SLOTS of the stratified
-    # priority order scanned EVERY bucket (they carry the sector floors
-    # + momentum bonus), and rotates the remaining slots through the
-    # tail deterministically by 30-min bucket, so every passer gets
-    # scanned within a few buckets while per-cycle cost stays bounded
-    # at _CANDIDATE_POOL_SIZE names. Order stays LIST-based end to end
-    # (the cc0e0c3 invariant): no set() ever touches the cut.
-    core = symbols[:_CANDIDATE_CORE_SLOTS]
-    tail = symbols[_CANDIDATE_CORE_SLOTS:]
-    rot_slots = _CANDIDATE_POOL_SIZE - len(core)
-    if len(tail) <= rot_slots:
-        result = core + tail
-    else:
-        offset = (now_bucket * rot_slots) % len(tail)
-        window = [tail[(offset + i) % len(tail)] for i in range(rot_slots)]
-        result = core + window
+    # never scanned; fleet breadth pinned at ~14-25 distinct/day).
+    # Window math lives in _rotation_window (pure, directly tested).
+    # Order stays LIST-based end to end (the cc0e0c3 invariant): no
+    # set() ever touches the cut.
+    result, offset = _rotation_window(symbols, now_bucket)
+    if offset is not None:
         logging.info(
             "[%s] screener union: %d candidates → core %d + rotating "
             "window %d (bucket offset %d of %d tail names)",
-            ctx.display_name if ctx else "?", len(symbols), len(core),
-            len(window), offset, len(tail))
+            ctx.display_name if ctx else "?", len(symbols),
+            _CANDIDATE_CORE_SLOTS,
+            len(result) - _CANDIDATE_CORE_SLOTS, offset,
+            len(symbols) - _CANDIDATE_CORE_SLOTS)
     # Cache only when we are still in the bucket the window was
     # computed for. A build that straddles the 30-min boundary would
     # otherwise store bucket N's rotation slice into bucket N+1's
@@ -5549,39 +5563,59 @@ def _preopen_universe_warm(now):
     if _last_universe_warm_date == open_date:
         return
     profiles = _load_active_profiles()
-    stock_prof = next(
-        (p for p in profiles if p.get("market_type") != "crypto"), None)
-    if stock_prof is None:
+    stock_profiles = [p for p in profiles
+                      if p.get("market_type") != "crypto"]
+    if not stock_profiles:
         return
     try:
         from models import build_user_context_from_profile
         from screener import (screen_dynamic_universe,
                               universe_cache_fresh_for)
-        ctx = build_user_context_from_profile(stock_prof["id"])
-        universe = screen_dynamic_universe(
-            min_price=ctx.min_price, max_price=ctx.max_price,
-            min_volume=ctx.min_volume, market_type=ctx.segment, ctx=ctx,
-        )
-        # screen_dynamic_universe SWALLOWS build failures (it returns
-        # the stale cache or the fallback list instead of raising), so
-        # a non-raising return is NOT success. Only a verifiably fresh
-        # cache marks the day done; anything else leaves the memo unset
-        # and the 60s wake-ups keep retrying until the bell (review
-        # 2026-07-15 #16 — the first cut opened the fleet on
-        # yesterday's list whenever a transient pre-open build failed).
-        if universe_cache_fresh_for(ctx.segment, ctx.min_price,
-                                    ctx.max_price, ctx.min_volume):
+        # Warm every DISTINCT floor combination among active stock
+        # profiles — universe cache keys are per-(segment, floors), so
+        # a single-profile warm would leave any divergent-floors
+        # profile paying the multi-minute build inside its first live
+        # cycle while the memo claimed the fleet was warm (review
+        # 2026-07-15 #11; today's cohort is uniform → one build).
+        warmed = {}
+        all_fresh = True
+        for prof in stock_profiles:
+            ctx = build_user_context_from_profile(prof["id"])
+            key = (ctx.segment, ctx.min_price, ctx.max_price,
+                   ctx.min_volume)
+            if key in warmed:
+                continue
+            universe = screen_dynamic_universe(
+                min_price=ctx.min_price, max_price=ctx.max_price,
+                min_volume=ctx.min_volume, market_type=ctx.segment,
+                ctx=ctx,
+            )
+            # screen_dynamic_universe SWALLOWS build failures (it
+            # returns the stale cache or the fallback list instead of
+            # raising), so a non-raising return is NOT success — only
+            # a verifiably fresh cache counts (review 2026-07-15 #16:
+            # the first cut opened the fleet on yesterday's list
+            # whenever a transient pre-open build failed).
+            fresh = universe_cache_fresh_for(*key)
+            warmed[key] = fresh
+            all_fresh = all_fresh and fresh
+            if fresh:
+                logging.info(
+                    "Pre-open universe warm: %s ready (%d name(s)).",
+                    key, len(universe or []))
+            else:
+                logging.warning(
+                    "pre-open universe warm: %s build did not produce "
+                    "a fresh cache (stale/fallback returned).", key)
+        if all_fresh:
             _last_universe_warm_date = open_date
             logging.info(
-                "Pre-open universe warm done for %s: %d name(s) ready "
-                "before the bell.", open_date, len(universe or []),
-            )
+                "Pre-open universe warm done for %s (%d floor "
+                "combination(s)).", open_date, len(warmed))
         else:
             logging.warning(
-                "pre-open universe warm: build did not produce a "
-                "fresh cache (stale/fallback returned) — retrying on "
-                "the next wake-up.",
-            )
+                "pre-open universe warm incomplete — retrying on the "
+                "next wake-up.")
     except Exception as exc:
         logging.warning(
             "pre-open universe warm failed (%s: %s) — retrying on the "

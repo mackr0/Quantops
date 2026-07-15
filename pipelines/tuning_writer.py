@@ -94,9 +94,18 @@ def apply_parameter_adjustments(
             canonical = new_val
         try:
             canonical = _bounds_clamp(param, canonical)
-        except Exception as _bc_exc:
+        except (KeyError, TypeError, ValueError) as _bc_exc:
+            # EXPECTED fall-through for non-numeric param values.
             logger.debug(
                 "PARAM_BOUNDS clamp skipped for %s=%r: %s: %s",
+                param, canonical, type(_bc_exc).__name__, _bc_exc,
+            )
+        except Exception as _bc_exc:
+            # UNEXPECTED bounds-table failure — the safety clamp must
+            # not degrade at debug level.
+            logger.warning(
+                "PARAM_BOUNDS clamp FAILED for %s=%r (clamp skipped — "
+                "investigate the bounds table): %s: %s",
                 param, canonical, type(_bc_exc).__name__, _bc_exc,
             )
         sanitized[param] = canonical

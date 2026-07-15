@@ -144,16 +144,21 @@ def _enrich_option_proposal(ctx, proposal) -> List[str]:
         elif expiry and symbol and strategy:
             try:
                 from datetime import date as _date
-                from options_trader import format_occ_symbol
+                from options_trader import (format_occ_symbol,
+                                            SINGLE_LEG_LEG_SPEC)
                 from options_strategy_advisor import _cached_option_premium
-                right = "P" if "put" in strategy.lower() else "C"
-                # buy-side single legs: long_* AND protective_put (a
-                # bought hedge — 'long' token alone priced it as a
-                # CREDIT and showed inverted economics; review #14).
-                _s_low = strategy.lower()
-                side = ("buy" if ("long" in _s_low
-                                  or "protective" in _s_low)
-                        else "sell")
+                # THE canonical strategy → (right, side) table — shared
+                # with the executor. A token-matching duplicate here
+                # priced protective_put as a CREDIT (review #5/#14);
+                # an unknown single-leg strategy is honestly
+                # unreviewable rather than guessed.
+                if strategy not in SINGLE_LEG_LEG_SPEC:
+                    missing.append(
+                        f"leg semantics (unknown single-leg strategy "
+                        f"{strategy!r})")
+                    proposal["_specialist_econ"] = econ
+                    return missing
+                right, side = SINGLE_LEG_LEG_SPEC[strategy]
                 occ = format_occ_symbol(
                     symbol, _date.fromisoformat(str(expiry)[:10]),
                     float(strike), right)
@@ -232,6 +237,13 @@ def _preflight_option_proposals(ctx, proposals):
             continue
         p["_veto_class"] = "invalid_input"
         p["_preflight_missing"] = missing
+        # Structured attribution — same fields route_to_specialists
+        # stamps on ensemble vetoes, so downstream consumers never
+        # parse log text.
+        p["_vetoed_by"] = "input_incomplete"
+        p["_veto_reason"] = (
+            f"option proposal missing usable {', '.join(missing)}; "
+            f"dropped before specialist review")
         sym = p.get("symbol", "?")
         logger.error(
             "OPTION PREFLIGHT dropped %s %s before specialist review: "
@@ -525,6 +537,15 @@ class Pipeline(ABC):
                 # Format consumed by OptionPipeline._record_veto and
                 # the trade_pipeline.py log line.
                 vetoed_by = verdict_data.get("vetoed_by")
+                # 2026-07-15 — ALSO stamp the attribution STRUCTURALLY
+                # on the proposal dict. The log line is a display
+                # format; consumers that need the fields (the outcome
+                # recorder's veto_class, the dispatch dedup) read these
+                # instead of regex-parsing text back out.
+                if isinstance(proposal, dict):
+                    proposal["_vetoed_by"] = vetoed_by
+                    proposal["_veto_reason"] = (
+                        verdict_data.get("veto_reason") or "")
                 attr = f" ({vetoed_by})" if vetoed_by else ""
                 veto_log.append(
                     f"{sym}: VETO{attr} — "

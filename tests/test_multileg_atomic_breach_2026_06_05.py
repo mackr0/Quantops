@@ -114,6 +114,9 @@ def _ctx(profile_id=42, db_path=None):
     ctx = MagicMock()
     ctx.profile_id = profile_id
     ctx.db_path = db_path
+    # numeric, not MagicMock — the 2026-07-15 single-leg cash floor
+    # does real arithmetic on it before the submit this test breaches
+    ctx.initial_capital = 100_000.0
     return ctx
 
 

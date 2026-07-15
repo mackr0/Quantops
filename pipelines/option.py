@@ -328,8 +328,28 @@ class OptionPipeline(Pipeline):
         # SKIPPED — vetoed proposals
         for vetoed in (verdict.vetoed or []):
             sym = vetoed.get("symbol", "") if isinstance(vetoed, dict) else ""
-            veto_reason, vetoed_by = self._veto_reason_for(verdict, sym)
+            # Attribution: STRUCTURED fields first (stamped by
+            # route_to_specialists / the preflight on the proposal
+            # dict); the veto_log parse remains only for verdicts
+            # built elsewhere from bare reasons (the legacy dispatch
+            # branch's rebuilt one-element verdicts).
+            if isinstance(vetoed, dict) and vetoed.get("_veto_reason"):
+                veto_reason = vetoed["_veto_reason"]
+                vetoed_by = vetoed.get("_vetoed_by")
+            else:
+                veto_reason, vetoed_by = self._veto_reason_for(verdict, sym)
             self._record_veto(ctx, vetoed, sym, (veto_reason, vetoed_by))
+            # Veto CLASS, derived structurally: the preflight stamps
+            # `_veto_class` on the proposal dict it dropped, and its
+            # veto_log attribution is the literal 'input_incomplete'
+            # (the parsed `vetoed_by` field of the established
+            # "SYM: VETO (attribution) — reason" format) — never a
+            # substring scan over free reason text.
+            veto_class = None
+            if isinstance(vetoed, dict):
+                veto_class = vetoed.get("_veto_class")
+            if not veto_class and vetoed_by == "input_incomplete":
+                veto_class = "invalid_input"
             # P3 feedback: record the vetoed proposal keyed by (spread
             # strategy x sector) so the ledger can discount doomed spreads.
             # ASYNC (2026-07-02 composed-system review): the capture prices the
@@ -340,7 +360,8 @@ class OptionPipeline(Pipeline):
                 self._record_option_outcome_async(
                     ctx, vetoed, sym, vetoed_flag=1,
                     veto_reason=(f"{vetoed_by}: {veto_reason}"
-                                 if vetoed_by else veto_reason))
+                                 if vetoed_by else veto_reason),
+                    veto_class=veto_class)
             result.skipped.append({
                 "action": "SPECIALIST_VETOED",
                 "symbol": sym,
@@ -523,7 +544,7 @@ class OptionPipeline(Pipeline):
 
     @staticmethod
     def _record_option_outcome_async(ctx, proposal, symbol, *, vetoed_flag,
-                                     veto_reason=None):
+                                     veto_reason=None, veto_class=None):
         """Spawn `_record_option_outcome` on a daemon thread so the feedback
         capture (leg pricing / sector lookup — blocking HTTP) NEVER delays live
         order dispatch. Returns the Thread (started) so tests can join it; the
@@ -551,7 +572,8 @@ class OptionPipeline(Pipeline):
         t = threading.Thread(
             target=OptionPipeline._record_option_outcome,
             args=(ctx, snap, symbol),
-            kwargs={"vetoed_flag": vetoed_flag, "veto_reason": veto_reason},
+            kwargs={"vetoed_flag": vetoed_flag, "veto_reason": veto_reason,
+                    "veto_class": veto_class},
             daemon=True, name="option-outcome-recorder",
         )
         t.start()
@@ -559,7 +581,7 @@ class OptionPipeline(Pipeline):
 
     @staticmethod
     def _record_option_outcome(ctx, proposal, symbol, *, vetoed_flag,
-                               veto_reason=None):
+                               veto_reason=None, veto_class=None):
         """Record ONE option proposal outcome (vetoed_flag 1/0) keyed by the
         SPREAD strategy + sector, for the selection engine's per-(strategy x
         sector) veto-rate discount (P3) and would-be-P&L calibration (P4).
@@ -590,18 +612,14 @@ class OptionPipeline(Pipeline):
                 ctx.db_path, symbol=sym, strategy=strategy, sector=sector,
                 vetoed=vetoed_flag, veto_reason=veto_reason,
                 # 'invalid_input' when the preflight completeness gate
-                # (pipelines.route_to_specialists) dropped the proposal
-                # before any specialist saw it; genuine vetoes default
-                # to 'risk' inside the recorder. The reason-text fallback
-                # covers the legacy dispatch path, which rebuilds the
-                # proposal dict from the raw ai_trade and loses the
-                # in-place `_veto_class` marker — only the veto_log text
-                # (carrying the 'input_incomplete' attribution) survives
-                # that copy.
-                veto_class=(proposal.get("_veto_class")
-                            or ("invalid_input"
-                                if "input_incomplete" in (veto_reason or "")
-                                else None)),
+                # dropped the proposal before any specialist saw it.
+                # The class arrives STRUCTURALLY: either as the caller's
+                # explicit veto_class (derived in execute() from the
+                # proposal marker or the parsed vetoed_by attribution)
+                # or as the marker on the proposal dict itself (the
+                # run_cycle path). Genuine vetoes default to 'risk'
+                # inside the recorder. Never inferred from reason text.
+                veto_class=(veto_class or proposal.get("_veto_class")),
                 confidence=proposal.get("confidence"),
                 expiry=proposal.get("expiry"), **fields,
             )
@@ -718,8 +736,18 @@ class OptionPipeline(Pipeline):
             # floor. FAIL-CLOSED on unpriceable debits: a spread whose
             # cost we cannot establish must not be bought on hope
             # (same rule as the stock door).
-            _is_credit_strat = strategy_name in (
-                "bull_put_spread", "bear_call_spread")
+            #
+            # Credit/debit comes from the SPEC the builder just made —
+            # spec.is_credit is the one source of truth (a hardcoded
+            # 2-vertical name list here misclassified the whole condor
+            # family as debits and fail-close-refused every
+            # iron_condor/iron_butterfly open; hack-hunt finding #1).
+            # The debit is priced HERE, at submit time, even though the
+            # preflight priced it minutes ago for the specialists —
+            # deliberate, not duplication: the floor must gate the cost
+            # the broker will charge NOW (leg quotes are 45s-cached, so
+            # back-to-back calls are one fetch anyway).
+            _is_credit_strat = bool(getattr(spec, "is_credit", False))
             _est_debit = None
             if not _is_credit_strat:
                 try:
@@ -738,9 +766,16 @@ class OptionPipeline(Pipeline):
                         "for %s: %s: %s", symbol,
                         type(_pd_exc).__name__, _pd_exc)
                 if _est_debit is None:
+                    # limit_price is the SIGNED per-share net
+                    # (+ debit / − credit — execute_multileg_strategy's
+                    # documented convention; abs()×100/contract matches
+                    # spec.total_max_loss). A negative value on a spec
+                    # the builder classified as DEBIT is a
+                    # contradiction — leave _est_debit None and refuse
+                    # below rather than gate a phantom number.
                     _lp = proposal.get("limit_price")
                     try:
-                        if _lp and float(_lp) > 0:
+                        if _lp is not None and float(_lp) > 0:
                             _est_debit = float(_lp) * 100.0 * contracts
                     except (TypeError, ValueError):
                         pass
