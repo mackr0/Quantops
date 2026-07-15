@@ -20,6 +20,8 @@ import json
 import logging
 import sqlite3
 from typing import Any, Dict, List, Tuple
+
+import config
 from client import get_api, get_account_info, get_positions
 
 logger = logging.getLogger(__name__)
@@ -604,109 +606,11 @@ def _meta_pregate_candidates(candidates: List[Dict[str, Any]],
 DEFAULT_MAX_POSITION_PCT = 0.10
 DEFAULT_STOP_LOSS_PCT = 0.03
 DEFAULT_TAKE_PROFIT_PCT = 0.10
-AI_MIN_CONFIDENCE = 25
-
-
 # ---------------------------------------------------------------------------
-# AI Review
-# ---------------------------------------------------------------------------
-
-def ai_review(symbol, technical_signal, ctx=None, political_context=None):
-    """Ask Claude to review a proposed trade before execution.
-
-    Records every AI prediction to the tracker for accuracy measurement.
-    Returns (approved: bool, ai_result: dict).
-
-    Parameters
-    ----------
-    ctx : UserContext, optional
-        If provided, passes ctx to analyze_symbol and record_prediction
-        for credentials and DB path.
-    political_context : str, optional
-        If provided (from MAGA Mode), passed through to analyze_symbol so
-        Claude considers political/macro conditions.
-    """
-    from ai_analyst import analyze_symbol, analyze_symbol_consensus
-    from ai_tracker import record_prediction, init_tracker_db
-
-    db_path = ctx.db_path if ctx is not None else None
-    init_tracker_db(db_path)
-
-    print(f"    AI reviewing {symbol}...", end=" ", flush=True)
-
-    # Use consensus analysis if enabled
-    use_consensus = ctx is not None and getattr(ctx, "enable_consensus", False)
-    if use_consensus:
-        ai_result = analyze_symbol_consensus(symbol, ctx=ctx, political_context=political_context)
-    else:
-        ai_result = analyze_symbol(symbol, ctx=ctx, political_context=political_context)
-
-    ai_signal = ai_result.get("signal", "HOLD").upper()
-    ai_confidence = ai_result.get("confidence", 0)
-    tech_signal = technical_signal.get("signal", "HOLD").upper()
-    tech_direction = "BUY" if "BUY" in tech_signal else "SELL" if "SELL" in tech_signal else "HOLD"
-    price = technical_signal.get("price", 0)
-
-    # Consensus veto: if consensus was sought and models disagree, veto the trade
-    if use_consensus and ai_result.get("consensus") is False:
-        primary = ai_result.get("primary_signal", "?")
-        secondary = ai_result.get("secondary_signal", "?")
-        secondary_model = ai_result.get("secondary_model", "unknown")
-        print(f"VETOED (No consensus — primary says {primary}, "
-              f"secondary ({secondary_model}) says {secondary})")
-        return False, ai_result
-
-    # Record every AI prediction for accuracy tracking
-    record_prediction(
-        symbol=symbol,
-        predicted_signal=ai_signal,
-        confidence=ai_confidence,
-        reasoning=ai_result.get("reasoning", ""),
-        price_at_prediction=price,
-        price_targets=ai_result.get("price_targets"),
-        db_path=db_path,
-    )
-
-    # Determine the confidence threshold via the full override chain
-    # (per-symbol > per-regime > per-TOD > global). The tuner's
-    # per-symbol overrides take effect transparently when this symbol
-    # has a meaningful track record.
-    if ctx is not None:
-        try:
-            from regime_overrides import resolve_for_current_regime
-            min_confidence = resolve_for_current_regime(
-                ctx, "ai_confidence_threshold",
-                default=ctx.ai_confidence_threshold,
-                symbol=symbol)
-        except Exception:
-            min_confidence = ctx.ai_confidence_threshold
-    else:
-        min_confidence = AI_MIN_CONFIDENCE
-
-    # Approval logic for BUY trades — threshold applies to ALL signals,
-    # no bypass for BUY (removed 2026-04-23, was undermining self-tuner)
-    if tech_direction == "BUY":
-        if ai_signal == "SELL":
-            print(f"VETOED (AI says SELL, confidence {ai_confidence})")
-            return False, ai_result
-        if ai_confidence < min_confidence:
-            print(f"VETOED (AI confidence {ai_confidence} < {min_confidence})")
-            return False, ai_result
-        print(f"APPROVED (AI: {ai_signal}, confidence {ai_confidence})")
-        return True, ai_result
-
-    # Approval logic for SELL trades — AI sell confirmation or low confidence
-    if tech_direction == "SELL":
-        if ai_signal == "BUY" and ai_confidence >= 70:
-            print(f"VETOED (AI strongly says BUY, confidence {ai_confidence})")
-            return False, ai_result
-        print(f"APPROVED (AI: {ai_signal}, confidence {ai_confidence})")
-        return True, ai_result
-
-    # HOLD — nothing to approve
-    return True, ai_result
-
-
+# (ai_review removed 2026-07-15 — it was the only consumer of
+# ai_confidence_threshold but had ZERO callers, which meant the
+# confidence filter never gated a single live trade. The live gate now
+# lives in run_trade_cycle STEP 4.85.)
 # ---------------------------------------------------------------------------
 # Live position-count maintenance during the STEP 5 dispatch loop
 # ---------------------------------------------------------------------------
@@ -861,10 +765,28 @@ def _adjust_cycle_cash(account, trade_result):
         return 0.0
     if notional <= 0:
         return 0.0
+    # 2026-07-15 — conservative in-cycle accounting. These deltas are
+    # DECISION-price estimates for market orders whose fills are still
+    # in flight; pad debits and haircut credits by the market-fill
+    # slippage reserve so a later same-cycle BUY can never spend cash
+    # the fills will eat (the p217 FCEL overdraw is the single-buy
+    # version of this; the same drift applies to the in-cycle race
+    # this helper governs).
+    _reserve = 1 + config.MARKET_BUY_SLIPPAGE_RESERVE_PCT
     if action in ("BUY", "COVER"):
-        delta = -notional
+        delta = -notional * _reserve
     elif action in ("SELL", "SHORT"):
-        delta = notional
+        delta = notional / _reserve
+    elif (action == "MULTILEG_OPEN"
+          and trade_result.get("estimated_cost")):
+        # 2026-07-15 (review #5) — a net-DEBIT spread's cash leaves the
+        # account now, but its legs journal price=NULL until the fill
+        # backfill, so without this a later same-cycle stock BUY sizes
+        # against money the spread already spent. The option executor
+        # sets estimated_cost ONLY for debit spreads; credits never
+        # fund same-cycle buys. (notional already resolved to
+        # estimated_cost above.)
+        delta = -notional * _reserve
     else:
         return 0.0
     try:
@@ -975,8 +897,8 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
         signal: Strategy signal dict (from strategy_router.run_strategy).
         ctx: UserContext, optional.  When provided, all API calls, risk
              parameters, and journal logging use the context.
-        ai_result: AI analysis dict (from ai_review). If provided, logged
-                   with the trade for full audit trail.
+        ai_result: AI analysis dict (from the AI decision step). If
+                   provided, logged with the trade for full audit trail.
         max_position_pct: Max fraction of equity for one position.  Falls back
                           to ctx or module constant.
         log: Whether to write to the journal database.
@@ -1365,7 +1287,21 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
         )
 
         max_dollars = equity * alloc_pct
-        dollars = min(max_dollars, cash)
+
+        # 2026-07-15 — market-order slippage reserve (p217 FCEL class):
+        # when the budget is the profile's remaining CASH rather than
+        # the position cap, a market fill printing above the decision
+        # price overdraws the account. Budget against cash net of the
+        # reserve so the fill has headroom; limit orders can't fill
+        # above their checked price and keep the full budget. Same
+        # reserve is enforced again at the order door (order_guard) —
+        # this is the sizing half, that is the unbypassable half.
+        use_limit = ctx is not None and getattr(ctx, "use_limit_orders", False)
+        if use_limit:
+            cash_budget = cash
+        else:
+            cash_budget = cash / (1 + config.MARKET_BUY_SLIPPAGE_RESERVE_PCT)
+        dollars = min(max_dollars, cash_budget)
 
         if price <= 0:
             result["action"] = "SKIP"
@@ -1413,17 +1349,26 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                 if ctx is not None else None)
         except Exception:
             max_total = ctx.max_total_positions if ctx is not None else None
-        proposed = {"side": "buy", "qty": qty, "price": price}
+        proposed = {"side": "buy", "qty": qty, "price": price,
+                    "order_type": "limit" if use_limit else "market"}
         allowed, constraint_reason = check_portfolio_constraints(
             symbol, proposed, positions, account,
             max_position_pct=max_position_pct,
             max_total_positions=max_total,
         )
 
-        # Use profile-specific concentration limit
+        # Use profile-specific concentration limit. The cash half of the
+        # re-allow applies the same market-fill slippage reserve as
+        # check_portfolio_constraints — this bypass must not be the one
+        # path that re-admits a 100%-of-cash market buy.
         trade_value = qty * price
+        _required_cash = (
+            trade_value if use_limit
+            else trade_value * (1 + config.MARKET_BUY_SLIPPAGE_RESERVE_PCT)
+        )
         if not allowed and "exceeds" in constraint_reason and equity > 0:
-            if trade_value / equity <= max_position_pct and trade_value <= cash:
+            if (trade_value / equity <= max_position_pct
+                    and _required_cash <= cash):
                 allowed = True
                 constraint_reason = "Passed risk constraints"
 
@@ -1489,7 +1434,7 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
         # them, not twice. Each profile's bracket is independent —
         # for shared accounts, total reserved = sum of bracket qtys
         # = aggregate position. Mathematics works.
-        use_limit = ctx is not None and getattr(ctx, "use_limit_orders", False)
+        # (use_limit computed above at the sizing reserve.)
         order_type = "limit" if use_limit else "market"
         stop_price = round(price * (1 - actual_sl_pct), 2)
         target_price = round(price * (1 + actual_tp_pct), 2)
@@ -2176,7 +2121,7 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     candidates : list[str]
         Ticker symbols to evaluate.
     ctx : UserContext, optional
-        Passed through to ai_review and execute_trade.
+        Passed through to the AI decision step and execute_trade.
     max_position_pct : float, optional
         Override for position sizing.  Falls back to ctx or module constant.
     log : bool
@@ -2361,7 +2306,16 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
         # history without us injecting a dedicated "blacklisted" flag.
 
         # Earnings block?
-        if symbol in earnings_blocklist:
+        if symbol in earnings_blocklist and symbol not in held_symbols:
+            # Held names are exempt (same shape as the recent-exit and
+            # learned-HTB gates above): we can still MANAGE a position
+            # we already hold, and the pre-earnings window is exactly
+            # when a held name most needs its AI exit review — review
+            # 2026-07-15 #18: without the exemption, the held-name
+            # candidate append was silently cancelled for the 2
+            # sessions before earnings. New ENTRIES on blocklisted
+            # names stay blocked at the BUY-on-held-free ranking layer
+            # and the entry gates downstream.
             pre_filter_skips.append({
                 "symbol": symbol, "action": "EARNINGS_SKIP",
                 "reason": f"Earnings within {getattr(ctx, 'avoid_earnings_days', 2)} days",
@@ -3045,6 +2999,88 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
         except Exception as exc:
             logging.warning(f"Meta-model integration failed: {exc}")
 
+    # ── STEP 4.85: Confidence gate ────────────────────────────────────
+    # 2026-07-15 — the profile's ai_confidence_threshold finally gates
+    # the LIVE path. The old site (ai_review) had zero callers, so the
+    # threshold — seeded, displayed in Settings, and "tuned" by the
+    # self-tuner — never filtered a single trade. NEW ENTRIES whose
+    # final (post-meta-blend) confidence is below the resolved threshold
+    # are dropped here; the prediction row from STEP 4 stays recorded so
+    # the tracker keeps learning from gated ideas, same philosophy as
+    # the blacklist gate below. Exits are NEVER gated — positions must
+    # always be able to close.
+    if ctx is not None and ai_trades:
+        _conf_entry_actions = {"BUY", "SHORT", "OPTIONS",
+                               "MULTILEG_OPEN", "PAIR_TRADE"}
+        _conf_kept = []
+        _conf_blocked = []
+        for t in ai_trades:
+            action = (t.get("action") or "").upper()
+            if action not in _conf_entry_actions:
+                _conf_kept.append(t)
+                continue
+            sym = t.get("symbol", "")
+            try:
+                from regime_overrides import resolve_for_current_regime
+                min_confidence = resolve_for_current_regime(
+                    ctx, "ai_confidence_threshold",
+                    default=ctx.ai_confidence_threshold,
+                    symbol=sym)
+            except Exception:
+                min_confidence = ctx.ai_confidence_threshold
+            conf = t.get("confidence")
+            conf = 0 if conf is None else conf
+            if conf < min_confidence:
+                _conf_blocked.append((sym, action, conf, min_confidence))
+                logging.info(
+                    f"  Confidence gate BLOCKED {action} {sym}: "
+                    f"confidence {conf} < threshold {min_confidence} — "
+                    f"prediction stays recorded for learning."
+                )
+                if getattr(ctx, "db_path", None):
+                    try:
+                        from journal import record_trade_drop
+                        record_trade_drop(
+                            db_path=ctx.db_path,
+                            symbol=sym,
+                            side=action.lower() or None,
+                            drop_code="CONFIDENCE_GATE",
+                            drop_reason=(
+                                f"AI confidence {conf} is below this "
+                                f"profile's minimum of {min_confidence} "
+                                f"for new positions. The idea stays "
+                                f"recorded and scored, but no money "
+                                f"moves on it."
+                            ),
+                            cycle_id=cycle_id,
+                            ai_confidence=conf,
+                            ai_reasoning=t.get("reasoning"),
+                        )
+                    except Exception as _cg_exc:
+                        logging.debug(
+                            "confidence-gate drop record failed for "
+                            "%s: %s", sym, _cg_exc,
+                        )
+                continue
+            _conf_kept.append(t)
+        if _conf_blocked:
+            print(
+                f"  Confidence gate: blocked "
+                f"{len(_conf_blocked)} low-confidence entries "
+                f"({', '.join(b[0] for b in _conf_blocked)})"
+            )
+            for _sym, _action, _conf, _minc in _conf_blocked:
+                details.append({
+                    "symbol": _sym,
+                    "action": "CONFIDENCE_BLOCKED",
+                    "reason": (
+                        f"AI wanted {_action} at confidence {_conf}, "
+                        f"below this profile's minimum of {_minc} for "
+                        f"new positions."
+                    ),
+                })
+        ai_trades = _conf_kept
+
     # ── STEP 4.9: Crisis gate (Phase 10) ─────────────────────────────
     # Capital preservation override. At `crisis` or `severe` levels, new
     # long entries are blocked entirely. At `elevated`, position sizes
@@ -3568,6 +3604,13 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                     "Trade NOT submitted for %s (%s): action=%s reason=%s",
                     symbol, action, ta, drop_reason,
                 )
+                _already_recorded = "input_incomplete" in str(drop_reason)
+                # The option preflight already recorded the precise
+                # OPTION_INPUT_INCOMPLETE drop for such proposals; a
+                # second SPECIALIST_VETOED row here would show the same
+                # dropped spread twice in the AI Brain under two codes
+                # (review 2026-07-15 #13). Only the record is skipped —
+                # the loop's later bookkeeping still runs.
                 # 2026-06-09 — persist the drop so the AI Brain panel's
                 # BLOCKED badge can show WHY (not just THAT) a trade
                 # didn't make it to the broker. Every doomsday gate
@@ -3577,22 +3620,23 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 # one record_trade_drop call covers all of them.
                 try:
                     from journal import record_trade_drop
-                    record_trade_drop(
-                        db_path=ctx.db_path if ctx else None,
-                        symbol=symbol,
-                        side=(action or "").lower() if action else None,
-                        drop_code=ta,
-                        drop_reason=drop_reason,
-                        cycle_id=cycle_id,
-                        ai_confidence=(
-                            ai_trade.get("confidence")
-                            if isinstance(ai_trade, dict) else None
-                        ),
-                        ai_reasoning=(
-                            ai_trade.get("reasoning")
-                            if isinstance(ai_trade, dict) else None
-                        ),
-                    )
+                    if not _already_recorded:
+                        record_trade_drop(
+                            db_path=ctx.db_path if ctx else None,
+                            symbol=symbol,
+                            side=(action or "").lower() if action else None,
+                            drop_code=ta,
+                            drop_reason=drop_reason,
+                            cycle_id=cycle_id,
+                            ai_confidence=(
+                                ai_trade.get("confidence")
+                                if isinstance(ai_trade, dict) else None
+                            ),
+                            ai_reasoning=(
+                                ai_trade.get("reasoning")
+                                if isinstance(ai_trade, dict) else None
+                            ),
+                        )
                 except Exception as drop_exc:
                     logging.debug(
                         "record_trade_drop persistence failed for "
@@ -4319,7 +4363,16 @@ def _rank_candidates(strategy_results, held_symbols, enable_shorts,
         longs = long_eligible[:long_slots]
         return longs + shorts
     else:
-        return long_eligible[:15]
+        # Exits must flow: a SELL/STRONG_SELL on a HELD symbol is a
+        # CLOSE decision, not a short entry — the head filter admits
+        # them deliberately, but this branch used to return longs only
+        # and silently discarded every AI exit signal on the three
+        # shorts-disabled AI profiles (review 2026-07-15 #15 — their
+        # exits were living on protectives/TP polling alone). Held
+        # exits lead the list so entries can never crowd them out.
+        held_exits = [s for s in short_eligible
+                      if s.get("symbol", "") in held_symbols]
+        return (held_exits + long_eligible)[:15]
 
 
 def _extract_indicator(signal, key, default=0):

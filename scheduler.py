@@ -77,11 +77,16 @@ def task_scan_and_trade():
     from notifications import notify_trade, notify_veto
 
     screen = run_full_screen()
-    symbols = set()
-    for cat in ("volume_surges", "momentum", "breakouts", "candidates"):
+    # Order-preserving first-seen union (2026-07-15 — same class as the
+    # cc0e0c3 multi_scheduler fix): no set() ahead of the [:30] cut.
+    symbols = []
+    _seen = set()
+    for cat in ("candidates", "volume_surges", "momentum", "breakouts"):
         for s in screen.get(cat, []):
-            symbols.add(s["symbol"])
-    symbols = list(symbols)[:30]
+            if s["symbol"] not in _seen:
+                _seen.add(s["symbol"])
+                symbols.append(s["symbol"])
+    symbols = symbols[:30]
 
     if not symbols:
         logging.info("No candidates found in screen.")

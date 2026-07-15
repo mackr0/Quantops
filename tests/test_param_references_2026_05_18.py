@@ -222,8 +222,13 @@ class TestWrapperUsesReferences:
         # Per-cycle cap: 70 * 1.25 = 87.5
         # Reference window: 60 * 1.5 = 90 (ceiling)
         # 87.5 ≤ 90, so per-cycle cap is the binding constraint.
+        # 2026-07-15: the wrapper now returns the CANONICAL value it
+        # actually wrote (cast round(87.5) → 88, within PARAM_BOUNDS)
+        # — not the pre-cast float. One value in config, ledger, and
+        # caller.
         assert was_clamped is True
-        assert applied == pytest.approx(87.5)
+        assert applied == 88
+        assert isinstance(applied, int)
 
     def test_reference_clamp_logged_in_reason(self, configured_db, monkeypatch):
         """When the reference-window guardrail fires, the tuning_history

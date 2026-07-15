@@ -276,6 +276,90 @@ def _format_panel_compact(verdicts: List[Dict[str, Any]]) -> str:
     return "  |  RULES: " + " ".join(bits)
 
 
+def _fmt_opt_money(v: Any) -> str:
+    try:
+        return f"${float(v):,.2f}"
+    except (TypeError, ValueError):
+        return "unavailable"
+
+
+def _format_option_proposal(c: Dict[str, Any]) -> str:
+    """Render an OPTION proposal with its actual economics.
+
+    Until 2026-07-15 option proposals fell through the stock-shaped
+    render below, which reads only symbol/signal/price/reason — none of
+    which an option proposal has — so every specialist reviewed
+    `- SYM [? @ $0]:` and option_spread_risk truthfully vetoed 78
+    fully-priced spreads for "missing strike and premium data". This
+    branch renders the fields the option specialists' prompts actually
+    interrogate: strategy, strikes, expiry/DTE, contracts, net premium,
+    max loss x contracts, max gain, breakeven, spot, IV rank."""
+    econ = c.get("_specialist_econ") or {}
+    sym = c.get("symbol", "?")
+    action = (c.get("action") or "").upper() or "OPTION"
+    strategy = (econ.get("strategy") or c.get("strategy_name")
+                or c.get("option_strategy") or "?")
+    contracts = econ.get("contracts") or c.get("contracts") or "?"
+    bits = [f"- {sym} {strategy} [{action} x{contracts}]:"]
+
+    prem = econ.get("entry_net_premium")
+    if prem is not None:
+        side_word = ("CREDIT" if econ.get("is_credit")
+                     else "DEBIT" if econ.get("is_credit") is not None
+                     else "premium")
+        bits.append(f"{side_word} {_fmt_opt_money(prem)}/contract")
+    else:
+        bits.append("net premium: unavailable")
+
+    strikes = c.get("strikes")
+    if isinstance(strikes, dict) and strikes:
+        ks = ", ".join(f"{k} {v}" for k, v in strikes.items()
+                       if v is not None)
+        bits.append(f"strikes: {ks}")
+    elif c.get("strike") is not None:
+        bits.append(f"strike: {c.get('strike')}")
+
+    expiry = econ.get("expiry") or c.get("expiry")
+    dte = econ.get("dte")
+    if expiry:
+        bits.append(f"exp {expiry}" + (f" ({dte} DTE)"
+                                       if dte is not None else ""))
+    width = econ.get("spread_width_points")
+    if width:
+        bits.append(f"width {width:g} pts")
+
+    ml = econ.get("max_loss_per_contract")
+    if ml is not None:
+        total = ""
+        try:
+            total = f" ({_fmt_opt_money(float(ml) * int(contracts))} total)"
+        except (TypeError, ValueError):
+            pass
+        bits.append(f"max loss {_fmt_opt_money(ml)}/contract{total}")
+    else:
+        bits.append("max loss: unavailable")
+    mg = econ.get("max_gain_per_contract")
+    if mg is not None:
+        bits.append(f"max gain {_fmt_opt_money(mg)}/contract")
+    be = econ.get("breakeven")
+    if be is not None:
+        bits.append(f"breakeven {be:g}")
+
+    spot = econ.get("spot")
+    bits.append(f"spot {_fmt_opt_money(spot)}" if spot
+                else "spot: unavailable")
+    ivr = econ.get("iv_rank")
+    bits.append(f"IV rank {ivr:g}" if ivr is not None
+                else "IV rank: unavailable")
+
+    conf = c.get("confidence")
+    if conf is not None:
+        bits.append(f"AI conf {conf}")
+    reasoning = (c.get("reasoning") or c.get("reason") or "")[:160]
+    line = " | ".join([bits[0] + " " + bits[1]] + bits[2:])
+    return f"{line} — {reasoning}" if reasoning else line
+
+
 def format_candidate_for_specialist(
     c: Dict[str, Any], specialist_name: str, ctx: Any = None,
 ) -> str:
@@ -283,9 +367,19 @@ def format_candidate_for_specialist(
     when the specialist isn't in the routing table or when the
     candidate has no alt-data dict.
 
+    Option proposals (action MULTILEG_OPEN / OPTIONS, or an attached
+    `_specialist_econ` from the pipeline preflight) take the option
+    branch — the stock-shaped render below has none of their fields
+    and blinded the option specialists until 2026-07-15.
+
     When `ctx` is provided, appends a compact RULES summary of the
     deterministic panel verdicts (Phase 3 of docs/17) so the LLM can
-    synthesize from facts the rule layer already established."""
+    synthesize from facts the rule layer already established. (The
+    RULES panel is stock-shaped and is not computed for option
+    proposals.)"""
+    _action = str(c.get("action") or "").upper()
+    if c.get("_specialist_econ") or _action in ("MULTILEG_OPEN", "OPTIONS"):
+        return _format_option_proposal(c)
     sym = c.get("symbol", "?")
     signal = c.get("signal", "?")
     price = c.get("price", 0) or 0

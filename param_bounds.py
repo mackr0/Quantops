@@ -117,8 +117,11 @@ PARAM_BOUNDS: Dict[str, Tuple[Number, Number]] = {
     # ── Boolean toggles (treated as 0.0-1.0 weights in Layer 2) ──
     # These ranges are intentionally [0.0, 1.0] so the same clamp()
     # works whether the value is being treated as a binary 0/1 or a
-    # graduated weight.
-    "enable_short_selling":          (0.0, 1.0),
+    # graduated weight. enable_short_selling is NOT repeated here — it
+    # already has its (0, 1) entry above, and a duplicate dict key
+    # silently overwrites the first (which is exactly what happened
+    # until 2026-07-15: the float pair won and defeated clamp()'s
+    # int-preservation branch).
     "use_atr_stops":                 (0.0, 1.0),
     "use_trailing_stops":            (0.0, 1.0),
     "use_limit_orders":              (0.0, 1.0),

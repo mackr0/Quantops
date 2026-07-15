@@ -17,12 +17,28 @@ Universe (~8,000 Alpaca-tradable US equities) →
             Meta-model pre-gate (drops candidates below meta_pregate_threshold, default 0.35) →
                 Two-layer specialist ensemble (179 deterministic rules + 8 LLM specialists) →
                     LLM batch decision (the apex policy) →
-                        Validation gates (hard rules) →
-                            Execution →
-                                Journal (decision + features) →
-                                    Resolution (win/loss labeling) →
-                                        Feedback loops (training data for every layer above)
+                        Confidence gate (new ENTRIES below the profile's
+                        ai_confidence_threshold are dropped, post-meta-blend;
+                        exits are never gated) →
+                            Validation gates (hard rules) →
+                                Execution →
+                                    Journal (decision + features) →
+                                        Resolution (win/loss labeling) →
+                                            Feedback loops (training data for every layer above)
 ```
+
+The confidence gate lives at `run_trade_cycle` STEP 4.85: it compares each
+proposed NEW entry's final (meta-blended) 0-100 confidence against the
+profile's `ai_confidence_threshold`, resolved through the tuner's
+per-symbol → per-regime → per-time-of-day → global override chain. Blocked
+entries are recorded as `CONFIDENCE_GATE` trade drops (visible in the AI
+Brain panel) while their prediction rows stay recorded, so the tracker keeps
+learning from gated ideas. Exits, covers, and protective orders never pass
+through this gate. Option proposals additionally pass a **preflight** before
+any LLM specialist sees them: the pipeline prices the spread (net premium,
+max loss/gain, breakeven, DTE, spot, IV rank) and refuses — loudly, as an
+`OPTION_INPUT_INCOMPLETE` drop excluded from veto learning — any proposal
+whose economics can't be established.
 
 **This is the value-prop story.** The system scales the AI's accuracy without scaling its cost by putting hundreds of *deterministic* rule-checkers in front of the *narrative* LLM call. The 179 rule modules each cost zero API tokens — they're pure-Python pattern matchers — and they catch the structurally-checkable patterns (RSI overbought, insider clusters, gap into resistance, etc.) so the LLM only spends tokens on the synthesis work it's uniquely good at. Most decisions short-circuit cleanly through the rule layer; only the genuinely-contested candidates exercise the apex LLM. Result: ~$0.27/day of AI spend across the 13-profile fleet at the current `gemini-2.5-flash-lite` rate.
 

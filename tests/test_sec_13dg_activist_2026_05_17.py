@@ -28,6 +28,16 @@ def temp_db(tmp_path, monkeypatch):
     return db_path
 
 
+def _days_ago(n: int) -> str:
+    """Filing date N days before today. The consumer filters on a
+    60-day recency window relative to NOW — hardcoded dates here were
+    a time bomb (the original 2026-05-15 seeds fell out of the window
+    on exactly 2026-07-15 and the suite went red for a calendar
+    reason, not a code reason)."""
+    from datetime import datetime, timedelta
+    return (datetime.utcnow() - timedelta(days=n)).date().isoformat()
+
+
 class TestAtomParsing:
     SAMPLE = """<?xml version="1.0"?>
     <feed xmlns="http://www.w3.org/2005/Atom">
@@ -63,11 +73,11 @@ class TestConsumerAPI:
                 " filer_cik, subject_name, subject_cik, subject_ticker, "
                 " source_url) VALUES (?,?,?,?,?,?,?,?,?)",
                 [
-                    ("acc-1", "SC 13D", "2026-05-15",
+                    ("acc-1", "SC 13D", _days_ago(5),
                      "Pershing Square", "0001336528",
                      "Apple Inc", "0000320193", "AAPL",
                      "https://x"),
-                    ("acc-2", "SC 13G", "2026-05-16",
+                    ("acc-2", "SC 13G", _days_ago(4),
                      "Vanguard", "0000102909",
                      "Tesla Inc", "0001318605", "TSLA",
                      "https://y"),
@@ -85,7 +95,7 @@ class TestConsumerAPI:
                 "INSERT INTO recent_13dg_filings "
                 "(accession, form_type, filing_date, filer_name, "
                 " subject_ticker) VALUES (?,?,?,?,?)",
-                ("acc-passive", "SC 13G", "2026-05-17",
+                ("acc-passive", "SC 13G", _days_ago(3),
                  "BlackRock", "MSFT"),
             )
         from sec_13dg_activist import get_recent_13dg_activist

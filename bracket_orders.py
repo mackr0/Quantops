@@ -170,6 +170,15 @@ def _submit_protective(api, kwargs: dict, db_path, symbol: str, describe: str):
             logger.warning(
                 "Protective %s NOT placed — %s", describe, detail)
             return None
+    if _side == "buy" and not _is_occ_symbol(symbol):
+        # A buy-side protective is a SHORT's cover stop — an exit by
+        # construction (the broker-backing gate above just verified the
+        # live short exists). Declare it so the buy-side cash door
+        # never gates it: a short whose cover has grown past remaining
+        # cash must STILL be coverable (2026-07-15 review #9).
+        from order_guard import INTENT_PROTECTIVE_COVER
+        kwargs = dict(kwargs)
+        kwargs["intent"] = INTENT_PROTECTIVE_COVER
     try:
         return api.submit_order(time_in_force="gtc", **kwargs)
     except Exception as exc:

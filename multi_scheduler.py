@@ -669,7 +669,13 @@ def run_full_screen_for_segment(ctx, seg):
         # so this can't block an exit. min_adv is operator policy, never
         # auto-tuned.
         min_adv=ctx.min_adv,
-        limit=50,
+        # 2026-07-15 — no second cut here: limit=50 was a latent
+        # un-stratifying truncation (on a day when >50 of the 100
+        # stratified names pass the floors, it silently discarded the
+        # stratified back half BEFORE the candidate window). The pool
+        # bound lives in ONE place — _get_shared_candidates' core+
+        # rotating window — so let every floor-passer through.
+        limit=len(universe) if universe else 50,
         universe=universe,
     )
     # 2026-06-17 — align the universe with the institutional benchmark:
@@ -862,6 +868,14 @@ _screener_cache = {}
 _screener_cache_cycle = 0
 _sec_checked_this_cycle = set()
 
+# Candidate window shape (2026-07-15). POOL bounds per-cycle scan cost;
+# CORE is the always-scanned head of the stratified priority order
+# (sector floors + momentum bonus live there); the remaining slots
+# rotate through the rest of the floor-passers by 30-min bucket so no
+# eligible name is structurally unreachable within a session.
+_CANDIDATE_POOL_SIZE = 30
+_CANDIDATE_CORE_SLOTS = 15
+
 
 def _get_screener_cache_key(market_type):
     return market_type
@@ -975,15 +989,40 @@ def _get_shared_candidates(ctx, seg, is_crypto):
                 continue
         logging.info(f"[{ctx.display_name}] MAGA oversold scan: added {maga_added}, {len(symbols)} total")
 
-    # The cut itself keeps the stratified priority order — the first
-    # ~30 of the round-robin ordering hold 2-3 names per sector.
-    if len(symbols) > 30:
+    # 2026-07-15 — CORE + ROTATING window replaces the fixed first-30
+    # cut. The fixed cut froze the SAME 30 names for the whole day,
+    # fleet-wide: every floor-passer beyond position 30 was structurally
+    # unreachable for 24h at a time (prod 07-14: 47 passers, the back 17
+    # never scanned; fleet breadth pinned at ~14-25 distinct/day). The
+    # window keeps the top _CANDIDATE_CORE_SLOTS of the stratified
+    # priority order scanned EVERY bucket (they carry the sector floors
+    # + momentum bonus), and rotates the remaining slots through the
+    # tail deterministically by 30-min bucket, so every passer gets
+    # scanned within a few buckets while per-cycle cost stays bounded
+    # at _CANDIDATE_POOL_SIZE names. Order stays LIST-based end to end
+    # (the cc0e0c3 invariant): no set() ever touches the cut.
+    core = symbols[:_CANDIDATE_CORE_SLOTS]
+    tail = symbols[_CANDIDATE_CORE_SLOTS:]
+    rot_slots = _CANDIDATE_POOL_SIZE - len(core)
+    if len(tail) <= rot_slots:
+        result = core + tail
+    else:
+        offset = (now_bucket * rot_slots) % len(tail)
+        window = [tail[(offset + i) % len(tail)] for i in range(rot_slots)]
+        result = core + window
         logging.info(
-            "[%s] screener union: %d candidates, keeping the first 30 "
-            "in stratified priority order",
-            ctx.display_name if ctx else "?", len(symbols))
-    result = symbols[:30]
-    _screener_cache[cache_key] = result
+            "[%s] screener union: %d candidates → core %d + rotating "
+            "window %d (bucket offset %d of %d tail names)",
+            ctx.display_name if ctx else "?", len(symbols), len(core),
+            len(window), offset, len(tail))
+    # Cache only when we are still in the bucket the window was
+    # computed for. A build that straddles the 30-min boundary would
+    # otherwise store bucket N's rotation slice into bucket N+1's
+    # cache and serve the wrong window fleet-wide for up to 30 minutes
+    # (review 2026-07-15 #17). The straddling caller still uses its
+    # own result; the next caller recomputes for the live bucket.
+    if int(_time.time() / 1800) == now_bucket:
+        _screener_cache[cache_key] = result
     return list(result)
 
 
@@ -1048,6 +1087,36 @@ def _task_scan_and_trade(ctx):
     update_status(_pid, "Screening universe", seg_label)
 
     symbols = _get_shared_candidates(ctx, seg, is_crypto)
+
+    # 2026-07-15 — exits must flow: this profile's OWN held stock names
+    # are always in the scanned pool, even when the daily universe
+    # rebuild or the rotating candidate window has moved past them.
+    # Before this, a held name that dropped out of the shared top-30
+    # could never receive an AI STRONG_SELL exit again (the AI exit
+    # path produced 75% of realized dollars in the 07-08 cohort's first
+    # week — starving it silently was a live risk, not a theory).
+    # Per-profile append AFTER the fleet-shared cache: held books
+    # differ per profile and must never leak into the shared list.
+    if not is_crypto:
+        try:
+            from journal import get_virtual_positions
+            _held_syms = [
+                (p.get("symbol") or "").upper()
+                for p in get_virtual_positions(ctx.db_path)
+                if not p.get("occ_symbol") and float(p.get("qty") or 0) != 0
+            ]
+            _added_held = [h for h in _held_syms if h and h not in symbols]
+            if _added_held:
+                symbols = symbols + _added_held
+                logging.info(
+                    "[%s] appended %d held name(s) outside the shared "
+                    "candidate window: %s", seg_label, len(_added_held),
+                    ", ".join(_added_held))
+        except Exception as _held_exc:
+            logger.warning(
+                "[%s] held-name candidate append failed (entry scan "
+                "proceeds on the shared window only): %s: %s",
+                seg_label, type(_held_exc).__name__, _held_exc)
 
     update_status(_pid, "Screener done", "%d candidates found" % len(symbols))
 
@@ -5448,6 +5517,79 @@ def _preopen_disarm_sweep(now):
         )
 
 
+_last_universe_warm_date = None
+
+
+def _preopen_universe_warm(now):
+    """Build TODAY'S dynamic universe once per market day, inside
+    [next_open − 45 min, next_open), so the first live cycle starts on
+    the fresh list instead of yesterday's.
+
+    Companion to the day-anchored cache freshness in
+    screener._universe_cache_fresh: day-anchoring alone would push the
+    multi-minute build INTO the first cycle at 09:30; warming it here
+    moves that cost into the pre-open sleep loop. Single-flight in the
+    screener makes a concurrent build impossible; the date memo only
+    sets on success so the 60s wake-ups retry a failed warm for free.
+    Cheap O(1) window/date rejects on every other wake-up (same shape
+    as _preopen_disarm_sweep)."""
+    global _last_universe_warm_date
+    try:
+        nxt = next_market_open(now)
+    except Exception as exc:
+        logging.warning("pre-open universe warm: next_market_open "
+                        "failed: %s", exc)
+        return
+    if nxt is None:
+        return
+    seconds_to_open = (nxt - now).total_seconds()
+    if not (0 < seconds_to_open <= 45 * 60):
+        return
+    open_date = nxt.date()
+    if _last_universe_warm_date == open_date:
+        return
+    profiles = _load_active_profiles()
+    stock_prof = next(
+        (p for p in profiles if p.get("market_type") != "crypto"), None)
+    if stock_prof is None:
+        return
+    try:
+        from models import build_user_context_from_profile
+        from screener import (screen_dynamic_universe,
+                              universe_cache_fresh_for)
+        ctx = build_user_context_from_profile(stock_prof["id"])
+        universe = screen_dynamic_universe(
+            min_price=ctx.min_price, max_price=ctx.max_price,
+            min_volume=ctx.min_volume, market_type=ctx.segment, ctx=ctx,
+        )
+        # screen_dynamic_universe SWALLOWS build failures (it returns
+        # the stale cache or the fallback list instead of raising), so
+        # a non-raising return is NOT success. Only a verifiably fresh
+        # cache marks the day done; anything else leaves the memo unset
+        # and the 60s wake-ups keep retrying until the bell (review
+        # 2026-07-15 #16 — the first cut opened the fleet on
+        # yesterday's list whenever a transient pre-open build failed).
+        if universe_cache_fresh_for(ctx.segment, ctx.min_price,
+                                    ctx.max_price, ctx.min_volume):
+            _last_universe_warm_date = open_date
+            logging.info(
+                "Pre-open universe warm done for %s: %d name(s) ready "
+                "before the bell.", open_date, len(universe or []),
+            )
+        else:
+            logging.warning(
+                "pre-open universe warm: build did not produce a "
+                "fresh cache (stale/fallback returned) — retrying on "
+                "the next wake-up.",
+            )
+    except Exception as exc:
+        logging.warning(
+            "pre-open universe warm failed (%s: %s) — retrying on the "
+            "next wake-up; worst case the first cycle builds it.",
+            type(exc).__name__, exc,
+        )
+
+
 def main_loop(active_segments=None, legacy_mode=False):
     """Run the multi-account scheduling loop.
 
@@ -5865,6 +6007,13 @@ def main_loop(active_segments=None, legacy_mode=False):
                         "pre-open disarm sweep failed (%s: %s)",
                         type(_pd_exc).__name__, _pd_exc,
                     )
+                try:
+                    _preopen_universe_warm(now)
+                except Exception as _uw_exc:
+                    logging.warning(
+                        "pre-open universe warm failed (%s: %s)",
+                        type(_uw_exc).__name__, _uw_exc,
+                    )
 
             # Check BEFORE timing logic if any profile has a non-market-hours schedule
             has_always_on = False
@@ -6119,6 +6268,16 @@ def main_loop(active_segments=None, legacy_mode=False):
                     logging.warning(
                         "pre-open disarm sweep failed (%s: %s)",
                         type(_pd_exc).__name__, _pd_exc,
+                    )
+                # Same reachability logic for the universe warm: the
+                # [open−45m, open) window is only visible from inside
+                # this sleep loop on market-hours fleets.
+                try:
+                    _preopen_universe_warm(now)
+                except Exception as _uw_exc:
+                    logging.warning(
+                        "pre-open universe warm failed (%s: %s)",
+                        type(_uw_exc).__name__, _uw_exc,
                     )
                 time.sleep(60)
         else:

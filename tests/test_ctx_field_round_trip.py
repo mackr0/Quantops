@@ -43,7 +43,12 @@ NON_PROFILE_CTX_FIELDS = {
     "alpaca_api_key", "alpaca_secret_key", "alpaca_base_url",
     "ai_api_key", "consensus_api_key",
     "db_path", "notification_email", "resend_api_key",
-    "ai_confidence_threshold",  # nullable on profiles, default-set elsewhere
+    # ai_confidence_threshold was exempted here until 2026-07-15 with a
+    # factually wrong comment ("nullable on profiles" — the column is
+    # INTEGER NOT NULL DEFAULT 25). The exemption is why no structural
+    # test ever noticed the ctx build loading the column raw and the
+    # fraction-scale seeds (0.6 vs the 0-100 gate) surviving to runtime.
+    # It round-trips like every other profile column now.
     "ai_provider", "ai_model",
 }
 

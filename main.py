@@ -279,12 +279,18 @@ def cmd_aggro_scan():
     screen = run_full_screen()
 
     # Collect unique symbols from all categories
-    symbols = set()
-    for cat in ("volume_surges", "momentum", "breakouts", "candidates"):
+    # Order-preserving first-seen union (2026-07-15 — same class as the
+    # cc0e0c3 multi_scheduler fix): a set() here fed Python hash order
+    # into the [:30] cut, discarding the screener's priority order.
+    symbols = []
+    _seen = set()
+    for cat in ("candidates", "volume_surges", "momentum", "breakouts"):
         for s in screen.get(cat, []):
-            symbols.add(s["symbol"])
+            if s["symbol"] not in _seen:
+                _seen.add(s["symbol"])
+                symbols.append(s["symbol"])
 
-    symbols = list(symbols)[:30]  # Cap at 30 to keep it manageable
+    symbols = symbols[:30]  # Cap at 30 to keep it manageable
     print(f"\nStep 2: Running aggressive analysis on {len(symbols)} stocks...\n")
 
     results = []
@@ -318,12 +324,18 @@ def cmd_aggro_trade():
     print("Step 1: Screening for small-cap candidates...\n")
     screen = run_full_screen()
 
-    symbols = set()
-    for cat in ("volume_surges", "momentum", "breakouts", "candidates"):
+    # Order-preserving first-seen union (2026-07-15 — same class as the
+    # cc0e0c3 multi_scheduler fix): a set() here fed Python hash order
+    # into the [:30] cut, discarding the screener's priority order.
+    symbols = []
+    _seen = set()
+    for cat in ("candidates", "volume_surges", "momentum", "breakouts"):
         for s in screen.get(cat, []):
-            symbols.add(s["symbol"])
+            if s["symbol"] not in _seen:
+                _seen.add(s["symbol"])
+                symbols.append(s["symbol"])
 
-    symbols = list(symbols)[:30]
+    symbols = symbols[:30]
     print(f"\nStep 2: Analyzing with AI review before trading ({len(symbols)} stocks)...\n")
 
     summary = run_trade_cycle(symbols)

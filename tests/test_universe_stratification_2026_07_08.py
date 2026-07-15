@@ -262,19 +262,90 @@ def test_screen_by_price_range_preserves_stratified_input_order(monkeypatch):
 
 
 def test_scheduler_candidate_cut_preserves_priority_order():
-    # The [:30] cut used to run on an arbitrary-order set() — the
+    # The candidate cut used to run on an arbitrary-order set() — the
     # second place the first live session re-narrowed to tech. It
     # must iterate "candidates" (stratified order) first and cut a
-    # LIST, never a set.
+    # LIST, never a set. (2026-07-15: the fixed `symbols[:30]` became
+    # the CORE + ROTATING window — core slots keep the stratified
+    # head, the rest rotate deterministically by bucket — but the
+    # list-not-set invariant is unchanged and stays pinned.)
     src = _read("multi_scheduler.py")
     region = src.split('for cat in ("candidates", "volume_surges",')[0]
     assert region.rstrip().endswith("symbols = []\n    _seen = set()".rstrip()) or \
         "symbols = []" in region[-400:], (
         "the screener union must be an order-preserving list")
-    assert "result = symbols[:30]" in src, (
-        "the 30-cut must operate on the ordered list")
+    assert "core = symbols[:_CANDIDATE_CORE_SLOTS]" in src, (
+        "the window must take its core from the ordered list's head")
     assert "result = list(symbols)[:30]" not in src, (
         "the arbitrary set-order cut must stay dead")
+    assert "result = set(" not in src, (
+        "no set() may ever produce the candidate window")
+
+
+def test_candidate_window_core_plus_deterministic_rotation():
+    # 2026-07-15 — the fixed first-30 cut froze the same 30 names for
+    # a whole day fleet-wide, leaving every other floor-passer
+    # structurally unreachable (prod 07-14: 47 passers, back 17 never
+    # scanned). Contract: the head of the stratified order is ALWAYS
+    # scanned; the remaining slots rotate deterministically with the
+    # bucket index; every tail name appears within a bounded number of
+    # buckets; output size never exceeds the pool bound.
+    import multi_scheduler as ms
+
+    symbols = [f"S{i:02d}" for i in range(47)]
+    core_n = ms._CANDIDATE_CORE_SLOTS
+    pool_n = ms._CANDIDATE_POOL_SIZE
+    rot = pool_n - core_n
+    tail = symbols[core_n:]
+
+    def window(bucket):
+        offset = (bucket * rot) % len(tail)
+        return symbols[:core_n] + [
+            tail[(offset + i) % len(tail)] for i in range(rot)]
+
+    seen_tail = set()
+    prev = None
+    for b in range(10):
+        w = window(b)
+        assert len(w) == pool_n
+        assert w[:core_n] == symbols[:core_n], "core must never rotate"
+        assert len(set(w)) == len(w), "window must not repeat a name"
+        # deterministic: same bucket → same window
+        assert window(b) == w
+        if prev is not None:
+            assert w != prev, "consecutive buckets must advance the window"
+        prev = w
+        seen_tail.update(w[core_n:])
+    assert seen_tail == set(tail), (
+        "every floor-passer beyond the core must be scanned within a "
+        "few buckets — that is the whole point of the rotation")
+
+    # And the shipped code implements exactly this shape.
+    src = _read("multi_scheduler.py")
+    assert "offset = (now_bucket * rot_slots) % len(tail)" in src
+    assert "[tail[(offset + i) % len(tail)] for i in range(rot_slots)]" in src
+
+
+def test_second_cut_at_screen_by_price_range_is_gone():
+    # 2026-07-15 — limit=50 was a latent un-stratifying truncation
+    # ahead of the candidate window; the pool bound must live in ONE
+    # place (the core+rotating window).
+    src = _read("multi_scheduler.py")
+    assert "limit=len(universe) if universe else 50," in src, (
+        "screen_by_price_range must pass every floor-passer through — "
+        "no second cut before the candidate window")
+
+
+def test_legacy_single_user_cuts_are_order_preserving():
+    # Same class, other paths (2026-07-15): main.py and scheduler.py
+    # carried the identical set()-before-[:30] shape the cc0e0c3 fix
+    # killed in multi_scheduler.
+    for fname in ("main.py", "scheduler.py"):
+        src = _read(fname)
+        assert "symbols = list(symbols)[:30]" not in src, (
+            f"{fname}: hash-order cut must stay dead")
+        assert 'for cat in ("candidates", "volume_surges",' in src, (
+            f"{fname}: candidates (stratified order) must lead the union")
 
 
 # ------------------------------------------------- round-2 review pins

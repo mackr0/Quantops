@@ -733,8 +733,10 @@ class TestSkipFirstMinutesTuner:
         assert msg is not None
         assert "Tightened" in msg
         # Rule proposes 10→5 (-50%); 2026-05-18 per-cycle delta cap
-        # clamps to -25% → 10 * 0.75 = 7.5 → int 7.
-        assert captured == [{"skip_first_minutes": 7}]
+        # clamps to -25% → 10 * 0.75 = 7.5 → 8 (2026-07-15: int casts
+        # ROUND now — int() truncation is how the fraction-scale
+        # confidence proposals became 0 in prod; round(7.5) → 8).
+        assert captured == [{"skip_first_minutes": 8}]
 
     def test_thin_sample_no_change(self, tmp_path):
         db = _make_db_with_slip_and_dq(tmp_path)

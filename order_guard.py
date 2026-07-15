@@ -615,6 +615,11 @@ def allowable_cover_qty(
 #: DELIBERATE short entry (a sell-to-open that is *supposed* to exceed the
 #: held long). The door consumes it and never forwards it to the broker.
 INTENT_OPEN_SHORT = "open_short"
+# 2026-07-15 — a SHORT position's buy-side protective (stop to cover).
+# bracket_orders verifies live broker backing before submitting these,
+# so they are exits by construction and the buy-side cash door must
+# never gate them.
+INTENT_PROTECTIVE_COVER = "protective_cover"
 
 
 class OversellGuardError(Exception):
@@ -716,9 +721,169 @@ def assert_sell_within_own_book(api, ctx, kwargs: dict) -> None:
                 str(symbol).upper(), qty, reason))
 
 
+class CashFloorGuardError(Exception):
+    """Raised by the guarded api door when a stock BUY's estimated cost
+    (with the market-fill slippage reserve) exceeds the profile's own
+    virtual cash. The buy-side twin of OversellGuardError: virtual
+    accounts are cash accounts, and a buy the book can't fund would
+    overdraw it at fill (p217 went to -$5.05 on 2026-07-14 exactly this
+    way). Call sites treat a raise as a non-fatal placement failure —
+    the entry is simply skipped this cycle."""
+
+
+def assert_buy_within_own_cash(api, ctx, kwargs: dict,
+                               intent=None) -> None:
+    """Enforce the virtual-cash floor for one submit_order call (kwargs).
+
+    For a STOCK BUY that increases long exposure, refuses (raises
+    CashFloorGuardError) when the estimated cost — reference price ×
+    qty, padded by the market-fill slippage reserve for non-limit
+    orders — exceeds this profile's own virtual cash. Reference price:
+    the order's limit price when present, else the latest trade from
+    the broker (fail-closed if unavailable: an entry skipped on a data
+    hiccup is recoverable next cycle; an overdraw is booked money).
+
+    NEVER gates exits: intent='protective_cover' (a short's buy-side
+    protective — bracket_orders verifies live broker backing before
+    submitting it, so it is an exit by construction) bypasses the
+    check entirely, immune to journal-read hiccups (review 2026-07-15
+    #9: get_virtual_positions swallows DB errors to [], which would
+    have read as 'no short exists' and blocked the one order the
+    naked-position rule says must always flow). A plain buy that
+    covers an own-journal short is likewise position-reducing; only
+    the portion beyond the short — new long exposure — is
+    cash-checked. Options (OCC symbols) return early like the sell
+    door: their cash budget is enforced in the options pipeline. Real
+    (non-virtual) accounts return early too — the broker enforces
+    their buying power."""
+    side = str(kwargs.get("side") or "").lower()
+    symbol = kwargs.get("symbol")
+    if side != "buy" or not symbol:
+        return
+    if intent == INTENT_PROTECTIVE_COVER:
+        return  # broker-backed short protective — exit by construction
+    if ctx is None or not getattr(ctx, "is_virtual", False):
+        return
+    sym = str(symbol).upper()
+    if _is_occ(sym):
+        return
+    try:
+        qty = int(float(kwargs.get("qty") or 0))
+    except (TypeError, ValueError):
+        return
+    if qty <= 0:
+        return
+    db_path = getattr(ctx, "db_path", None)
+    if not db_path:
+        return
+
+    # Cover-exemption: net own-journal SHORT on this stock reduces the
+    # cash-gated quantity. A pure buy-to-cover is an exit — always
+    # allowed regardless of cash (a short loss can legitimately cost
+    # more than the credit received; blocking the cover would strand
+    # the position, which is worse than the overdraft it books).
+    gated_qty = qty
+    try:
+        from journal import get_virtual_positions
+        for pos in get_virtual_positions(db_path):
+            if (pos.get("symbol") or "").upper() != sym:
+                continue
+            if pos.get("occ_symbol"):
+                continue
+            own_qty = int(float(pos.get("qty", 0) or 0))
+            if own_qty < 0:
+                gated_qty = max(0, qty - abs(own_qty))
+            break
+    except Exception as exc:
+        # Can't prove a short exists → treat the whole buy as new long
+        # exposure (conservative for cash; never blocks a provable
+        # cover because a provable cover needs a readable journal).
+        logger.warning(
+            "CASH DOOR: get_virtual_positions failed for %s (db=%s); "
+            "treating full buy qty as new exposure: %s: %s",
+            sym, db_path, type(exc).__name__, exc,
+        )
+    if gated_qty <= 0:
+        return  # pure buy-to-cover — exit path, never cash-gated
+
+    # Reference price: limit price binds the fill; otherwise latest
+    # trade from the broker. Fail-closed — a buy with no knowable
+    # price cannot be cash-checked and must not be sent on hope.
+    limit_price = kwargs.get("limit_price")
+    ref_price = None
+    is_limit = False
+    if limit_price is not None:
+        try:
+            ref_price = float(limit_price)
+            is_limit = ref_price > 0
+        except (TypeError, ValueError):
+            ref_price = None
+    if not ref_price or ref_price <= 0:
+        try:
+            trade = api.get_latest_trade(sym)
+            ref_price = float(getattr(trade, "price", None)
+                              or getattr(trade, "p", 0) or 0)
+        except Exception as exc:
+            who = getattr(ctx, "display_name", None) or db_path or "?"
+            logger.error(
+                "CASH DOOR: no reference price for BUY %s qty=%d [%s] "
+                "(%s: %s). Refusing the buy (fail-closed) rather than "
+                "submit an uncheckable market order.",
+                sym, qty, who, type(exc).__name__, exc,
+            )
+            raise CashFloorGuardError(
+                "BUY %s qty=%d refused: reference price unavailable "
+                "for the cash floor" % (sym, qty))
+    if not ref_price or ref_price <= 0:
+        raise CashFloorGuardError(
+            "BUY %s qty=%d refused: reference price %r unusable for "
+            "the cash floor" % (sym, qty, ref_price))
+
+    import config as _cfg
+    reserve = 0.0 if is_limit else _cfg.MARKET_BUY_SLIPPAGE_RESERVE_PCT
+    est_cost = gated_qty * ref_price * (1 + reserve)
+
+    from journal import get_virtual_cash, get_pending_protective_buy_commitment
+    cash = get_virtual_cash(
+        db_path,
+        initial_capital=getattr(ctx, "initial_capital", 100000.0),
+    )
+    if cash is not None:
+        # Money a resting cover stop will need is not spendable: the
+        # cash math excludes pending_protective rows, so a cover that
+        # fires mid-cycle leaves journal cash stale-HIGH until the
+        # reconciler flips the row — reserving the commitment closes
+        # that approval window (review 2026-07-15 #6) and is the
+        # correct cash-account treatment of short-cover liability.
+        cash -= get_pending_protective_buy_commitment(db_path)
+    if cash is None:
+        who = getattr(ctx, "display_name", None) or db_path or "?"
+        logger.error(
+            "CASH DOOR: virtual cash unreadable for BUY %s qty=%d [%s]. "
+            "Refusing the buy (fail-closed) rather than trust an "
+            "unreadable book.", sym, qty, who,
+        )
+        raise CashFloorGuardError(
+            "BUY %s qty=%d refused: virtual cash unreadable" % (sym, qty))
+
+    if est_cost > cash + 0.01:
+        who = getattr(ctx, "display_name", None) or db_path or "?"
+        logger.error(
+            "CASH DOOR BLOCKED BUY %s qty=%d [%s]: estimated cost "
+            "$%.2f (ref $%.4f%s) exceeds virtual cash $%.2f. A virtual "
+            "account is a cash account — the order was NOT sent.",
+            sym, gated_qty, who, est_cost, ref_price,
+            "" if is_limit else " + slippage reserve", cash,
+        )
+        raise CashFloorGuardError(
+            "BUY %s qty=%d refused: est cost $%.2f exceeds virtual "
+            "cash $%.2f" % (sym, gated_qty, est_cost, cash))
+
+
 class GuardedAlpacaApi:
     """Per-profile wrapper around the Alpaca REST client. The ONLY method
-    it changes is submit_order — routed through assert_sell_within_own_book.
+    it changes is submit_order — routed through assert_sell_within_own_book
+    (the oversell door) and assert_buy_within_own_cash (the cash door).
     Every other attribute/method delegates verbatim to the wrapped client.
 
     Bound to ONE profile's ctx (its own db_path), so it cannot consult
@@ -765,6 +930,7 @@ class GuardedAlpacaApi:
         # ENTRY (open_short) vs a long close.
         intent = kwargs.get("intent")
         assert_sell_within_own_book(api, ctx, kwargs)
+        assert_buy_within_own_cash(api, ctx, kwargs, intent=intent)
         # RETRY_OK: this is the pass-through door, not an originating call
         # site. Every real caller (trader, trade_pipeline, bracket_orders,
         # …) already wraps its submit_order in try/except — that is exactly

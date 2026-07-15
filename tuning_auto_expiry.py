@@ -108,6 +108,15 @@ def _is_eligible_for_revert(
         return False, "outcome_after=improved"
     if row.get("outcome_after") == "auto_expired":
         return False, "already auto-expired"
+    if str(row.get("outcome_after") or "").startswith("voided"):
+        # Operator data repair voided this row (e.g. the 2026-07-15
+        # confidence-threshold scale repair) — its old_value is on a
+        # dead scale and must never be replayed into the config.
+        return False, "voided by operator repair"
+    if row.get("outcome_after") == "n/a":
+        # Informational rows (no-change evaluations, operator repair
+        # records) are not tightenings to unwind.
+        return False, "informational row (n/a)"
     if samples_since < min_samples:
         return (
             False,
@@ -141,15 +150,28 @@ def _newer_change_exists_for_param(
     return False
 
 
-def _cast_old_value(old_value: Any) -> Any:
-    """Best-effort cast of stored old_value string back to its native
-    type. SQLite stored it as TEXT but most columns are INTEGER /
-    REAL / TEXT — try int → float → str."""
+def _cast_old_value(old_value: Any, parameter_name: str = "") -> Any:
+    """Cast a stored old_value string back to its native column type.
+
+    Known tuned params delegate to self_tuning._cast_param_value so
+    this module can never disagree with the funnel's cast policy (a
+    second independent heuristic here is how a fraction-scale "0.6"
+    could have been written back into the INTEGER confidence column —
+    the 2026-07-15 scale-repair class). Unknown params keep the old
+    best-effort int → float → str heuristic."""
     if old_value is None or old_value == "":
         return None
     s = str(old_value).strip()
     if s.lower() in ("true", "false"):
         return 1 if s.lower() == "true" else 0
+    if parameter_name:
+        try:
+            from self_tuning import _cast_param_value
+            cast = _cast_param_value(parameter_name, s)
+            if cast is not s:  # param was in one of the typed sets
+                return cast
+        except (ImportError, ValueError, TypeError):
+            pass
     try:
         if "." not in s and "e" not in s.lower():
             return int(s)
@@ -207,7 +229,7 @@ def _revert_to_old_value(
             return False, f"weight revert failed: {type(exc).__name__}: {exc}"
 
     # 3. Direct column update on trading_profiles.
-    cast = _cast_old_value(old_value)
+    cast = _cast_old_value(old_value, parameter_name)
     if cast is None:
         return False, f"cannot cast old_value {old_value!r}"
     try:

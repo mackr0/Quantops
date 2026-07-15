@@ -30,9 +30,239 @@ Public surface:
 """
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Option-proposal preflight (2026-07-15)
+#
+# The specialist ensemble reviewed option proposals through a STOCK-shaped
+# renderer that dropped every option field — the model literally saw
+# `- COST [? @ $0]:` for a fully-priced bear-call spread, and
+# option_spread_risk correctly answered "missing strike and premium data"
+# 78 times in a row (the "97% veto storm" was substantially this). The
+# preflight (a) ENRICHES each option proposal with the priced economics the
+# specialists' prompts demand — the SAME _price_option_rec call the veto
+# recorder already made seconds after each veto — and (b) refuses to send
+# an unpriceable proposal to the LLM at all: it is dropped loudly, recorded
+# as veto_class='invalid_input' (excluded from P(veto) learning), and never
+# reaches execution.
+# ---------------------------------------------------------------------------
+
+_OPTION_PROPOSAL_ACTIONS = {"MULTILEG_OPEN", "OPTIONS"}
+
+
+def _enrich_option_proposal(ctx, proposal) -> List[str]:
+    """Attach `_specialist_econ` (priced economics + market context) to an
+    option proposal, in place. Returns the list of MISSING required fields
+    ([] = complete and reviewable).
+
+    Required: symbol, strategy, strikes/strike, expiry, contracts, spot,
+    and priced economics (net premium + max loss for verticals; leg
+    premium for single-leg OPTIONS). Optional, rendered as 'unavailable'
+    when absent: iv_rank, breakeven.
+    """
+    missing: List[str] = []
+    symbol = (proposal.get("symbol") or "").upper()
+    action = (proposal.get("action") or "").upper()
+    strategy = (proposal.get("strategy_name")
+                or proposal.get("option_strategy") or "")
+    expiry = proposal.get("expiry")
+    try:
+        contracts = int(proposal.get("contracts") or 0)
+    except (TypeError, ValueError):
+        contracts = 0
+    if not symbol:
+        missing.append("symbol")
+    if not strategy:
+        missing.append("strategy")
+    if not expiry:
+        missing.append("expiry")
+    if contracts <= 0:
+        missing.append("contracts")
+
+    econ: dict = {
+        "strategy": strategy,
+        "contracts": contracts,
+        "expiry": expiry,
+        "dte": None,
+        "spot": None,
+        "iv_rank": None,
+        "is_credit": None,
+        "entry_net_premium": None,   # per contract, dollars
+        "max_loss_per_contract": None,
+        "max_gain_per_contract": None,
+        "breakeven": None,
+        "spread_width_points": None,
+        "legs": None,
+        "single_leg": action == "OPTIONS",
+    }
+
+    # DTE from expiry
+    if expiry:
+        try:
+            from datetime import date as _date, datetime as _dt
+            _exp = _date.fromisoformat(str(expiry)[:10])
+            econ["dte"] = (_exp - _dt.utcnow().date()).days
+        except (ValueError, TypeError):
+            missing.append("expiry (unparseable)")
+
+    # Spot + IV rank — oracle first (30-min cached), bars fallback for spot.
+    if symbol:
+        try:
+            from options_oracle import get_options_oracle
+            oracle = get_options_oracle(symbol) or {}
+            if oracle.get("has_options"):
+                econ["spot"] = oracle.get("current_price")
+                econ["iv_rank"] = (oracle.get("iv_rank") or {}).get("rank_pct")
+        except Exception as _or_exc:
+            logger.debug("preflight oracle lookup failed for %s: %s: %s",
+                         symbol, type(_or_exc).__name__, _or_exc)
+        if not econ["spot"]:
+            try:
+                from market_data import get_bars
+                bars = get_bars(symbol, limit=2)
+                if bars is not None and len(bars):
+                    econ["spot"] = float(bars["close"].iloc[-1])
+            except Exception as _sp_exc:
+                logger.debug("preflight spot fallback failed for %s: %s: %s",
+                             symbol, type(_sp_exc).__name__, _sp_exc)
+    if not econ["spot"]:
+        missing.append("spot price")
+
+    # Priced economics.
+    if action == "OPTIONS":
+        # Single leg: {option_strategy, strike, expiry, contracts}.
+        strike = proposal.get("strike")
+        if strike is None:
+            missing.append("strike")
+        elif expiry and symbol and strategy:
+            try:
+                from datetime import date as _date
+                from options_trader import format_occ_symbol
+                from options_strategy_advisor import _cached_option_premium
+                right = "P" if "put" in strategy.lower() else "C"
+                # buy-side single legs: long_* AND protective_put (a
+                # bought hedge — 'long' token alone priced it as a
+                # CREDIT and showed inverted economics; review #14).
+                _s_low = strategy.lower()
+                side = ("buy" if ("long" in _s_low
+                                  or "protective" in _s_low)
+                        else "sell")
+                occ = format_occ_symbol(
+                    symbol, _date.fromisoformat(str(expiry)[:10]),
+                    float(strike), right)
+                prem = _cached_option_premium(occ, side)
+                if prem and prem > 0:
+                    econ["entry_net_premium"] = round(prem * 100.0, 2)
+                    econ["is_credit"] = side == "sell"
+                    econ["legs"] = [{"occ": occ, "side": side}]
+                    if side == "buy":
+                        # a long single leg risks exactly the premium
+                        econ["max_loss_per_contract"] = round(
+                            prem * 100.0, 2)
+            except Exception as _sl_exc:
+                logger.debug(
+                    "preflight single-leg pricing failed for %s: %s: %s",
+                    symbol, type(_sl_exc).__name__, _sl_exc)
+        if econ["entry_net_premium"] is None:
+            missing.append("leg premium (unpriceable)")
+    else:
+        # Multileg: the same pricing call _price_vetoed_spread makes.
+        strikes = proposal.get("strikes") or {}
+        if not strikes:
+            missing.append("strikes")
+        elif symbol and expiry and strategy:
+            try:
+                from options_strategy_advisor import _price_option_rec
+                prec = {"strategy": strategy, "symbol": symbol,
+                        "expiry": expiry, "strikes": dict(strikes)}
+                _price_option_rec(prec)
+                econ["is_credit"] = prec.get("is_credit")
+                econ["spread_width_points"] = prec.get("spread_width_points")
+                econ["max_loss_per_contract"] = prec.get(
+                    "max_loss_per_contract")
+                econ["max_gain_per_contract"] = prec.get(
+                    "max_gain_per_contract")
+                econ["breakeven"] = prec.get("breakeven")
+                econ["entry_net_premium"] = prec.get("entry_net_premium")
+                econ["legs"] = prec.get("legs")
+                if not prec.get("priced"):
+                    # Verticals must price (premium + true max loss);
+                    # only the conservative width fallback is available
+                    # for exotic shapes — those keep max_loss and pass.
+                    if {"short", "long"} <= set(strikes.keys()):
+                        missing.append("spread pricing (untrusted marks)")
+                    elif not econ["max_loss_per_contract"]:
+                        missing.append("max loss (unpriceable)")
+            except Exception as _ml_exc:
+                logger.debug(
+                    "preflight spread pricing failed for %s: %s: %s",
+                    symbol, type(_ml_exc).__name__, _ml_exc)
+                missing.append("spread pricing (error)")
+
+    proposal["_specialist_econ"] = econ
+    return missing
+
+
+def _preflight_option_proposals(ctx, proposals):
+    """Split proposals into (ready, dropped_incomplete). Option-shaped
+    proposals are enriched in place; incomplete ones are dropped LOUDLY
+    before any LLM sees them, marked veto_class='invalid_input' so the
+    outcome recorder keeps them out of P(veto) learning, and surfaced in
+    the AI Brain via record_trade_drop. Non-option proposals pass through
+    untouched."""
+    ready, dropped = [], []
+    for p in proposals:
+        if not isinstance(p, dict):
+            ready.append(p)
+            continue
+        action = (p.get("action") or "").upper()
+        if action not in _OPTION_PROPOSAL_ACTIONS:
+            ready.append(p)
+            continue
+        missing = _enrich_option_proposal(ctx, p)
+        if not missing:
+            ready.append(p)
+            continue
+        p["_veto_class"] = "invalid_input"
+        p["_preflight_missing"] = missing
+        sym = p.get("symbol", "?")
+        logger.error(
+            "OPTION PREFLIGHT dropped %s %s before specialist review: "
+            "missing/unpriceable %s. The proposal never reached the LLM; "
+            "recorded as invalid_input (excluded from veto learning).",
+            action, sym, ", ".join(missing),
+        )
+        db_path = getattr(ctx, "db_path", None) if ctx is not None else None
+        if db_path:
+            try:
+                from journal import record_trade_drop
+                record_trade_drop(
+                    db_path=db_path,
+                    symbol=sym,
+                    side=action.lower(),
+                    drop_code="OPTION_INPUT_INCOMPLETE",
+                    drop_reason=(
+                        f"Option proposal was missing usable "
+                        f"{', '.join(missing)}, so it could not be "
+                        f"risk-reviewed. Dropped before review; not "
+                        f"counted against the strategy's veto record."
+                    ),
+                    ai_confidence=p.get("confidence"),
+                    ai_reasoning=p.get("reasoning"),
+                )
+            except Exception as _td_exc:
+                logger.debug(
+                    "preflight drop record failed for %s: %s: %s",
+                    sym, type(_td_exc).__name__, _td_exc)
+        dropped.append(p)
+    return ready, dropped
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +471,27 @@ class Pipeline(ABC):
                     f"(would have used {len(spec_list)} specialists)"
                 ],
             )
+        # 2026-07-15 — option-proposal preflight: enrich with priced
+        # economics (the render used to drop every option field and the
+        # specialists reviewed '- SYM [? @ $0]:'), and refuse to send an
+        # unpriceable proposal to the LLM at all. Dropped proposals are
+        # BLOCKED from execution (they join `vetoed`) but carry
+        # veto_class='invalid_input' so the P(veto) learning never counts
+        # a plumbing failure as a risk judgment.
+        proposals, preflight_dropped = _preflight_option_proposals(
+            ctx, proposals)
+        preflight_log = [
+            (f"{p.get('symbol', '?')}: VETO (input_incomplete) — option "
+             f"proposal missing usable "
+             f"{', '.join(p.get('_preflight_missing') or ['inputs'])}; "
+             f"dropped before specialist review")
+            for p in preflight_dropped
+        ]
+        if not proposals:
+            return SpecialistVerdict(
+                approved=[], vetoed=list(preflight_dropped),
+                veto_log=preflight_log,
+            )
         # Compose the per-pipeline ensemble call. Tests patch
         # `ensemble.run_ensemble` to verify the specialist list flows
         # through without making AI calls; production callers get the
@@ -259,7 +510,9 @@ class Pipeline(ABC):
             pipeline_kind=self.name,
         )
         per_symbol = (result or {}).get("per_symbol", {})
-        approved, vetoed, veto_log = [], [], []
+        approved = []
+        vetoed = list(preflight_dropped)
+        veto_log = list(preflight_log)
         for proposal in proposals:
             sym = proposal.get("symbol") if isinstance(proposal, dict) else None
             verdict_data = per_symbol.get(sym, {}) if sym else {}

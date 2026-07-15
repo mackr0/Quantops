@@ -408,6 +408,24 @@ class OptionPipeline(Pipeline):
         if not sym:
             return ("specialist veto", None)
         log = list(getattr(verdict, "veto_log", None) or [])
+        # Exact "<sym>: " prefix first — the bare substring match let a
+        # short ticker inherit ANOTHER symbol's log line ('A' matched
+        # the AAPL entry), which after 2026-07-15 could launder a
+        # genuine risk veto into veto_class='invalid_input' via the
+        # reason-text fallback (review finding #12). Substring stays
+        # only as the last-resort fallback for prefix-less legacy
+        # formats.
+        for entry in log:
+            if str(entry).startswith(f"{sym}:"):
+                body = entry[len(sym) + 1:].strip()
+                import re
+                m = re.match(
+                    r"VETO\s*(?:\(([^)]+)\))?\s*[—-]\s*(.*)",
+                    body,
+                )
+                if m:
+                    return (m.group(2).strip(), m.group(1))
+                return (body.strip(), None)
         for entry in log:
             if sym in entry:
                 # Strip leading "<sym>: " prefix when present
@@ -571,6 +589,19 @@ class OptionPipeline(Pipeline):
             record_option_proposal_outcome(
                 ctx.db_path, symbol=sym, strategy=strategy, sector=sector,
                 vetoed=vetoed_flag, veto_reason=veto_reason,
+                # 'invalid_input' when the preflight completeness gate
+                # (pipelines.route_to_specialists) dropped the proposal
+                # before any specialist saw it; genuine vetoes default
+                # to 'risk' inside the recorder. The reason-text fallback
+                # covers the legacy dispatch path, which rebuilds the
+                # proposal dict from the raw ai_trade and loses the
+                # in-place `_veto_class` marker — only the veto_log text
+                # (carrying the 'input_incomplete' attribution) survives
+                # that copy.
+                veto_class=(proposal.get("_veto_class")
+                            or ("invalid_input"
+                                if "input_incomplete" in (veto_reason or "")
+                                else None)),
                 confidence=proposal.get("confidence"),
                 expiry=proposal.get("expiry"), **fields,
             )
@@ -676,6 +707,93 @@ class OptionPipeline(Pipeline):
                     "%s: %s", type(_budget_exc).__name__, _budget_exc,
                 )
 
+            # 2026-07-15 — VIRTUAL-CASH floor for NET-DEBIT spreads
+            # (review finding #5). The capital-at-risk budget above
+            # compares max-loss to EQUITY, never to remaining CASH; the
+            # stock cash door returns early on OCC symbols; and legs
+            # are journaled price=NULL until fill backfill — so a debit
+            # spread could overdraw virtual cash exactly like the p217
+            # stock shape, on the very flow the preflight fix just
+            # unblocked. Credit spreads ADD cash at open and skip the
+            # floor. FAIL-CLOSED on unpriceable debits: a spread whose
+            # cost we cannot establish must not be bought on hope
+            # (same rule as the stock door).
+            _is_credit_strat = strategy_name in (
+                "bull_put_spread", "bear_call_spread")
+            _est_debit = None
+            if not _is_credit_strat:
+                try:
+                    from options_strategy_advisor import _price_option_rec
+                    _prec = {"strategy": strategy_name, "symbol": symbol,
+                             "expiry": expiry_str,
+                             "strikes": dict(strikes)}
+                    _price_option_rec(_prec)
+                    if _prec.get("priced") and _prec.get(
+                            "entry_net_premium"):
+                        _est_debit = (float(_prec["entry_net_premium"])
+                                      * contracts)
+                except Exception as _pd_exc:
+                    logger.debug(
+                        "debit-spread pricing for the cash floor failed "
+                        "for %s: %s: %s", symbol,
+                        type(_pd_exc).__name__, _pd_exc)
+                if _est_debit is None:
+                    _lp = proposal.get("limit_price")
+                    try:
+                        if _lp and float(_lp) > 0:
+                            _est_debit = float(_lp) * 100.0 * contracts
+                    except (TypeError, ValueError):
+                        pass
+                if _est_debit is None:
+                    logger.error(
+                        "OPTION CASH FLOOR: cannot price the net debit "
+                        "of %s %s — refusing (fail-closed).",
+                        strategy_name, symbol)
+                    return {
+                        "action": "SKIP", "symbol": symbol,
+                        "reason": (
+                            f"Cash floor: the net debit of "
+                            f"{strategy_name} could not be priced — "
+                            f"not submitted"),
+                    }
+                try:
+                    import config as _cfg
+                    from journal import get_virtual_cash as _gvc
+                    _cash = _gvc(
+                        ctx.db_path,
+                        initial_capital=getattr(
+                            ctx, "initial_capital", 100000.0))
+                    _needed = _est_debit * (
+                        1 + _cfg.MARKET_BUY_SLIPPAGE_RESERVE_PCT)
+                    if _cash is None or _needed > _cash + 0.01:
+                        logger.error(
+                            "OPTION CASH FLOOR blocked %s %s: net debit "
+                            "$%.2f (+reserve) vs virtual cash %s — a "
+                            "virtual account is a cash account.",
+                            strategy_name, symbol, _est_debit,
+                            "unreadable" if _cash is None
+                            else f"${_cash:,.2f}")
+                        return {
+                            "action": "SKIP", "symbol": symbol,
+                            "reason": (
+                                f"Cash floor: net debit "
+                                f"${_est_debit:,.2f} exceeds this "
+                                f"account's available cash"),
+                        }
+                except Exception:
+                    # The floor itself must fail CLOSED — an evaluation
+                    # error here means we cannot prove the cash exists.
+                    logger.error(
+                        "OPTION CASH FLOOR evaluation failed for %s %s "
+                        "— refusing (fail-closed).",
+                        strategy_name, symbol, exc_info=True)
+                    return {
+                        "action": "SKIP", "symbol": symbol,
+                        "reason": (
+                            f"Cash floor: could not verify cash for "
+                            f"{strategy_name} — not submitted"),
+                    }
+
             # 2026-05-20 (docs/23 / #195 Phase 1): Greeks gate for the
             # multileg path. Mirrors the single-leg gate at
             # options_trader.py:497-540. Aggregates per-leg delta /
@@ -745,6 +863,18 @@ class OptionPipeline(Pipeline):
                 ai_reasoning=proposal.get("reasoning"),
             )
             trade_result.setdefault("symbol", symbol)
+            # 2026-07-15 — expose the estimated net debit so the
+            # dispatch loop's in-cycle cash adjuster can debit the
+            # shared account snapshot (legs journal price=NULL until
+            # fill backfill, so a later same-cycle stock BUY would
+            # otherwise size against cash this spread already spent).
+            # Credits are deliberately NOT exposed: an unfilled credit
+            # must never fund a same-cycle buy.
+            if (_est_debit is not None and _est_debit > 0
+                    and isinstance(trade_result, dict)
+                    and (trade_result.get("action") or "").upper()
+                    in ("MULTILEG_OPEN", "MULTILEG_CLOSE")):
+                trade_result.setdefault("estimated_cost", _est_debit)
             # Phase 5c linkage — best-effort
             try:
                 combo_id = trade_result.get("combo_order_id") or (

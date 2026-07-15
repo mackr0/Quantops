@@ -76,6 +76,11 @@ KNOWN_ACTIONS: Set[str] = {
     "KILL_SWITCH", "CATASTROPHIC_SINGLE_TRADE",
     "BOOK_CONCENTRATION_CAP", "DRAWDOWN_PAUSE",
     "BLACKLIST_BLOCKED", "COOLDOWN", "INTRADAY_RISK_HALT",
+    # 2026-07-15 — STEP 4.85 confidence gate: entry proposal whose
+    # final confidence sits below the profile threshold. Surfaced as a
+    # details entry (same downstream shape as BLACKLIST_BLOCKED) plus
+    # a CONFIDENCE_GATE trade-drop row for the AI Brain badge.
+    "CONFIDENCE_BLOCKED",
     # Options pipeline
     "OPTIONS", "OPTIONS_OPEN", "MULTILEG_OPEN",
     # Pair-trading pipeline

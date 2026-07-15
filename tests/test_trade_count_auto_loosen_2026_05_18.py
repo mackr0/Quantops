@@ -139,9 +139,13 @@ class TestLoosenTarget:
 
     def test_no_op_when_cast_collapses_to_current(self):
         from self_tuning import _loosen_target
-        # int param at 4: 4 * 1.25 = 5.0 → int 5 → no, wait, 5 != 4.
-        # Try 3 → 3*1.25=3.75 → int 3 → equals current → None
-        assert _loosen_target("max_total_positions", 3) is None
+        # 2026-07-15 — the cast now ROUNDS (int(3.75) used to truncate
+        # back to 3 and this pinned that artifact; 3 → 3.75 → 4 is a
+        # genuine loosen today). The collapse-to-None contract is still
+        # real at the BOUNDS ceiling: 25 * 1.25 = 31.25 → bound 25 ==
+        # current → None, no no-op ledger row.
+        assert _loosen_target("max_total_positions", 3) == 4
+        assert _loosen_target("max_total_positions", 25) is None
 
     def test_returns_none_for_unknown_param(self):
         from self_tuning import _loosen_target

@@ -206,16 +206,114 @@ class TestApplyParamChangeWrapper:
             win_rate_at_change=70, predictions_resolved=50,
         )
         assert was_clamped is False
-        assert applied == 66.0
+        # 2026-07-15 — ONE canonical value everywhere: the wrapper now
+        # returns the CAST value (int 66), writes it to the profile, and
+        # logs str() of that SAME value to the ledger. The old pin here
+        # ("66.0" in the ledger vs int 66 in config) encoded the exact
+        # divergence that let prod ledgers claim 0.75 while configs held
+        # int(0.75)=0 for six profiles.
+        assert applied == 66
+        assert isinstance(applied, int)
         assert suffix == ""
         utp.assert_called_once_with(1, ai_confidence_threshold=66)
-        # Verify log_tuning_change got the same value, not the proposed
         args, kwargs = ltc.call_args
         # Positional: profile_id, user_id, adjustment_type, param_name,
         #             old_value, new_value, reason
-        assert args[5] == "66.0", (
-            f"log_tuning_change new_value must match applied value; got {args[5]}"
+        assert args[5] == "66", (
+            f"log_tuning_change new_value must be str(the exact value "
+            f"written to the profile); got {args[5]!r}"
         )
+
+    def test_one_canonical_value_when_cast_changes_the_number(
+            self, monkeypatch):
+        """THE 2026-07 prod bug shape: clamp yields a fractional applied
+        value (60 → propose 90 → ±25% clamp 75.0; contrast prod where a
+        fraction-scaled anchor made the clamp emit 0.75 and int() wrote
+        0). Whatever the cast produces, profile config, tuning_history,
+        AND the returned value must be the SAME number — never the
+        pre-cast float in one store and the cast int in another."""
+        from unittest.mock import MagicMock
+        utp = MagicMock()
+        ltc = MagicMock(return_value=42)
+        monkeypatch.setattr("models.update_trading_profile", utp)
+        monkeypatch.setattr("models.log_tuning_change", ltc)
+        from self_tuning import _apply_param_change
+        applied, was_clamped, suffix = _apply_param_change(
+            profile_id=1, user_id=1,
+            adjustment_type="test_adjustment",
+            param_name="ai_confidence_threshold",
+            old_value=60, proposed_new_value=65.5,   # in-band; round → 66
+            reason="test reason",
+        )
+        assert applied == 66 and isinstance(applied, int)
+        utp.assert_called_once_with(1, ai_confidence_threshold=66)
+        args, _ = ltc.call_args
+        assert args[5] == str(applied) == "66"
+
+    def test_cast_rounds_never_truncates(self):
+        """int(float('0.75')) == 0 is how six prod profiles got their
+        confidence gate zeroed while the ledger said 0.75. The cast must
+        ROUND for int params."""
+        from self_tuning import _cast_param_value
+        assert _cast_param_value("ai_confidence_threshold", "0.75") == 1
+        assert _cast_param_value("ai_confidence_threshold", "65.5") == 66
+        assert _cast_param_value("max_total_positions", "3.75") == 4
+
+    def test_bounds_clamp_at_the_funnel(self, monkeypatch):
+        """PARAM_BOUNDS is enforced INSIDE _apply_param_change: a value
+        that survives the delta/reference clamps but sits outside the
+        absolute bounds is pulled to the edge, and that bounded value is
+        the one canonical value in both stores."""
+        from unittest.mock import MagicMock
+        utp = MagicMock()
+        ltc = MagicMock(return_value=42)
+        monkeypatch.setattr("models.update_trading_profile", utp)
+        monkeypatch.setattr("models.log_tuning_change", ltc)
+        from self_tuning import _apply_param_change
+        # old=80 (in-bounds) → propose 100 → +25% is inside the delta
+        # band → 100 → ABOVE bounds ceiling 90 → clamped to 90
+        applied, was_clamped, _ = _apply_param_change(
+            profile_id=1, user_id=1,
+            adjustment_type="test_adjustment",
+            param_name="ai_confidence_threshold",
+            old_value=80, proposed_new_value=100,
+            reason="test reason",
+        )
+        assert applied == 90
+        assert was_clamped is True
+        utp.assert_called_once_with(1, ai_confidence_threshold=90)
+        args, _ = ltc.call_args
+        assert args[5] == "90"
+
+    def test_bounds_clamp_never_corrects_an_operator_seed(
+            self, monkeypatch):
+        """Review 2026-07-15 #2: all 10 AI profiles run the DELIBERATE
+        out-of-bounds seed max_total_positions=999 ('the AI decides');
+        the funnel's bounds clamp must bound the tuner's STEP, never
+        yank an operator seed to the ceiling. Without the guard, the
+        first tuner touch wrote 999 → 25 (a 40x cap collapse) in one
+        cycle and broke arm comparability."""
+        from unittest.mock import MagicMock
+        utp = MagicMock()
+        ltc = MagicMock(return_value=42)
+        monkeypatch.setattr("models.update_trading_profile", utp)
+        monkeypatch.setattr("models.log_tuning_change", ltc)
+        from self_tuning import _apply_param_change
+        # the live optimizer's own _bound() proposes 25 from 999; the
+        # delta clamp bounds the step to -25% → 749 — the pre-existing
+        # behavior — and the absolute clamp must NOT drag it to 25.
+        applied, was_clamped, _ = _apply_param_change(
+            profile_id=987654, user_id=1,
+            adjustment_type="test_adjustment",
+            param_name="max_total_positions",
+            old_value=999, proposed_new_value=25,
+            reason="test reason",
+        )
+        assert applied == 749, (
+            f"operator seed outside PARAM_BOUNDS must not be dragged "
+            f"into range by the funnel; got {applied}"
+        )
+        utp.assert_called_once_with(987654, max_total_positions=749)
 
     def test_wrapper_clamps_and_writes_clamped_value(self, monkeypatch):
         """50% proposed cut → wrapper clamps to 25% and writes the

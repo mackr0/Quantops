@@ -227,8 +227,60 @@ def _apply_param_change(profile_id: int, user_id: int,
             f"{clamp_reason}; {ref_reason}" if clamp_reason else ref_reason
         )
 
-    # Cast to the column type the profile expects
+    # Cast to the column type the profile expects, then clamp to the
+    # absolute PARAM_BOUNDS safety range. From here on there is exactly
+    # ONE canonical value: it goes to trading_profiles, to the
+    # tuning_history row, AND back to the caller. The 2026-07 cohort
+    # divergence (ledger said 0.75, config held int-cast 0, activity
+    # ticker announced 0.75) came from logging the pre-cast float while
+    # writing the post-cast int — never split them again.
     cast_value = _cast_param_value(param_name, str(applied))
+    try:
+        from param_bounds import clamp as _bounds_clamp, get_bounds
+        # The bounds clamp bounds the tuner's STEP — it must never
+        # "correct" a value the OPERATOR deliberately seeded outside
+        # PARAM_BOUNDS (max_total_positions=999 "the AI decides",
+        # BuyHoldSPY max_position_pct=1.0 — both pinned by tests).
+        # Review 2026-07-15 #2: without this guard, the first tuner
+        # touch on an uncapped profile collapsed 999 → 25 in one write.
+        # When the CURRENT value is already outside bounds, the delta
+        # and reference clamps still bound movement; the absolute
+        # clamp applies only when the tuner is operating inside its
+        # sanctioned range.
+        _old_in_bounds = True
+        try:
+            _lo, _hi = get_bounds(param_name)
+            _old_f = float(old_value)
+            _old_in_bounds = _lo <= _old_f <= _hi
+        except (KeyError, TypeError, ValueError):
+            pass
+        bounded_value = (_bounds_clamp(param_name, cast_value)
+                         if _old_in_bounds else cast_value)
+        if not _old_in_bounds:
+            logger.debug(
+                "PARAM_BOUNDS clamp skipped for %s: current value %r is "
+                "an operator seed outside bounds; step clamps still "
+                "applied", param_name, old_value,
+            )
+    except Exception as _bc_exc:
+        # String-typed params (cast fall-through) can't be compared to
+        # numeric bounds — keep the cast value, note it for debugging.
+        logger.debug(
+            "PARAM_BOUNDS clamp skipped for %s=%r: %s: %s",
+            param_name, cast_value, type(_bc_exc).__name__, _bc_exc,
+        )
+        bounded_value = cast_value
+    if bounded_value != cast_value:
+        was_clamped = True
+        bounds_reason = (
+            f"absolute-bounds clamp: {param_name} value {cast_value} "
+            f"outside PARAM_BOUNDS — clamped to {bounded_value}"
+        )
+        clamp_reason = (
+            f"{clamp_reason}; {bounds_reason}" if clamp_reason
+            else bounds_reason
+        )
+        cast_value = bounded_value
     update_kwargs = {param_name: cast_value}
     update_trading_profile(profile_id, **update_kwargs)
     final_reason = reason
@@ -238,13 +290,17 @@ def _apply_param_change(profile_id: int, user_id: int,
         )
     log_tuning_change(
         profile_id, user_id, adjustment_type,
-        param_name, str(old_value), str(applied), final_reason,
+        param_name, str(old_value), str(cast_value), final_reason,
         win_rate_at_change=win_rate_at_change,
         predictions_resolved=predictions_resolved,
     )
-    return applied, was_clamped, (
-        f" (clamped by guardrail to {applied:.4g})" if was_clamped else ""
-    )
+    if was_clamped:
+        _shown = (
+            f"{cast_value:.4g}" if isinstance(cast_value, (int, float))
+            else str(cast_value)
+        )
+        return cast_value, True, f" (clamped by guardrail to {_shown})"
+    return cast_value, False, ""
 
 
 def _is_cached(key: str) -> bool:
@@ -326,6 +382,12 @@ def _get_recent_adjustment(profile_id, parameter_name, days=3):
     cutoff = datetime.utcnow() - timedelta(days=days)
     for entry in history:
         try:
+            # Rows voided by an operator data repair (e.g. the
+            # 2026-07-15 confidence-threshold scale repair) never
+            # happened as far as the tuner is concerned — they must
+            # not hold the 3-day cooldown.
+            if str(entry.get("outcome_after") or "").startswith("voided"):
+                continue
             ts = datetime.fromisoformat(entry["timestamp"])
             if ts >= cutoff and entry["parameter_name"] == parameter_name:
                 return entry
@@ -347,8 +409,13 @@ def _was_adjustment_effective(profile_id, parameter_name):
     """
     history = _get_tuning_history(profile_id, limit=50)
     for entry in history:
+        outcome = str(entry.get("outcome_after") or "")
+        # Voided rows (operator data repair) are not evidence either
+        # way — skip them so they can't shadow a real verdict.
+        if outcome.startswith("voided"):
+            continue
         if (entry["parameter_name"] == parameter_name
-                and entry["outcome_after"] != "pending"):
+                and outcome != "pending"):
             return entry["outcome_after"]
     return None
 
@@ -2148,11 +2215,15 @@ def _cast_param_value(param_name, value_str):
     }
 
     if param_name in int_params:
-        return int(float(value_str))
+        # round(), never int(): int(float("0.75")) truncated the tuner's
+        # clamped confidence-threshold proposals to 0 on the fraction-
+        # seeded 2026-07 cohort — six profiles ended up with the gate
+        # wide open while the ledger claimed 0.75 (repaired 2026-07-15).
+        return int(round(float(value_str)))
     elif param_name in float_params:
         return float(value_str)
     elif param_name in bool_params:
-        return int(float(value_str))
+        return int(round(float(value_str)))
     return value_str
 
 

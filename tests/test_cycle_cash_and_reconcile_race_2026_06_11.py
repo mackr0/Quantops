@@ -34,6 +34,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parent.parent
 
 
@@ -42,6 +44,16 @@ REPO = Path(__file__).resolve().parent.parent
 # ---------------------------------------------------------------------------
 
 class TestAdjustCycleCash:
+    # 2026-07-15 — deltas are now CONSERVATIVE by the market-fill
+    # slippage reserve (the p217 FCEL overdraw class): decision-price
+    # debits are padded and credits haircut, because the fills these
+    # estimates stand in for are still in flight. The exact-notional
+    # pins below became reserve-adjusted pins on purpose.
+
+    @staticmethod
+    def _r():
+        import config
+        return 1 + config.MARKET_BUY_SLIPPAGE_RESERVE_PCT
 
     def test_buy_debits(self):
         from trade_pipeline import _adjust_cycle_cash
@@ -49,25 +61,27 @@ class TestAdjustCycleCash:
         delta = _adjust_cycle_cash(
             acct, {"action": "BUY", "qty": 100, "price": 50.0,
                    "estimated_cost": 5000.0})
-        assert delta == -5000.0
-        assert acct["cash"] == 95000.0
+        assert delta == pytest.approx(-5000.0 * self._r())
+        assert acct["cash"] == pytest.approx(
+            100000.0 - 5000.0 * self._r())
 
     def test_sell_credits(self):
         from trade_pipeline import _adjust_cycle_cash
         acct = {"cash": 1000.0}
         _adjust_cycle_cash(
             acct, {"action": "SELL", "qty": 10, "price": 50.0})
-        assert acct["cash"] == 1500.0
+        assert acct["cash"] == pytest.approx(1000.0 + 500.0 / self._r())
 
     def test_short_credits_and_cover_debits(self):
         from trade_pipeline import _adjust_cycle_cash
         acct = {"cash": 0.0}
         _adjust_cycle_cash(
             acct, {"action": "SHORT", "qty": 10, "price": 10.0})
-        assert acct["cash"] == 100.0
+        assert acct["cash"] == pytest.approx(100.0 / self._r())
         _adjust_cycle_cash(
             acct, {"action": "COVER", "qty": 10, "price": 9.0})
-        assert acct["cash"] == 10.0
+        assert acct["cash"] == pytest.approx(
+            100.0 / self._r() - 90.0 * self._r())
 
     def test_non_trade_results_are_noops(self):
         from trade_pipeline import _adjust_cycle_cash
@@ -79,14 +93,17 @@ class TestAdjustCycleCash:
 
     def test_three_buys_cannot_overdraw(self):
         """The p97 shape: 3 BUYs in one cycle against a balance that
-        only covers two. With the debit applied between trades, the
-        third sees the drained balance."""
+        only covers two. With the (reserve-padded) debit applied
+        between trades, the third sees a balance at or BELOW the true
+        remaining cash — never above it."""
         from trade_pipeline import _adjust_cycle_cash
         acct = {"cash": 45000.0}
         for _ in range(2):
             _adjust_cycle_cash(
                 acct, {"action": "BUY", "qty": 100, "price": 200.0})
-        assert acct["cash"] == 5000.0  # third BUY sizes against THIS
+        assert acct["cash"] == pytest.approx(
+            45000.0 - 2 * 20000.0 * self._r())
+        assert acct["cash"] <= 5000.0  # third BUY sizes against THIS
 
 
 # ---------------------------------------------------------------------------

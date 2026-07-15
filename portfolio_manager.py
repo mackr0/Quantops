@@ -313,10 +313,22 @@ def check_portfolio_constraints(symbol, proposed_trade, current_positions, accou
                 f"{max_position_pct:.0%} of equity"
             )
 
-    # Check sufficient cash
-    if trade_value > cash:
+    # Check sufficient cash. Market orders must budget fill slippage:
+    # trade_value is qty × DECISION price, but the fill is unbounded
+    # above it — p217 overdrew to -$5.05 when a 100%-of-cash FCEL
+    # market buy filled +46bps over the checked price (2026-07-14).
+    # Limit orders can't fill above their checked price, so they get
+    # the exact comparison. Unknown order_type is treated as market
+    # (conservative).
+    order_type = str(proposed_trade.get("order_type") or "market").lower()
+    if order_type == "limit":
+        required = trade_value
+    else:
+        required = trade_value * (1 + config.MARKET_BUY_SLIPPAGE_RESERVE_PCT)
+    if required > cash:
         return False, (
-            f"Insufficient cash: need ${trade_value:,.2f}, have ${cash:,.2f}"
+            f"Insufficient cash: need ${required:,.2f} "
+            f"(incl. market-fill slippage reserve), have ${cash:,.2f}"
         )
 
     return True, "Trade passes all portfolio constraints"

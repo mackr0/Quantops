@@ -967,6 +967,37 @@ def execute_pair_trade(api, proposal: Dict[str, Any], ctx,
                 "Half-pair open — operator must reconcile.",
                 order_id_a, exc,
             )
+            # JOURNAL leg A before returning: it is a LIVE broker order
+            # (possibly a naked directional short) and the early return
+            # used to leave it with no trades row at all — only the
+            # submitted_orders recovery ledger stood between it and an
+            # orphan-halt. The buy-side cash door (2026-07-15) makes a
+            # leg-B refusal deterministic on cash-poor profiles, so
+            # this path is no longer a rare broker fluke (review #7).
+            if log:
+                try:
+                    from journal import log_trade
+                    log_trade(
+                        symbol=sym_a, side=side_a, qty=qty_a,
+                        price=price_a, order_id=order_id_a,
+                        signal_type="PAIR_TRADE",
+                        strategy="stat_arb_pair",
+                        reason=(f"Pair {pair.label} leg A (leg B "
+                                f"FAILED: {exc}) — half-pair, close "
+                                f"or pair it manually"),
+                        ai_reasoning=reasoning,
+                        ai_confidence=int(
+                            proposal.get("confidence", 0) or 0),
+                        decision_price=price_a,
+                        db_path=db_path,
+                    )
+                except Exception as _lj_exc:
+                    logger.error(
+                        "Half-pair leg A journal write ALSO failed "
+                        "(%s: %s) — order %s is only in the "
+                        "submitted_orders recovery ledger",
+                        type(_lj_exc).__name__, _lj_exc, order_id_a,
+                    )
             result["action"] = "ERROR"
             result["reason"] = (
                 f"Leg A submitted ({order_id_a}) but leg B failed: {exc}"

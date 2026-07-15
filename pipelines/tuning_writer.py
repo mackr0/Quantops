@@ -63,13 +63,68 @@ def apply_parameter_adjustments(
     rationale = getattr(adjustments, "rationale", "") or ""
     user_id = getattr(ctx, "user_id", 0) if ctx is not None else 0
 
-    # Record each param change to the canonical tuning_history
+    # 2026-07-15 — this writer used to bypass every guardrail the
+    # legacy funnel enforces (operator-only firewall, type cast,
+    # PARAM_BOUNDS) and logged the ledger row BEFORE attempting the
+    # profile write, so a failed write still left history claiming
+    # the change happened. Align with _apply_param_change's contract:
+    # refuse operator-only params, produce ONE canonical (cast +
+    # bounds-clamped) value, write the profile FIRST, and only then
+    # record that same value to the ledger.
+    from self_tuning import _OPERATOR_ONLY_PARAMS, _cast_param_value
+    from param_bounds import clamp as _bounds_clamp
+
+    sanitized = {}
+    for param, new_val in changes.items():
+        if param in _OPERATOR_ONLY_PARAMS:
+            logger.warning(
+                "pipeline tuner refused to change operator-only param "
+                "%s (profile %s): universe/liquidity floors are set in "
+                "Settings, never auto-tuned", param, profile_id,
+            )
+            continue
+        # _cast_param_value types KNOWN params; for params outside its
+        # sets it returns the string we passed UNCHANGED (same object),
+        # in which case keep the caller's native value — stringifying a
+        # float here regressed max_net_options_delta_pct to the TEXT
+        # '0.06' (caught by test_option_tuner_writes).
+        _s = str(new_val)
+        canonical = _cast_param_value(param, _s)
+        if canonical is _s:
+            canonical = new_val
+        try:
+            canonical = _bounds_clamp(param, canonical)
+        except Exception as _bc_exc:
+            logger.debug(
+                "PARAM_BOUNDS clamp skipped for %s=%r: %s: %s",
+                param, canonical, type(_bc_exc).__name__, _bc_exc,
+            )
+        sanitized[param] = canonical
+    if not sanitized:
+        return 0
+
+    # Persist the parameter values to trading_profiles via the
+    # central writer — BEFORE the ledger, so tuning_history can never
+    # assert a change that didn't land.
+    try:
+        from models import update_trading_profile
+        update_trading_profile(profile_id, **sanitized)
+    except Exception as exc:
+        logger.warning(
+            "apply_parameter_adjustments: update_trading_profile "
+            "for profile_id=%s failed (no ledger rows written): %s",
+            profile_id, exc,
+        )
+        return 0
+
+    # Record each applied change to the canonical tuning_history
     # table (main config DB). `adjustment_type` distinguishes
     # pipeline-tuner adjustments from legacy self-tuner ones so
-    # operators can filter the history view by source.
+    # operators can filter the history view by source. new_value is
+    # the SAME canonical value written above — one value, two stores.
     try:
         from models import log_tuning_change
-        for param, new_val in changes.items():
+        for param, canonical in sanitized.items():
             old_val = (
                 getattr(ctx, param, None) if ctx is not None
                 else None
@@ -80,35 +135,27 @@ def apply_parameter_adjustments(
                 adjustment_type=f"pipeline_tuner_{pipeline_name}",
                 parameter_name=param,
                 old_value=str(old_val) if old_val is not None else "",
-                new_value=str(new_val),
+                new_value=str(canonical),
                 reason=rationale,
             )
     except Exception as exc:
-        logger.debug(
-            "log_tuning_change failed for profile=%s pipeline=%s: %s",
+        # The profile write already landed; a missing ledger row is a
+        # visibility gap, not a config divergence. Loud so it gets fixed.
+        logger.warning(
+            "log_tuning_change failed for profile=%s pipeline=%s "
+            "(profile write already applied): %s",
             profile_id, pipeline_name, exc,
         )
-
-    # Persist the parameter values to trading_profiles via the
-    # central writer.
-    try:
-        from models import update_trading_profile
-        update_trading_profile(profile_id, **changes)
-    except Exception as exc:
-        logger.warning(
-            "apply_parameter_adjustments: update_trading_profile "
-            "for profile_id=%s failed: %s", profile_id, exc,
-        )
-        return 0
 
     logger.info(
         "Applied %d parameter adjustment(s) to profile %s "
         "(pipeline=%s): %s. Rationale: %s",
-        len(changes), profile_id, pipeline_name,
-        {k: f"{v:.4f}" for k, v in changes.items()},
+        len(sanitized), profile_id, pipeline_name,
+        {k: (f"{v:.4f}" if isinstance(v, float) else str(v))
+         for k, v in sanitized.items()},
         rationale,
     )
-    return len(changes)
+    return len(sanitized)
 
 
 def run_pipeline_tuning(ctx: Any) -> dict:

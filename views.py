@@ -812,6 +812,12 @@ def _mask_key(key):
 #                 the badge SHOULD apply to any trades_selected entry.
 _MULTILEG_DROP_CODES = frozenset({
     "MULTILEG_OPEN", "MULTILEG_CLOSE",
+    # 2026-07-15 — option-proposal preflight refusal (missing/
+    # unpriceable inputs, dropped before specialist review). Almost
+    # always a spread proposal today; a rare single-leg OPTIONS drop
+    # classifying as multileg costs at most a mismatched badge on the
+    # same symbol's paired proposal.
+    "OPTION_INPUT_INCOMPLETE",
 })
 # Drop codes that originate inside the multileg pipeline (option.py /
 # options_multileg.py): build failures, position-intent mismatches on
@@ -834,6 +840,10 @@ _CROSS_CUTTING_DROP_CODES = frozenset({
     # cross-cutting so the badge matches the suppressed entry
     # whatever its action class.
     "META_SUPPRESSED",
+    # 2026-07-15 — the confidence gate blocks any entry action
+    # (BUY/SHORT/OPTIONS/MULTILEG_OPEN/PAIR_TRADE) and its reason text
+    # carries no surface hint — same shape as META_SUPPRESSED.
+    "CONFIDENCE_GATE",
 })
 
 

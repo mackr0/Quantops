@@ -174,10 +174,15 @@ class TestBoundsClipping:
 
 class TestApplyParameterAdjustments:
     def test_writes_to_trading_profile(self, db_path):
+        # 2026-07-15 fixture note: this used max_net_options_delta_pct
+        # 0.06, but that param was RETIRED from tuning 2026-07-01 with
+        # a deliberate PARAM_BOUNDS floor of 1.0 (backstop-only), and
+        # the writer now enforces PARAM_BOUNDS — 0.06 would rightly be
+        # clamped to 1.0. Use a genuinely tunable param instead.
         from pipelines import ParameterAdjustments
         adj = ParameterAdjustments(
             pipeline_name="option",
-            changes={"max_net_options_delta_pct": 0.06},
+            changes={"max_theta_burn_dollars_per_day": 60.0},
             rationale="test loosen",
         )
         captured = {}
@@ -195,7 +200,10 @@ class TestApplyParameterAdjustments:
 
         assert n == 1
         assert captured["profile_id"] == 42
-        assert captured["kwargs"]["max_net_options_delta_pct"] == 0.06
+        assert captured["kwargs"]["max_theta_burn_dollars_per_day"] == 60.0
+        # native float preserved — never a stringified number
+        assert isinstance(
+            captured["kwargs"]["max_theta_burn_dollars_per_day"], float)
 
     def test_records_to_canonical_tuning_history(self, db_path):
         """Phase 2b records via the canonical models.log_tuning_change
@@ -205,10 +213,10 @@ class TestApplyParameterAdjustments:
         from pipelines import ParameterAdjustments
         adj = ParameterAdjustments(
             pipeline_name="option",
-            changes={"max_net_options_delta_pct": 0.06},
+            changes={"max_theta_burn_dollars_per_day": 60.0},
             rationale="loosened on 70% win",
         )
-        ctx = _ctx(db_path, max_net_options_delta_pct=0.05, user_id=1)
+        ctx = _ctx(db_path, max_theta_burn_dollars_per_day=50.0, user_id=1)
         captured = []
 
         def fake_log(profile_id, user_id, adjustment_type,
@@ -234,9 +242,9 @@ class TestApplyParameterAdjustments:
         assert captured[0]["profile_id"] == 42
         assert captured[0]["user_id"] == 1
         assert captured[0]["adjustment_type"] == "pipeline_tuner_option"
-        assert captured[0]["parameter_name"] == "max_net_options_delta_pct"
-        assert captured[0]["old_value"] == "0.05"
-        assert captured[0]["new_value"] == "0.06"
+        assert captured[0]["parameter_name"] == "max_theta_burn_dollars_per_day"
+        assert captured[0]["old_value"] == "50.0"
+        assert captured[0]["new_value"] == "60.0"
         assert "loosened" in captured[0]["reason"]
 
     def test_empty_changes_skips_write(self, db_path):

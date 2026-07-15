@@ -37,6 +37,22 @@ MAX_TOTAL_POSITIONS = 10
 DEFAULT_STOP_LOSS_PCT = 0.05
 DEFAULT_TAKE_PROFIT_PCT = 0.15
 
+# Market-order slippage reserve for BUY sizing and cash checks.
+# A market buy sized to 100.0% of remaining virtual cash at the
+# decision price overdraws the account the moment the fill prints
+# higher — p217 went to -$5.05 on 2026-07-14 when FCEL filled
+# +46bps over its decision price (observed cohort market-buy
+# slippage: FCEL +46bps, MSTR +120bps; the slippage model's
+# telemetry prediction was 12.5bps, an underestimate — hence a
+# flat floor, not the model). Every cash-vs-cost comparison on the
+# buy side must budget cost * (1 + this) for market orders; limit
+# orders can't fill above their checked price and skip the reserve.
+# 150bps: ABOVE the worst observed fill drift (MSTR 120bps) — a
+# reserve below the observed max only shrinks the overdraw, it
+# doesn't close it. Cost of the headroom: ~1.5% of one position's
+# notional briefly unspent per cash-constrained buy — negligible.
+MARKET_BUY_SLIPPAGE_RESERVE_PCT = 0.015
+
 # Watchlist
 WATCHLIST = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "SPY", "QQQ"]
 

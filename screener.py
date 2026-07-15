@@ -160,6 +160,59 @@ def _is_fund_name(name) -> bool:
     return any(tok in n for tok in _FUND_NAME_TOKENS)
 
 
+#: Share-class / corporate-suffix tokens stripped when normalizing an
+#: issuer name for dual-class detection. Order-independent word tokens.
+_DUAL_CLASS_STRIP_TOKENS = frozenset({
+    "CLASS", "A", "B", "C", "COMMON", "CAPITAL", "ORDINARY", "STOCK",
+    "SHARES", "SHARE", "INC", "INC.", "INCORPORATED", "CORP", "CORP.",
+    "CORPORATION", "CO", "CO.", "COMPANY", "PLC", "LTD", "LTD.",
+    "HOLDINGS", "HOLDING", "GROUP", "THE",
+})
+
+
+def _dual_class_issuer_key(name) -> str:
+    """Normalized issuer key for dual-class detection: uppercase, strip
+    punctuation and share-class/suffix tokens. 'Alphabet Inc. Class C
+    Capital Stock' and 'Alphabet Inc. Class A Common Stock' both key to
+    'ALPHABET'. Empty when nothing distinctive remains (never match on
+    an empty key)."""
+    import re as _re
+    n = _re.sub(r"[^A-Z0-9 ]", " ", str(name or "").upper())
+    kept = [w for w in n.split() if w not in _DUAL_CLASS_STRIP_TOKENS]
+    return " ".join(kept)
+
+
+def _dedupe_dual_class(results, asset_names):
+    """Collapse dual-class share listings of the same issuer to ONE
+    line — the first (most dollar-liquid) in the rank-sorted `results`.
+
+    Two symbols are the same issuer ONLY when their normalized
+    registered names match exactly AND one ticker is a prefix of the
+    other (GOOG/GOOGL, FOX/FOXA, UA/UAA) — the ticker condition guards
+    against distinct companies whose names normalize identically.
+    `results` is [(symbol, avg_volume, last_price)] sorted by dollar
+    volume descending; order is preserved."""
+    kept = []
+    kept_by_key = {}
+    dropped = []
+    for row in results:
+        sym = row[0]
+        key = _dual_class_issuer_key(asset_names.get(sym, ""))
+        if key:
+            prior = kept_by_key.get(key)
+            if prior and (sym.startswith(prior) or prior.startswith(sym)):
+                dropped.append(f"{sym} (dup of {prior})")
+                continue
+            if prior is None:
+                kept_by_key[key] = sym
+        kept.append(row)
+    if dropped:
+        _dyn_logger.info(
+            "Dynamic screener: collapsed %d dual-class duplicate(s): %s",
+            len(dropped), ", ".join(dropped[:10]))
+    return kept
+
+
 #: Single-flight guard for the dynamic-universe build (round-1 review
 #: H3): 13 profile workers share one universe; on daily cache expiry
 #: only the first thread in may build, the rest re-check the cache.
@@ -762,7 +815,47 @@ import time as _time
 import logging as _logging
 
 _dynamic_cache = {}  # {market_type: (timestamp, [symbols])}
-_DYNAMIC_TTL = 86400  # 24 hours — universe doesn't change much daily
+_DYNAMIC_TTL = 86400  # 24 hours — absolute max age backstop
+
+
+def universe_cache_fresh_for(market_type, min_price, max_price,
+                             min_volume) -> bool:
+    """Public probe: is the persisted dynamic universe for these
+    parameters fresh (within TTL AND built on the current ET day)?
+
+    Used by the pre-open warm to decide whether the build it just
+    triggered actually SUCCEEDED — screen_dynamic_universe swallows
+    build failures into a stale-cache/fallback return, so the caller
+    cannot tell success from failure by the return value alone
+    (review 2026-07-15 #16)."""
+    cache_key = f"{market_type}_{min_price}_{max_price}_{min_volume}_v2"
+    return _universe_cache_fresh(_dynamic_cache.get(cache_key))
+
+
+def _universe_cache_fresh(cached) -> bool:
+    """A cached universe is fresh iff it is within the 24h TTL AND was
+    built on the CURRENT ET calendar day.
+
+    The old pure-TTL check was wall-clock-anchored to the last build,
+    so the daily rebuild drifted ~5 min later per day and by 2026-07-14
+    fired at 10:00 ET — the fleet opened every day on YESTERDAY'S
+    universe and swapped candidate pools mid-morning (hour-13 names
+    vanished at the swap). Day-anchoring makes the first use after ET
+    midnight rebuild, and the pre-open warm call in main_loop's sleep
+    loop does that build before the bell instead of during it."""
+    if not cached:
+        return False
+    try:
+        ts = float(cached[0])
+    except (TypeError, ValueError, IndexError):
+        return False
+    if (_time.time() - ts) >= _DYNAMIC_TTL:
+        return False
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo as _ZI
+    _et = _ZI("America/New_York")
+    built_day = _dt.fromtimestamp(ts, _et).date()
+    return built_day == _dt.now(_et).date()
 
 # On-disk cache file. Persists the dynamic universe across process
 # restarts so a redeploy during market hours doesn't force a 30-minute
@@ -1037,7 +1130,7 @@ def screen_dynamic_universe(min_price=10.0, max_price=20.0, min_volume=500_000,
     # for its first 24h after deploy (round-1 review L7).
     cache_key = f"{market_type}_{min_price}_{max_price}_{min_volume}_v2"
     cached = _dynamic_cache.get(cache_key)
-    if cached and (_time.time() - cached[0]) < _DYNAMIC_TTL:
+    if _universe_cache_fresh(cached):
         return cached[1]
 
     # SINGLE-FLIGHT: 13 profile workers share one universe. Without a
@@ -1047,7 +1140,7 @@ def screen_dynamic_universe(min_price=10.0, max_price=20.0, min_volume=500_000,
     # fresh cache on the re-check.
     with _dynamic_build_lock:
         cached = _dynamic_cache.get(cache_key)
-        if cached and (_time.time() - cached[0]) < _DYNAMIC_TTL:
+        if _universe_cache_fresh(cached):
             return cached[1]
         return _screen_dynamic_universe_locked(
             cache_key, market_type, min_price, max_price, min_volume,
@@ -1084,6 +1177,7 @@ def _screen_dynamic_universe_locked(cache_key, market_type, min_price,
         }
         equity_symbols = []
         excluded_funds = 0
+        asset_names = {}
         for a in assets:
             if not (a.tradable and a.exchange in ("NYSE", "NASDAQ",
                                                   "ARCA", "AMEX")
@@ -1096,6 +1190,7 @@ def _screen_dynamic_universe_locked(cache_key, market_type, min_price,
                 excluded_funds += 1
                 continue
             equity_symbols.append(a.symbol)
+            asset_names[a.symbol] = getattr(a, "name", "") or ""
 
         _dyn_logger.info(
             f"Dynamic screener: {len(equity_symbols)} tradable assets "
@@ -1245,6 +1340,13 @@ def _screen_dynamic_universe_locked(cache_key, market_type, min_price,
         # This widens what can COMPETE — the momentum sub-screens and
         # the AI still decide what gets bought.
         results.sort(key=lambda x: x[1] * x[2], reverse=True)
+        # 2026-07-15 — dual-class dedupe: GOOG + GOOGL both earned
+        # top-30 universe slots (same company twice), wasting a
+        # candidate slot fleet-wide and doubling the held-exit churn
+        # (222 of 355 held-name shortlist appearances on 07-14 were the
+        # two Alphabet lines). Keep the more dollar-liquid share class;
+        # results are already rank-sorted so first-seen wins.
+        results = _dedupe_dual_class(results, asset_names)
         symbols = _stratify_by_sector(results[:_STRATIFY_POOL_SIZE],
                                       max_symbols)
 

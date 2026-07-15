@@ -191,6 +191,15 @@ def init_db(db_path=None):
                 sector TEXT,
                 vetoed INTEGER NOT NULL,
                 veto_reason TEXT,
+                -- 2026-07-15 — veto CLASS: 'risk' = a specialist's genuine
+                -- judgment; 'invalid_input' = the proposal never reached a
+                -- reviewable state (incomplete/unpriceable inputs). Only
+                -- 'risk' rows may feed the P(veto) discount — before this
+                -- column, 78 render-bug vetoes ("missing strike data" on
+                -- fully-priced spreads) were one row from locking a 0.5
+                -- RAR discount on an innocent strategy pair. NULL on
+                -- accepted rows.
+                veto_class TEXT,
                 confidence REAL,
                 -- would-be resolution fields (P4; NULL for accepted rows).
                 -- lo_strike/hi_strike + strategy direction + max_loss/gain let
@@ -875,6 +884,14 @@ def _migrate_all_columns(conn):
             # rows and on legs opened before this column existed.
             ("spread_max_loss", "REAL"),
         ],
+        "option_proposal_outcomes": [
+            # 2026-07-15 — veto class ('risk' | 'invalid_input'); see the
+            # CREATE TABLE comment. Existing cohort DBs predate the
+            # column; without this explicit entry the INSERT in
+            # record_option_proposal_outcome fails with 'no such column'
+            # (the _migrate_all_columns lesson from 2026-07-02).
+            ("veto_class", "TEXT"),
+        ],
         "ai_predictions": [
             ("regime_at_prediction", "TEXT"),
             ("strategy_type", "TEXT"),
@@ -1418,7 +1435,7 @@ def record_option_proposal_outcome(db_path, *, symbol, strategy, sector,
                                    max_gain_per_contract=None,
                                    breakeven=None, lo_strike=None,
                                    hi_strike=None, expiry=None,
-                                   legs_json=None):
+                                   legs_json=None, veto_class=None):
     """Record ONE option proposal outcome — vetoed (1) or accepted (0) — keyed
     by the SPREAD strategy + sector, for the selection engine's per-(strategy x
     sector) veto-rate discount (P3) and the would-be-P&L shadow resolver (P4).
@@ -1436,15 +1453,18 @@ def record_option_proposal_outcome(db_path, *, symbol, strategy, sector,
     import logging as _logging
     try:
         with closing(_get_conn(db_path)) as conn:
+            # veto_class defaults: a vetoed row with no explicit class is a
+            # genuine specialist judgment ('risk'); accepted rows carry NULL.
+            _vc = veto_class if veto_class else ("risk" if vetoed else None)
             cursor = conn.execute(
                 "INSERT INTO option_proposal_outcomes "
-                "(symbol, strategy, sector, vetoed, veto_reason, confidence, "
-                " entry_net_premium, max_loss_per_contract, "
+                "(symbol, strategy, sector, vetoed, veto_reason, veto_class, "
+                " confidence, entry_net_premium, max_loss_per_contract, "
                 " max_gain_per_contract, breakeven, lo_strike, hi_strike, "
                 " expiry, legs_json, status) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 ((symbol or "").upper(), str(strategy), sector,
-                 1 if vetoed else 0, veto_reason, confidence,
+                 1 if vetoed else 0, veto_reason, _vc, confidence,
                  entry_net_premium, max_loss_per_contract,
                  max_gain_per_contract, breakeven, lo_strike, hi_strike,
                  expiry, legs_json,
@@ -1471,12 +1491,18 @@ def option_veto_counts(db_path):
         return []
     try:
         with closing(_get_conn(db_path)) as conn:
+            # invalid_input rows (2026-07-15) are plumbing events, not risk
+            # judgments — excluded from BOTH numerator and denominator so a
+            # render/enrichment failure can never teach the ledger that a
+            # (strategy, sector) pair is un-tradeable. COALESCE keeps
+            # pre-column rows counting as 'risk'.
             rows = conn.execute(
                 "SELECT strategy, "
                 "       COALESCE(sector, '') AS sector, "
                 "       SUM(CASE WHEN vetoed = 1 THEN 1 ELSE 0 END) AS vetoed, "
                 "       COUNT(*) AS total "
                 "FROM option_proposal_outcomes "
+                "WHERE COALESCE(veto_class, 'risk') != 'invalid_input' "
                 "GROUP BY strategy, COALESCE(sector, '')"
             ).fetchall()
         return [(r["strategy"], r["sector"], int(r["vetoed"] or 0),
@@ -1505,6 +1531,11 @@ def pending_veto_outcomes(db_path, strictly_before):
                 "       max_loss_per_contract, max_gain_per_contract, expiry "
                 "FROM option_proposal_outcomes "
                 "WHERE vetoed = 1 AND status = 'pending' "
+                # invalid_input rows are plumbing events, not risk
+                # judgments — resolving their would-be P&L would feed
+                # the P4 veto-QUALITY signal with outcomes no specialist
+                # ever judged. They stay pending by design (2026-07-15).
+                "  AND COALESCE(veto_class, 'risk') != 'invalid_input' "
                 "  AND max_loss_per_contract IS NOT NULL "
                 "  AND max_gain_per_contract IS NOT NULL "
                 "  AND lo_strike IS NOT NULL AND hi_strike IS NOT NULL "
@@ -1585,6 +1616,10 @@ def option_veto_quality_counts(db_path):
                 "         AS losses "
                 "FROM option_proposal_outcomes "
                 "WHERE vetoed = 1 AND status = 'resolved' "
+                # invalid_input rows never carry a specialist judgment —
+                # their would-be outcomes say nothing about veto QUALITY
+                # (2026-07-15; belt to the pending_veto_outcomes filter).
+                "  AND COALESCE(veto_class, 'risk') != 'invalid_input' "
                 "GROUP BY strategy, COALESCE(sector, '')"
             ).fetchall()
         return [(r["strategy"], r["sector"], int(r["resolved"] or 0),
@@ -1614,6 +1649,12 @@ def resolved_veto_counterfactuals(db_path):
                 "       expiry, wouldbe_outcome, wouldbe_pnl, resolved_at "
                 "FROM option_proposal_outcomes "
                 "WHERE vetoed = 1 AND status = 'resolved' "
+                # invalid_input rows carry no specialist judgment — a
+                # plumbing veto must never train the fine-tune corpus
+                # as a 'the specialists blocked this' counterfactual
+                # (review 2026-07-15 #10: rows resolved BEFORE the
+                # veto_class backfill would otherwise leak through).
+                "  AND COALESCE(veto_class, 'risk') != 'invalid_input' "
                 "  AND wouldbe_outcome IS NOT NULL "
                 "ORDER BY timestamp ASC"
             ).fetchall()
@@ -2453,26 +2494,27 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
     return positions
 
 
-def get_virtual_account_info(db_path=None, initial_capital=100000.0,
-                             price_fetcher=None):
-    """Compute virtual account info from the trades table.
+# Rate-limit memo for the negative-cash alarm below: db_path → last
+# ERROR wall-clock. Virtual cash below zero is always real money the
+# sizing never budgeted (the p217 FCEL slippage overdraw, 2026-07-14)
+# or an accounting bug — either way it must be LOUD, but not once per
+# dashboard poll.
+_NEG_CASH_ALARM_MEMO: dict = {}
+_NEG_CASH_ALARM_INTERVAL_SEC = 1800
 
-    Returns a dict matching `client.get_account_info()` shape:
-    {equity, buying_power, cash, portfolio_value, status}
 
-    Cash is computed from money flows:
-        cash = initial_capital - sum(BUY costs) + sum(SELL proceeds)
+def get_virtual_cash(db_path=None, initial_capital=100000.0):
+    """Cash-only slice of get_virtual_account_info: identical statuses,
+    identical fill-true price expression, identical option multiplier —
+    without the portfolio-value price fetches. Cheap enough for the
+    buy-side cash door to call on every stock BUY submit.
 
-    Portfolio value = sum(current_price × qty) for open positions.
-    Equity = cash + portfolio_value.
-    Buying power = cash (no margin on paper).
+    Returns the cash float, or None when the trades table can't be
+    read (caller decides how to fail).
     """
+    import time as _time
     conn = _get_conn(db_path)
     try:
-        # Probe for the occ_symbol column — tests use a minimal
-        # schema without it. Production DBs all have it (added via
-        # _migrate_all_columns). Read it when present so option
-        # trades get the contract multiplier.
         try:
             cols = {r[1] for r in conn.execute(
                 "PRAGMA table_info(trades)"
@@ -2485,42 +2527,16 @@ def get_virtual_account_info(db_path=None, initial_capital=100000.0,
             has_fill = False
             has_dq = False
         try:
-            # 2026-05-21 — exclude 'pending_protective' placeholder
-            # rows from the cash math (placement-time trigger prices
-            # are not cash flows).
-            #
-            # 2026-06-11 — TWO accuracy fixes:
-            # (a) Exclude EVERY never-filled terminal status, not
-            #     just 'pending_protective'. A protective row that
-            #     transitions pending_protective → canceled KEEPS its
-            #     trigger price; the old filter counted it as a real
-            #     cash flow (caught on p94: ONE canceled BBAI
-            #     take-profit row injected $9,970.79 phantom cash —
-            #     the entire +3.76% the dashboard showed).
-            #     auto_reconciled_phantom_close marks entries the
-            #     broker never filled — same rule: no money moved.
-            # (b) Prefer fill_price over the decision price when the
-            #     broker reported a real fill. Decision-vs-fill drift
-            #     is real money at size (WCT: 9,029 shares × $0.055
-            #     slippage = $497 cash error on a single trade).
             _cash_excluded = (
                 "'pending_protective', 'canceled', 'expired', "
                 "'rejected', 'done_for_day', "
                 "'auto_reconciled_phantom_close', "
-                # filled-then-externally-closed legs: their real cash
-                # is booked by the broker-activities pass, never by
-                # the leg row itself (2026-07-14 status split)
                 "'auto_closed_external'"
             )
             _price_expr = (
                 "COALESCE(NULLIF(fill_price, 0), price)"
                 if has_fill else "price"
             )
-            # Exclude data_quality-tagged rows from the cash math IDENTICALLY
-            # to get_virtual_positions (which now filters them). Otherwise a
-            # tagged exit row keeps its cash effect while its lot is dropped
-            # from positions → equity overstated (broker/journal divergence).
-            # (2026-06-23 — the consistency half of the data_quality hardening.)
             _dq = " AND data_quality IS NULL" if has_dq else ""
             if has_occ:
                 rows = conn.execute(
@@ -2539,26 +2555,10 @@ def get_virtual_account_info(db_path=None, initial_capital=100000.0,
                     ).fetchall()
                 ]
         except Exception:
-            return {
-                "equity": initial_capital,
-                "buying_power": initial_capital,
-                "cash": initial_capital,
-                "portfolio_value": 0.0,
-                "status": "ACTIVE",
-            }
+            return None
     finally:
         conn.close()
 
-    # Cash flows. Two bugs fixed 2026-05-17:
-    # (1) 'short' (sell-to-open a stock short) wasn't crediting cash.
-    #     Stocks shorted via side='short' had proceeds invisible to
-    #     virtual equity — equity understated by short premium.
-    # (2) Options had no contract multiplier. 1 contract = 100 shares,
-    #     so the cash effect of an option trade is qty * price * 100,
-    #     not qty * price. Every option trade was off by 100x.
-    # Caught when AUTO_RECONCILE backfill of 33 stock-shorts dropped
-    # the dashboard total by $216K — the broker had credited cash for
-    # those shorts months ago, but the virtual ledger never did.
     total_buys = 0.0
     total_sells = 0.0
     for row in rows:
@@ -2570,34 +2570,111 @@ def get_virtual_account_info(db_path=None, initial_capital=100000.0,
             continue
         multiplier = 100.0 if occ else 1.0
         notional = qty * price * multiplier
-        # 'buy'   = cash OUT (long open or short close via 'buy' label)
-        # 'cover' = cash OUT (stock short close — buying shares back
-        #           to return them to the lender)
-        # 'sell'  = cash IN  (long close OR option sell-to-open premium)
-        # 'short' = cash IN  (stock short open — proceeds received)
-        # 'dividend' = cash IN (non-trade credit; #168)
-        #
-        # 2026-05-21 — 'cover' was previously in the cash-IN bucket
-        # alongside 'sell'/'short' with a misleading "mostly dormant"
-        # comment claiming the codebase always used 'buy' to close
-        # shorts. That was wrong: stock-side short closes via the
-        # `cover` label DO get written here (caught when pid16 showed
-        # +$40K phantom equity from 2 NVTS covers totaling ~$20.6K
-        # notional that were inflating cash by ~$41.2K — once as
-        # spurious cash-IN, once as never-subtracted cash-OUT). The
-        # fix moves 'cover' into the cash-OUT bucket. Audit + snapshot
-        # rewrite of every profile with cover rows happens alongside
-        # this commit; see CHANGELOG 2026-05-21.
         if side in ("buy", "cover"):
             total_buys += notional
         elif side in ("sell", "short", "dividend"):
-            # 'dividend' added 2026-05-17 (#168): non-trade cash credits
-            # captured via activities_capture.py. Stored as a trades row
-            # with side='dividend', qty=1, price=dividend_amount so the
-            # row participates in cash math identically to a sell.
             total_sells += notional
 
     cash = initial_capital - total_buys + total_sells
+
+    # Loud (rate-limited) alarm on negative virtual cash. buying_power
+    # clamps to max(cash, 0) for its consumers, which HID the p217
+    # -$5.05 overdraw from everything except the raw dashboard field.
+    # Virtual accounts are cash accounts: below zero means a buy spent
+    # money the book never had.
+    if cash < -0.01:
+        now = _time.time()
+        last = _NEG_CASH_ALARM_MEMO.get(db_path or "", 0)
+        if now - last >= _NEG_CASH_ALARM_INTERVAL_SEC:
+            _NEG_CASH_ALARM_MEMO[db_path or ""] = now
+            logging.error(
+                "NEGATIVE VIRTUAL CASH %s: $%.2f. A buy overdrew this "
+                "virtual account (fill slippage past the sizing reserve, "
+                "or an accounting bug). Entries self-block while cash "
+                "<= 0; investigate the most recent buys.",
+                db_path or "?", cash,
+            )
+
+    return cash
+
+
+def get_pending_protective_buy_commitment(db_path=None) -> float:
+    """Dollars committed to RESTING buy-side protectives (cover stops
+    for shorts): Σ qty × trigger price over open 'pending_protective'
+    stock rows with side='buy'.
+
+    The cash math excludes pending_protective rows (trigger prices are
+    not cash flows), which means a cover stop that FIRES at the broker
+    is invisible to journal cash until the reconciler flips the row —
+    a window in which cash reads stale-HIGH. The buy-side cash door
+    subtracts this commitment so an entry can never spend the money a
+    resting cover will need (review 2026-07-15 #6). Conservative by
+    design: a short's cover cost is real future cash-out in a cash
+    account. Returns 0.0 on any error (the door's reserve still
+    applies; an unreadable table already fails the door closed via
+    get_virtual_cash)."""
+    if not db_path:
+        return 0.0
+    try:
+        with closing(_get_conn(db_path)) as conn:
+            cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(trades)").fetchall()}
+            occ_filter = ("AND occ_symbol IS NULL "
+                          if "occ_symbol" in cols else "")
+            row = conn.execute(
+                "SELECT COALESCE(SUM(qty * price), 0) FROM trades "
+                "WHERE status = 'pending_protective' AND side = 'buy' "
+                f"{occ_filter}"
+            ).fetchone()
+        return float(row[0] or 0.0)
+    except Exception as exc:
+        logging.warning(
+            "pending-protective buy commitment unreadable for %s "
+            "(door treats as 0; its other floors still apply): %s: %s",
+            db_path, type(exc).__name__, exc)
+        return 0.0
+
+
+def get_virtual_account_info(db_path=None, initial_capital=100000.0,
+                             price_fetcher=None):
+    """Compute virtual account info from the trades table.
+
+    Returns a dict matching `client.get_account_info()` shape:
+    {equity, buying_power, cash, portfolio_value, status}
+
+    Cash is computed from money flows:
+        cash = initial_capital - sum(BUY costs) + sum(SELL proceeds)
+
+    Portfolio value = sum(current_price × qty) for open positions.
+    Equity = cash + portfolio_value.
+    Buying power = cash (no margin on paper).
+
+    The cash math itself lives in get_virtual_cash (extracted
+    2026-07-15 so the buy-side cash door shares the EXACT same
+    statuses / fill-true price expression / option multiplier — two
+    implementations of "cash" is how books drift). Its history:
+    - 2026-05-17: 'short' proceeds credited; option 100× multiplier.
+    - 2026-05-21: 'cover' moved to the cash-OUT bucket (pid16 NVTS
+      +$40K phantom); pending_protective excluded.
+    - 2026-06-11: every never-filled terminal status excluded (p94
+      canceled BBAI TP injected $9,970.79 phantom cash); fill_price
+      preferred over the decision price (WCT $497 on one trade).
+    - 2026-06-23: data_quality-tagged rows excluded identically to
+      get_virtual_positions.
+    - 2026-07-14: 'auto_closed_external' excluded (cash booked by the
+      broker-activities pass, never by the leg row).
+    """
+    cash_val = get_virtual_cash(db_path=db_path,
+                                initial_capital=initial_capital)
+    if cash_val is None:
+        return {
+            "equity": initial_capital,
+            "buying_power": initial_capital,
+            "cash": initial_capital,
+            "portfolio_value": 0.0,
+            "status": "ACTIVE",
+        }
+    cash = cash_val
 
     positions = get_virtual_positions(db_path=db_path, price_fetcher=price_fetcher)
     portfolio_value = sum(p["market_value"] for p in positions)

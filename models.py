@@ -1569,6 +1569,22 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
                 value = json.dumps(value)
             if isinstance(value, bool):
                 value = int(value)
+            if key == "ai_confidence_threshold":
+                # The column is an INTEGER on the 0-100 gate scale. This
+                # writer used to accept anything, which is how the
+                # fraction seeds (0.6) reached the DB and disabled the
+                # confidence filter for the whole 2026-07 cohort. A
+                # fraction here is always a scale bug in the caller —
+                # refuse it loudly instead of storing garbage.
+                num = float(value)
+                if 0 < num < 1:
+                    raise ValueError(
+                        f"ai_confidence_threshold={value!r} is fraction-"
+                        f"scaled; the gate compares 0-100 integer "
+                        f"confidence. Pass the 0-100 value (e.g. 60, "
+                        f"not 0.60)."
+                    )
+                value = int(round(num))
             updates[key] = value
         else:
             rejected.append(key)
@@ -1665,6 +1681,36 @@ def _parse_wheel_symbols(raw):
     return []
 
 
+def _normalize_confidence_threshold(raw, profile_id) -> int:
+    """Normalize a stored ai_confidence_threshold to the 0-100 int scale
+    the entry gate compares against.
+
+    The 2026-07 cohort was seeded with FRACTIONS (0.6) against the
+    0-100 integer gate, which silently disabled the confidence filter
+    for every AI profile and then poisoned the tuner's clamp anchors.
+    After the 2026-07-15 repair no fraction can legally exist; if one
+    ever appears again it is scale corruption — scream and fall back
+    to the schema default (25) rather than silently acting on garbage.
+    """
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        logger.error(
+            "profile %s ai_confidence_threshold %r is not numeric — "
+            "scale corruption; using schema default 25", profile_id, raw,
+        )
+        return 25
+    if 0 < val < 1:
+        logger.error(
+            "profile %s ai_confidence_threshold %r is fraction-scaled "
+            "against the 0-100 integer gate — scale corruption (see "
+            "CHANGELOG 2026-07-15); using schema default 25",
+            profile_id, raw,
+        )
+        return 25
+    return int(round(val))
+
+
 def build_user_context_from_profile(profile_id: int) -> UserContext:
     """Load profile + user from DB, decrypt credentials, return UserContext.
 
@@ -1728,7 +1774,8 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
         take_profit_pct=profile["take_profit_pct"],
         max_position_pct=profile["max_position_pct"],
         max_total_positions=profile["max_total_positions"],
-        ai_confidence_threshold=profile["ai_confidence_threshold"],
+        ai_confidence_threshold=_normalize_confidence_threshold(
+            profile["ai_confidence_threshold"], profile_id),
         # Screener parameters
         min_price=profile["min_price"],
         max_price=profile["max_price"],
@@ -2002,7 +2049,8 @@ def build_user_context(user_id: int, segment: str) -> UserContext:
         take_profit_pct=seg_config["take_profit_pct"],
         max_position_pct=seg_config["max_position_pct"],
         max_total_positions=seg_config["max_total_positions"],
-        ai_confidence_threshold=seg_config["ai_confidence_threshold"],
+        ai_confidence_threshold=_normalize_confidence_threshold(
+            seg_config["ai_confidence_threshold"], f"segment:{segment}"),
         # Screener parameters
         min_price=seg_config["min_price"],
         max_price=seg_config["max_price"],
@@ -2274,6 +2322,13 @@ def get_expirable_tightenings(profile_id: int, ttl_days: int = 14,
                    WHERE profile_id = ?
                      AND expired_at IS NULL
                      AND COALESCE(outcome_after, 'pending') != 'improved'
+                     AND COALESCE(outcome_after, 'pending') NOT LIKE 'voided%'
+                     -- 'n/a' = informational rows (no-change evaluations,
+                     -- operator repairs) — never expiry candidates. Review
+                     -- 2026-07-15 #1: the scale-repair corrective row would
+                     -- otherwise be 'auto-expired' 14 days out, walking the
+                     -- freshly repaired threshold back down forever.
+                     AND COALESCE(outcome_after, 'pending') != 'n/a'
                      AND datetime(timestamp) <= datetime('now', '-' || ? || ' days')
                    ORDER BY timestamp ASC
                    LIMIT ?""",

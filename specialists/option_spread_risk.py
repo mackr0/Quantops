@@ -133,9 +133,11 @@ cover those. You judge each candidate ONLY through the option-economics
 lens.
 
 {budget_line}{greeks_line}{budget_caps_block}For each candidate, consider:
-  - SPREAD MAX-LOSS: does the structural max loss
-    (spread_max_loss × 100 × contracts) exceed the per-trade risk
-    budget? If yes — VETO.
+  - SPREAD MAX-LOSS: each candidate line reports "max loss" in
+    DOLLARS per contract, and the position TOTAL in dollars in
+    parentheses — already multiplied out; do NOT multiply again.
+    Does the TOTAL max loss exceed the per-trade risk budget?
+    If yes — VETO.
   - IV CRUSH: is this LONG premium with iv_rank > {iv_rank_veto:.0f}
     (premium will deflate even on a directional win)? Or SHORT
     premium with earnings inside the spread's DTE (event will spike

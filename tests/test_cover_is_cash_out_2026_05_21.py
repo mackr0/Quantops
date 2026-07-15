@@ -218,15 +218,26 @@ class TestSourceClassification:
     Scanning the source ensures cover stays where it belongs even if
     someone rewrites the cash-flow loop."""
 
-    def test_get_virtual_account_info_buckets_cover_with_buy(self):
+    def test_virtual_cash_buckets_cover_with_buy(self):
+        # 2026-07-15 — the cash math was extracted from
+        # get_virtual_account_info into get_virtual_cash (one cash
+        # implementation for both the account snapshot and the buy-side
+        # cash door). The invariant this pins is unchanged: cover is
+        # cash-OUT, never in the cash-IN tuple with sell/short/dividend.
         import inspect
-        from journal import get_virtual_account_info
-        src = inspect.getsource(get_virtual_account_info)
+        from journal import get_virtual_cash, get_virtual_account_info
+        src = inspect.getsource(get_virtual_cash)
         assert "(\"buy\", \"cover\")" in src or "('buy', 'cover')" in src, (
-            "get_virtual_account_info must bucket 'cover' alongside "
-            "'buy' (both are cash-OUT). If you refactor the tuple "
-            "shape, keep the property: cover is NOT in the cash-IN "
-            "tuple with 'sell'/'short'/'dividend'."
+            "get_virtual_cash must bucket 'cover' alongside 'buy' "
+            "(both are cash-OUT). If you refactor the tuple shape, "
+            "keep the property: cover is NOT in the cash-IN tuple "
+            "with 'sell'/'short'/'dividend'."
+        )
+        gvai_src = inspect.getsource(get_virtual_account_info)
+        assert "get_virtual_cash(" in gvai_src, (
+            "get_virtual_account_info must DELEGATE to get_virtual_cash "
+            "— a second inline cash implementation is how the account "
+            "snapshot and the cash door drift apart."
         )
 
     def test_slippage_cost_clause_buckets_cover_with_buy(self):
