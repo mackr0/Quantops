@@ -60,8 +60,11 @@ def _detector_for(change_type: str) -> Optional[Callable]:
     `change_type`, or None if the type isn't propagatable."""
     import self_tuning as st
     mapping = {
-        "confidence_threshold": st._optimize_confidence_threshold_upward,
-        "confidence_threshold_optimization": st._optimize_confidence_threshold_upward,
+        # confidence_threshold / confidence_threshold_optimization are
+        # deliberately ABSENT (2026-07-17): tuner raises of the entry
+        # floor are refused by the one-way valve in
+        # self_tuning._apply_param_change (the floor is a backstop;
+        # raises are operator-only), so there is nothing to propagate.
         "regime_position_sizing": st._optimize_regime_position_sizing,
         "strategy_toggle": st._optimize_strategy_toggles,
         "strategy_deprecate": st._optimize_strategy_toggles,

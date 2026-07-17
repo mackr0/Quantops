@@ -1778,6 +1778,134 @@ def print_ai_report():
 
 
 # ---------------------------------------------------------------------------
+# Confidence-gate counterfactual calibration (2026-07-17)
+# ---------------------------------------------------------------------------
+
+def gate_drop_calibration(db_path, days=30):
+    """Would-be outcomes of CONFIDENCE_GATE drops, banded by the GATED
+    (post-meta-blend) confidence.
+
+    The evidence loop that keeps the entry-confidence floor
+    falsifiable: every gate drop hard-links (trade_drops.pred_id) to
+    the prediction row recorded BEFORE the gate, and the horizon
+    resolver scores that row whether or not the trade executed. This
+    query joins the two, so "what did the blocked band actually do?"
+    is answerable from data instead of belief. Bands are 5 wide on
+    the gated confidence (the number the floor compared against —
+    trade_drops.ai_confidence — NOT the raw stated confidence, which
+    lives on the prediction row and differs when the meta-model
+    blend is active).
+
+    Returns {"bands": [...], "total": n, "linked": n, "resolved": n}.
+    `total` counts EVERY CONFIDENCE_GATE drop in the window — the same
+    population the backstop alarm counts — while `linked` counts the
+    subset with a prediction row to score (ranked ALTERNATES are
+    gate-checked too but deliberately carry no prediction row, so the
+    two counts legitimately differ; showing only the linked count as
+    "refused" would understate the gate's activity — review 2026-07-17
+    M3). Each band is {band, n, resolved, wins, losses,
+    avg_return_pct}; bands cover linked drops only. Wins count
+    'win'/'big_win' outcomes; losses 'loss'/'big_loss' — the horizon
+    resolver writes win/loss/neutral ('neutral' is neither), and the
+    big_* variants belong to the fine-tune outcome_class vocabulary;
+    both are counted so a future vocabulary unification cannot
+    silently zero this table. Empty bands are omitted. Returns zeros
+    when the table predates the pred_id link. Best-effort: never
+    raises (display/diagnostic surface, not a trading path)."""
+    out = {"bands": [], "total": 0, "linked": 0, "resolved": 0,
+           "window_days": days}
+    if not db_path:
+        return out
+    try:
+        with closing(_get_conn(db_path)) as conn:
+            out["total"] = conn.execute(
+                """SELECT COUNT(*) FROM trade_drops
+                   WHERE drop_code = 'CONFIDENCE_GATE'
+                     AND timestamp >= datetime('now', ?)""",
+                (f"-{int(days)} days",),
+            ).fetchone()[0]
+            rows = conn.execute(
+                """SELECT d.ai_confidence,
+                          p.status,
+                          p.actual_outcome,
+                          p.actual_return_pct
+                   FROM trade_drops d
+                   JOIN ai_predictions p ON p.id = d.pred_id
+                   WHERE d.drop_code = 'CONFIDENCE_GATE'
+                     AND d.pred_id IS NOT NULL
+                     AND d.ai_confidence IS NOT NULL
+                     AND d.timestamp >= datetime('now', ?)""",
+                (f"-{int(days)} days",),
+            ).fetchall()
+    except Exception as exc:
+        logging.warning(
+            "gate_drop_calibration(%s) failed (non-fatal, diagnostic "
+            "surface): %s: %s", db_path, type(exc).__name__, exc)
+        return out
+
+    bands = {}
+    for conf, status, outcome, ret in rows:
+        band_lo = (int(conf) // 5) * 5
+        b = bands.setdefault(band_lo, {
+            "band": f"{band_lo}-{band_lo + 4}",
+            "n": 0, "resolved": 0, "wins": 0, "losses": 0,
+            "_ret_sum": 0.0,
+        })
+        b["n"] += 1
+        out["linked"] += 1
+        if outcome is not None and ret is not None:
+            b["resolved"] += 1
+            out["resolved"] += 1
+            b["_ret_sum"] += float(ret)
+            if outcome in ("win", "big_win"):
+                b["wins"] += 1
+            elif outcome in ("loss", "big_loss"):
+                b["losses"] += 1
+    for band_lo in sorted(bands):
+        b = bands[band_lo]
+        b["avg_return_pct"] = (
+            round(b.pop("_ret_sum") / b["resolved"], 2)
+            if b["resolved"] else None)
+        out["bands"].append(b)
+    return out
+
+
+def gate_drop_calibration_multi(db_paths, days=30):
+    """Merge gate_drop_calibration across profile DBs (the AI page's
+    "All Profiles" scope). Bands with the same range sum their counts;
+    avg_return_pct re-weights by resolved count."""
+    merged = {}
+    total = linked = resolved = 0
+    for db in db_paths or []:
+        one = gate_drop_calibration(db, days=days)
+        total += one["total"]
+        linked += one["linked"]
+        resolved += one["resolved"]
+        for b in one["bands"]:
+            m = merged.setdefault(b["band"], {
+                "band": b["band"], "n": 0, "resolved": 0,
+                "wins": 0, "losses": 0, "_ret_wsum": 0.0,
+            })
+            m["n"] += b["n"]
+            m["resolved"] += b["resolved"]
+            m["wins"] += b["wins"]
+            m["losses"] += b["losses"]
+            if b["avg_return_pct"] is not None:
+                m["_ret_wsum"] += b["avg_return_pct"] * b["resolved"]
+    bands = []
+    for key in sorted(merged, key=lambda k: int(k.split("-")[0])):
+        m = merged[key]
+        m["avg_return_pct"] = (
+            round(m.pop("_ret_wsum") / m["resolved"], 2)
+            if m["resolved"] else None)
+        if "_ret_wsum" in m:
+            m.pop("_ret_wsum")
+        bands.append(m)
+    return {"bands": bands, "total": total, "linked": linked,
+            "resolved": resolved, "window_days": days}
+
+
+# ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
 

@@ -733,14 +733,20 @@ def _confidence_bar_block(ctx) -> str:
     2026-07-15 — the STEP 4.85 gate executes new entries only at
     confidence ≥ the profile's ai_confidence_threshold. The AI must
     KNOW that rule (operator design: mechanisms inform the AI so it
-    trades best); with the bar stated, the AI selects its strongest
-    ideas at-or-above it instead of having sub-bar work silently
-    discarded, and the hard gate becomes a backstop. The honesty
-    clause matters: confidence is calibration DATA (the tracker scores
-    every prediction, the tuner moves this very bar on realized
-    win-rates by band, the meta-model trains on it) — an inflated
-    number games the gate once and degrades the profile's own
-    learning permanently. Empty string when no ctx/bar (legacy
+    trades best). 2026-07-17 — the floor is reseeded to backstop
+    level (45) and framed as such: the first two live days proved a
+    bar at/above the AI's honest median turns the gate into the
+    allocator (132 blocks vs 39 buys in half a day, books at 70-92%
+    cash), the exact inversion of the operator's inform-don't-
+    suppress design. Note the blend: the meta-model adjusts stated
+    confidence BEFORE the gate compares it to the floor, so the
+    prompt says so — otherwise the AI is told "the bar is X" while
+    being judged on a number it never stated. The honesty clause
+    matters: confidence is calibration DATA (the tracker scores
+    every prediction, gate drops are counterfactually scored via
+    their linked prediction rows, the meta-model trains on it) — an
+    inflated number games the gate once and degrades the profile's
+    own learning permanently. Empty string when no ctx/bar (legacy
     paths)."""
     try:
         bar = int(getattr(ctx, "ai_confidence_threshold", 0) or 0) \
@@ -749,14 +755,28 @@ def _confidence_bar_block(ctx) -> str:
         return ""
     if bar <= 0:
         return ""
+    # The blend disclosure is CONDITIONAL: only profiles with the
+    # meta-model enabled have their stated number adjusted before the
+    # gate reads it. Telling the NoMetaModel ablation (or any profile)
+    # its number "will be adjusted" when the gate compares the raw
+    # value is the same goalpost dishonesty in the other direction
+    # (review 2026-07-17 M1). "may be adjusted" covers the cold-start
+    # window where the model hasn't trained yet.
+    blend = (
+        ", measured after this profile's learned calibration may "
+        "adjust your stated number"
+        if getattr(ctx, "enable_meta_model", True) else ""
+    )
     return (
-        f"\n  Entry confidence bar (system-enforced): NEW positions "
-        f"(BUY / SHORT / options) execute only at confidence >= {bar}; "
-        f"exits are never gated. This is a quality bar, not a brake — "
-        f"spend your picks on the ideas you genuinely rate at or above "
-        f"it. Rate honestly: every prediction's confidence is scored "
-        f"against its real outcome, and inflated confidence corrupts "
-        f"this profile's own calibration and drives the bar higher."
+        f"\n  Entry confidence floor (system-enforced backstop): NEW "
+        f"positions (BUY / SHORT / options) execute only at confidence "
+        f">= {bar}{blend}; exits are never gated. This "
+        f"floor is a low backstop against no-conviction ideas and "
+        f"should almost never bind — it is not the quality bar. Rate "
+        f"honestly on the full 0-100 scale: every prediction's "
+        f"confidence is scored against its real outcome (including "
+        f"ideas the floor refuses), and inflated confidence corrupts "
+        f"this profile's own calibration."
     )
 
 

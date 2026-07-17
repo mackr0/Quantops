@@ -62,8 +62,12 @@ def test_features_payload_excludes_stash_blobs():
     # ai_cycles.
     src = open(os.path.join(os.path.dirname(__file__), os.pardir,
                             "trade_pipeline.py")).read()
+    # Window sized for the exclusion tuple's source region; the loop
+    # body gained an indent level on 2026-07-17 (per-candidate fault
+    # isolation), which pushed the same content past the old 900-char
+    # cut — the pin is on the KEYS being excluded, not on indentation.
     for key in ("_market_context", "_portfolio", "_panel_verdicts"):
-        assert f'"{key}"' in src.split("features_payload = {")[1][:900], (
+        assert f'"{key}"' in src.split("features_payload = {")[1][:1400], (
             f"{key} must be excluded from features_payload")
 
 

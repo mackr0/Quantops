@@ -50,24 +50,17 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # ---------------------------------------------------------------------------
 
 def _make_journal_db(tmp_path):
-    """Minimal journal DB with the trade_drops table."""
+    """Journal DB created via the REAL prod init path.
+
+    Was a hand-rolled minimal trade_drops DDL until 2026-07-17, when
+    it silently drifted from the prod schema (missing the new pred_id
+    column) and record_trade_drop's best-effort catch swallowed every
+    INSERT — the round-trip test failed while prod was fine. A test
+    fixture that replicates schema instead of reusing init_db WILL
+    drift again; don't reintroduce the copy."""
     db = tmp_path / "p.db"
-    conn = sqlite3.connect(str(db))
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS trade_drops (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT NOT NULL DEFAULT (datetime('now')),
-            symbol TEXT NOT NULL,
-            side TEXT,
-            drop_code TEXT NOT NULL,
-            drop_reason TEXT NOT NULL,
-            cycle_id TEXT,
-            ai_confidence INTEGER,
-            ai_reasoning TEXT
-        );
-    """)
-    conn.commit()
-    conn.close()
+    from journal import init_db
+    init_db(str(db))
     return str(db)
 
 

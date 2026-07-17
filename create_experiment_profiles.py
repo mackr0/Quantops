@@ -113,7 +113,16 @@ PROFILES: List[Dict[str, Any]] = [
         # the entry gate use. Seeded as fraction 0.60 until 2026-07-15,
         # which made the gate a no-op and poisoned the tuner's anchors
         # (see CHANGELOG 2026-07-15 confidence-gate scale repair).
-        "ai_confidence_threshold": 60,
+        # 45 everywhere since 2026-07-17: the gate is a BACKSTOP against
+        # no-conviction ideas, not the allocator. The old per-arm bars
+        # (60/65/55) sat at/above the AI's honest median (62) — and the
+        # meta-model blend discounts confidence AFTER the AI states it —
+        # so the gate blocked most entry flow and books stockpiled cash
+        # (07-17: 132 blocks vs 39 buys in half a day). The QUALITY bar
+        # lives in the prompt; the hard floor here should almost never
+        # bind. Per-profile tuning of this value belongs to the tuner,
+        # informed by gate-drop counterfactual outcomes.
+        "ai_confidence_threshold": 45,
     },
 
     # ── Account 2: Ablations ($1M, 5 × $200K) ────────────────────────
@@ -139,7 +148,7 @@ PROFILES: List[Dict[str, Any]] = [
         "max_total_positions": 999,  # effectively uncapped (2026-06-11): the AI
         # decides position count; only BuyHoldSPY (1) and the Randoms (5)
         # keep fixed caps for the life of the experiment.
-        "ai_confidence_threshold": 60,
+        "ai_confidence_threshold": 45,
     },
     {
         "name": "EXP-A2-NoMetaModel",
@@ -156,7 +165,7 @@ PROFILES: List[Dict[str, Any]] = [
         "max_total_positions": 999,  # effectively uncapped (2026-06-11): the AI
         # decides position count; only BuyHoldSPY (1) and the Randoms (5)
         # keep fixed caps for the life of the experiment.
-        "ai_confidence_threshold": 60,
+        "ai_confidence_threshold": 45,
     },
     {
         "name": "EXP-A2-NoSelfTuning",
@@ -173,7 +182,7 @@ PROFILES: List[Dict[str, Any]] = [
         "max_total_positions": 999,  # effectively uncapped (2026-06-11): the AI
         # decides position count; only BuyHoldSPY (1) and the Randoms (5)
         # keep fixed caps for the life of the experiment.
-        "ai_confidence_threshold": 60,
+        "ai_confidence_threshold": 45,
     },
     {
         "name": "EXP-A2-NoOptions",
@@ -190,7 +199,7 @@ PROFILES: List[Dict[str, Any]] = [
         "max_total_positions": 999,  # effectively uncapped (2026-06-11): the AI
         # decides position count; only BuyHoldSPY (1) and the Randoms (5)
         # keep fixed caps for the life of the experiment.
-        "ai_confidence_threshold": 60,
+        "ai_confidence_threshold": 45,
     },
     {
         # COMBINED ablation — tests whether alt-data + meta-model are
@@ -209,7 +218,7 @@ PROFILES: List[Dict[str, Any]] = [
         "max_total_positions": 999,  # effectively uncapped (2026-06-11): the AI
         # decides position count; only BuyHoldSPY (1) and the Randoms (5)
         # keep fixed caps for the life of the experiment.
-        "ai_confidence_threshold": 60,
+        "ai_confidence_threshold": 45,
     },
 
     # ── Account 3: Product candidate + scale ($750K, 4 profiles) ─────
@@ -231,7 +240,7 @@ PROFILES: List[Dict[str, Any]] = [
         "max_total_positions": 999,  # effectively uncapped (2026-06-11): the AI
         # decides position count; only BuyHoldSPY (1) and the Randoms (5)
         # keep fixed caps for the life of the experiment.
-        "ai_confidence_threshold": 65,  # slightly higher bar (0-100 scale)
+        "ai_confidence_threshold": 45,
     },
     {
         # Reproducibility replica — IDENTICAL config, different
@@ -250,7 +259,7 @@ PROFILES: List[Dict[str, Any]] = [
         "max_total_positions": 999,  # effectively uncapped (2026-06-11): the AI
         # decides position count; only BuyHoldSPY (1) and the Randoms (5)
         # keep fixed caps for the life of the experiment.
-        "ai_confidence_threshold": 65,
+        "ai_confidence_threshold": 45,
     },
     {
         # 10× scaling test — same constraints as Candidate.
@@ -268,7 +277,7 @@ PROFILES: List[Dict[str, Any]] = [
         "max_total_positions": 999,  # effectively uncapped (2026-06-11): the AI
         # decides position count; only BuyHoldSPY (1) and the Randoms (5)
         # keep fixed caps for the life of the experiment.
-        "ai_confidence_threshold": 65,
+        "ai_confidence_threshold": 45,
     },
     {
         # Aggressive Free — all small-account constraints DROPPED.
@@ -289,7 +298,7 @@ PROFILES: List[Dict[str, Any]] = [
         "max_total_positions": 999,  # effectively uncapped (2026-06-11): the AI
         # decides position count; only BuyHoldSPY (1) and the Randoms (5)
         # keep fixed caps for the life of the experiment.
-        "ai_confidence_threshold": 55,  # lower bar — let it cook (0-100 scale)
+        "ai_confidence_threshold": 45,
     },
 ]
 

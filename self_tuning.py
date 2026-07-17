@@ -196,6 +196,30 @@ def _apply_param_change(profile_id: int, user_id: int,
             "never auto-tuned", param_name, profile_id,
         )
         return old_value, False, " [refused: operator-only param]"
+    # One-way valve (2026-07-17): the entry-confidence FLOOR may move
+    # DOWN under tuner power (drift-toward-trading: false-negative
+    # evidence lowers it, auto-loosen can pick it) but never UP. The
+    # gate is a rarely-firing backstop; two live days at raised bars
+    # turned it into the allocator (132 blocks vs 39 buys, books at
+    # 70-92% cash), and the old band rules could legally walk 45 back
+    # to 67 in ~6 days (review 2026-07-17 H1). Raises are operator
+    # decisions, made on the gate-drop counterfactual table (the AI
+    # page's "Confidence Floor" evidence). Same single-choke placement
+    # as the operator-only firewall above: every optimizer and
+    # insight-propagation write funnels through here.
+    if param_name == "ai_confidence_threshold":
+        try:
+            _raising = float(proposed_new_value) > float(old_value)
+        except (TypeError, ValueError):
+            _raising = True  # unparseable proposal → refuse (fail-closed)
+        if _raising:
+            logger.warning(
+                "self-tuner refused to RAISE ai_confidence_threshold "
+                "%s -> %s (profile %s): the entry floor is a backstop; "
+                "raises are operator-only, on gate-drop counterfactual "
+                "evidence", old_value, proposed_new_value, profile_id,
+            )
+            return old_value, False, " [refused: floor raises are operator-only]"
     from models import (
         update_trading_profile, log_tuning_change,
         get_param_reference, record_param_reference_if_absent,
@@ -1645,11 +1669,16 @@ def get_auto_adjustments(ctx, db_path=None):
                     )
                     continue
 
-                result["confidence_threshold"] = threshold
+                # 2026-07-17: never RECOMMEND a floor raise either —
+                # the entry floor is a backstop and raises are
+                # operator-only (one-way valve in _apply_param_change).
+                # Surface the evidence; the decision surface is the AI
+                # page's gate-drop counterfactual table.
                 result["reasons"].append(
                     f"Win rate at confidence {label} is {bwr:.0f}% "
-                    f"(adjustment window). Validation confirmed: "
-                    f"raising to {threshold}"
+                    f"(adjustment window, validation-confirmed). The "
+                    f"entry floor is operator-owned — review the "
+                    f"Confidence Floor evidence before any manual raise."
                 )
         else:
             result["reasons"].append(
@@ -1951,91 +1980,20 @@ def apply_auto_adjustments(ctx, db_path=None):
                 profile_id, recent_entries, MIN_RECENT_ENTRIES, WINDOW_DAYS,
             )
 
-        # --- Check if confidence threshold was adjusted recently ---
-        recent_conf = _get_recent_adjustment(
-            profile_id, "ai_confidence_threshold", days=3)
-
-        if not recent_conf:
-            # Pick the right confidence threshold in ONE step — don't cascade.
-            # Check the tighter band (70) first. If both bands are bad, go
-            # straight to 70 instead of 60→70 in the same run.
-            conf_adjusted = False
-
-            band70_total = conn.execute(
-                "SELECT COUNT(*) FROM ai_predictions "
-                "WHERE status='resolved' AND confidence < 70"
-            ).fetchone()[0]
-            band70_wins = conn.execute(
-                "SELECT COUNT(*) FROM ai_predictions "
-                "WHERE status='resolved' AND actual_outcome='win' AND confidence < 70"
-            ).fetchone()[0]
-
-            # 2026-05-14: minimum sample size 30 (60 when the profile
-            # is below the trade-volume floor). Previously 5, which
-            # let the tuner ratchet thresholds up to 70-80 on noise.
-            # The volume-floor signal RAISES the bar but doesn't
-            # block; tightening on truly broken patterns stays
-            # available with stronger evidence.
-            _min_n_70 = 60 if getattr(ctx, "_runtime_under_volume_floor", False) else 30
-            if band70_total >= _min_n_70:
-                wr70 = band70_wins / band70_total * 100
-                if wr70 < 35 and ctx.ai_confidence_threshold < 70:
-                    past_outcome = _was_adjustment_effective(
-                        profile_id, "ai_confidence_threshold")
-                    if past_outcome != "worsened":
-                        old_val = ctx.ai_confidence_threshold
-                        reason = (
-                            f"Win rate at <70% confidence was {wr70:.0f}% "
-                            f"({band70_wins}/{band70_total})"
-                        )
-                        applied, _, suffix = _apply_param_change(
-                            profile_id, user_id or 0,
-                            "confidence_threshold", "ai_confidence_threshold",
-                            old_val, 70, reason,
-                            win_rate_at_change=overall_wr,
-                            predictions_resolved=resolved,
-                        )
-                        adjustments_made.append(
-                            f"Raised AI confidence threshold from {old_val} "
-                            f"to {applied}{suffix} ({reason})"
-                        )
-                        conf_adjusted = True
-
-            if not conf_adjusted:
-                band60_total = conn.execute(
-                    "SELECT COUNT(*) FROM ai_predictions "
-                    "WHERE status='resolved' AND confidence < 60"
-                ).fetchone()[0]
-                band60_wins = conn.execute(
-                    "SELECT COUNT(*) FROM ai_predictions "
-                    "WHERE status='resolved' AND actual_outcome='win' AND confidence < 60"
-                ).fetchone()[0]
-
-                # 2026-05-14: same min-30 (60 if under volume floor)
-                # rule as the band70 check above (was previously >5).
-                _min_n_60 = 60 if getattr(ctx, "_runtime_under_volume_floor", False) else 30
-                if band60_total >= _min_n_60:
-                    wr60 = band60_wins / band60_total * 100
-                    if wr60 < 35 and ctx.ai_confidence_threshold < 60:
-                        past_outcome = _was_adjustment_effective(
-                            profile_id, "ai_confidence_threshold")
-                        if past_outcome != "worsened":
-                            old_val = ctx.ai_confidence_threshold
-                            reason = (
-                                f"Win rate at <60% confidence was {wr60:.0f}% "
-                                f"({band60_wins}/{band60_total})"
-                            )
-                            applied, _, suffix = _apply_param_change(
-                                profile_id, user_id or 0,
-                                "confidence_threshold", "ai_confidence_threshold",
-                                old_val, 60, reason,
-                                win_rate_at_change=overall_wr,
-                                predictions_resolved=resolved,
-                            )
-                            adjustments_made.append(
-                                f"Raised AI confidence threshold from {old_val} "
-                                f"to {applied}{suffix} ({reason})"
-                            )
+        # --- Confidence floor: no tuner raises (2026-07-17) ---------
+        # The band rules that lived here (win-rate <35% in the sub-70 /
+        # sub-60 band → jump the threshold to an absolute 70/60) are
+        # GONE, not firewalled-and-dead: they could legally walk the 45
+        # backstop to 67 in ~6 days (delta cap 45→56, re-anchored
+        # window 56→67 — review 2026-07-17 H1), rebuilding the exact
+        # allocator regime that starved the books on 07-15..17. Their
+        # band stats also counted HOLD rows (confidence 0) and
+        # gate-blocked counterfactuals as fuel. The one-way valve in
+        # _apply_param_change refuses ANY tuner raise of
+        # ai_confidence_threshold; lowering paths
+        # (_optimize_false_negatives, trade-count auto-loosen) remain
+        # live. Raises are operator decisions made on the AI page's
+        # gate-drop counterfactual evidence.
 
         # --- BUY vs SELL performance ---
         buy_total = conn.execute(
@@ -2302,7 +2260,6 @@ _OPTIMIZER_DIRECTION = {
     "_optimize_short_max_position_pct": "STRUCTURAL",
     "_optimize_short_max_hold_days": "STRUCTURAL",
     # Tightening (action-restricting — fire LAST in the registry)
-    "_optimize_confidence_threshold_upward": "TIGHTEN",
     "_optimize_strategy_toggles": "TIGHTEN",
     # 2026-05-20 (#195 Phase 2): retagged TIGHTEN → BIDIRECTIONAL.
     # The function ALREADY has both branches (see lines 2819-2856 of
@@ -2353,7 +2310,6 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
     # so the file order doesn't accidentally bias the system.
     all_optimizers = [
         # Tightening (will fire LAST per the direction-priority sort)
-        _optimize_confidence_threshold_upward,
         _optimize_strategy_toggles,
         _optimize_max_total_positions,
         _optimize_max_correlation,
@@ -2463,86 +2419,11 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
     return results
 
 
-def _optimize_confidence_threshold_upward(conn, ctx, profile_id, user_id,
-                                          overall_wr, resolved):
-    """Find the confidence band with the best win rate and raise the
-    threshold to focus on that band. Only raises one band at a time."""
-    if _get_recent_adjustment(profile_id, "ai_confidence_threshold", days=3):
-        return None
-    if _was_adjustment_effective(profile_id, "ai_confidence_threshold") == "worsened":
-        return None
-
-    # 2026-05-13 — exclude data_quality-tagged ai_predictions
-    from journal import data_quality_clause
-    _aip_dq = data_quality_clause(conn, table="ai_predictions")
-    rows = conn.execute(
-        f"""SELECT
-             CASE WHEN confidence >= 80 THEN 80
-                  WHEN confidence >= 70 THEN 70
-                  WHEN confidence >= 60 THEN 60
-                  WHEN confidence >= 50 THEN 50
-                  ELSE 0 END as band_floor,
-             COUNT(*) as total,
-             SUM(CASE WHEN actual_outcome='win' THEN 1 ELSE 0 END) as wins
-           FROM ai_predictions WHERE status='resolved'{_aip_dq}
-           GROUP BY band_floor HAVING COUNT(*) >= 30
-           ORDER BY band_floor"""
-    ).fetchall()
-
-    if not rows:
-        return None
-
-    # Find the band with the highest win rate
-    best_band = None
-    best_wr = 0
-    for r in rows:
-        wr = (r["wins"] / r["total"] * 100) if r["total"] > 0 else 0
-        if wr > best_wr:
-            best_wr = wr
-            best_band = r["band_floor"]
-
-    if best_band is None or best_band <= ctx.ai_confidence_threshold:
-        return None
-
-    # Best band must be meaningfully better than overall
-    if best_wr < overall_wr + 10:
-        return None
-
-    # Only raise one band at a time
-    current = ctx.ai_confidence_threshold
-    band_levels = [50, 60, 70, 80]
-    new_threshold = current
-    for level in band_levels:
-        if level > current and level <= best_band:
-            new_threshold = level
-            break
-
-    if new_threshold <= current or new_threshold > 80:
-        return None
-
-    # Verify enough predictions exist above the new threshold
-    above_count = conn.execute(
-        "SELECT COUNT(*) FROM ai_predictions WHERE status='resolved' AND confidence >= ?",
-        (new_threshold,),
-    ).fetchone()[0]
-    if above_count < 10:
-        return None
-
-    reason = (
-        f"Confidence {new_threshold}+ band has {best_wr:.0f}% win rate "
-        f"vs {overall_wr:.0f}% overall — focusing on higher-conviction trades"
-    )
-    applied, was_clamped, suffix = _apply_param_change(
-        profile_id, user_id,
-        "confidence_threshold_optimization",
-        "ai_confidence_threshold",
-        current, new_threshold, reason,
-        win_rate_at_change=overall_wr, predictions_resolved=resolved,
-    )
-    return (
-        f"Raised confidence threshold from {current} to "
-        f"{int(applied)}{suffix} ({reason})"
-    )
+# _optimize_confidence_threshold_upward is GONE (2026-07-17):
+# it raised the entry floor to the best-performing band (50-80),
+# which under the backstop design rebuilds the allocator regime.
+# The one-way valve in _apply_param_change refuses tuner raises
+# of ai_confidence_threshold; see review 2026-07-17 H1.
 
 
 def _optimize_regime_position_sizing(conn, ctx, profile_id, user_id,

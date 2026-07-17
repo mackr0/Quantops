@@ -4673,6 +4673,26 @@ def ai_dashboard():
     except Exception:
         ensemble_info["veto_stats"] = None
 
+    # 2026-07-17 — confidence-gate counterfactual calibration: what the
+    # entries the gate refused WOULD have done (drops hard-link to
+    # pre-gate prediction rows; the horizon resolver scores those rows
+    # regardless of execution). This is the evidence that keeps the
+    # entry-confidence floor honest — a floor set too high shows up
+    # here as blocked bands with positive would-be returns. Same
+    # profile scoping as the veto widget above.
+    try:
+        from ai_tracker import gate_drop_calibration_multi
+        gate_db_paths = db_paths
+        if selected_profile_int:
+            scoped = f"quantopsai_profile_{selected_profile_int}.db"
+            gate_db_paths = [d for d in db_paths if d.endswith(scoped)]
+        ensemble_info["gate_calibration"] = gate_drop_calibration_multi(
+            gate_db_paths, days=30,
+        )
+    except Exception as exc:
+        logger.warning("gate calibration widget failed: %s", exc)
+        ensemble_info["gate_calibration"] = None
+
     # Phase A3 of OPTIONS_PROGRAM_PLAN.md — per-profile Greeks panel.
     # Aggregates net delta/gamma/vega/theta across each profile's open
     # positions (stock + options). Empty when a profile has no positions.

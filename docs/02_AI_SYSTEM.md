@@ -30,11 +30,22 @@ Universe (~8,000 Alpaca-tradable US equities) →
 The confidence gate lives at `run_trade_cycle` STEP 4.85: it compares each
 proposed NEW entry's final (meta-blended) 0-100 confidence against the
 profile's `ai_confidence_threshold`, resolved through the tuner's
-per-symbol → per-regime → per-time-of-day → global override chain. Blocked
-entries are recorded as `CONFIDENCE_GATE` trade drops (visible in the AI
-Brain panel) while their prediction rows stay recorded, so the tracker keeps
-learning from gated ideas. Exits, covers, and protective orders never pass
-through this gate. Option proposals additionally pass a **preflight** before
+per-symbol → per-regime → per-time-of-day → global override chain. The
+floor is a **rarely-firing backstop** (seeded 45 everywhere since
+2026-07-17), not the quality bar — the quality bar is stated in the
+decision prompt, which also discloses that the meta blend adjusts the
+stated confidence before the floor applies. Blocked entries are recorded
+as `CONFIDENCE_GATE` trade drops (visible in the AI Brain panel);
+blocked **primary** picks hard-link to their pre-gate prediction rows
+(`trade_drops.pred_id`) — ranked backup picks are gate-checked too but
+deliberately carry no prediction row, so they stay unlinked. The
+horizon resolver scores linked rows regardless of execution, and the AI
+page's "Confidence Floor" table shows each refused band's would-be
+outcomes — the evidence that keeps the floor falsifiable. A
+backstop-health alarm raises a rate-limited ERROR whenever the gate
+blocks more than 20% of a profile's daily entry flow (≥10 flow events):
+a floor doing the allocating is a defect, not a posture. Exits, covers,
+and protective orders never pass through this gate. Option proposals additionally pass a **preflight** before
 any LLM specialist sees them: the pipeline prices the spread (net premium,
 max loss/gain, breakeven, DTE, spot, IV rank) and refuses — loudly, as an
 `OPTION_INPUT_INCOMPLETE` drop excluded from veto learning — any proposal

@@ -137,18 +137,22 @@ class TestWrapperUsesReferences:
         from self_tuning import _apply_param_change
         from models import get_param_reference
 
+        # LOWER direction (2026-07-17): tuner raises of the entry
+        # floor are refused by the one-way valve before this machinery
+        # runs — the wrapper mechanics are identical either way.
         _apply_param_change(
             profile_id=1, user_id=1,
             adjustment_type="test", param_name="ai_confidence_threshold",
-            old_value=60, proposed_new_value=66,
+            old_value=60, proposed_new_value=54,
             reason="testing",
         )
         # Reference snapshot was taken from old_value
         assert get_param_reference(1, "ai_confidence_threshold") == 60.0
 
     def test_reference_window_clamps_excessive_drift(self, configured_db, monkeypatch):
-        """Reference 60, proposed 95 (+58%) → reference-window clamps
-        to 90 (+50% ceiling)."""
+        """Reference 60, proposed 27 (-55%) → reference-window clamps
+        to 30 (-50% floor). (Lower direction since 2026-07-17: floor
+        raises are refused by the one-way valve upstream.)"""
         from unittest.mock import MagicMock
         utp = MagicMock()
         ltc = MagicMock(return_value=1)
@@ -160,19 +164,19 @@ class TestWrapperUsesReferences:
         # Pre-seed the reference at 60 (simulating prior tuning runs)
         record_param_reference_if_absent(1, "ai_confidence_threshold", 60)
 
-        # current = 80, propose 95. Per-cycle cap: 80*1.25 = 100 → no
-        # clamp from Item 1 since 95 < 100. Reference-window: 60 + 50%
-        # = 90, so 95 → 90.
+        # current = 35, propose 27. Per-cycle cap: 35*0.75 = 26.25 →
+        # no clamp from Item 1 since 27 > 26.25. Reference-window:
+        # 60 - 50% = 30 floor, so 27 → 30.
         applied, was_clamped, suffix = _apply_param_change(
             profile_id=1, user_id=1,
             adjustment_type="test", param_name="ai_confidence_threshold",
-            old_value=80, proposed_new_value=95,
+            old_value=35, proposed_new_value=27,
             reason="testing",
         )
         assert was_clamped is True
-        assert applied == pytest.approx(90.0)
+        assert applied == pytest.approx(30.0)
         assert "guardrail" in suffix.lower()
-        utp.assert_called_once_with(1, ai_confidence_threshold=90)
+        utp.assert_called_once_with(1, ai_confidence_threshold=30)
 
     def test_no_reference_passes_through(self, configured_db, monkeypatch):
         """When no prior reference exists, only the per-cycle cap
@@ -186,22 +190,24 @@ class TestWrapperUsesReferences:
         monkeypatch.setattr("models.log_tuning_change", ltc)
         from self_tuning import _apply_param_change
 
-        # First call: no prior reference. Proposal within per-cycle cap.
+        # First call: no prior reference. Proposal within per-cycle cap
+        # (lower direction — raises are valve-refused upstream).
         applied, was_clamped, _ = _apply_param_change(
             profile_id=1, user_id=1,
             adjustment_type="test", param_name="ai_confidence_threshold",
-            old_value=60, proposed_new_value=70,
+            old_value=60, proposed_new_value=50,
             reason="testing",
         )
-        # 70 is within 60*1.25=75, so per-cycle cap allows. No prior
+        # 50 is within 60*0.75=45, so per-cycle cap allows. No prior
         # reference, so reference-window can't fire.
         assert was_clamped is False
-        assert applied == 70.0
+        assert applied == 50.0
 
     def test_per_cycle_cap_and_reference_window_compose(self, configured_db, monkeypatch):
-        """Adversarial proposer asks for a 200% jump; per-cycle cap
-        clamps to +25%, then reference-window further clamps to +50%
-        from reference. Verifies both layers run in sequence."""
+        """Adversarial proposer asks for a crash to 1; per-cycle cap
+        clamps to -25%, and the reference-window floor backstops it.
+        Verifies both layers run in sequence (lower direction since
+        2026-07-17 — raises are valve-refused upstream)."""
         from unittest.mock import MagicMock
         utp = MagicMock()
         ltc = MagicMock(return_value=1)
@@ -210,24 +216,24 @@ class TestWrapperUsesReferences:
         from self_tuning import _apply_param_change
         from models import record_param_reference_if_absent
 
-        # Reference 60, current already at 70 (snuck up before
-        # references existed). Adversary proposes 200.
+        # Reference 60, current already at 45 (walked down before
+        # references existed). Adversary proposes 1.
         record_param_reference_if_absent(1, "ai_confidence_threshold", 60)
         applied, was_clamped, _ = _apply_param_change(
             profile_id=1, user_id=1,
             adjustment_type="test", param_name="ai_confidence_threshold",
-            old_value=70, proposed_new_value=200,
+            old_value=45, proposed_new_value=1,
             reason="adversarial",
         )
-        # Per-cycle cap: 70 * 1.25 = 87.5
-        # Reference window: 60 * 1.5 = 90 (ceiling)
-        # 87.5 ≤ 90, so per-cycle cap is the binding constraint.
-        # 2026-07-15: the wrapper now returns the CANONICAL value it
-        # actually wrote (cast round(87.5) → 88, within PARAM_BOUNDS)
+        # Per-cycle cap: 45 * 0.75 = 33.75
+        # Reference window: 60 * 0.5 = 30 (floor)
+        # 33.75 ≥ 30, so per-cycle cap is the binding constraint.
+        # 2026-07-15: the wrapper returns the CANONICAL value it
+        # actually wrote (cast round(33.75) → 34, within PARAM_BOUNDS)
         # — not the pre-cast float. One value in config, ledger, and
         # caller.
         assert was_clamped is True
-        assert applied == 88
+        assert applied == 34
         assert isinstance(applied, int)
 
     def test_reference_clamp_logged_in_reason(self, configured_db, monkeypatch):
@@ -247,10 +253,12 @@ class TestWrapperUsesReferences:
         from models import record_param_reference_if_absent
 
         record_param_reference_if_absent(1, "ai_confidence_threshold", 60)
+        # Lower-side breach (raises are valve-refused since 2026-07-17):
+        # 35 -> 27 passes the per-cycle cap, ref floor 30 fires.
         _apply_param_change(
             profile_id=1, user_id=1,
             adjustment_type="test", param_name="ai_confidence_threshold",
-            old_value=80, proposed_new_value=95,
+            old_value=35, proposed_new_value=27,
             reason="some reason",
         )
         assert captured, "log_tuning_change must have been called"

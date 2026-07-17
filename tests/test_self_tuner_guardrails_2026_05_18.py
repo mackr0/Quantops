@@ -190,7 +190,9 @@ class TestApplyParamChangeWrapper:
 
     def test_wrapper_passes_through_when_no_clamp(self, monkeypatch):
         """In-band change → wrapper applies proposed value as-is to
-        both update_trading_profile and log_tuning_change."""
+        both update_trading_profile and log_tuning_change. (Lower
+        direction since 2026-07-17: floor raises are refused by the
+        one-way valve before this machinery runs.)"""
         from unittest.mock import MagicMock
         utp = MagicMock()
         ltc = MagicMock(return_value=42)
@@ -201,7 +203,7 @@ class TestApplyParamChangeWrapper:
             profile_id=1, user_id=1,
             adjustment_type="test_adjustment",
             param_name="ai_confidence_threshold",
-            old_value=60, proposed_new_value=66,
+            old_value=60, proposed_new_value=54,
             reason="test reason",
             win_rate_at_change=70, predictions_resolved=50,
         )
@@ -212,14 +214,14 @@ class TestApplyParamChangeWrapper:
         # ("66.0" in the ledger vs int 66 in config) encoded the exact
         # divergence that let prod ledgers claim 0.75 while configs held
         # int(0.75)=0 for six profiles.
-        assert applied == 66
+        assert applied == 54
         assert isinstance(applied, int)
         assert suffix == ""
-        utp.assert_called_once_with(1, ai_confidence_threshold=66)
+        utp.assert_called_once_with(1, ai_confidence_threshold=54)
         args, kwargs = ltc.call_args
         # Positional: profile_id, user_id, adjustment_type, param_name,
         #             old_value, new_value, reason
-        assert args[5] == "66", (
+        assert args[5] == "54", (
             f"log_tuning_change new_value must be str(the exact value "
             f"written to the profile); got {args[5]!r}"
         )
@@ -242,13 +244,13 @@ class TestApplyParamChangeWrapper:
             profile_id=1, user_id=1,
             adjustment_type="test_adjustment",
             param_name="ai_confidence_threshold",
-            old_value=60, proposed_new_value=65.5,   # in-band; round → 66
+            old_value=60, proposed_new_value=53.5,   # in-band; round → 54
             reason="test reason",
         )
-        assert applied == 66 and isinstance(applied, int)
-        utp.assert_called_once_with(1, ai_confidence_threshold=66)
+        assert applied == 54 and isinstance(applied, int)
+        utp.assert_called_once_with(1, ai_confidence_threshold=54)
         args, _ = ltc.call_args
-        assert args[5] == str(applied) == "66"
+        assert args[5] == str(applied) == "54"
 
     def test_cast_rounds_never_truncates(self):
         """int(float('0.75')) == 0 is how six prod profiles got their
@@ -270,20 +272,21 @@ class TestApplyParamChangeWrapper:
         monkeypatch.setattr("models.update_trading_profile", utp)
         monkeypatch.setattr("models.log_tuning_change", ltc)
         from self_tuning import _apply_param_change
-        # old=80 (in-bounds) → propose 100 → +25% is inside the delta
-        # band → 100 → ABOVE bounds ceiling 90 → clamped to 90
+        # old=12 (in-bounds) → propose 6 → -25% delta band clamps to
+        # 9 → BELOW bounds floor 10 → pulled to 10. (Floor-side since
+        # 2026-07-17: raises are refused by the one-way valve.)
         applied, was_clamped, _ = _apply_param_change(
             profile_id=1, user_id=1,
             adjustment_type="test_adjustment",
             param_name="ai_confidence_threshold",
-            old_value=80, proposed_new_value=100,
+            old_value=12, proposed_new_value=6,
             reason="test reason",
         )
-        assert applied == 90
+        assert applied == 10
         assert was_clamped is True
-        utp.assert_called_once_with(1, ai_confidence_threshold=90)
+        utp.assert_called_once_with(1, ai_confidence_threshold=10)
         args, _ = ltc.call_args
-        assert args[5] == "90"
+        assert args[5] == "10"
 
     def test_bounds_clamp_never_corrects_an_operator_seed(
             self, monkeypatch):

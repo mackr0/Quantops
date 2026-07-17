@@ -505,7 +505,32 @@ class TestAIKnowsTheBar:
             "the anti-gaming clause is load-bearing: confidence feeds "
             "the tracker's calibration, the tuner's band logic, and "
             "the meta-model's training data")
-        assert "quality bar, not a brake" in block
+        # 2026-07-17 backstop reseed: the block must present the floor
+        # as a rarely-binding backstop (NOT the quality bar) and must
+        # disclose the meta-blend — the AI is judged on its adjusted
+        # number, and telling it otherwise is informing-then-moving-
+        # the-goalposts.
+        assert "backstop" in block
+        assert "should almost never bind" in block
+        assert "not the quality bar" in block
+        assert "may adjust your stated number" in block
+
+    def test_bar_block_blend_clause_only_when_meta_enabled(self):
+        """Review 2026-07-17 M1: the blend disclosure was
+        unconditionally emitted — for the NoMetaModel ablation (and
+        cold-start profiles) the gate compares the RAW stated number,
+        so claiming adjustment is the goalpost lie in the other
+        direction."""
+        from unittest.mock import MagicMock
+        from ai_analyst import _confidence_bar_block
+        ctx = MagicMock()
+        ctx.ai_confidence_threshold = 45
+        ctx.enable_meta_model = False
+        block = _confidence_bar_block(ctx)
+        assert "adjust your stated number" not in block
+        assert ">= 45;" in block
+        ctx.enable_meta_model = True
+        assert "may adjust your stated number" in _confidence_bar_block(ctx)
 
     def test_bar_block_empty_without_ctx_or_bar(self):
         from unittest.mock import MagicMock

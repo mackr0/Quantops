@@ -137,89 +137,14 @@ def setup(tmp_path, monkeypatch):
     return tmp_path
 
 
-class TestConfidenceThresholdUpward:
-    def test_raised_to_best_band(self, setup, monkeypatch):
-        db = _make_db(setup)
-        ctx = _make_ctx(db)
-        # Each band needs >=30 samples after 2026-05-14
-        # minimum-evidence rule. Tripled fixture preserves
-        # original win-rate proportions: 45@30%, 65@50%, 75@80%.
-        preds = (
-            [{"confidence": 45, "outcome": "loss"} for _ in range(21)]
-            + [{"confidence": 45, "outcome": "win"} for _ in range(9)]
-            + [{"confidence": 65, "outcome": "loss"} for _ in range(15)]
-            + [{"confidence": 65, "outcome": "win"} for _ in range(15)]
-            + [{"confidence": 75, "outcome": "win"} for _ in range(24)]
-            + [{"confidence": 75, "outcome": "loss"} for _ in range(6)]
-        )
-        _insert_predictions(db, preds)
-
-        conn = sqlite3.connect(db)
-        conn.row_factory = sqlite3.Row
-        from self_tuning import _optimize_confidence_threshold_upward
-        updated = {}
-        monkeypatch.setattr("models.update_trading_profile",
-                            lambda pid, **kw: updated.update(kw))
-        result = _optimize_confidence_threshold_upward(
-            conn, ctx, 1, 1, 53.3, 30)
-        conn.close()
-        assert result is not None
-        # Pre-2026-05-18 this test expected 50 (a 100% one-cycle jump
-        # from 25). The per-cycle delta cap (Phase 1 #1 of docs/17)
-        # now bounds any single adjustment to ±25%. So the optimizer's
-        # target of 50 gets clamped on the first cycle to 25 * 1.25 = 31.
-        # Over 3-4 cycles the value converges to the intended 50.
-        # This test now verifies the clamp fires correctly.
-        assert updated.get("ai_confidence_threshold") == 31, (
-            "Expected per-cycle clamp to 31 (25 * 1.25); the "
-            "guardrails closing the 2026-05-14 cascade are designed "
-            "to bound single-cycle jumps even on upward moves."
-        )
-
-    def test_skipped_on_cooldown(self, setup, monkeypatch):
-        db = _make_db(setup)
-        ctx = _make_ctx(db)
-        preds = ([{"confidence": 75, "outcome": "win"} for _ in range(10)]
-                 + [{"confidence": 45, "outcome": "loss"} for _ in range(10)])
-        _insert_predictions(db, preds)
-
-        # Simulate recent adjustment
-        from models import log_tuning_change
-        log_tuning_change(1, 1, "test", "ai_confidence_threshold",
-                          "25", "50", "test", 50, 20)
-
-        conn = sqlite3.connect(db)
-        conn.row_factory = sqlite3.Row
-        from self_tuning import _optimize_confidence_threshold_upward
-        result = _optimize_confidence_threshold_upward(
-            conn, ctx, 1, 1, 50, 20)
-        conn.close()
-        assert result is None
-
-    def test_skipped_when_previous_worsened(self, setup, monkeypatch):
-        db = _make_db(setup)
-        ctx = _make_ctx(db)
-        preds = ([{"confidence": 75, "outcome": "win"} for _ in range(10)]
-                 + [{"confidence": 45, "outcome": "loss"} for _ in range(10)])
-        _insert_predictions(db, preds)
-
-        # Log a worsened adjustment
-        from models import log_tuning_change, _get_conn
-        row_id = log_tuning_change(1, 1, "test", "ai_confidence_threshold",
-                                   "25", "50", "test", 50, 20)
-        mc = _get_conn()
-        mc.execute("UPDATE tuning_history SET outcome_after='worsened', "
-                   "timestamp=datetime('now','-5 days') WHERE id=?", (row_id,))
-        mc.commit()
-        mc.close()
-
-        conn = sqlite3.connect(db)
-        conn.row_factory = sqlite3.Row
-        from self_tuning import _optimize_confidence_threshold_upward
-        result = _optimize_confidence_threshold_upward(
-            conn, ctx, 1, 1, 50, 20)
-        conn.close()
-        assert result is None
+# TestConfidenceThresholdUpward is GONE (2026-07-17): the optimizer it
+# exercised (_optimize_confidence_threshold_upward) was excised with the
+# band rules — tuner raises of the entry-confidence floor are refused by
+# the one-way valve in _apply_param_change (the floor is a rarely-firing
+# backstop; two live days at raised bars starved the books to 70-92%
+# cash). The refusal, the structural absence of the raise paths, and the
+# still-live lowering paths are pinned in
+# tests/test_gate_backstop_2026_07_17.py::TestFloorRaisesAreOperatorOnly.
 
 
 class TestRegimePositionSizing:

@@ -689,9 +689,21 @@ def _apply_confidence_gate(ai_trades, ctx, cycle_id, details):
                         cycle_id=cycle_id,
                         ai_confidence=conf,
                         ai_reasoning=t.get("reasoning"),
+                        # Hard link to the pre-gate prediction row —
+                        # the resolver scores it regardless of
+                        # execution, which makes this drop's
+                        # counterfactual outcome queryable (the
+                        # "recorded and scored" claim above is true
+                        # BECAUSE of this link).
+                        pred_id=t.get("_pred_id"),
                     )
                 except Exception as _cg_exc:
-                    logging.debug(
+                    # WARNING, not debug: the drop row is load-bearing
+                    # now (calibration evidence + the backstop alarm's
+                    # numerator). A schema-drift swallow here is the
+                    # exact shape that silently killed the trade-drop
+                    # visibility fixture (review 2026-07-17 L2).
+                    logging.warning(
                         "confidence-gate drop record failed for "
                         "%s: %s", sym, _cg_exc,
                     )
@@ -713,7 +725,102 @@ def _apply_confidence_gate(ai_trades, ctx, cycle_id, details):
                     f"new positions."
                 ),
             })
+        _check_gate_backstop_health(ctx)
     return kept
+
+
+# ---------------------------------------------------------------------------
+# Backstop-health alarm (2026-07-17). The gate is DESIGNED to be a
+# rarely-firing backstop (operator rule: mechanisms inform the AI; the
+# hard floor catches only no-conviction ideas). Its first two live days
+# proved that nothing measured this: the bars sat at/above the AI's
+# honest median, the gate silently became the allocator (132 blocks vs
+# 39 buys in half a day), books stockpiled cash, and only operator
+# eyeballs caught it. This check turns the design intention into a
+# CHECKED invariant: when today's blocked share of entry flow crosses
+# the threshold, a loud rate-limited ERROR names the profile, the bar,
+# and the counts — so no future reseed (mine or the tuner's) can turn
+# the backstop into a throttle silently again.
+# ---------------------------------------------------------------------------
+
+#: Alarm when the gate blocks more than this share of today's entry
+#: flow (blocked / (blocked + executed entries)) …
+_GATE_BACKSTOP_MAX_SHARE = 0.20
+#: … but only once the day has enough flow to mean anything.
+_GATE_BACKSTOP_MIN_FLOW = 10
+#: db_path → last alarm wall-clock (same rate-limit pattern as the
+#: negative-cash alarm in journal).
+_GATE_BACKSTOP_ALARM_MEMO: dict = {}
+_GATE_BACKSTOP_ALARM_INTERVAL_SEC = 1800
+
+
+def _check_gate_backstop_health(ctx) -> None:
+    """Compare today's CONFIDENCE_GATE drops against today's executed
+    entries for THIS profile and alarm when the 'backstop' is doing
+    the allocating. Reads both counts from the profile's own DB (UTC
+    day, matching the tables' datetime('now') stamps) so the check is
+    restart-safe with no in-memory state to lose. The entry count
+    excludes buy rows that are really protective COVERS (their
+    order_id is referenced by an entry row's protective_*_order_id
+    pointer — review 2026-07-17 L1: counting a short's stop-out as an
+    "entry" would under-fire the alarm on short-heavy days).
+    Deliberate remaining approximation: drops count IDEAS while
+    multileg entries count one row per LEG, so the share can skew by
+    a small factor — irrelevant at the 20% threshold, which exists to
+    catch the 70%+ allocator regime, not to be a precise meter.
+    Best-effort: never raises into the trade cycle."""
+    db_path = getattr(ctx, "db_path", None)
+    if not db_path:
+        return
+    import time as _time
+    now = _time.time()
+    if (now - _GATE_BACKSTOP_ALARM_MEMO.get(db_path, 0)
+            < _GATE_BACKSTOP_ALARM_INTERVAL_SEC):
+        return
+    try:
+        from contextlib import closing as _closing
+        from journal import _get_conn as _journal_conn
+        with _closing(_journal_conn(db_path)) as conn:
+            blocked_today = conn.execute(
+                "SELECT COUNT(*) FROM trade_drops "
+                "WHERE drop_code = 'CONFIDENCE_GATE' "
+                "AND date(timestamp) = date('now')"
+            ).fetchone()[0]
+            entered_today = conn.execute(
+                "SELECT COUNT(*) FROM trades e "
+                "WHERE e.side IN ('buy', 'short') "
+                "AND COALESCE(e.status, 'open') NOT IN "
+                "('pending_protective', 'canceled', 'expired', "
+                " 'rejected', 'done_for_day', "
+                " 'auto_reconciled_phantom_close') "
+                "AND date(e.timestamp) = date('now') "
+                "AND NOT EXISTS (SELECT 1 FROM trades r WHERE "
+                "  r.protective_stop_order_id = e.order_id "
+                "  OR r.protective_tp_order_id = e.order_id "
+                "  OR r.protective_trailing_order_id = e.order_id)"
+            ).fetchone()[0]
+        flow = blocked_today + entered_today
+        if flow < _GATE_BACKSTOP_MIN_FLOW:
+            return
+        share = blocked_today / flow
+        if share > _GATE_BACKSTOP_MAX_SHARE:
+            _GATE_BACKSTOP_ALARM_MEMO[db_path] = now
+            logging.error(
+                "CONFIDENCE GATE IS NOT A BACKSTOP today for %s: it "
+                "blocked %d of %d entry-flow events (%.0f%%, alarm "
+                "threshold %.0f%%) at bar %s. The gate is designed to "
+                "fire rarely — this share means it is allocating "
+                "capital. Check the bar against the AI's honest "
+                "confidence scale (and the meta-model blend) before "
+                "trusting today's low entry counts.",
+                db_path, blocked_today, flow, 100 * share,
+                100 * _GATE_BACKSTOP_MAX_SHARE,
+                getattr(ctx, "ai_confidence_threshold", "?"),
+            )
+    except Exception as exc:
+        logging.warning(
+            "gate backstop-health check failed for %s (non-fatal): "
+            "%s: %s", db_path, type(exc).__name__, exc)
 # Live position-count maintenance during the STEP 5 dispatch loop
 # ---------------------------------------------------------------------------
 
@@ -2755,227 +2862,248 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
         from ai_tracker import record_prediction, classify_prediction_type
         current_regime = (regime_info or {}).get("regime")
         for c in candidates_data:
-            sym = c.get("symbol", "")
-            votes = c.get("votes", {})
-            strategy = next((k for k, v in votes.items() if v != "HOLD"), "batch_ai")
-
-            # Was this symbol selected as a PRIMARY trade by the AI?
-            # Ranked alternates (the conflict-substitution bench) are
-            # excluded here — a prediction records the AI's primary
-            # conviction, and most alternates never execute. Without this
-            # guard, an alternate-only symbol would be recorded as if it
-            # were a primary pick and skew the prediction-resolution
-            # win-rate.
-            selected = next(
-                (t for t in ai_trades
-                 if t.get("symbol") == sym and not t.get("_is_alt")),
-                None,
-            )
-
-            if selected:
-                pred_signal = selected["action"]
-                pred_confidence = selected.get("confidence", 50)
-                pred_reasoning = selected.get("reasoning", "")
-                price_targets = {
-                    "stop_loss": selected.get("stop_loss_pct"),
-                    "take_profit": selected.get("take_profit_pct"),
-                }
-            else:
-                # AI saw this candidate but passed — record as HOLD
-                # so the resolver can check if passing was the right call
-                pred_signal = "HOLD"
-                pred_confidence = 0
-                pred_reasoning = portfolio_reasoning[:300]
-                price_targets = None
-
-            # Classify the prediction so the resolver applies the right
-            # win/loss criteria (see LONG_SHORT_PLAN.md §1.0). SELL on a
-            # held LONG = exit-quality question; SELL on something we don't
-            # hold = directional-bearish question. Lumping them together
-            # made 'Avg Move on SELLs' uninterpretable.
-            held_pos = positions_dict.get(sym)
-            held_qty = float(held_pos.get("qty", 0)) if held_pos else 0.0
-            # P0 (2026-07-01, selection-engine design): option opens classify as
-            # "option_open", never directional_long — otherwise every
-            # per-expression stat + meta-model training conflates spreads with
-            # stock longs. See ai_tracker.classify_prediction_type.
-            pred_type = classify_prediction_type(pred_signal, held_qty)
-
-            # Build feature payload for meta-model training (Phase 1).
-            # Strip non-numeric/non-scalar fields — store only what a feature
-            # extractor can reliably use (see meta_model.extract_features).
-            features_payload = {
-                k: v for k, v in c.items()
-                if k not in ("reason", "news", "votes", "rel_strength",
-                              "alt_data", "social", "last_prediction",
-                              "earnings_warning", "track_record",
-                              # 2026-07-02 storage diet: prompt-render stash
-                              # blobs (measured 81% of features_json,
-                              # ~11 MB/day). _market_context/_portfolio are
-                              # cycle-level context already persisted on
-                              # ai_cycles; _panel_verdicts is separately
-                              # persisted as rule_votes_json. Zero consumers
-                              # read them from features_json.
-                              "_market_context", "_portfolio",
-                              "_panel_verdicts")
-            }
-            # Ledger-RAR override metadata (decision #4): persist ON this real
-            # prediction so the override_scorecard can later measure whether the
-            # AI's overrides beat the number. NOT meta-model features (the
-            # `_ledger_` keys aren't in the extractor whitelist, so they're
-            # stored + queryable but never trained on).
-            if selected:
-                for _lk in ("_ledger_rar", "_ledger_best_rar",
-                            "_ledger_best_expr", "_ledger_is_override"):
-                    if _lk in selected:
-                        features_payload[_lk] = selected[_lk]
-            # Include meta-signals separately (flattened)
-            votes = c.get("votes", {})
-            for strat_name, vote in votes.items():
-                features_payload[f"vote_{strat_name}"] = vote
-            rs = c.get("rel_strength") or {}
-            if rs:
-                features_payload["rel_strength_vs_sector"] = rs.get("relative_strength", 0)
-                features_payload["sector_trend"] = rs.get("sector_trend", "flat")
-            # Capture days-to-earnings so the self-tuner's
-            # _optimize_avoid_earnings_days rule can bucket resolved
-            # predictions by proximity to earnings. Negative values
-            # mean earnings already past or unknown — store as -1.
+            # Per-candidate isolation (review 2026-07-17 L5):
+            # one candidate's recording failure must not
+            # abort the loop — later candidates would lose
+            # their _pred_id stamp, permanently unlinking
+            # any gate drop they produce this cycle.
             try:
-                from earnings_calendar import check_earnings as _ck_earn
-                _ec = _ck_earn(sym)
-                features_payload["days_to_earnings"] = (
-                    int(_ec["days_until"]) if _ec and _ec.get("days_until") is not None
-                    else -1
-                )
-            except Exception:
-                features_payload["days_to_earnings"] = -1
-            alt = c.get("alt_data") or {}
-            if alt:
-                features_payload["insider_direction"] = alt.get("insider", {}).get("net_direction", "neutral")
-                features_payload["short_pct_float"] = alt.get("short", {}).get("short_pct_float", 0)
-                features_payload["options_signal"] = alt.get("options", {}).get("signal", "neutral")
-                features_payload["put_call_ratio"] = alt.get("options", {}).get("put_call_ratio", 0)
-                features_payload["vwap_position"] = alt.get("intraday", {}).get("vwap_position", "at")
-                features_payload["pe_trailing"] = alt.get("fundamentals", {}).get("pe_trailing", 0)
-                # New per-symbol alt data
-                features_payload["congress_direction"] = alt.get("congressional", {}).get("net_direction", "neutral")
-                features_payload["finra_short_vol_ratio"] = alt.get("finra_short_vol", {}).get("short_volume_ratio", 0)
-                features_payload["insider_cluster"] = 1 if alt.get("insider_cluster", {}).get("is_cluster") else 0
-                features_payload["eps_revision_direction"] = alt.get("analyst_estimates", {}).get("eps_revision_direction", "flat")
-                features_payload["eps_revision_magnitude"] = alt.get("analyst_estimates", {}).get("revision_magnitude_pct", 0)
-                features_payload["insider_near_earnings"] = alt.get("insider_earnings", {}).get("insider_direction_near_earnings", "neutral")
-                features_payload["dark_pool_pct"] = alt.get("dark_pool", {}).get("ats_pct_of_total", 0)
-                features_payload["earnings_surprise_streak"] = alt.get("earnings_surprise", {}).get("streak", 0)
-                features_payload["earnings_surprise_direction"] = alt.get("earnings_surprise", {}).get("surprise_direction", "mixed")
-                # 4 local-SQLite alt-data sources — flatten into
-                # features_payload so the meta-model can train on them
-                # AND the Layer 2 weight tuner's `is_active` predicates
-                # can look them up at decision time.
-                cong = alt.get("congressional_recent") or {}
-                features_payload["congressional_trades_60d"] = cong.get("trades_60d", 0)
-                features_payload["congressional_dollar_volume_60d"] = cong.get("dollar_volume_60d", 0)
-                features_payload["congressional_net_direction"] = cong.get("net_direction", "neutral")
-                inst = alt.get("institutional_13f") or {}
-                features_payload["institutional_13f_holders"] = inst.get("total_holders", 0)
-                features_payload["institutional_13f_qoq_pct"] = inst.get("qoq_share_change_pct") or 0
-                bio = alt.get("biotech_milestones") or {}
-                features_payload["biotech_days_to_pdufa"] = bio.get("days_to_pdufa")
-                features_payload["biotech_phase3_count"] = bio.get("active_phase3_count", 0)
-                twits = alt.get("stocktwits_sentiment") or {}
-                features_payload["stocktwits_message_count_7d"] = twits.get("message_count_7d", 0)
-                features_payload["stocktwits_net_sentiment_7d"] = twits.get("net_sentiment_7d")
-                features_payload["stocktwits_is_trending"] = 1 if twits.get("is_trending") else 0
-                # Item 3a — Google Trends + Wikipedia attention signals
-                gt = alt.get("google_trends") or {}
-                features_payload["google_trends_z"] = gt.get("trend_z_score") or 0
-                features_payload["google_trends_direction"] = gt.get("trend_direction", "flat")
-                wp = alt.get("wikipedia_pageviews") or {}
-                features_payload["wikipedia_pageviews_z"] = wp.get("pageview_z_score") or 0
-                features_payload["wikipedia_pageviews_spike"] = 1 if wp.get("pageview_spike_flag") else 0
-                # Item 3a — App Store ranking. Use 999 sentinel for
-                # "not in top-200 chart" so the meta-model doesn't
-                # misread missing-data as "rank #1" (which `or 0`
-                # would imply).
-                ap = alt.get("app_store_ranking") or {}
-                features_payload["app_store_grossing_rank"] = (
-                    ap.get("best_grossing_rank") or 999
-                )
-                features_payload["app_store_free_rank"] = (
-                    ap.get("best_free_rank") or 999
-                )
-            social = c.get("social") or {}
-            if social:
-                features_payload["reddit_mentions"] = social.get("mentions", 0)
-                features_payload["reddit_sentiment"] = social.get("sentiment_score", 0)
-            # Market context
-            features_payload["_regime"] = current_regime
-            features_payload["_market_signal_count"] = len([v for v in votes.values() if v != "HOLD"])
-            # Market-wide macro features
-            _macro = market_ctx.get("macro_context", {})
-            _yc = _macro.get("yield_curve", {})
-            features_payload["_yield_spread_10y2y"] = _yc.get("spread_10y_2y", 0)
-            features_payload["_curve_status"] = _yc.get("curve_status", "normal")
-            features_payload["_cboe_skew"] = _macro.get("cboe_skew", {}).get("skew_value", 0)
-            _fm = _macro.get("fred_macro", {})
-            features_payload["_unemployment_rate"] = _fm.get("unemployment_rate", 0)
-            features_payload["_cpi_yoy"] = _fm.get("cpi_yoy", 0)
-            features_payload["_rotation_phase"] = _macro.get("sector_momentum", {}).get("rotation_phase", "mixed")
-            features_payload["_market_gex_regime"] = _macro.get("market_gex", {}).get("net_regime", "balanced")
+                sym = c.get("symbol", "")
+                votes = c.get("votes", {})
+                strategy = next((k for k, v in votes.items() if v != "HOLD"), "batch_ai")
 
-            # 2026-05-19 (Phase B1) — capture the meta-model
-            # scores that influenced this prediction. The features
-            # dict already exposes meta_score if available; pull
-            # for first-class storage.
-            _meta_score = features_payload.get("meta_model_score")
-            _online_meta_score = features_payload.get("online_meta_score")
-            pred_id = record_prediction(
-                symbol=sym,
-                predicted_signal=pred_signal,
-                confidence=pred_confidence,
-                reasoning=pred_reasoning,
-                price_at_prediction=c.get("price", 0),
-                price_targets=price_targets,
-                db_path=ctx.db_path if ctx else None,
-                regime=current_regime,
-                strategy_type=strategy,
-                features=features_payload,
-                prediction_type=pred_type,
-                # Phase B1 fine-tune-quality fields. 2026-07-02: prompt_text
-                # + raw_response now live ONCE on the ai_cycles row (written
-                # at cycle mint above) — the dataset builder joins on
-                # cycle_id. Storing them per prediction duplicated the same
-                # bytes onto every candidate row of the cycle (6.15x bloat).
-                cycle_id=cycle_id,
-                prompt_text=None,
-                raw_response=None,
-                meta_model_score=_meta_score,
-                online_meta_score=_online_meta_score,
-                # 2026-05-20 #185 — capture the deterministic-panel
-                # snapshot stashed by ai_analyst._build_batch_prompt.
-                # None when the panel fired no rules for this
-                # candidate (record_prediction stores NULL); a non-
-                # empty list serializes to ai_predictions.rule_votes_json
-                # for the fine-tune dataset builder to join against
-                # multi-horizon outcomes.
-                rule_votes=c.get("_panel_verdicts"),
-            )
-            # Wave 3 / Fix #9 — log the per-specialist verdicts that
-            # contributed to this prediction so the calibrators can
-            # learn from each specialist's track record.
-            if pred_id and pred_id > 0 and ctx and getattr(ctx, "db_path", None):
-                specialists_for_pred = c.get("ensemble_specialists", [])
-                if specialists_for_pred:
-                    try:
-                        from specialist_calibration import record_outcomes_for_prediction
-                        record_outcomes_for_prediction(
-                            ctx.db_path, pred_id, specialists_for_pred,
-                        )
-                    except Exception as _exc:
-                        logging.warning(
-                            "Failed to record specialist outcomes "
-                            "for prediction %s: %s", pred_id, _exc,
-                        )
+                # Was this symbol selected as a PRIMARY trade by the AI?
+                # Ranked alternates (the conflict-substitution bench) are
+                # excluded here — a prediction records the AI's primary
+                # conviction, and most alternates never execute. Without this
+                # guard, an alternate-only symbol would be recorded as if it
+                # were a primary pick and skew the prediction-resolution
+                # win-rate.
+                selected = next(
+                    (t for t in ai_trades
+                     if t.get("symbol") == sym and not t.get("_is_alt")),
+                    None,
+                )
+
+                if selected:
+                    pred_signal = selected["action"]
+                    pred_confidence = selected.get("confidence", 50)
+                    pred_reasoning = selected.get("reasoning", "")
+                    price_targets = {
+                        "stop_loss": selected.get("stop_loss_pct"),
+                        "take_profit": selected.get("take_profit_pct"),
+                    }
+                else:
+                    # AI saw this candidate but passed — record as HOLD
+                    # so the resolver can check if passing was the right call
+                    pred_signal = "HOLD"
+                    pred_confidence = 0
+                    pred_reasoning = portfolio_reasoning[:300]
+                    price_targets = None
+
+                # Classify the prediction so the resolver applies the right
+                # win/loss criteria (see LONG_SHORT_PLAN.md §1.0). SELL on a
+                # held LONG = exit-quality question; SELL on something we don't
+                # hold = directional-bearish question. Lumping them together
+                # made 'Avg Move on SELLs' uninterpretable.
+                held_pos = positions_dict.get(sym)
+                held_qty = float(held_pos.get("qty", 0)) if held_pos else 0.0
+                # P0 (2026-07-01, selection-engine design): option opens classify as
+                # "option_open", never directional_long — otherwise every
+                # per-expression stat + meta-model training conflates spreads with
+                # stock longs. See ai_tracker.classify_prediction_type.
+                pred_type = classify_prediction_type(pred_signal, held_qty)
+
+                # Build feature payload for meta-model training (Phase 1).
+                # Strip non-numeric/non-scalar fields — store only what a feature
+                # extractor can reliably use (see meta_model.extract_features).
+                features_payload = {
+                    k: v for k, v in c.items()
+                    if k not in ("reason", "news", "votes", "rel_strength",
+                                  "alt_data", "social", "last_prediction",
+                                  "earnings_warning", "track_record",
+                                  # 2026-07-02 storage diet: prompt-render stash
+                                  # blobs (measured 81% of features_json,
+                                  # ~11 MB/day). _market_context/_portfolio are
+                                  # cycle-level context already persisted on
+                                  # ai_cycles; _panel_verdicts is separately
+                                  # persisted as rule_votes_json. Zero consumers
+                                  # read them from features_json.
+                                  "_market_context", "_portfolio",
+                                  "_panel_verdicts")
+                }
+                # Ledger-RAR override metadata (decision #4): persist ON this real
+                # prediction so the override_scorecard can later measure whether the
+                # AI's overrides beat the number. NOT meta-model features (the
+                # `_ledger_` keys aren't in the extractor whitelist, so they're
+                # stored + queryable but never trained on).
+                if selected:
+                    for _lk in ("_ledger_rar", "_ledger_best_rar",
+                                "_ledger_best_expr", "_ledger_is_override"):
+                        if _lk in selected:
+                            features_payload[_lk] = selected[_lk]
+                # Include meta-signals separately (flattened)
+                votes = c.get("votes", {})
+                for strat_name, vote in votes.items():
+                    features_payload[f"vote_{strat_name}"] = vote
+                rs = c.get("rel_strength") or {}
+                if rs:
+                    features_payload["rel_strength_vs_sector"] = rs.get("relative_strength", 0)
+                    features_payload["sector_trend"] = rs.get("sector_trend", "flat")
+                # Capture days-to-earnings so the self-tuner's
+                # _optimize_avoid_earnings_days rule can bucket resolved
+                # predictions by proximity to earnings. Negative values
+                # mean earnings already past or unknown — store as -1.
+                try:
+                    from earnings_calendar import check_earnings as _ck_earn
+                    _ec = _ck_earn(sym)
+                    features_payload["days_to_earnings"] = (
+                        int(_ec["days_until"]) if _ec and _ec.get("days_until") is not None
+                        else -1
+                    )
+                except Exception:
+                    features_payload["days_to_earnings"] = -1
+                alt = c.get("alt_data") or {}
+                if alt:
+                    features_payload["insider_direction"] = alt.get("insider", {}).get("net_direction", "neutral")
+                    features_payload["short_pct_float"] = alt.get("short", {}).get("short_pct_float", 0)
+                    features_payload["options_signal"] = alt.get("options", {}).get("signal", "neutral")
+                    features_payload["put_call_ratio"] = alt.get("options", {}).get("put_call_ratio", 0)
+                    features_payload["vwap_position"] = alt.get("intraday", {}).get("vwap_position", "at")
+                    features_payload["pe_trailing"] = alt.get("fundamentals", {}).get("pe_trailing", 0)
+                    # New per-symbol alt data
+                    features_payload["congress_direction"] = alt.get("congressional", {}).get("net_direction", "neutral")
+                    features_payload["finra_short_vol_ratio"] = alt.get("finra_short_vol", {}).get("short_volume_ratio", 0)
+                    features_payload["insider_cluster"] = 1 if alt.get("insider_cluster", {}).get("is_cluster") else 0
+                    features_payload["eps_revision_direction"] = alt.get("analyst_estimates", {}).get("eps_revision_direction", "flat")
+                    features_payload["eps_revision_magnitude"] = alt.get("analyst_estimates", {}).get("revision_magnitude_pct", 0)
+                    features_payload["insider_near_earnings"] = alt.get("insider_earnings", {}).get("insider_direction_near_earnings", "neutral")
+                    features_payload["dark_pool_pct"] = alt.get("dark_pool", {}).get("ats_pct_of_total", 0)
+                    features_payload["earnings_surprise_streak"] = alt.get("earnings_surprise", {}).get("streak", 0)
+                    features_payload["earnings_surprise_direction"] = alt.get("earnings_surprise", {}).get("surprise_direction", "mixed")
+                    # 4 local-SQLite alt-data sources — flatten into
+                    # features_payload so the meta-model can train on them
+                    # AND the Layer 2 weight tuner's `is_active` predicates
+                    # can look them up at decision time.
+                    cong = alt.get("congressional_recent") or {}
+                    features_payload["congressional_trades_60d"] = cong.get("trades_60d", 0)
+                    features_payload["congressional_dollar_volume_60d"] = cong.get("dollar_volume_60d", 0)
+                    features_payload["congressional_net_direction"] = cong.get("net_direction", "neutral")
+                    inst = alt.get("institutional_13f") or {}
+                    features_payload["institutional_13f_holders"] = inst.get("total_holders", 0)
+                    features_payload["institutional_13f_qoq_pct"] = inst.get("qoq_share_change_pct") or 0
+                    bio = alt.get("biotech_milestones") or {}
+                    features_payload["biotech_days_to_pdufa"] = bio.get("days_to_pdufa")
+                    features_payload["biotech_phase3_count"] = bio.get("active_phase3_count", 0)
+                    twits = alt.get("stocktwits_sentiment") or {}
+                    features_payload["stocktwits_message_count_7d"] = twits.get("message_count_7d", 0)
+                    features_payload["stocktwits_net_sentiment_7d"] = twits.get("net_sentiment_7d")
+                    features_payload["stocktwits_is_trending"] = 1 if twits.get("is_trending") else 0
+                    # Item 3a — Google Trends + Wikipedia attention signals
+                    gt = alt.get("google_trends") or {}
+                    features_payload["google_trends_z"] = gt.get("trend_z_score") or 0
+                    features_payload["google_trends_direction"] = gt.get("trend_direction", "flat")
+                    wp = alt.get("wikipedia_pageviews") or {}
+                    features_payload["wikipedia_pageviews_z"] = wp.get("pageview_z_score") or 0
+                    features_payload["wikipedia_pageviews_spike"] = 1 if wp.get("pageview_spike_flag") else 0
+                    # Item 3a — App Store ranking. Use 999 sentinel for
+                    # "not in top-200 chart" so the meta-model doesn't
+                    # misread missing-data as "rank #1" (which `or 0`
+                    # would imply).
+                    ap = alt.get("app_store_ranking") or {}
+                    features_payload["app_store_grossing_rank"] = (
+                        ap.get("best_grossing_rank") or 999
+                    )
+                    features_payload["app_store_free_rank"] = (
+                        ap.get("best_free_rank") or 999
+                    )
+                social = c.get("social") or {}
+                if social:
+                    features_payload["reddit_mentions"] = social.get("mentions", 0)
+                    features_payload["reddit_sentiment"] = social.get("sentiment_score", 0)
+                # Market context
+                features_payload["_regime"] = current_regime
+                features_payload["_market_signal_count"] = len([v for v in votes.values() if v != "HOLD"])
+                # Market-wide macro features
+                _macro = market_ctx.get("macro_context", {})
+                _yc = _macro.get("yield_curve", {})
+                features_payload["_yield_spread_10y2y"] = _yc.get("spread_10y_2y", 0)
+                features_payload["_curve_status"] = _yc.get("curve_status", "normal")
+                features_payload["_cboe_skew"] = _macro.get("cboe_skew", {}).get("skew_value", 0)
+                _fm = _macro.get("fred_macro", {})
+                features_payload["_unemployment_rate"] = _fm.get("unemployment_rate", 0)
+                features_payload["_cpi_yoy"] = _fm.get("cpi_yoy", 0)
+                features_payload["_rotation_phase"] = _macro.get("sector_momentum", {}).get("rotation_phase", "mixed")
+                features_payload["_market_gex_regime"] = _macro.get("market_gex", {}).get("net_regime", "balanced")
+
+                # 2026-05-19 (Phase B1) — capture the meta-model
+                # scores that influenced this prediction. The features
+                # dict already exposes meta_score if available; pull
+                # for first-class storage.
+                _meta_score = features_payload.get("meta_model_score")
+                _online_meta_score = features_payload.get("online_meta_score")
+                pred_id = record_prediction(
+                    symbol=sym,
+                    predicted_signal=pred_signal,
+                    confidence=pred_confidence,
+                    reasoning=pred_reasoning,
+                    price_at_prediction=c.get("price", 0),
+                    price_targets=price_targets,
+                    db_path=ctx.db_path if ctx else None,
+                    regime=current_regime,
+                    strategy_type=strategy,
+                    features=features_payload,
+                    prediction_type=pred_type,
+                    # Phase B1 fine-tune-quality fields. 2026-07-02: prompt_text
+                    # + raw_response now live ONCE on the ai_cycles row (written
+                    # at cycle mint above) — the dataset builder joins on
+                    # cycle_id. Storing them per prediction duplicated the same
+                    # bytes onto every candidate row of the cycle (6.15x bloat).
+                    cycle_id=cycle_id,
+                    prompt_text=None,
+                    raw_response=None,
+                    meta_model_score=_meta_score,
+                    online_meta_score=_online_meta_score,
+                    # 2026-05-20 #185 — capture the deterministic-panel
+                    # snapshot stashed by ai_analyst._build_batch_prompt.
+                    # None when the panel fired no rules for this
+                    # candidate (record_prediction stores NULL); a non-
+                    # empty list serializes to ai_predictions.rule_votes_json
+                    # for the fine-tune dataset builder to join against
+                    # multi-horizon outcomes.
+                    rule_votes=c.get("_panel_verdicts"),
+                )
+                # 2026-07-17 — carry the prediction id on the trade dict so
+                # the confidence gate (STEP 4.85, downstream) can hard-link
+                # its drop record to this row. The horizon resolver scores
+                # the prediction whether or not the trade executes, so the
+                # link makes every gate drop counterfactually scored — the
+                # evidence that keeps the threshold falsifiable.
+                if selected is not None and pred_id and pred_id > 0:
+                    selected["_pred_id"] = int(pred_id)
+                # Wave 3 / Fix #9 — log the per-specialist verdicts that
+                # contributed to this prediction so the calibrators can
+                # learn from each specialist's track record.
+                if pred_id and pred_id > 0 and ctx and getattr(ctx, "db_path", None):
+                    specialists_for_pred = c.get("ensemble_specialists", [])
+                    if specialists_for_pred:
+                        try:
+                            from specialist_calibration import record_outcomes_for_prediction
+                            record_outcomes_for_prediction(
+                                ctx.db_path, pred_id, specialists_for_pred,
+                            )
+                        except Exception as _exc:
+                            logging.warning(
+                                "Failed to record specialist outcomes "
+                                "for prediction %s: %s", pred_id, _exc,
+                            )
+            except Exception as _cand_exc:
+                logging.warning(
+                    "prediction recording failed for %s (continuing "
+                    "with remaining candidates): %s: %s",
+                    c.get("symbol", "?"), type(_cand_exc).__name__,
+                    _cand_exc,
+                )
     except Exception as exc:
         logging.warning(f"Failed to record batch predictions: {exc}")
 
@@ -3076,9 +3204,16 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                                     cycle_id=cycle_id,
                                     ai_confidence=t.get("confidence"),
                                     ai_reasoning=t.get("reasoning"),
+                                    # Same counterfactual link as the
+                                    # confidence gate's drops: the
+                                    # suppression threshold is only
+                                    # falsifiable if suppressed ideas'
+                                    # would-be outcomes stay queryable
+                                    # (review 2026-07-17 M2).
+                                    pred_id=t.get("_pred_id"),
                                 )
                             except Exception as _ms_exc:
-                                logging.debug(
+                                logging.warning(
                                     "meta-suppress drop record failed for "
                                     "%s: %s", sym, _ms_exc,
                                 )
@@ -3681,9 +3816,17 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                                 ai_trade.get("reasoning")
                                 if isinstance(ai_trade, dict) else None
                             ),
+                            # Counterfactual link (review 2026-07-17
+                            # M2): every doomsday-gate drop through
+                            # this dispatch point keeps its would-be
+                            # outcome queryable via the prediction row.
+                            pred_id=(
+                                ai_trade.get("_pred_id")
+                                if isinstance(ai_trade, dict) else None
+                            ),
                         )
                 except Exception as drop_exc:
-                    logging.debug(
+                    logging.warning(
                         "record_trade_drop persistence failed for "
                         "%s/%s: %s — drop still visible via the "
                         "WARNING log above",

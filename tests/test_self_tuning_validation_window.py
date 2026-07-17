@@ -168,10 +168,16 @@ def test_validation_confirms_adjustment_recommends_change(seeded_db):
                             outcome="loss", resolved_days_ago=5)
 
     result = self_tuning.get_auto_adjustments(_ctx_for_db(seeded_db))
-    assert result.get("confidence_threshold") in (60, 70), (
-        f"Validation confirmed adjustment but no threshold change "
-        f"recommended. result={result}"
-    )
+    # 2026-07-17: the recommender no longer proposes floor RAISES —
+    # the entry floor is a backstop and raises are operator-only (the
+    # one-way valve refuses them at the write choke). The validated
+    # evidence still surfaces, but as operator advice pointing at the
+    # Confidence Floor table, never as an actionable recommendation.
+    assert result.get("confidence_threshold") is None, (
+        f"floor raises must never be recommended; result={result}")
+    assert any("operator-owned" in r for r in result.get("reasons", [])), (
+        f"validated raise-evidence must surface as operator advice; "
+        f"reasons={result.get('reasons')}")
 
 
 def test_validation_rejects_adjustment_when_recent_data_disagrees(seeded_db):

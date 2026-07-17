@@ -79,6 +79,7 @@ What the AI sees right now, on this cycle.
 | **Specialist Ensemble** | Each candidate's per-specialist verdicts (earnings, pattern, sentiment, risk, adversarial). Vetoes highlighted. |
 | **Attention Signals** | Per held position: Google Trends z-score + direction, Wikipedia 7d/90d z-score + spike flag, App Store ranks. _Per-profile only — keyed to the selected profile's held positions._ |
 | **Specialist Veto Activity** | Per-specialist verdict counts over the last 7 days. Distinguishes "claimed" vetoes (any specialist that wrote VETO) from "effective" vetoes (specialists in `VETO_AUTHORIZED` that actually blocked a trade). Scope follows the page profile filter — single profile = that profile's vetoes; All Profiles = cross-profile aggregate. |
+| **Confidence Floor** | What the entries refused by the confidence floor would have done, banded by the gated confidence (last 30 days): refused count, scored count, would-be wins/losses, average would-be return. Every refused idea keeps its prediction and is scored against the market anyway — a refused band that keeps winning is evidence the floor is set too high. Scope follows the page profile filter. |
 | **Strategy Validations** | Recent backtest gauntlet runs from `strategy_validations.db`. Scope follows the page profile filter — single profile = rows for that profile's `market_type` only; All Profiles = cross-market rollup of the 30 newest. |
 
 ### 3d. Operations tab

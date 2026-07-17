@@ -242,7 +242,12 @@ def init_db(db_path=None):
                 drop_reason TEXT NOT NULL,
                 cycle_id TEXT,
                 ai_confidence INTEGER,
-                ai_reasoning TEXT
+                ai_reasoning TEXT,
+                -- 2026-07-17: link to the pre-gate ai_predictions row so
+                -- CONFIDENCE_GATE drops are counterfactually scored by
+                -- the existing horizon resolver (see _migrate_all_columns
+                -- entry for the full rationale). NULL on non-gate drops.
+                pred_id INTEGER
             );
             CREATE INDEX IF NOT EXISTS idx_trade_drops_timestamp
                 ON trade_drops(timestamp DESC);
@@ -892,6 +897,20 @@ def _migrate_all_columns(conn):
             # record_option_proposal_outcome fails with 'no such column'
             # (the _migrate_all_columns lesson from 2026-07-02).
             ("veto_class", "TEXT"),
+        ],
+        "trade_drops": [
+            # 2026-07-17 — hard link from a CONFIDENCE_GATE drop to the
+            # ai_predictions row recorded (pre-gate) for the same idea.
+            # The prediction is resolved by the horizon resolver whether
+            # or not the trade executed, so this link IS the gate's
+            # counterfactual scoring: join drops → resolved predictions
+            # and the blocked band's would-be outcomes fall out. Without
+            # it the threshold is unfalsifiable — no evidence can ever
+            # accumulate that the bar is set wrong. NULL on non-gate
+            # drops and rows from before the column existed (backfilled
+            # by migrate_confidence_backstop_2026_07_17 via
+            # (cycle_id, symbol)).
+            ("pred_id", "INTEGER"),
         ],
         "ai_predictions": [
             ("regime_at_prediction", "TEXT"),
@@ -1708,7 +1727,7 @@ def open_options_capital_at_risk(db_path=None) -> float:
 
 def record_trade_drop(db_path, symbol, side, drop_code, drop_reason,
                        cycle_id=None, ai_confidence=None,
-                       ai_reasoning=None):
+                       ai_reasoning=None, pred_id=None):
     """Persist a pre-broker trade drop. Called from every early-return
     path in trade_pipeline.execute_trade so the AI Brain panel can
     show the actual reason a proposed trade didn't make it to the
@@ -1730,11 +1749,12 @@ def record_trade_drop(db_path, symbol, side, drop_code, drop_reason,
             conn.execute(
                 "INSERT INTO trade_drops "
                 "(symbol, side, drop_code, drop_reason, cycle_id, "
-                " ai_confidence, ai_reasoning) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                " ai_confidence, ai_reasoning, pred_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (symbol, side, drop_code, drop_reason, cycle_id,
                  int(ai_confidence) if ai_confidence is not None else None,
-                 ai_reasoning),
+                 ai_reasoning,
+                 int(pred_id) if pred_id else None),
             )
             conn.commit()
     except Exception as exc:

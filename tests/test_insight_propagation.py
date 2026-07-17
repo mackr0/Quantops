@@ -23,7 +23,6 @@ class TestDetectorMapping:
         # we don't break when intentionally non-propagatable types
         # are added later.
         for change_type in [
-            "confidence_threshold_optimization",
             "regime_position_sizing",
             "strategy_toggle",
             "concentration_reduce",
@@ -34,6 +33,16 @@ class TestDetectorMapping:
         ]:
             assert _detector_for(change_type) is not None, (
                 f"No detector mapped for change_type {change_type!r}")
+
+    def test_confidence_raises_are_not_propagatable(self):
+        """2026-07-17: tuner raises of the entry-confidence floor are
+        refused by the one-way valve (the floor is a backstop; raises
+        are operator-only), so their change types must NEVER propagate
+        to peer profiles — propagation was one of the two paths that
+        could have rebuilt the allocator-era bars."""
+        from insight_propagation import _detector_for
+        assert _detector_for("confidence_threshold") is None
+        assert _detector_for("confidence_threshold_optimization") is None
 
     def test_unknown_change_type_returns_none(self):
         from insight_propagation import _detector_for

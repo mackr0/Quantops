@@ -1226,6 +1226,51 @@
         </article>
         {% endif %}
 
+        {% if ensemble_info.gate_calibration and ensemble_info.gate_calibration.total %}
+        <article style="margin:1rem 0; background:#f8f8f6; padding:0.75rem 1rem;">
+            <header style="padding:0;">
+                <h4 style="margin:0;">Confidence Floor — what refused entries would have done (last {{ ensemble_info.gate_calibration.window_days }} days)</h4>
+                <small class="muted">
+                    {{ ensemble_info.gate_calibration.total }} entr{{ 'y' if ensemble_info.gate_calibration.total == 1 else 'ies' }} refused by the confidence floor ·
+                    {{ ensemble_info.gate_calibration.linked }} carry a scoreable prediction (backup picks don't) ·
+                    {{ ensemble_info.gate_calibration.resolved }} scored against the market so far.
+                    Every refused primary idea keeps its prediction and gets scored anyway — if a refused band
+                    keeps winning, the floor is set too high and this table is the evidence.
+                </small>
+            </header>
+            <table style="width:100%; font-size:0.85rem; margin-top:0.5rem;">
+                <thead>
+                    <tr>
+                        <th style="text-align:left;">Confidence band</th>
+                        <th style="text-align:right;">Refused</th>
+                        <th style="text-align:right;">Scored</th>
+                        <th style="text-align:right;">Would-be wins</th>
+                        <th style="text-align:right;">Would-be losses</th>
+                        <th style="text-align:right;">Avg would-be return</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for b in ensemble_info.gate_calibration.bands %}
+                    <tr>
+                        <td>{{ b.band }}</td>
+                        <td style="text-align:right;">{{ b.n }}</td>
+                        <td style="text-align:right;">{{ b.resolved }}</td>
+                        <td style="text-align:right;">{{ b.wins }}</td>
+                        <td style="text-align:right;">{{ b.losses }}</td>
+                        <td style="text-align:right;">
+                            {% if b.avg_return_pct is not none %}
+                            <span class="{{ 'pnl-pos' if b.avg_return_pct >= 0 else 'pnl-neg' }}">{{ '%+.2f' % b.avg_return_pct }}%</span>
+                            {% else %}
+                            <span class="muted">pending</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </article>
+        {% endif %}
+
         {# Phase A3 of OPTIONS_PROGRAM_PLAN — per-profile Greeks panel.
            Highlights any leg within 80% of an active gate (amber) or
            over the gate (red). Empty when no profile has positions. #}
