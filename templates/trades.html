@@ -69,35 +69,66 @@
     </div>
 </div>
 <p class="muted" style="font-size:0.8rem;margin:0 0 0.6rem 0;">
-    These tabs filter the <strong>list of rows</strong> below.
+    These tabs filter the <strong>list of rows</strong> below and set the headline total to match.
     <strong>Closed (realized)</strong> = trades with locked-in profit or loss.
     <strong>Open (unrealized)</strong> = positions you still hold, valued at the latest price.
     Cancelled / expired orders never filled, so they carry no P&amp;L and show only under <strong>All</strong>.
-    The P&amp;L summary bar underneath always shows all three money totals — it doesn't change with the tab.
 </p>
 {% if pnl_summary %}
-<div style="display:flex;flex-wrap:wrap;gap:0.4rem 1.4rem;align-items:baseline;
+{# The headline metric follows the ACTIVE TAB (2026-07-15, operator:
+   "it doesn't make sense to change tabs and only ever see the
+   realized"): All → Total, Closed → Realized, Open → Unrealized.
+   The other two totals stay visible smaller so the split always
+   reconciles. An unreadable live valuation says so in the headline
+   slot — silently hiding money made a broken equity lookup look
+   like a stuck filter for a week. #}
+{# Fragments carry their own wrapper span (and render NOTHING when
+   their value is unavailable) so no empty flex items pad the gap.
+   "matches the dashboard" is only claimed on the single-profile view
+   — the dashboard deliberately shows no book-wide total, so the
+   aggregate says what it is instead: Σ across N profiles. A realized
+   figure that is knowingly short (an unreadable book) is stamped
+   "incomplete" — a partial sum must never present as the whole. #}
+{% set _incomplete_mark %}{% if pnl_summary.realized_incomplete %} <span class="muted">· incomplete</span>{% endif %}{% endset %}
+{% set _total_tag %}{% if pnl_summary.n_profiles > 1 %}· live · Σ across {{ pnl_summary.n_profiles }} profiles{% else %}· live · matches the dashboard{% endif %}{% endset %}
+{% set _realized_html %}<span style="font-size:0.85rem;"><span class="muted">Realized</span> <strong class="{{ 'pnl-pos' if pnl_summary.realized >= 0 else 'pnl-neg' }}">{{ pnl_summary.realized_str }}</strong> <span class="muted">({{ pnl_summary.realized_n }} closed trade{{ '' if pnl_summary.realized_n == 1 else 's' }})</span>{{ _incomplete_mark }}</span>{% endset %}
+{% set _unreal_html %}{% if pnl_summary.total is not none %}<span style="font-size:0.85rem;"><span class="muted">Unrealized (open)</span> <strong class="{{ 'pnl-pos' if pnl_summary.unrealized >= 0 else 'pnl-neg' }}">{{ pnl_summary.unrealized_str }}</strong></span>{% endif %}{% endset %}
+{% set _total_html %}{% if pnl_summary.total is not none %}<span style="font-size:0.85rem;"><span class="muted">Total</span> <strong class="{{ 'pnl-pos' if pnl_summary.total >= 0 else 'pnl-neg' }}">{{ pnl_summary.total_str }}</strong> <span class="muted">{{ _total_tag }}</span></span>{% endif %}{% endset %}
+{% set _unavail_html %}{% if pnl_summary.total is none and pnl_summary.total_unavailable_reason %}<span class="muted" style="font-size:0.88rem;">Unrealized / Total unavailable — {{ pnl_summary.total_unavailable_reason }}</span>{% endif %}{% endset %}
+<div id="pnl-lead" data-lead="{{ view or 'all' }}"
+     style="display:flex;flex-wrap:wrap;gap:0.35rem 1.4rem;align-items:baseline;
             padding:0.6rem 0.85rem;margin:0 0 1rem;border:1px solid #e3e3ea;
             border-radius:5px;background:#fafafb;font-size:0.9rem;">
-    <span><span class="muted">Realized P&amp;L</span>
+    {% if view == 'realized' %}
+    <span style="font-size:1.12rem;"><span class="muted">Realized P&amp;L</span>
         <strong class="{{ 'pnl-pos' if pnl_summary.realized >= 0 else 'pnl-neg' }}">{{ pnl_summary.realized_str }}</strong>
-        <span class="muted" style="font-size:0.82rem;">· {{ pnl_summary.realized_n }} closed trade{{ '' if pnl_summary.realized_n == 1 else 's' }}</span>
+        <span class="muted" style="font-size:0.82rem;">· {{ pnl_summary.realized_n }} closed trade{{ '' if pnl_summary.realized_n == 1 else 's' }}</span>{{ _incomplete_mark }}
     </span>
+    {{ _unreal_html }}
+    {{ _total_html }}
+    {{ _unavail_html }}
+    {% elif view == 'unrealized' %}
     {% if pnl_summary.total is not none %}
-    <span><span class="muted">Unrealized (open)</span>
+    <span style="font-size:1.12rem;"><span class="muted">Unrealized P&amp;L (open)</span>
         <strong class="{{ 'pnl-pos' if pnl_summary.unrealized >= 0 else 'pnl-neg' }}">{{ pnl_summary.unrealized_str }}</strong>
+        <span class="muted" style="font-size:0.82rem;">· live</span>
     </span>
-    <span><span class="muted">Total</span>
+    {% else %}
+    {{ _unavail_html }}
+    {% endif %}
+    {{ _realized_html }}
+    {{ _total_html }}
+    {% else %}
+    {% if pnl_summary.total is not none %}
+    <span style="font-size:1.12rem;"><span class="muted">Total P&amp;L</span>
         <strong class="{{ 'pnl-pos' if pnl_summary.total >= 0 else 'pnl-neg' }}">{{ pnl_summary.total_str }}</strong>
-        <span class="muted" style="font-size:0.82rem;">· live · matches the dashboard</span>
+        <span class="muted" style="font-size:0.82rem;">{{ _total_tag }}</span>
     </span>
-    {% elif pnl_summary.total_unavailable_reason %}
-    {# An unreadable live valuation must say so — silently hiding the
-       Unrealized/Total spans made a broken equity lookup look like a
-       stuck filter for a week (caught by the operator 2026-07-15). #}
-    <span class="muted" style="font-size:0.82rem;">
-        Unrealized / Total unavailable — {{ pnl_summary.total_unavailable_reason }}
-    </span>
+    {% else %}
+    {{ _unavail_html }}
+    {% endif %}
+    {{ _realized_html }}
+    {{ _unreal_html }}
     {% endif %}
     {% if pnl_summary.never_filled_n %}
     <span class="muted" style="font-size:0.82rem;">{{ pnl_summary.never_filled_n }} order{{ '' if pnl_summary.never_filled_n == 1 else 's' }} never filled — not P&amp;L</span>

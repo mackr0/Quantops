@@ -134,6 +134,12 @@ def patched_user_with_profiles(tmp_path, monkeypatch):
         from journal import init_db as init_journal_db
         init_journal_db(db)
 
+    # Route code resolves per-profile DBs by RELATIVE path
+    # ("quantopsai_profile_N.db"), so without this chdir every test
+    # using this fixture silently read/created DB files in the repo
+    # root instead of the seeded ones above (review 2026-07-16 #7).
+    monkeypatch.chdir(tmp_path)
+
     # Seed users + trading_profiles
     conn = sqlite3.connect(master_db)
     conn.execute(

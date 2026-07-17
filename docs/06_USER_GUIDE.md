@@ -179,6 +179,7 @@ Settings are organized into sections. Every numeric / boolean knob has a tooltip
 
 Trade ledger across all profiles.
 
+- **View tabs + P&L headline**: the All / Closed (realized) / Open (unrealized) tabs filter the row list **and** set the headline money total to match — All leads with **Total P&L**, Closed leads with **Realized P&L**, Open leads with **Unrealized P&L**; the other two totals stay visible smaller so the split always reconciles (Total = Realized + Unrealized = equity − initial capital). On a single profile the Total is tagged "matches the dashboard" (same live number); on the all-profiles view it's tagged "Σ across N profiles" (the dashboard intentionally shows no book-wide total). If any profile's live valuation or trade book can't be read, the bar says so explicitly — and stamps a knowingly-partial Realized figure "incomplete" — rather than showing a short or fabricated total.
 - Filters: profile, symbol, side, status, date range.
 - Each row: timestamp, symbol, side, qty, price, fill price, slippage_pct, P&L, AI confidence, AI reasoning (truncated, expandable).
 - **P&L column**:

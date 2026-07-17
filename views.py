@@ -116,6 +116,16 @@ def _safe_account_info(ctx):
     try:
         from client import get_account_info
         result = get_account_info(ctx=ctx)
+        # A degraded book (trades table unreadable → initial-capital
+        # fallback stamped degraded=True) is a FAILURE, not data —
+        # same rule as the except below: failures are never cached,
+        # and no money display may render the fabricated numbers.
+        if result and result.get("degraded"):
+            logger.warning(
+                "Account for %s is degraded (book unreadable); "
+                "treating as unavailable",
+                ctx.display_name or ctx.segment)
+            return None
         if db_path:
             _dashboard_cache[f"account_{db_path}"] = (time.time(), result)
         return result
@@ -538,15 +548,22 @@ def _trades_pnl_summary(profile_ids, account_equity_by_pid=None,
                  gain/loss).
     never_filled = count of canceled/expired/rejected/done_for_day orders
                  (pnl-less noise — shown so the user knows it isn't P&L).
-    total / unrealized: only when equity is supplied (single-profile
-                 view). total = equity − initial_capital (the SAME number
-                 the dashboard shows); unrealized = total − realized. By
-                 construction realized + unrealized == the dashboard P&L,
-                 so the page reconciles with the overview.
+    total / unrealized: whenever live equity is supplied for EVERY
+                 profile in scope — the selected profile, or all of
+                 them on the aggregate view. total = Σ(equity) −
+                 Σ(initial_capital) (the SAME number the dashboard
+                 shows); unrealized = total − realized. By construction
+                 realized + unrealized == the dashboard P&L, so the
+                 page reconciles with the overview.
     """
     realized = 0.0
     realized_n = 0
     never_filled_n = 0
+    unreadable = []  # books whose journal read failed — the realized
+    #                  figure is short by exactly those books, so the
+    #                  header must say so (and no honest Unrealized
+    #                  split exists: unrealized = total − realized
+    #                  would be INFLATED by the missing realized).
     _ph = ",".join("?" * len(_NEVER_FILLED_STATUSES))
     for pid in profile_ids:
         db_path = f"quantopsai_profile_{pid}.db"
@@ -563,6 +580,7 @@ def _trades_pnl_summary(profile_ids, account_equity_by_pid=None,
                     "IN (%s)" % _ph, _NEVER_FILLED_STATUSES
                 ).fetchone()[0] or 0)
         except Exception as exc:
+            unreadable.append(pid)
             logger.warning(
                 "_trades_pnl_summary: could not read profile %s: %s",
                 pid, exc,
@@ -577,7 +595,12 @@ def _trades_pnl_summary(profile_ids, account_equity_by_pid=None,
         "realized": round(realized, 2),
         "realized_str": _money(realized),
         "realized_n": realized_n,
+        # Realized is a partial sum when any book was unreadable —
+        # the template stamps it "incomplete" so a knowingly-short
+        # figure is never presented as the whole story.
+        "realized_incomplete": bool(unreadable),
         "never_filled_n": never_filled_n,
+        "n_profiles": len(profile_ids),
         "total": None, "total_str": None,
         "unrealized": None, "unrealized_str": None,
         # When total stays None the template SHOWS this reason — a
@@ -586,28 +609,54 @@ def _trades_pnl_summary(profile_ids, account_equity_by_pid=None,
         # 2026-07-15). Missing money columns must explain themselves.
         "total_unavailable_reason": None,
     }
-    # Equity-based total only when a single profile's equity is known —
-    # mirrors the dashboard's `equity − initial_capital`, so the split
-    # reconciles exactly.
-    if len(profile_ids) != 1:
+    # Equity-based total whenever EVERY profile in scope has a live
+    # equity — single-profile AND the all-profiles aggregate alike
+    # (2026-07-15: the aggregate view used to hide the split behind a
+    # "select a single profile" excuse; the dashboard computes every
+    # profile's live equity on one page, so this page can too). Total
+    # mirrors the dashboard's Σ(equity) − Σ(initial capital), so the
+    # split reconciles exactly. Fail-HONEST: if any book's valuation
+    # is unreadable, an aggregate that silently omits it would be a
+    # wrong number — say so instead.
+    eq_by = account_equity_by_pid or {}
+    cap_by = initial_capital_by_pid or {}
+    no_eq = [pid for pid in profile_ids if eq_by.get(pid) is None]
+    bad_cap = [pid for pid in profile_ids
+               if (cap_by.get(pid) or 0) <= 0]
+    multi = len(profile_ids) > 1
+
+    def _scope(pids):
+        return (f"{len(pids)} of {len(profile_ids)} profiles"
+                if multi else "this profile")
+
+    if unreadable:
+        # The journal read itself failed, so realized is short and
+        # unrealized (total − realized) would be inflated by exactly
+        # the missing books — no honest split exists.
         out["total_unavailable_reason"] = (
-            "select a single profile to see the live Unrealized and "
-            "Total split")
-        return out
-    pid = profile_ids[0]
-    eq = (account_equity_by_pid or {}).get(pid)
-    cap = (initial_capital_by_pid or {}).get(pid)
-    if eq is not None and cap and cap > 0:
-        total = float(eq) - float(cap)
+            ("the trade book could not be read for " + _scope(unreadable)
+             if multi else "this profile's trade book could not be read")
+            + ", so these totals would be wrong; refresh to retry")
+    elif no_eq:
+        out["total_unavailable_reason"] = (
+            "the live valuation could not be fetched for "
+            + _scope(no_eq) + " on this page load; refresh to retry")
+    elif bad_cap:
+        # Equity fetched fine — the CAPITAL BASELINE is what's
+        # unusable (profile has no positive initial capital), which
+        # is a different failure than a marks outage and must not be
+        # misreported as one.
+        out["total_unavailable_reason"] = (
+            "no initial-capital baseline is recorded for "
+            + _scope(bad_cap) + ", so P&L has no reference point")
+    elif profile_ids:
+        total = (sum(float(eq_by[pid]) for pid in profile_ids)
+                 - sum(float(cap_by[pid]) for pid in profile_ids))
         unreal = total - realized
         out["total"] = round(total, 2)
         out["total_str"] = _money(total)
         out["unrealized"] = round(unreal, 2)
         out["unrealized_str"] = _money(unreal)
-    else:
-        out["total_unavailable_reason"] = (
-            "the live account valuation could not be fetched for this "
-            "page load; refresh to retry")
     return out
 
 
@@ -2502,43 +2551,55 @@ def trades():
     page_links = _build_page_links(page, total_pages, window=2)
 
     # Reconciliation header: realized vs unrealized vs never-filled, so
-    # the trades page tells the same P&L story as the dashboard. For a
-    # single profile we also show the equity-based total (= dashboard
-    # number) split into realized (Σ booked pnl) and unrealized (the
-    # remainder, i.e. open-position marks). Best-effort — never blocks
-    # the page.
+    # the trades page tells the same P&L story as the dashboard. The
+    # equity-based total (= dashboard number) is computed for the
+    # CURRENT SCOPE — the selected profile, or Σ across every profile
+    # on the all-profiles view (2026-07-15: the aggregate used to punt
+    # with "select a single profile"; the dashboard values every
+    # profile live on one page, so this page does too). Live-equity
+    # fetches fan out concurrently like the dashboard's. Best-effort —
+    # never blocks the page.
     pnl_summary = None
     try:
-        if selected_profile_int:
-            sel_prof = next((p for p in profiles
-                             if p["id"] == selected_profile_int), None)
+        scope = ([p for p in profiles
+                  if p["id"] == selected_profile_int]
+                 if selected_profile_int else list(profiles or []))
+        if scope:
             equity_by, cap_by = {}, {}
-            if sel_prof:
-                cap_by[selected_profile_int] = float(
-                    sel_prof.get("initial_capital") or 0)
+            for p in scope:
+                cap_by[p["id"]] = float(p.get("initial_capital") or 0)
+
+            def _fetch_equity(pid):
+                # _safe_account_info returns None on fetch failure AND
+                # on a degraded book (unreadable trades table → the
+                # journal's initial-capital fallback) — either way the
+                # profile counts as missing and the header says so
+                # instead of booking a fabricated $0 P&L into the
+                # aggregate. It also shares the dashboard's 30s
+                # account cache, so the two pages show the same marks.
+                # (Predecessor bug, 2026-07-15: this fetch referenced
+                # an unimported name, the except ate the NameError,
+                # and Unrealized/Total silently never rendered.)
                 try:
-                    # Local import — this name was NEVER imported in
-                    # this scope, so every single render since the
-                    # header shipped raised NameError here, the except
-                    # ate it as a warning, and the Unrealized/Total
-                    # spans silently never appeared (operator caught it
-                    # 2026-07-15: "all three views show the same
-                    # number"). The swallowed-error-hides-dead-feature
-                    # class again.
-                    from client import get_account_info
-                    _sctx = build_user_context_from_profile(selected_profile_int)
-                    _acct = get_account_info(ctx=_sctx)
-                    equity_by[selected_profile_int] = float(
-                        _acct.get("equity") or 0)
+                    _ctx = build_user_context_from_profile(pid)
+                    _acct = _safe_account_info(_ctx)
+                    if not _acct:
+                        return pid, None
+                    return pid, float(_acct.get("equity") or 0)
                 except Exception as exc:
                     logger.warning(
-                        "trades(): equity for P&L summary failed (profile "
-                        "%d): %s", selected_profile_int, exc,
-                    )
+                        "trades(): equity for P&L summary failed "
+                        "(profile %d): %s", pid, exc)
+                    return pid, None
+
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=10) as pool:
+                for pid, eq in pool.map(_fetch_equity,
+                                        [p["id"] for p in scope]):
+                    if eq is not None:
+                        equity_by[pid] = eq
             pnl_summary = _trades_pnl_summary(
-                [selected_profile_int], equity_by, cap_by)
-        elif profiles:
-            pnl_summary = _trades_pnl_summary([p["id"] for p in profiles])
+                [p["id"] for p in scope], equity_by, cap_by)
     except Exception as exc:
         logger.warning("trades(): P&L summary failed: %s", exc)
         pnl_summary = None
@@ -3212,6 +3273,13 @@ def performance_dashboard():
             from client import get_account_info
             _lctx = build_user_context_from_profile(selected_profile_int)
             _lacct = get_account_info(ctx=_lctx)
+            if _lacct.get("degraded"):
+                # Unreadable book → the journal returned its
+                # initial-capital fallback; a live-recon line built
+                # on it would claim $0 P&L as live truth. Same
+                # omit-with-warning path as a fetch failure.
+                raise RuntimeError(
+                    "book degraded — trades table unreadable")
             _leq = float(_lacct.get("equity") or 0)
             if _leq > 0 and total_initial_capital > 0:
                 _ltotal = _leq - total_initial_capital
@@ -3949,6 +4017,13 @@ def _build_long_short_awareness(profiles):
             from client import get_account_info, get_positions
             ctx = build_user_context_from_profile(p["id"])
             account = get_account_info(ctx=ctx) or {}
+            if account.get("degraded"):
+                # Unreadable book → beta/exposure/drawdown computed on
+                # the initial-capital fallback would be fiction; the
+                # except below keeps the n/a row, which is the honest
+                # rendering for an unreadable book.
+                raise RuntimeError(
+                    "book degraded — trades table unreadable")
             poss = get_positions(ctx=ctx) or []
             equity = float(account.get("equity") or 0)
             positions = []
@@ -6262,6 +6337,13 @@ def api_dashboard_totals():
                     "profile %s: %s", p.get("id"), exc,
                 )
                 cost_today = 0.0
+            if account.get("degraded"):
+                # Unreadable book → journal's initial-capital fallback.
+                # Raising routes into the per-profile skip below, so
+                # the JS refresh keeps the row's last honest value
+                # instead of overwriting it with a fabricated $0 P&L.
+                raise RuntimeError(
+                    "book degraded — trades table unreadable")
             equity = float(account.get("equity") or 0)
             cash = float(account.get("cash") or 0)
             n_pos = len(positions)

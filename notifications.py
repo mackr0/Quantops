@@ -306,6 +306,12 @@ def _notify_trade_disabled(trade_result, signal=None, ai_result=None, ctx=None):
     # -- Account snapshot ----------------------------------------------------
     try:
         account = get_account_info(ctx=ctx)
+        if account.get("degraded"):
+            # Unreadable book → initial-capital fallback; emailing
+            # those numbers as an "Account Snapshot" would present
+            # fabricated money as truth. Omit the section (the
+            # except below logs it) — same as a fetch failure.
+            raise RuntimeError("book degraded — trades table unreadable")
         acct_info = (
             _kv_row("Equity", f"${account['equity']:,.2f}")
             + _kv_row("Cash", f"${account['cash']:,.2f}")
@@ -507,6 +513,12 @@ def notify_daily_summary(ctx=None):
     # -- Account overview ----------------------------------------------------
     try:
         account = get_account_info(ctx=ctx)
+        if account.get("degraded"):
+            # Unreadable book → initial-capital fallback; the daily
+            # summary must not present fabricated money as truth.
+            # Omit the section (the except logs it) — same handling
+            # as a fetch failure.
+            raise RuntimeError("book degraded — trades table unreadable")
         positions = get_positions(ctx=ctx)
         total_unrealized = sum(p.get("unrealized_pl", 0) for p in positions)
 

@@ -2509,6 +2509,11 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
 _NEG_CASH_ALARM_MEMO: dict = {}
 _NEG_CASH_ALARM_INTERVAL_SEC = 1800
 
+# Rate-limit memo for the degraded-book alarm in
+# get_virtual_account_info: db_path → last ERROR wall-clock. Same
+# rationale — loud, but not once per dashboard poll.
+_DEGRADED_BOOK_ALARM_MEMO: dict = {}
+
 
 def get_virtual_cash(db_path=None, initial_capital=100000.0):
     """Cash-only slice of get_virtual_account_info: identical statuses,
@@ -2674,12 +2679,33 @@ def get_virtual_account_info(db_path=None, initial_capital=100000.0,
     cash_val = get_virtual_cash(db_path=db_path,
                                 initial_capital=initial_capital)
     if cash_val is None:
+        # The trades table is unreadable (locked/corrupt). The
+        # initial-capital fallback keeps long-standing consumers alive,
+        # but it is NOT the real book — so it is stamped degraded=True
+        # and every MONEY DISPLAY must render "unavailable" instead of
+        # these numbers (review 2026-07-16 #1: a locked profile DB
+        # silently booked that book at exactly $0 P&L inside the
+        # trades-page aggregate, under a "· live" tag). Trading is
+        # separately safe: the buy-side cash door calls
+        # get_virtual_cash itself and fails CLOSED on the same None.
+        import time as _time
+        _now = _time.time()
+        if (_now - _DEGRADED_BOOK_ALARM_MEMO.get(db_path or "", 0)
+                >= _NEG_CASH_ALARM_INTERVAL_SEC):
+            _DEGRADED_BOOK_ALARM_MEMO[db_path or ""] = _now
+            logging.error(
+                "DEGRADED BOOK %s: trades table unreadable; virtual "
+                "account info is falling back to the initial-capital "
+                "snapshot (degraded=True). Displays must show "
+                "'unavailable', not these numbers.", db_path or "?",
+            )
         return {
             "equity": initial_capital,
             "buying_power": initial_capital,
             "cash": initial_capital,
             "portfolio_value": 0.0,
             "status": "ACTIVE",
+            "degraded": True,
         }
     cash = cash_val
 

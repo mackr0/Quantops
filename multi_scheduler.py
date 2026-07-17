@@ -3910,6 +3910,16 @@ def _task_daily_snapshot(ctx):
 
     init_db(ctx.db_path)
     account = get_account_info(ctx=ctx)
+    if account.get("degraded"):
+        # Unreadable book → journal returned its initial-capital
+        # fallback. Writing that into daily_snapshots would PERSIST a
+        # fabricated equity into the historical record (every metrics
+        # curve reads this table). Fail the task loudly instead —
+        # a missing snapshot is recoverable, a poisoned one is not.
+        raise RuntimeError(
+            f"daily snapshot refused for {ctx.db_path}: book degraded "
+            "(trades table unreadable) — would persist fabricated "
+            "equity into daily_snapshots")
     positions = get_positions(ctx=ctx)
     equity = account["equity"]
 
