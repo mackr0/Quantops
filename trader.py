@@ -289,6 +289,12 @@ def _journal_exit_order_id_minimal(db_path, symbol, side, qty, price,
             fields = ["symbol", "side", "qty", "price", "order_id",
                       "signal_type", "status"]
             values = [symbol, side, qty, price, order_id, "SELL", status]
+            if "timestamp" in cols:
+                # A NULL timestamp breaks FIFO ordering (gvp sorts by
+                # timestamp) — stamp the row like log_trade does.
+                from datetime import datetime as _dt_min
+                fields.append("timestamp")
+                values.append(_dt_min.utcnow().isoformat())
             if "pnl" in cols and pnl is not None:
                 fields.append("pnl")
                 values.append(pnl)
@@ -663,6 +669,15 @@ def check_exits(ctx=None):
                         "qty": abs(int(float(pos["qty"]))),
                         "is_short": True,
                         "trigger": "time_stop",
+                        # 2026-07-20 — every trigger dict MUST carry
+                        # "price". This one didn't, and the missing key
+                        # blew up _process_exit_trigger AFTER the cover
+                        # was live at the broker: the KeyError escaped
+                        # through the A0 fallback (which read the same
+                        # key) and 12 time-stop covers went completely
+                        # un-journaled — the Jul-20 kill-switch drift.
+                        "price": (float(pos.get("current_price") or 0)
+                                  or None),
                         "reason": (
                             f"Short held > {int(ctx.short_max_hold_days)} days — "
                             f"covering regardless of P&L (borrow eats capital "
@@ -998,12 +1013,18 @@ def _process_exit_trigger(trigger_signal, api, ctx, db_path, positions,
     # even that fails. See PROFILE_ORDER_ISOLATION.md (A0) and
     # feedback_no_orphan_broker_fills.
     _exit_status = "pending_fill" if pnl is not None else "open"
+    # 2026-07-20 — read the trigger price ONCE, None-safe. A trigger
+    # dict without "price" (the time-stop class) must degrade to a
+    # NULL price (update_fills backfills from the broker), never to a
+    # KeyError after the order is live. The journal row is the
+    # load-bearing artifact; a missing display price is cosmetic.
+    _trigger_price = trigger_signal.get("price")
     try:
         log_trade(
             symbol=symbol,
             side=side_label,
             qty=qty,
-            price=trigger_signal["price"],
+            price=_trigger_price,
             order_id=order.id,
             signal_type="SELL",
             strategy=trigger_signal["trigger"],
@@ -1016,7 +1037,7 @@ def _process_exit_trigger(trigger_signal, api, ctx, db_path, positions,
             # matching BUY rows when fill_price populates. Avoids the
             # phantom-SELL window if Alpaca async-cancels.
             status=_exit_status,
-            decision_price=trigger_signal["price"],
+            decision_price=_trigger_price,
             db_path=db_path,
         )
     except Exception as _lt_exc:
@@ -1026,10 +1047,25 @@ def _process_exit_trigger(trigger_signal, api, ctx, db_path, positions,
             "to avoid an orphan fill",
             symbol, order.id, type(_lt_exc).__name__, _lt_exc,
         )
-        _journaled = _journal_exit_order_id_minimal(
-            db_path, symbol, side_label, qty,
-            trigger_signal["price"], order.id, _exit_status, pnl,
-        )
+        # 2026-07-20 — the fallback invocation must be UN-DEFEATABLE:
+        # pre-fix it re-subscripted trigger_signal["price"], so the
+        # very KeyError that broke log_trade re-raised INSIDE this
+        # except handler, escaped _process_exit_trigger, and skipped
+        # both the minimal journal AND the halt — 12 live covers with
+        # no journal row and no alarm. Nothing inside this handler may
+        # evaluate anything fallible outside its own try.
+        try:
+            _journaled = _journal_exit_order_id_minimal(
+                db_path, symbol, side_label, qty,
+                _trigger_price, order.id, _exit_status, pnl,
+            )
+        except Exception as _min_exc:
+            logging.error(
+                "Minimal exit journal raised for %s order %s (%s: %s) "
+                "— falling through to profile halt",
+                symbol, order.id, type(_min_exc).__name__, _min_exc,
+            )
+            _journaled = False
         if not _journaled:
             # The order_id could not be persisted by ANY path — this
             # is a true orphan-fill risk. Halt the profile so the

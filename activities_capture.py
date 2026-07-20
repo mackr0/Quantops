@@ -244,17 +244,27 @@ def capture_activities_for_profile(ctx,
             getattr(ctx, "profile_id", "?"), exc,
         )
         return summary
-    try:
-        activities = api.get_activities(
-            activity_types=",".join(_HANDLED_TYPES),
-            after=since.isoformat(),
-        )
-    except Exception as exc:
-        logger.warning(
-            "activities_capture: get_activities failed for profile %s: %s",
-            getattr(ctx, "profile_id", "?"), exc,
-        )
-        return summary
+    # 2026-07-20 — fetch PER TYPE. The previous comma-joined string
+    # ('DIV,OPEXP,OPASN,OPXRC') was rejected by Alpaca as one unknown
+    # type ("invalid activity type: DIV,OPEXP,OPASN,OPXRC"), which
+    # silently killed the ENTIRE capture stream on every cycle — no
+    # dividends, no option expiry/assignment events, ever. Per-type
+    # calls survive an API/SDK that only accepts a single type, and a
+    # failure in one type can no longer take down the rest.
+    activities = []
+    for _a_type in _HANDLED_TYPES:
+        try:
+            batch = api.get_activities(
+                activity_types=_a_type,
+                after=since.isoformat(),
+            )
+            activities.extend(list(batch) if batch is not None else [])
+        except Exception as exc:
+            logger.warning(
+                "activities_capture: get_activities(%s) failed for "
+                "profile %s: %s",
+                _a_type, getattr(ctx, "profile_id", "?"), exc,
+            )
 
     for a in activities:
         a_type = getattr(a, "activity_type", "")

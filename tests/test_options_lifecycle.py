@@ -77,10 +77,16 @@ def _activity(a_type, occ, qty=1, aid="act-1"):
 
 def _api(positions=(), activities=()):
     """Broker mock: list_positions + get_activities both stubbed so
-    no test leaks a MagicMock iterable into the sweep."""
+    no test leaks a MagicMock iterable into the sweep. get_activities
+    filters by the requested type, modeling the per-type fetch the
+    real Alpaca API requires (comma-joined type strings are rejected;
+    see test_timestop_cover_journaling_2026_07_20)."""
     api = MagicMock()
     api.list_positions.return_value = list(positions)
-    api.get_activities.return_value = list(activities)
+    acts = list(activities)
+    api.get_activities.side_effect = (
+        lambda activity_types=None, after=None:
+        [a for a in acts if a.activity_type == activity_types])
     return api
 
 

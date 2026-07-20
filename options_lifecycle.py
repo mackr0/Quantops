@@ -229,23 +229,34 @@ _EXPIRY_ACTIVITY_TYPES = ("OPEXP", "OPASN", "OPXRC")
 def _fetch_expiry_activities(api, since_iso: str) -> Optional[List[Any]]:
     """Fetch OPEXP/OPASN/OPXRC activities from the broker.
 
-    Returns None (not []) on fetch failure so callers can distinguish
-    "broker said nothing happened" from "we couldn't ask" — the latter
-    must DEFER, never guess.
+    Fetches PER TYPE (2026-07-20): Alpaca rejected the comma-joined
+    form as one unknown type ("invalid activity type: ..."), which
+    would make this function permanently return None and every ITM row
+    defer forever. One call per type survives that API shape, and one
+    type failing doesn't blind the others.
+
+    Returns None (not []) when ANY type's fetch failed so callers can
+    distinguish "broker said nothing happened" from "we couldn't ask
+    completely" — an incomplete answer must DEFER, never guess. (A
+    partial list would risk closing an assigned contract as worthless
+    because the OPASN fetch happened to be the one that failed.)
     """
-    try:
-        acts = api.get_activities(
-            activity_types=",".join(_EXPIRY_ACTIVITY_TYPES),
-            after=since_iso,
-        )
-        return list(acts) if acts is not None else []
-    except Exception as exc:
-        logger.warning(
-            "options_lifecycle: get_activities failed (%s) — deferring "
-            "all ITM-candidate rows this pass rather than guessing "
-            "expiry outcomes", exc,
-        )
-        return None
+    out: List[Any] = []
+    all_ok = True
+    for a_type in _EXPIRY_ACTIVITY_TYPES:
+        try:
+            acts = api.get_activities(
+                activity_types=a_type, after=since_iso,
+            )
+            out.extend(list(acts) if acts is not None else [])
+        except Exception as exc:
+            all_ok = False
+            logger.warning(
+                "options_lifecycle: get_activities(%s) failed (%s) — "
+                "ITM-candidate rows will defer this pass rather than "
+                "resolve on incomplete broker data", a_type, exc,
+            )
+    return out if all_ok else None
 
 
 def _journal_expiry_activities(conn, occ: str) -> Dict[str, float]:
