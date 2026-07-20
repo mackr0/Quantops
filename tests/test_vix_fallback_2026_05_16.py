@@ -44,14 +44,19 @@ def _spy_hist():
 
 
 def _patch_spy_hist(monkeypatch):
-    """Stub out the SPY history call so we focus on the VIX branch."""
-    import market_regime
-    # detect_regime fetches SPY via `client._get_history` (or similar);
-    # easier route is to patch the bar-fetcher used by the module.
-    # Inspect: detect_regime calls `_get_history("SPY", ...)`. Patch it.
+    """Stub the SPY bar fetch so these tests are hermetic.
+
+    detect_regime does `from market_data import get_bars` INSIDE the
+    function body, so the patch target is `market_data.get_bars`. The
+    previous target (`market_regime._get_history`, with raising=False)
+    never existed — the patch was a silent no-op and the tests only
+    passed when a LIVE Yahoo/Alpaca fetch happened to succeed, i.e.
+    they were network-dependent by accident (caught 2026-07-20 in a
+    sandboxed environment where the live fetch 403s). No raising=False:
+    if the fetch function is ever renamed again, fail loudly here."""
+    import market_data
     monkeypatch.setattr(
-        market_regime, "_get_history", lambda *a, **kw: _spy_hist(),
-        raising=False,
+        market_data, "get_bars", lambda symbol, limit=60, **kw: _spy_hist(),
     )
 
 

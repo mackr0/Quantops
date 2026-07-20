@@ -1117,35 +1117,6 @@ def get_active_users() -> List[Dict[str, Any]]:
 # Segment configuration
 # ---------------------------------------------------------------------------
 
-def create_default_segment_configs(user_id: int) -> None:
-    """Insert default config rows for all market segments.
-
-    Default values are pulled from the segment definitions in segments.py.
-    """
-    with closing(_get_conn()) as conn:
-        for seg_name in ("stocks", "crypto"):
-            seg = get_segment(seg_name)
-            conn.execute(
-                """INSERT OR IGNORE INTO user_segment_configs
-                   (user_id, segment, enabled,
-                    stop_loss_pct, take_profit_pct, max_position_pct,
-                    min_price, max_price, min_volume)
-                   VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)""",
-                (
-                    user_id,
-                    seg_name,
-                    seg.get("stop_loss_pct", 0.03),
-                    seg.get("take_profit_pct", 0.10),
-                    seg.get("max_position_pct", 0.10),
-                    seg.get("min_price", 10.0),
-                    seg.get("max_price", 20.0),
-                    seg.get("min_volume", 500_000),
-                ),
-            )
-        conn.commit()
-    logger.info("Created default segment configs for user #%d", user_id)
-
-
 def get_user_segment_config(user_id: int, segment: str) -> Optional[Dict[str, Any]]:
     """Return config dict for a user + segment, or None."""
     with closing(_get_conn()) as conn:

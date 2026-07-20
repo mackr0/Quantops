@@ -250,10 +250,11 @@ def repair_account(aid, pids, apply_mode: bool, since: str):
             shutil.copy2(src, tmp)
             workdb[pid] = tmp
 
-    conns = {pid: sqlite3.connect(workdb[pid]) for pid in pids}
-    for c in conns.values():
-        c.row_factory = sqlite3.Row
+    conns = {}
     try:
+        for pid in pids:
+            conns[pid] = sqlite3.connect(workdb[pid])
+            conns[pid].row_factory = sqlite3.Row
         # Step 2 — broker-evidence pass per fabricated leg
         legs_by_pid = {pid: _fabricated_legs(conns[pid], since)
                        for pid in pids}
@@ -359,6 +360,9 @@ def repair_account(aid, pids, apply_mode: bool, since: str):
         for c in conns.values():
             try:
                 c.close()
+            # SILENT_OK: close-fail during cleanup — the connection is
+            # being discarded either way and raising here would mask
+            # the real result/exception of the repair pass.
             except Exception:
                 pass
 

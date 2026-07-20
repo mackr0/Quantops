@@ -171,8 +171,12 @@ def _occ_right(option_row: Dict[str, Any]) -> str:
             r = (parse_occ_symbol(occ).get("right") or "").upper()
             if r in ("C", "P"):
                 return r
-        except Exception:
-            pass
+        except (ValueError, KeyError, ImportError) as exc:
+            logger.debug(
+                "_occ_right: parse_occ_symbol(%r) failed (%s: %s) — "
+                "falling back to option_strategy inference",
+                occ, type(exc).__name__, exc,
+            )
     strat = (option_row.get("option_strategy") or "").lower()
     if "call" in strat:
         return "C"
@@ -280,8 +284,14 @@ def _activities_for_occ(activities: Optional[List[Any]],
                 continue
             qty = float(getattr(a, "qty", 0) or 0)
             out[a_type] = out.get(a_type, 0.0) + abs(qty)
-        except Exception:
-            continue
+        except (ValueError, TypeError, AttributeError) as exc:
+            logger.warning(
+                "_activities_for_occ: malformed broker activity %r "
+                "skipped (%s: %s) — if this contract's verdict depends "
+                "on it, the row will defer/needs_review rather than "
+                "resolve on partial data",
+                getattr(a, "id", "?"), type(exc).__name__, exc,
+            )
     return out
 
 

@@ -65,6 +65,11 @@ ALLOWLIST_FILES = {
         "explicitly closed in try/finally inside backup_one().",
     "recover_cycle_data.py":
         "Recovery utility. Short-lived process.",
+    "repair_opex_phantom_shorts_2026_07_20.py":
+        "One-shot incident repair. Opens one connection per profile "
+        "into a dict inside try:, every one closed in the finally: — "
+        "the AST heuristic can't follow dict-slot assignment, but the "
+        "lifetime is explicit and the process exits after one pass.",
     "run_phase2_validations.py":
         "One-shot validation script.",
     "run_backtest_validation.py":

@@ -18,7 +18,6 @@ from models import (
     build_user_context, get_user_segment_config, update_user_segment_config,
     get_user_by_id, get_user_by_email, get_active_users,
     update_user_credentials, get_api_usage,
-    create_default_segment_configs,
     # Trading profiles
     create_trading_profile, get_trading_profile, get_user_profiles,
     get_active_profiles, update_trading_profile, delete_trading_profile,
