@@ -3091,6 +3091,7 @@ def _task_options_lifecycle(ctx):
                 f"assigned={result['assigned']}, "
                 f"exercised={result['exercised']}, "
                 f"needs_review={result['needs_review']}, "
+                f"deferred={result.get('deferred', 0)}, "
                 f"errors={result['errors']}"
             )
     except Exception:
