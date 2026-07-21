@@ -2769,6 +2769,19 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 )
     shortlist = [c for c in shortlist if c.get("price", 0) > 0]
 
+    # ── Menu floor (2026-07-21 night) ────────────────────────────────
+    # The strategy layer prioritizes but may not empty the menu: when
+    # its triggers produced fewer than MENU_FLOOR_MIN_CANDIDATES, the
+    # best of the scanned window backfills as honest NEUTRAL entries.
+    # See _apply_menu_floor.
+    try:
+        shortlist = _apply_menu_floor(
+            shortlist, filtered_candidates, held_symbols,
+            symbol_reputation)
+    except Exception:
+        logging.exception("menu floor backfill failed; shortlist "
+                          "continues with strategy signals only")
+
     if not shortlist:
         clear_status(_pid)
         logging.info(f"Pipeline complete: {len(candidates)} candidates -> "
@@ -4581,6 +4594,103 @@ def _squeeze_risk(symbol: str) -> str:
 # retires proven zombies that monopolize a starved candidate menu
 # (SPCX 0W/102L presented as the ONLY candidate, cycle after cycle).
 CHRONIC_ZERO_WIN_MIN_ATTEMPTS = 10
+
+# Menu floor (2026-07-21 night): the AI's shortlist must carry at least
+# this many candidates whenever the scanned window can supply them. The
+# deterministic strategy layer was distilling 30 scanned names to 0–3
+# (its compound trigger rules emit HOLD on ~93% of real stocks), which
+# made the whole pipeline zero-flow whenever ANY single downstream
+# objection removed a name. The strategy layer is a PRIORITIZER, not
+# the allocator: its signaled names still rank first, but when they
+# number fewer than this floor, the best of the rest of the scanned
+# window backfills the menu — honestly labeled NEUTRAL (no fabricated
+# signal), ranked by indicator extremity, with held names and chronic
+# zombies excluded — so the AI always has a real menu to judge and can
+# still pass on its own reasoning.
+MENU_FLOOR_MIN_CANDIDATES = 8
+
+
+def _apply_menu_floor(shortlist, scanned_symbols, held_symbols,
+                      symbol_reputation, indicators_fn=None,
+                      price_fn=None):
+    """Backfill `shortlist` up to MENU_FLOOR_MIN_CANDIDATES from the
+    scanned window when the strategy layer signaled fewer than that.
+
+    Backfill entries carry signal="NEUTRAL", score=0, empty votes and a
+    `_menu_floor` marker — the AI sees exactly what they are. Ranking
+    is a plain extremity heuristic (distance of RSI from 50, volume
+    surge over 1x, 10-day rate of change): a prioritizer for the AI's
+    attention, never a trade signal. Excluded from backfill: names
+    already shortlisted, HELD names (their exits are managed by the
+    exit paths; re-listing them as neutral entries confuses the menu),
+    chronic zero-win zombies, and anything without usable data or a
+    positive price. Fail-open per symbol: a data error skips that name,
+    never the floor. `indicators_fn` / `price_fn` exist for tests."""
+    if len(shortlist) >= MENU_FLOOR_MIN_CANDIDATES:
+        return shortlist
+    if indicators_fn is None:
+        indicators_fn = _get_latest_indicators
+    if price_fn is None:
+        def price_fn(sym):
+            from market_data import get_bars
+            bars = get_bars(sym, limit=200)
+            if bars is None or getattr(bars, "empty", True):
+                return 0.0
+            return float(bars.iloc[-1]["close"])
+    have = {c.get("symbol") for c in shortlist}
+    fill = []
+    for sym in scanned_symbols:
+        if not sym or sym in have or sym in held_symbols:
+            continue
+        rep = (symbol_reputation or {}).get(sym)
+        if (rep and rep.get("total", 0) >= CHRONIC_ZERO_WIN_MIN_ATTEMPTS
+                and rep.get("win_rate", 1) == 0):
+            continue
+        try:
+            ind = indicators_fn(sym) or {}
+            if not ind:
+                continue
+            price = float(price_fn(sym) or 0)
+        except Exception as _mf_exc:
+            # Per-symbol fail-open: one name's data hiccup must never
+            # break the floor for the rest of the window.
+            logger.debug(
+                "menu floor: skipping %s (data unavailable): %s: %s",
+                sym, type(_mf_exc).__name__, _mf_exc,
+            )
+            continue
+        if price <= 0:
+            continue
+        extremity = (
+            abs(float(ind.get("rsi", 50)) - 50.0)
+            + 10.0 * max(0.0, float(ind.get("volume_ratio", 1.0)) - 1.0)
+            + abs(float(ind.get("roc_10", 0)))
+        )
+        fill.append((extremity, {
+            "symbol": sym,
+            "signal": "NEUTRAL",
+            "score": 0,
+            "votes": {},
+            "price": price,
+            "reason": (
+                "menu floor: no deterministic trigger this cycle; "
+                "surfaced by indicator extremity for AI judgment"
+            ),
+            "_menu_floor": True,
+        }))
+    if not fill:
+        return shortlist
+    fill.sort(key=lambda pc: pc[0], reverse=True)
+    needed = MENU_FLOOR_MIN_CANDIDATES - len(shortlist)
+    added = [c for _e, c in fill[:needed]]
+    logging.info(
+        "Menu floor: strategy layer signaled only %d candidate(s); "
+        "backfilled %d NEUTRAL name(s) from the scanned window so the "
+        "AI has a real menu: %s",
+        len(shortlist), len(added),
+        ", ".join(c["symbol"] for c in added),
+    )
+    return shortlist + added
 
 
 def _rank_candidates(strategy_results, held_symbols, enable_shorts,

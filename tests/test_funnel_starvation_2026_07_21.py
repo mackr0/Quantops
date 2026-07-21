@@ -92,6 +92,79 @@ class TestChronicZeroWinExclusion:
         assert CHRONIC_ZERO_WIN_MIN_ATTEMPTS >= 10
 
 
+class TestMenuFloor:
+    """The strategy layer prioritizes but may not empty the menu: when
+    its triggers produce fewer than MENU_FLOOR_MIN_CANDIDATES, the best
+    of the scanned window backfills as honest NEUTRAL entries."""
+
+    def _ind(self, rsi=60, vol=1.5, roc=2.0):
+        return {"rsi": rsi, "volume_ratio": vol, "roc_10": roc}
+
+    def test_backfills_to_floor(self):
+        from trade_pipeline import (_apply_menu_floor,
+                                    MENU_FLOOR_MIN_CANDIDATES)
+        signaled = [_sig("MS")]
+        scanned = ["MS"] + [f"S{i}" for i in range(20)]
+        out = _apply_menu_floor(
+            signaled, scanned, held_symbols=set(), symbol_reputation={},
+            indicators_fn=lambda s: self._ind(), price_fn=lambda s: 10.0)
+        assert len(out) == MENU_FLOOR_MIN_CANDIDATES
+        assert out[0]["symbol"] == "MS", "signaled names keep priority"
+        for extra in out[1:]:
+            assert extra["signal"] == "NEUTRAL"
+            assert extra["_menu_floor"] is True
+            assert extra["score"] == 0
+
+    def test_ranked_by_extremity(self):
+        from trade_pipeline import _apply_menu_floor
+        inds = {"CALM": self._ind(rsi=50, vol=1.0, roc=0.0),
+                "HOT": self._ind(rsi=20, vol=3.0, roc=8.0)}
+        out = _apply_menu_floor(
+            [], ["CALM", "HOT"], held_symbols=set(), symbol_reputation={},
+            indicators_fn=lambda s: inds[s], price_fn=lambda s: 10.0)
+        assert out[0]["symbol"] == "HOT"
+
+    def test_full_menu_unchanged(self):
+        from trade_pipeline import (_apply_menu_floor,
+                                    MENU_FLOOR_MIN_CANDIDATES)
+        signaled = [_sig(f"X{i}") for i in range(MENU_FLOOR_MIN_CANDIDATES)]
+        out = _apply_menu_floor(
+            signaled, ["EXTRA"], held_symbols=set(), symbol_reputation={},
+            indicators_fn=lambda s: self._ind(), price_fn=lambda s: 10.0)
+        assert out is signaled
+
+    def test_held_and_zombies_never_backfilled(self):
+        from trade_pipeline import _apply_menu_floor
+        out = _apply_menu_floor(
+            [], ["HELD", "SPCX", "OK"], held_symbols={"HELD"},
+            symbol_reputation={"SPCX": _rep(102, 0.0)},
+            indicators_fn=lambda s: self._ind(), price_fn=lambda s: 10.0)
+        assert [c["symbol"] for c in out] == ["OK"]
+
+    def test_no_data_symbols_skipped_fail_open(self):
+        from trade_pipeline import _apply_menu_floor
+
+        def flaky(sym):
+            if sym == "BAD":
+                raise RuntimeError("no bars")
+            return self._ind()
+
+        out = _apply_menu_floor(
+            [], ["BAD", "NODATA", "GOOD"], held_symbols=set(),
+            symbol_reputation={},
+            indicators_fn=lambda s: ({} if s == "NODATA" else flaky(s)),
+            price_fn=lambda s: 10.0)
+        assert [c["symbol"] for c in out] == ["GOOD"]
+
+    def test_call_site_wired(self):
+        src = open(os.path.join(REPO, "trade_pipeline.py")).read()
+        idx = src.index('shortlist = [c for c in shortlist if c.get("price", 0) > 0]')
+        window = src[idx:idx + 700]
+        assert "_apply_menu_floor(" in window, (
+            "the menu floor must run after the price filter and before "
+            "the empty-shortlist early return")
+
+
 class TestCrisisGateStructure:
 
     def _crisis_block(self):
