@@ -656,6 +656,59 @@ NEW_ENTRY_ACTIONS = frozenset({
 })
 
 
+def _meta_suppression_plan(scored, threshold):
+    """STEP 4.5 backstop cap (2026-07-21 evening) — decide which
+    AI-selected trades the meta-model may actually suppress.
+
+    TRIMMER, NOT GATE, second instance. The meta-PREGATE got the
+    backstop cap this morning ("mathematically incapable of zeroing
+    the flow") — but the post-AI suppressor runs one step later, with
+    the SAME model trained on the same losing week, and had no cap:
+    fleet drop rows show it suppressing every AI-selected entry at
+    1–26% edge vs the 30% threshold, re-zeroing the cycles the pregate
+    was forbidden to zero. Same structural rule as
+    _meta_pregate_candidates: suppress at most the worst HALF of the
+    scored cohort; the least-bad survive in their original slots.
+
+    `scored` is [(trade_dict, meta_prob)] in original order. Returns
+    (suppressed, spared_ids): `suppressed` is [(meta_prob, trade)] for
+    the trades the model may drop (worst first when the cap bound);
+    `spared_ids` is the id() set of trades it WANTED to drop but the
+    cap saved.
+
+    Three deliberate consequences:
+      1. a single-trade selection can never be suppressed (1//2 == 0);
+      2. EXITS are never suppressible — suppressing a SELL/COVER
+         because the ENTRY-edge model scores it low strands a live
+         position (the stranded-GOOG class, one gate over);
+      3. SPARED trades keep their ORIGINAL confidence (enforced at the
+         call site) — blending in the sub-threshold meta_prob halves
+         it and hands the same knife to the confidence gate one step
+         later (the AMT 44-vs-45 shape), which would defeat the cap
+         while changing only the drop code."""
+    below = [
+        (mp, t) for t, mp in scored
+        if (t.get("action") or "").upper() in NEW_ENTRY_ACTIONS
+        and mp is not None and mp < threshold
+    ]
+    max_suppress = len(scored) // 2
+    spared_ids = set()
+    if len(below) > max_suppress:
+        below.sort(key=lambda pc: pc[0])  # lowest meta_prob first
+        spared_ids = {id(t) for _mp, t in below[max_suppress:]}
+        logging.warning(
+            "Meta-model wanted to suppress %d/%d AI-selected trades "
+            "but is a BACKSTOP, not the allocator — capped at %d "
+            "(worst by meta_prob); %d spared with original confidence. "
+            "If this fires persistently the model/threshold needs "
+            "retraining, not a bigger veto.",
+            len(below), len(scored), max_suppress,
+            len(below) - max_suppress,
+        )
+        below = below[:max_suppress]
+    return below, spared_ids
+
+
 def _apply_confidence_gate(ai_trades, ctx, cycle_id, details):
     """STEP 4.85 — drop NEW ENTRIES whose final (post-meta-blend)
     confidence sits below the profile's resolved ai_confidence_threshold.
@@ -3224,7 +3277,10 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 meta_bundle = meta_model.load_model(meta_path)
             if meta_bundle:
                 meta_stats["loaded"] = True
-                filtered_trades = []
+                # (t, meta_prob, online_prob) in original order — the
+                # suppression decision moves AFTER the scoring loop so
+                # the backstop cap below can see the whole cohort.
+                _meta_scored = []
                 for t in ai_trades:
                     sym = t.get("symbol", "")
                     cand = next((c for c in candidates_data if c.get("symbol") == sym), {})
@@ -3272,48 +3328,74 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                         t["online_meta_prob"] = round(online_prob, 4)
                         t["meta_divergence"] = round(online_prob - meta_prob, 4)
 
-                    if meta_prob < meta_model.SUPPRESSION_THRESHOLD:
-                        meta_stats["suppressed"] += 1
-                        logging.info(f"  Meta-model SUPPRESS {sym}: meta_prob={meta_prob:.3f} < "
-                                     f"{meta_model.SUPPRESSION_THRESHOLD}")
-                        # 2026-06-15 — record a drop so the AI-Brain
-                        # badge shows the SPECIFIC reason instead of
-                        # the vague "most likely … meta-model
-                        # suppression" catch-all. This was the one
-                        # genuinely silent skip path (it only logged
-                        # + continued).
-                        if ctx is not None and getattr(ctx, "db_path", None):
-                            try:
-                                from journal import record_trade_drop
-                                record_trade_drop(
-                                    db_path=ctx.db_path,
-                                    symbol=sym,
-                                    side=(t.get("action") or "").lower() or None,
-                                    drop_code="META_SUPPRESSED",
-                                    drop_reason=(
-                                        f"Meta-model suppressed: edge "
-                                        f"probability {meta_prob:.0%} below "
-                                        f"the {meta_model.SUPPRESSION_THRESHOLD:.0%} "
-                                        f"threshold — the pre-trade model "
-                                        f"judged this candidate's expected "
-                                        f"edge too low to trade."
-                                    ),
-                                    cycle_id=cycle_id,
-                                    ai_confidence=t.get("confidence"),
-                                    ai_reasoning=t.get("reasoning"),
-                                    # Same counterfactual link as the
-                                    # confidence gate's drops: the
-                                    # suppression threshold is only
-                                    # falsifiable if suppressed ideas'
-                                    # would-be outcomes stay queryable
-                                    # (review 2026-07-17 M2).
-                                    pred_id=t.get("_pred_id"),
-                                )
-                            except Exception as _ms_exc:
-                                logging.warning(
-                                    "meta-suppress drop record failed for "
-                                    "%s: %s", sym, _ms_exc,
-                                )
+                    _meta_scored.append((t, meta_prob, online_prob))
+
+                # Backstop cap — see _meta_suppression_plan's docstring
+                # for the full 2026-07-21 rationale (trimmer-not-gate,
+                # exits exempt, spared trades keep original confidence).
+                _below, _spared_ids = _meta_suppression_plan(
+                    [(t, mp) for t, mp, _op in _meta_scored],
+                    meta_model.SUPPRESSION_THRESHOLD,
+                )
+                _suppressed_ids = {id(t) for _mp, t in _below}
+                for meta_prob, t in _below:
+                    sym = t.get("symbol", "")
+                    meta_stats["suppressed"] += 1
+                    logging.info(f"  Meta-model SUPPRESS {sym}: meta_prob={meta_prob:.3f} < "
+                                 f"{meta_model.SUPPRESSION_THRESHOLD}")
+                    # 2026-06-15 — record a drop so the AI-Brain
+                    # badge shows the SPECIFIC reason instead of
+                    # the vague "most likely … meta-model
+                    # suppression" catch-all. This was the one
+                    # genuinely silent skip path (it only logged
+                    # + continued).
+                    if ctx is not None and getattr(ctx, "db_path", None):
+                        try:
+                            from journal import record_trade_drop
+                            record_trade_drop(
+                                db_path=ctx.db_path,
+                                symbol=sym,
+                                side=(t.get("action") or "").lower() or None,
+                                drop_code="META_SUPPRESSED",
+                                drop_reason=(
+                                    f"Meta-model suppressed: edge "
+                                    f"probability {meta_prob:.0%} below "
+                                    f"the {meta_model.SUPPRESSION_THRESHOLD:.0%} "
+                                    f"threshold — the pre-trade model "
+                                    f"judged this candidate's expected "
+                                    f"edge too low to trade."
+                                ),
+                                cycle_id=cycle_id,
+                                ai_confidence=t.get("confidence"),
+                                ai_reasoning=t.get("reasoning"),
+                                # Same counterfactual link as the
+                                # confidence gate's drops: the
+                                # suppression threshold is only
+                                # falsifiable if suppressed ideas'
+                                # would-be outcomes stay queryable
+                                # (review 2026-07-17 M2).
+                                pred_id=t.get("_pred_id"),
+                            )
+                        except Exception as _ms_exc:
+                            logging.warning(
+                                "meta-suppress drop record failed for "
+                                "%s: %s", sym, _ms_exc,
+                            )
+                filtered_trades = []
+                for t, meta_prob, online_prob in _meta_scored:
+                    if id(t) in _suppressed_ids:
+                        continue
+                    sym = t.get("symbol", "")
+                    if id(t) in _spared_ids:
+                        # Spared by the backstop cap: keep the AI's
+                        # original confidence (see the block comment
+                        # above — blending would re-kill it at the
+                        # confidence gate).
+                        logging.info(
+                            f"  Meta-model spared {sym} (backstop cap): "
+                            f"meta_prob={meta_prob:.3f}, confidence "
+                            f"kept at {t.get('confidence', 50)}")
+                        filtered_trades.append(t)
                         continue
                     # Blend confidences
                     original_conf = t.get("confidence", 50)
