@@ -1912,7 +1912,7 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
         # rewrite version downsized to aggregate, which is how one
         # profile's sell consumed sibling profiles' shares.
         allowed_qty, guard_reason = allowable_sell_qty(
-            api, symbol, int(sell_qty), db_path=db_path,
+            api, symbol, int(sell_qty), db_path=db_path, ctx=ctx,
         )
         if allowed_qty == 0:
             result["action"] = "SKIP"

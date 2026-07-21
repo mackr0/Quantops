@@ -899,8 +899,11 @@ def _process_exit_trigger(trigger_signal, api, ctx, db_path, positions,
         # consume sibling profiles' short positions. Same bug-class
         # as pre-fix SELL on the long side, opposite direction.
         from order_guard import allowable_cover_qty
+        # 2026-07-21 — pass ctx so a sibling-masked short (broker
+        # aggregate netted by a sibling's long) isn't refused as drift
+        # when the account decomposition holds. See order_guard notes.
         allowed_qty, guard_reason = allowable_cover_qty(
-            api, symbol, int(qty), db_path=db_path,
+            api, symbol, int(qty), db_path=db_path, ctx=ctx,
         )
         if allowed_qty == 0:
             logging.warning(
@@ -933,7 +936,7 @@ def _process_exit_trigger(trigger_signal, api, ctx, db_path, positions,
         # own virtual qty, not the aggregate. See order_guard.py
         # rewrite notes.
         allowed_qty, guard_reason = allowable_sell_qty(
-            api, symbol, int(qty), db_path=db_path,
+            api, symbol, int(qty), db_path=db_path, ctx=ctx,
         )
         if allowed_qty == 0:
             logging.warning(

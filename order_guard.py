@@ -275,10 +275,44 @@ def allowable_buy_qty(
     return (requested_qty, "ok")
 
 
+def _account_decomposition_explains(api, ctx, symbol: str) -> bool:
+    """True iff the shared account's symbol-level decomposition HOLDS
+    for `symbol`: Σ(every same-account profile's virtual qty) equals the
+    broker position within half a share.
+
+    2026-07-21 — the sibling-masking escape for the drift checks below.
+    The drift refusal compares this profile's own-book claim against the
+    ACCOUNT-AGGREGATE broker position, so a sibling's opposite direction
+    can mask a genuinely-owned position (p212's GOOG short 11 + p214's
+    long 10 → broker nets −1; the cover guard read "broker short 1,
+    journal claims 11" and refused every time-stop cover, stranding the
+    short paying borrow). When the decomposition holds, the account's
+    books collectively explain the broker — nobody's position is
+    phantom, the own-book claim is genuine, and the exit must be
+    allowed. Same invariant, same implementation as the reconciler's
+    orphan-halt suppressor (`_symbol_decomposition_holds`, CHANGELOG
+    2026-07-21 "sibling-masked positions"). Fail-CLOSED: no ctx, any
+    error, or a broken decomposition → False → the drift refusal stands
+    exactly as before."""
+    if ctx is None:
+        return False
+    try:
+        from reconcile_journal_to_broker import _symbol_decomposition_holds
+        return bool(_symbol_decomposition_holds(api, ctx, symbol, {}))
+    except Exception as exc:
+        logger.warning(
+            "sibling-mask decomposition check failed for %s (%s: %s) — "
+            "fail-closed; drift refusal stands.",
+            symbol, type(exc).__name__, exc,
+        )
+        return False
+
+
 def allowable_sell_qty(
     api, symbol: str, requested_qty: int,
     db_path: Optional[str] = None,
     broker_drift_check: bool = True,
+    ctx=None,
 ) -> tuple:
     """Pre-trade guard: return (allowed_qty, reason) for a SELL of `requested_qty`.
 
@@ -431,6 +465,27 @@ def allowable_sell_qty(
         else requested_qty
     )
     if broker_qty < drift_baseline:
+        # Sibling-masking escape (2026-07-21): a sibling's SHORT can net
+        # the aggregate broker long below this profile's genuine own-book
+        # long. If the account decomposition holds (Σ every profile's
+        # virtual qty == broker), the books explain the broker and this
+        # is masking, not drift — allow the own-book exit. Only reachable
+        # with a computed own-book claim (db_path path), so requested ≤
+        # own_virtual_qty is already guaranteed above. Fail-closed: no
+        # ctx or any doubt → the refusal below stands.
+        if (own_virtual_qty is not None and own_virtual_qty > 0
+                and _account_decomposition_explains(api, ctx, target)):
+            logger.info(
+                "allowable_sell_qty: %s own-book long %d is masked by a "
+                "sibling's opposite direction (broker aggregate %d) but "
+                "the account decomposition HOLDS (Σ virtual == broker) — "
+                "genuinely owned, SELL %d allowed.",
+                target, own_virtual_qty, broker_qty, requested_qty,
+            )
+            return (
+                requested_qty,
+                "ok: sibling-masked — account decomposition holds",
+            )
         own_claim = (
             own_virtual_qty if own_virtual_qty is not None
             else "?"
@@ -452,6 +507,7 @@ def allowable_sell_qty(
 def allowable_cover_qty(
     api, symbol: str, requested_qty: int,
     db_path: Optional[str] = None,
+    ctx=None,
 ) -> tuple:
     """Pre-trade guard for buy-to-cover (closing a short). Mirror of
     `allowable_sell_qty` for the short side.
@@ -571,6 +627,29 @@ def allowable_cover_qty(
         else requested_qty
     )
     if broker_short_qty < drift_baseline:
+        # Sibling-masking escape (2026-07-21, the p212 GOOG stranded
+        # short): a sibling's LONG can net the aggregate broker short
+        # below this profile's genuine own-book short (p212 short 11 +
+        # p214 long 10 → broker −1 → "broker short 1, journal claims
+        # 11"). If the account decomposition holds (Σ every profile's
+        # virtual qty == broker), the books explain the broker and this
+        # is masking, not drift — the cover must be allowed up to the
+        # own-book short (requested ≤ own_short_qty is already
+        # guaranteed above on the db_path path). Fail-closed: no ctx or
+        # any doubt → the refusal below stands.
+        if (own_short_qty is not None and own_short_qty > 0
+                and _account_decomposition_explains(api, ctx, target)):
+            logger.info(
+                "allowable_cover_qty: %s own-book short %d is masked by "
+                "a sibling's opposite direction (broker aggregate short "
+                "%d) but the account decomposition HOLDS (Σ virtual == "
+                "broker) — genuinely owned, COVER %d allowed.",
+                target, own_short_qty, broker_short_qty, requested_qty,
+            )
+            return (
+                requested_qty,
+                "ok: sibling-masked — account decomposition holds",
+            )
         own_claim = (
             own_short_qty if own_short_qty is not None else "?"
         )
