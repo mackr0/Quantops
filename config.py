@@ -71,16 +71,14 @@ DEFAULT_MAX_POSITION_PCT = 0.10
 DEFAULT_STOP_LOSS_PCT = 0.03
 DEFAULT_TAKE_PROFIT_PCT = 0.10
 SCREEN_MIN_PRICE = 10.00  # fresh-start baseline floor (institutional: excludes sub-$10 penny/meme tier)
-# 2026-07-21 — ceiling raised 20 → 1000. The $20 ceiling structurally
-# excluded every liquid Energy/Staples/Real-Estate/mega-cap name, so the
-# sector-stratified universe could not deliver the sectors the AI's own
-# beta/rotation guidance told it to prefer — the AI narrated rotations it
-# could never execute, and cycles starved (the system's purpose is to
-# TRADE and evaluate judgment, not stockpile cash). $1,000 keeps ≥2
-# shares purchasable at a 10% position on the smallest ($25K) book and
-# excludes only ultra-priced outliers (BKNG/NVR/AZO-class); sizing
-# already SKIPs any name whose share price doesn't fit the budget.
-SCREEN_MAX_PRICE = 1000.00
+# 2026-07-21 — default aligned to the operator's LIVE band ($10,000;
+# every active profile stores this in trading_profiles.max_price, which
+# is what the screener actually uses — this constant is only the
+# fallback for contexts/profiles created without an explicit value).
+# The old default of 20.00 was a legacy small-cap artifact that no live
+# profile used; a new profile silently inheriting it would have had its
+# universe strangled to sub-$20 names.
+SCREEN_MAX_PRICE = 10000.00
 SCREEN_MIN_VOLUME = 500000
 # Specialist ensemble cost control (2026-06-30): globally disable these
 # advisory (non-veto) LLM specialists. They were ~22% of daily AI cost and are

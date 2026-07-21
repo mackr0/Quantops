@@ -1,5 +1,8 @@
-"""2026-07-21 — universe price-band migration: max_price 20 → 1000 on
-every active STOCK profile.
+"""2026-07-21 — universe price-band migration (CONFIRMED NO-OP in prod:
+the dry-run proved every active profile already stores max_price=10000 —
+the $20 value existed only in code defaults, never in live rows). Kept
+as the verification tool that caught that attribution error; safe and
+idempotent to run any time.
 
 WHY: the $20 ceiling structurally excluded every liquid Energy /
 Staples / Real-Estate / mega-cap name. The sector-stratified universe
@@ -26,7 +29,7 @@ import sys
 
 sys.path.insert(0, "/opt/quantopsai")
 
-NEW_MAX = 1000.0
+NEW_MAX = 10000.0
 OLD_MAX = 20.0
 
 

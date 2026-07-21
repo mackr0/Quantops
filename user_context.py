@@ -44,7 +44,7 @@ class UserContext:
 
     # Screener parameters
     min_price: float = 10.0
-    max_price: float = 1000.0  # 2026-07-21: 20 → 1000, see config.SCREEN_MAX_PRICE
+    max_price: float = 10000.0  # 2026-07-21: aligned to the live operator band (see config.SCREEN_MAX_PRICE)
     min_volume: int = 500_000
     # Minimum average daily DOLLAR volume (price * 20-day mean share
     # volume). Liquidity floor the share-count min_volume can't express.
