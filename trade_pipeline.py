@@ -3439,16 +3439,69 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
         if crisis_level != "normal":
             pre = len(ai_trades)
             if crisis_size_multiplier <= 0:
-                # Crisis / severe: block new long entries entirely.
-                # Allow SELL/SHORT (exits / capital preservation).
+                # Crisis / severe: block risk-increasing entries; keep
+                # SHORT (capital-preservation posture) and EVERY exit.
+                # 2026-07-21 (evening) — two fixes to this branch:
+                #   1. The old keep-list was literally ("SELL", "SHORT"),
+                #      which also discarded STRONG_SELL / MULTILEG_CLOSE
+                #      — a crisis gate stranding EXITS, the stranded-
+                #      position class for the third time today. The
+                #      block-list is now NEW_ENTRY_ACTIONS minus SHORT,
+                #      so exits are structurally exempt.
+                #   2. It was the last SILENT eater: a symbol-less log
+                #      line and NO trade_drops record — a blocked BUY
+                #      simply vanished between "AI selected" and
+                #      "Executing" (the MS shape: shorts flowed to the
+                #      named gates while every long evaporated). Blocked
+                #      trades now log their symbols and record
+                #      CRISIS_GATE drops with the counterfactual pred
+                #      link, same as every other gate.
+                _crisis_blocked = [
+                    t for t in ai_trades
+                    if (t.get("action") or "").upper() in NEW_ENTRY_ACTIONS
+                    and (t.get("action") or "").upper() != "SHORT"
+                ]
+                _crisis_blocked_ids = {id(t) for t in _crisis_blocked}
                 ai_trades = [t for t in ai_trades
-                             if t.get("action", "").upper() in ("SELL", "SHORT")]
+                             if id(t) not in _crisis_blocked_ids]
+                _blocked_syms = ", ".join(
+                    f"{(t.get('action') or '?').upper()} "
+                    f"{t.get('symbol', '?')}" for t in _crisis_blocked
+                ) or "none"
                 logging.warning(
-                    f"Crisis gate BLOCKED {pre - len(ai_trades)} new longs "
-                    f"(level={crisis_level})"
+                    f"Crisis gate BLOCKED {pre - len(ai_trades)} "
+                    f"risk-increasing entries (level={crisis_level}): "
+                    f"{_blocked_syms}"
                 )
                 print(f"  Crisis gate [{crisis_level.upper()}]: "
-                      f"blocked {pre - len(ai_trades)} new longs")
+                      f"blocked {pre - len(ai_trades)} entries "
+                      f"({_blocked_syms})")
+                for t in _crisis_blocked:
+                    try:
+                        from journal import record_trade_drop
+                        record_trade_drop(
+                            db_path=ctx.db_path,
+                            symbol=t.get("symbol", ""),
+                            side=(t.get("action") or "").lower() or None,
+                            drop_code="CRISIS_GATE",
+                            drop_reason=(
+                                f"Crisis gate ({crisis_level}): the "
+                                f"profile is in capital-preservation "
+                                f"mode — risk-increasing entries are "
+                                f"blocked until the crisis state "
+                                f"clears. The idea stays recorded and "
+                                f"scored."
+                            ),
+                            cycle_id=cycle_id,
+                            ai_confidence=t.get("confidence"),
+                            ai_reasoning=t.get("reasoning"),
+                            pred_id=t.get("_pred_id"),
+                        )
+                    except Exception as _cg_exc:
+                        logging.warning(
+                            "crisis-gate drop record failed for %s: %s",
+                            t.get("symbol", "?"), _cg_exc,
+                        )
             else:
                 # Elevated: scale down size_pct
                 for t in ai_trades:
@@ -4520,6 +4573,16 @@ def _squeeze_risk(symbol: str) -> str:
     return risk
 
 
+# Chronic-zero-win shortlist exclusion (2026-07-21 evening): a symbol
+# with ZERO wins across at least this many resolved predictions stops
+# being nominated to the AI's shortlist entirely (held-symbol exits are
+# exempt). Deliberately far above the downstream blacklist gate's ≥3 —
+# the gate keeps the learning loop for young losers; this cutoff only
+# retires proven zombies that monopolize a starved candidate menu
+# (SPCX 0W/102L presented as the ONLY candidate, cycle after cycle).
+CHRONIC_ZERO_WIN_MIN_ATTEMPTS = 10
+
+
 def _rank_candidates(strategy_results, held_symbols, enable_shorts,
                       deprecated_strategies=None,
                       target_short_pct=0.0,
@@ -4559,6 +4622,7 @@ def _rank_candidates(strategy_results, held_symbols, enable_shorts,
     long_eligible = []
     short_eligible = []
     short_skips = {"borrow": 0, "squeeze": 0, "regime": 0}
+    _chronic_skips = []
     market_regime = _classify_market_regime() if enable_shorts else "neutral"
 
     for signal in strategy_results:
@@ -4571,6 +4635,29 @@ def _rank_candidates(strategy_results, held_symbols, enable_shorts,
             continue
         if _is_long_action(action) and symbol in held_symbols:
             continue
+
+        # 2026-07-21 (evening) — CHRONIC-ZERO-WIN exclusion. The
+        # downstream blacklist gate (0% win, ≥3 resolved) deliberately
+        # lets the symbol keep reaching prediction recording so it can
+        # rehabilitate — that stays. But a symbol the gate has refused
+        # DOZENS of times still occupied a shortlist slot every cycle,
+        # and on a starved funnel (1–2 candidates/cycle) that
+        # monopolized the AI's entire menu: SPCX at 0W/102L was "the
+        # only asset presented" cycle after cycle, and the AI passed
+        # every time — zero flow while the strategy layer kept
+        # re-nominating a dead flat ticker whose RSI≈50/ADX≈0 profile
+        # permanently satisfies the range-based entry rules. At ≥10
+        # straight losses the rehab ship has sailed: stop feeding it to
+        # the AI at all. Held symbols are exempt (exits must flow).
+        # Trade-off, accepted: an excluded symbol records no new
+        # predictions and cannot auto-rehabilitate; the operator can
+        # clear its reputation to re-admit it.
+        if symbol not in held_symbols and symbol_reputation:
+            _rep = symbol_reputation.get(symbol)
+            if (_rep and _rep.get("total", 0) >= CHRONIC_ZERO_WIN_MIN_ATTEMPTS
+                    and _rep.get("win_rate", 1) == 0):
+                _chronic_skips.append(symbol)
+                continue
 
         # Phase 3: skip candidates whose primary voting strategy is deprecated.
         if deprecated_strategies:
@@ -4739,6 +4826,15 @@ def _rank_candidates(strategy_results, held_symbols, enable_shorts,
                            abs(s.get("rsi", 50) - 50))
     long_eligible.sort(key=long_key, reverse=True)
     short_eligible.sort(key=short_key, reverse=True)
+
+    if _chronic_skips:
+        logging.info(
+            "Shortlist: retired %d chronic zero-win symbol(s) "
+            "(0%% win rate over >=%d resolved predictions): %s — "
+            "freeing their menu slots for tradeable names.",
+            len(_chronic_skips), CHRONIC_ZERO_WIN_MIN_ATTEMPTS,
+            ", ".join(sorted(set(_chronic_skips))),
+        )
 
     if enable_shorts:
         # Reserve slots: top 10 longs + top 5 shorts. If short bench is

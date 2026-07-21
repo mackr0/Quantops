@@ -898,6 +898,11 @@ _CROSS_CUTTING_DROP_CODES = frozenset({
     # (BUY/SHORT/OPTIONS/MULTILEG_OPEN/PAIR_TRADE) and its reason text
     # carries no surface hint — same shape as META_SUPPRESSED.
     "CONFIDENCE_GATE",
+    # 2026-07-21 — the crisis gate was the last silent eater (symbol-
+    # less log, no drop record); now that it records drops, it blocks
+    # any risk-increasing action with no surface hint in the reason —
+    # same shape as CONFIDENCE_GATE.
+    "CRISIS_GATE",
 })
 
 
