@@ -1164,7 +1164,16 @@ function showOpTab(event, profileId, which) {
                 });
                 tbl += '</tbody></table>';
                 listEl.innerHTML = tbl;
-            } else if (listEl) { listEl.innerHTML = '<em>No candidates met threshold this cycle</em>'; }
+            } else if (listEl) {
+                // 2026-07-21 — truthful empty-panel cause. The old
+                // catch-all ("No candidates met threshold") asserted a
+                // threshold reason for EVERY cause — halts, empty
+                // screens, gate wipes — and sat next to stale or
+                // fabricated narratives. The pipeline now states why.
+                listEl.innerHTML = '<em>' + escapeHtml(
+                    data.no_candidates_reason
+                    || 'No candidates met threshold this cycle') + '</em>';
+            }
     }
 
     // Mirrors the activity ticker exactly: idx 0 = Live (now), ←

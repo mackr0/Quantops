@@ -1067,6 +1067,9 @@ def _task_scan_and_trade(ctx):
     if not enforce_funding(ctx):
         from scan_status import clear_status as _cs
         _cs(_pid)
+        _write_skip_snapshot(
+            ctx, "Account funding guard blocked this cycle — broker "
+                 "funding is missing or mismatched. No scan ran.")
         return
 
     # Strategy dispatch: non-AI baselines short-circuit the screener
@@ -1143,6 +1146,10 @@ def _task_scan_and_trade(ctx):
             f"{seg_label} Scan: 0 candidates found",
             "No symbols passed the screener filters this cycle.",
         )
+        _write_skip_snapshot(
+            ctx, "Screener returned 0 candidates this cycle — nothing "
+                 "passed the universe/price/volume filters. No AI call "
+                 "was made.")
         return
 
     # 2026-05-19 reconciler safety net: if the reconciler HALTED this
@@ -1181,6 +1188,9 @@ def _task_scan_and_trade(ctx):
             )
         except Exception:
             logging.exception("Failed to log halt activity")
+        _write_skip_snapshot(
+            ctx, f"Profile HALTED — {halt_reason}. New entries blocked; "
+                 f"exits and monitoring continue. No AI call was made.")
         return
 
     update_status(_pid, "Running trade pipeline", "%d candidates" % len(symbols))
@@ -3061,6 +3071,22 @@ def _task_options_roll_manager(ctx):
             )
     except Exception:
         logging.exception(f"[{seg_label}] Roll manager failed")
+
+
+def _write_skip_snapshot(ctx, reason: str) -> None:
+    """AI-Brain truthfulness (2026-07-21): a cycle that never reaches
+    the trade pipeline (funding guard, empty screen, profile halt)
+    must still tell the dashboard WHY — otherwise the panel keeps
+    showing the PREVIOUS cycle's narrative as if it were current
+    thinking. Writes the per-profile cycle JSON with an explicit
+    no_candidates_reason; no ai_cycles history row is created
+    (cycle_id stays None), so the fine-tune corpus is untouched."""
+    try:
+        from trade_pipeline import _save_cycle_data
+        _save_cycle_data(ctx, [], [], [], "", {}, {},
+                         no_candidates_reason=reason)
+    except Exception:
+        logging.exception("skip-snapshot write failed (non-fatal)")
 
 
 def _task_options_lifecycle(ctx):

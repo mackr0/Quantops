@@ -2689,6 +2689,24 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
         logging.info(f"Pipeline complete: {len(candidates)} candidates -> "
                      f"{len(filtered_candidates)} post-filter -> 0 shortlisted -> "
                      f"0 sent to AI -> 0 buys, 0 sells, 0 shorts")
+        # 2026-07-21 — AI-Brain truthfulness: this early return used to
+        # skip _save_cycle_data entirely, so the dashboard kept showing
+        # the PREVIOUS cycle's narrative next to an empty candidates
+        # panel — stale text presented as current thinking. Write the
+        # snapshot with the real cause instead.
+        try:
+            _save_cycle_data(
+                ctx, [], [], [], "", {}, regime_info,
+                no_candidates_reason=(
+                    f"No directional signals this cycle: "
+                    f"{len(candidates)} screened, "
+                    f"{len(filtered_candidates)} passed pre-filters, "
+                    f"0 shortlisted (every candidate was HOLD or "
+                    f"filtered before ranking). No AI call was made."
+                ),
+            )
+        except Exception:
+            logging.exception("empty-shortlist snapshot write failed")
         return {
             "total": len(candidates), "buys": 0, "sells": 0, "shorts": 0,
             "holds": len(strategy_results) - len(shortlist),
@@ -2724,7 +2742,10 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     # ── returns None on cold-start, so the gate passes all candidates.
     # ── Per-profile threshold via `meta_pregate_threshold` (default 0.5,
     # ── 0.0 = disabled).
+    _n_pre_pregate = len(candidates_data)
     candidates_data = _meta_pregate_candidates(candidates_data, ctx)
+    _n_pregate_dropped = _n_pre_pregate - len(candidates_data)
+    _n_veto_dropped = 0
 
     update_status(_pid, "Specialist ensemble", "%d candidates" % len(candidates_data))
     # ── STEP 3.7: Specialist ensemble (Phase 8) ──────────────────────
@@ -2770,6 +2791,7 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                     c["ensemble_specialists"] = verdict.get("specialists", [])
                 kept.append(c)
             candidates_data = kept
+            _n_veto_dropped = len(vetoed_syms)
             if vetoed_syms:
                 logging.info(f"Specialist ensemble vetoed: {vetoed_syms}")
                 print(f"  Risk specialist VETOed: {', '.join(vetoed_syms)}")
@@ -2777,6 +2799,49 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                   f"{len(vetoed_syms)} vetoed, {len(candidates_data)} kept")
         except Exception as exc:
             logging.warning(f"Specialist ensemble failed (continuing without): {exc}")
+
+    # 2026-07-21 — NEVER call the AI with an empty candidate list. The
+    # pre-fix pipeline did exactly that when the meta-pregate and
+    # specialist vetoes emptied a real shortlist: the model was handed
+    # portfolio/sector context, zero tradable names, and the standing
+    # instruction to propose trades with conviction — so it fabricated
+    # a rotation narrative ("initiating long positions in Energy...")
+    # whose every symbol was then silently dropped against the empty
+    # valid-set. The dashboard rendered that fiction next to "No
+    # candidates met threshold." A gate emptying a whole live cycle is
+    # also the gate-as-allocator disease (2026-07-17): it means the
+    # system is stockpiling cash instead of trading, so it logs at
+    # ERROR — loudly — with the full funnel accounting.
+    if not candidates_data:
+        _gate_reason = (
+            f"Gates emptied the cycle: {len(shortlist)} shortlisted → "
+            f"meta-pregate dropped {_n_pregate_dropped} → specialist "
+            f"vetoes dropped {_n_veto_dropped} → 0 candidates left for "
+            f"the AI. No AI call was made — no narrative exists for "
+            f"this cycle."
+        )
+        logging.error(
+            "[%s] PIPELINE GATES EMPTIED A LIVE CYCLE — a gate is "
+            "acting as the allocator (the system exists to TRADE, and "
+            "this cycle it structurally could not): %s",
+            getattr(ctx, "display_name", "?") or "?", _gate_reason,
+        )
+        try:
+            _save_cycle_data(
+                ctx, [], shortlist, [], "", market_ctx, regime_info,
+                no_candidates_reason=_gate_reason,
+            )
+        except Exception:
+            logging.exception("gates-emptied snapshot write failed")
+        clear_status(_pid)
+        return {
+            "total": len(candidates), "buys": 0, "sells": 0, "shorts": 0,
+            "holds": len(strategy_results) - len(shortlist),
+            "skips": len(pre_filter_skips),
+            "ai_vetoed": _n_veto_dropped, "errors": len(errors),
+            "pre_filtered": len(pre_filter_skips), "sent_to_ai": 0,
+            "details": details, "vetoed_details": [],
+        }
 
     print(f"  AI batch: {len(candidates_data)} candidates -> selecting trades...", flush=True)
     from ai_analyst import ai_select_trades
@@ -4070,7 +4135,8 @@ def _save_cycle_data(ctx, candidates_data, shortlist, ai_trades,
                      portfolio_reasoning, market_ctx, regime_info,
                      meta_stats=None, ensemble_result=None,
                      cycle_id=None, cycle_prompt=None,
-                     cycle_raw_response_json=None):
+                     cycle_raw_response_json=None,
+                     no_candidates_reason=None):
     """Save the last cycle's AI decisions to a JSON file for the dashboard
     AND append a row to the ai_cycles history table (2026-05-19 Phase B1).
 
@@ -4099,7 +4165,19 @@ def _save_cycle_data(ctx, candidates_data, shortlist, ai_trades,
             # …" catch-all even though every drop had a specific
             # recorded reason.
             "cycle_id": cycle_id,
-            "ai_reasoning": portfolio_reasoning or "No candidates shortlisted",
+            # 2026-07-21 — AI-Brain truthfulness. When no AI call was
+            # made this cycle, the Decision line must state the REAL
+            # cause (halt / gates / empty screen), never render a
+            # stale or fabricated narrative. `no_candidates_reason`
+            # is authored by the pipeline, not the LLM, and is
+            # prefixed PASS so it can never read as an action claim.
+            "ai_reasoning": (
+                portfolio_reasoning
+                or (f"PASS — {no_candidates_reason}"
+                    if no_candidates_reason else
+                    "No candidates shortlisted")
+            ),
+            "no_candidates_reason": no_candidates_reason,
             "trades_selected": [
                 {
                     "symbol": t.get("symbol"),
@@ -4147,10 +4225,15 @@ def _save_cycle_data(ctx, candidates_data, shortlist, ai_trades,
             "ensemble": _ensemble_summary_for_cycle(ensemble_result),
         }
 
-        # Write per-profile cycle file (dashboard source — overwritten)
+        # Write per-profile cycle file (dashboard source — overwritten).
+        # Atomic (temp + rename): views.py documents partial-read races
+        # on this file; a rename can never expose a half-written JSON.
         path = f"cycle_data_{profile_id}.json"
-        with open(path, "w") as f:
+        _tmp = f"{path}.tmp"
+        with open(_tmp, "w") as f:
             _json.dump(cycle_data, f)
+        import os as _os
+        _os.replace(_tmp, path)
 
         # 2026-05-19 (Phase B1 data-collection upgrade) — append-only
         # ai_cycles row so cross-candidate context survives past the

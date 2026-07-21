@@ -538,6 +538,22 @@ def ai_select_trades(candidates_data, portfolio_state, market_context, ctx=None)
         portfolio_reasoning: str
         pass_this_cycle: bool
     """
+    # 2026-07-21 — HARD GUARD: never call the model with an empty
+    # candidate list. Given portfolio/sector context and zero tradable
+    # names, the model fabricates an action narrative ("initiating
+    # long positions in Energy...") that validation then guts while
+    # the narrative survives to the dashboard. The pipeline returns
+    # before reaching here when gates empty the list; this guard
+    # protects every other caller (and the class, not the instance).
+    if not candidates_data:
+        return {
+            "trades": [], "alternates": [],
+            "portfolio_reasoning": "",
+            "pass_this_cycle": True,
+            "prompt": "", "raw_response": "",
+            "no_candidates": True,
+        }
+
     _ledger_opps = []
     prompt = _build_batch_prompt(candidates_data, portfolio_state,
                                  market_context, ctx,
@@ -1209,7 +1225,10 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context,
                 f"  → BETA TOO HIGH by {delta:+.2f}. Strong preference: "
                 f"DEFENSIVE picks (beta < 0.7 — utilities, staples, "
                 f"healthcare) on the long side, or LEVERED shorts (beta > "
-                f"1.3 — high-vol tech, financials) to reduce book beta.\n"
+                f"1.3 — high-vol tech, financials) to reduce book beta — "
+                f"but ONLY among the candidates listed; if no such "
+                f"candidate is present this cycle, note the absence "
+                f"rather than claiming a rotation.\n"
             )
         elif delta < -0.30:
             beta_target_block += (
@@ -2528,6 +2547,15 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context,
         f'"reasoning": "fallback if a primary is blocked"}}], '
         f'"portfolio_reasoning": "Why this combination or why pass", '
         f'"pass_this_cycle": false}}'
+        f'\n\nPORTFOLIO_REASONING CONTRACT: describe ONLY decisions '
+        f'about the candidates listed above. Never claim to be '
+        f'"initiating", "rotating into", or "rebalancing toward" '
+        f'positions or sectors that are not in the candidate list — '
+        f'you cannot trade what was not presented. If a sector you '
+        f'would prefer (per the beta/balance guidance) has no '
+        f'candidate here, state that explicitly ("no Energy '
+        f'candidates were presented this cycle") instead of narrating '
+        f'a rotation. If you pass, say why you pass.'
     )
 
     return prompt
