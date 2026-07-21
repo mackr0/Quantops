@@ -5,6 +5,10 @@ at the top.
 
 ---
 
+## 2026-07-21 (later) — Reconciler false-halt on sibling-masked positions: a genuinely-owned long that a sibling's larger short nets past zero at the broker was classified orphan_close. Severity: MEDIUM (p214 blocked from entries all morning on correct books).
+
+p214 held the (truthfully journaled) 10-share GOOG long from yesterday's re-fire while p212 held its remaining short 11; the account nets -1 — exactly what Alpaca shows, and the account-level certify gate agreed the books were CLEAN. But the per-profile orphan scan compared p214's own qty against the ACCOUNT-aggregate broker position, saw "broker doesn't hold your shares", and halted — violating this module's own documented rule that aggregate parity belongs to the decomposition gate. New `_symbol_decomposition_holds` suppressor, consulted after the own-exit escape and before orphan_close bucketing: when Σ(every same-account profile's virtual qty) == broker qty for the symbol (the certify invariant, deterministic own-books arithmetic, no fill attribution, A3 intact), the books collectively explain the broker and nothing is phantom. Fail-CLOSED on any error; memoized per pass; a REAL externally-closed phantom (Σ ≠ broker) still halts, pinned by test. The halt auto-clears on the first pass after deploy. Pinned in `test_reconciler_sibling_mask_2026_07_21.py` (5 tests).
+
 ## 2026-07-21 — AI-Brain truthfulness: the Decision panel could show a fabricated or stale action narrative ("initiating long positions in Energy") beside "No candidates met threshold this cycle". The AI is never again called with an empty candidate list, every empty panel states its REAL cause, and a gate that empties a live cycle now alarms. Severity: HIGH (the system's core purpose — evaluating AI judgment — was reading fiction).
 
 Operator-caught: three profiles' AI Brain panels narrated sector rotation while showing zero candidates considered, live on a Tuesday open. Three traces pinned a compound:

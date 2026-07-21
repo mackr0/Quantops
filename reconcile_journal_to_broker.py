@@ -538,6 +538,70 @@ def _own_exit_fills_explain(api, conn, db_path, symbol: str,
     return result
 
 
+def _symbol_decomposition_holds(api, ctx, symbol: str, memo: dict) -> bool:
+    """True iff Σ(every same-account profile's virtual qty) equals the
+    broker's position for `symbol` within half a share — the exact
+    invariant certify_books.check_broker_drift enforces account-wide.
+
+    Used to suppress the orphan_close halt for positions MASKED by a
+    sibling's opposite direction on the shared account (2026-07-21:
+    p214's genuinely-owned GOOG long looked "not held" because a
+    sibling's larger short made the account net negative). This is
+    deterministic own-books arithmetic across the account — it never
+    attributes any fill to any profile (A3 intact). Fail-CLOSED: any
+    error → False → the safety net halts as before. Memoized per
+    symbol for the pass."""
+    key = ("__decomp__", (symbol or "").upper())
+    if key in memo:
+        return memo[key]
+    result = False
+    try:
+        aid = getattr(ctx, "alpaca_account_id", None)
+        if not aid:
+            memo[key] = False
+            return False
+        broker_map = memo.get("__decomp_broker__")
+        if broker_map is None:
+            broker_map = {}
+            for p in api.list_positions():
+                s = getattr(p, "symbol", "") or ""
+                # stock symbols only — OCC contracts are the option
+                # reconciler's domain
+                if s and not any(ch.isdigit() for ch in s):
+                    broker_map[s.upper()] = float(getattr(p, "qty", 0) or 0)
+            memo["__decomp_broker__"] = broker_map
+        from models import get_active_profiles, build_user_context_from_profile
+        from journal import get_virtual_positions
+        total = 0.0
+        for prof in get_active_profiles():
+            if prof.get("alpaca_account_id") != aid:
+                continue
+            sib_db = build_user_context_from_profile(prof["id"]).db_path
+            for pos in get_virtual_positions(db_path=sib_db,
+                                             price_fetcher=lambda s: 0.0):
+                if pos.get("occ_symbol"):
+                    continue
+                if (pos.get("symbol") or "").upper() == (symbol or "").upper():
+                    total += float(pos.get("qty") or 0)
+        broker_qty = broker_map.get((symbol or "").upper(), 0.0)
+        result = abs(total - broker_qty) <= 0.5
+        if not result:
+            logger.info(
+                "decomposition check for %s: Σ virtual=%g vs broker=%g "
+                "— does NOT hold; orphan classification proceeds",
+                symbol, total, broker_qty,
+            )
+    except Exception as exc:
+        logger.warning(
+            "decomposition check failed for %s (%s: %s) — treating as "
+            "not-held (fail-closed; safety net halts as before)",
+            symbol, type(exc).__name__, exc,
+        )
+        result = False
+    memo[key] = result
+    return result
+
+
 def _all_journal_sell_order_ids(profile_ids: Iterable[int]) -> set:
     """Collect every order_id referenced by a SELL or COVER row across
     every profile's journal. Used to dedup the fallback match path so
@@ -1804,6 +1868,33 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
                         "by this profile's OWN in-flight exit row "
                         "(entry flip lagging the fill) — not an "
                         "orphan, no halt; sweep completes the flip.",
+                        sym,
+                    )
+                    continue
+                # SYMBOL-LEVEL DECOMPOSITION check (2026-07-21, the
+                # p214 GOOG false-halt): on a shared account, a real
+                # long can be MASKED by a sibling's larger short (p214
+                # long 10 + p212 short 11 → broker nets -1), making
+                # the per-profile "broker doesn't hold your shares"
+                # test fire on a position that is genuinely owned.
+                # This module's own contract says aggregate parity is
+                # the DECOMPOSITION gate's job — so when the account's
+                # decomposition HOLDS for this symbol (Σ every
+                # profile's virtual qty == broker qty, the exact
+                # invariant certify_books enforces), the books
+                # collectively explain the broker and no profile's
+                # position is phantom. Deterministic own-books
+                # arithmetic — no fuzzy matching, no fill
+                # attribution, A3 intact. Fail-CLOSED: any error in
+                # the cross-book sum → not suppressed → halt.
+                if _symbol_decomposition_holds(api, ctx, sym,
+                                               _own_exit_memo):
+                    logger.info(
+                        "Reconcile: %s per-profile qty is masked by a "
+                        "sibling's opposite direction but the "
+                        "account-level decomposition HOLDS (Σ virtual "
+                        "== broker) — genuinely owned, not an orphan, "
+                        "no halt.",
                         sym,
                     )
                     continue
