@@ -24,7 +24,7 @@ def test_config_ceiling_is_1000():
 
 def test_user_context_default_ceiling_is_1000():
     from user_context import UserContext
-    ctx = UserContext(user_id=1)
+    ctx = UserContext(user_id=1, segment="stocks")
     assert ctx.max_price == 1000.0
     assert ctx.min_price == 10.0
 
