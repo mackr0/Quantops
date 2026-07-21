@@ -518,6 +518,7 @@ def _meta_pregate_candidates(candidates: List[Dict[str, Any]],
                              and n_train_long is not None)
 
     kept = []
+    below = []  # (meta_prob, candidate) under threshold — capped later
     dropped_count = 0
     short_bypass_count = 0
     for c in candidates:
@@ -580,9 +581,40 @@ def _meta_pregate_candidates(candidates: List[Dict[str, Any]],
             if meta_prob >= threshold:
                 kept.append(c)
             else:
-                dropped_count += 1
+                below.append((float(meta_prob), c))
         except Exception:
             kept.append(c)
+
+    # 2026-07-21 — TRIMMER, NOT GATE (the EXP-A3 "6 shortlisted →
+    # meta-pregate dropped 6 → 0 for the AI" starvation): a pregate
+    # trained on one bad week scored EVERY candidate below threshold
+    # and emptied live cycles — the gate-as-allocator disease
+    # (2026-07-17), one gate over. Structural rule: the pregate may
+    # drop at most the WORST HALF of the cohort (len(candidates)//2),
+    # so it sharpens the shortlist and saves specialist calls but is
+    # mathematically incapable of zeroing the flow. The candidates it
+    # wanted to drop but couldn't are kept in their original slots;
+    # the counterfactual scoring on META_SUPPRESSED drops keeps
+    # judging whether the model deserves a bigger knife.
+    max_drops = len(candidates) // 2
+    if len(below) > max_drops:
+        below.sort(key=lambda pc: pc[0])  # lowest meta_prob first
+        spared = {id(c) for _, c in below[max_drops:]}
+        logging.warning(
+            "Meta-pregate wanted to drop %d/%d candidates but is a "
+            "BACKSTOP, not the allocator — capped at %d (worst by "
+            "meta_prob); %d spared. If this fires persistently the "
+            "model/threshold needs retraining, not a bigger veto.",
+            len(below), len(candidates), max_drops, len(below) - max_drops,
+        )
+        below = below[:max_drops]
+    else:
+        spared = set()
+    dropped_ids = {id(c) for _, c in below}
+    dropped_count = len(dropped_ids)
+    # Rebuild in ORIGINAL order: every candidate not dropped survives
+    # (threshold-passers, bypassed, unscoreable, and spared alike).
+    kept = [c for c in candidates if id(c) not in dropped_ids]
 
     if dropped_count > 0:
         logging.info(
