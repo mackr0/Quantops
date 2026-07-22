@@ -1472,7 +1472,16 @@ def _task_update_fills(ctx):
         orphan_rollbacks = 0
         for trade in unfilled:
             try:
-                order = api.get_order(trade["order_id"])
+                # 2026-07-22 — cached lookup: terminal orders never
+                # change (cached forever), and the short TTL dedups
+                # same-cycle re-polls. This loop is the machinery that
+                # VOIDS journaled-but-never-filled phantom rows; under
+                # the 429 storm its own polling was starved, phantoms
+                # accumulated, and the integrity gate halted the
+                # fleet. The cache + breaker keep this healer inside
+                # the API budget so it always completes.
+                from order_status_cache import get_order_cached
+                order = get_order_cached(api, trade["order_id"])
             except Exception as exc:
                 logging.debug(
                     "[%s] update_fills: get_order(%s) failed: %s",

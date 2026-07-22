@@ -764,7 +764,11 @@ def _is_order_active(api, order_id: str) -> bool:
     if not order_id:
         return False
     try:
-        order = api.get_order(order_id)
+        # 2026-07-22 — cached (terminal-forever + short TTL): this
+        # helper runs per open entry per cycle and was part of the
+        # per-cycle polling volume behind the 429 storm.
+        from order_status_cache import get_order_cached
+        order = get_order_cached(api, order_id)
     except Exception:
         return False
     status = (getattr(order, "status", "") or "").lower()
@@ -1023,8 +1027,15 @@ def ensure_protective_stops(api, positions, ctx, db_path,
                 ).fetchone()
                 if _entry_order_id and _entry_order_id[0]:
                     try:
-                        _parent = api.get_order(
-                            _entry_order_id[0], nested=True,
+                        # 2026-07-22 — cached: a dead bracket (terminal
+                        # parent, terminal/absent children) can never
+                        # change again, and re-polling every one of
+                        # them every cycle for every profile is what
+                        # blew Alpaca's rate limit (the 429 storm that
+                        # starved the fill-healer and broke the books).
+                        from order_status_cache import get_order_cached
+                        _parent = get_order_cached(
+                            api, _entry_order_id[0], nested=True,
                         )
                         if (getattr(_parent, "order_class", "") or "") == "bracket":
                             # The bracket's children handle protection.
@@ -1168,7 +1179,8 @@ def ensure_protective_stops(api, positions, ctx, db_path,
             if _pending_row:
                 _existing_oid = _pending_row["order_id"]
                 try:
-                    _existing_order = api.get_order(_existing_oid)
+                    from order_status_cache import get_order_cached
+                    _existing_order = get_order_cached(api, _existing_oid)
                     _existing_status = (
                         getattr(_existing_order, "status", "") or ""
                     ).lower()
@@ -1331,6 +1343,23 @@ def ensure_protective_stops(api, positions, ctx, db_path,
                         "conviction-TP skip eval failed: %s: %s",
                         type(_ct_exc).__name__, _ct_exc,
                     )
+
+            # 2026-07-22 — 429 stand-down: placing protective orders
+            # into an open rate-limit window guarantees rejections
+            # (and burns the budget the fill-healer needs to void
+            # phantom rows). The position keeps whatever coverage it
+            # has; next cycle retries once the breaker closes.
+            try:
+                from order_status_cache import rate_limited
+                if rate_limited():
+                    logger.warning(
+                        "ensure_protective_stops: 429 cooldown active — "
+                        "deferring protective placement for %s (entry "
+                        "#%s) to next cycle.", symbol, row["id"],
+                    )
+                    continue
+            except ImportError:
+                pass
 
             sl_pct = sl_pct_short if is_short else sl_pct_long
 

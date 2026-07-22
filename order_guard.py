@@ -1027,7 +1027,22 @@ class GuardedAlpacaApi:
         # …) already wraps its submit_order in try/except — that is exactly
         # why the oversell raise above is non-fatal. Retry/error handling
         # belongs to the caller, not the gate.
-        result = api.submit_order(**kwargs)
+        try:
+            result = api.submit_order(**kwargs)
+        except Exception as _sub_exc:
+            # 2026-07-22 — submit-side 429s open the process-wide
+            # breaker too (the option-close rejections that broke the
+            # books came through submits, not lookups). The exception
+            # still propagates to the caller's existing handling.
+            _s = str(_sub_exc).lower()
+            if "429" in _s or "rate limit" in _s:
+                try:
+                    from order_status_cache import note_rate_limit
+                    note_rate_limit("submit_order(%s)"
+                                    % kwargs.get("symbol"))
+                except ImportError:
+                    pass
+            raise
         # Durable-journaling recovery (2026-06-23): record the accepted order
         # the moment the broker returns it, BEFORE the caller's log_trade. If
         # that journal write is later lost (DB lock/disk), the order_id

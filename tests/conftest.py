@@ -215,3 +215,24 @@ def _block_real_email_in_tests():
     finally:
         config.RESEND_API_KEY = saved_key
         config.NOTIFICATION_EMAIL = saved_email
+
+
+@pytest.fixture(autouse=True)
+def _reset_order_status_cache():
+    """order_status_cache holds process-global state (order cache +
+    429-breaker cooldown). In production that persistence is the whole
+    point; across TESTS it leaks one test's mocked orders (or an open
+    breaker) into the next — caught 2026-07-22 when the bracket-skip
+    sweep test read another test's cached parent order. Autouse +
+    function-scoped so isolation can never be forgotten."""
+    try:
+        import order_status_cache
+        order_status_cache.clear_cache()
+    except ImportError:
+        pass
+    yield
+    try:
+        import order_status_cache
+        order_status_cache.clear_cache()
+    except ImportError:
+        pass

@@ -47,10 +47,15 @@ def test_ensure_protective_stops_skips_bracket_parent_orders():
         "Bracket-skip anchor comment missing — refactor must "
         "preserve the anchor or update this pin."
     )
-    assert "api.get_order" in body, (
-        "ensure_protective_stops must call api.get_order to read "
-        "the parent order_class. Without this it can't tell "
-        "bracket entries apart from legacy plain entries."
+    # 2026-07-22 — the parent read is routed through the order-status
+    # cache (terminal-forever + TTL; the per-cycle re-poll of dead
+    # brackets is what blew the API rate limit). Either form satisfies
+    # this pin's intent: the sweep must READ the parent order_class.
+    assert ("api.get_order" in body or "get_order_cached(" in body), (
+        "ensure_protective_stops must read the parent order (directly "
+        "or via order_status_cache.get_order_cached) to see "
+        "order_class. Without this it can't tell bracket entries "
+        "apart from legacy plain entries."
     )
     # The class check must be on order_class='bracket'
     assert '"bracket"' in body, (
