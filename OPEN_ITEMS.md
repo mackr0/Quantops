@@ -251,3 +251,40 @@ These are real differentiators of billion-dollar funds but the gap is structural
 - **Adding an item:** when a code marker (`TODO`, `deferred`, `future enhancement`) gets shipped, add it under §10 with a status. When a new plan ships with new gaps, add a section.
 - **Closing an item:** mark ✅ DONE with the commit + date. Don't delete entries — keeping them visible documents what was completed.
 - **Quarterly sweep:** every ~3 months, re-run the `grep` audit (see §10) to catch any new code-level deferrals that snuck in. The pattern matchers: `TODO`, `FIXME`, `HACK`, `XXX`, `deferred`, `defer until`, `future enhancement`, `future:`, `NOT YET`, `not yet built`, `not yet wired`, `future improvement`, `improve later`, `known limit`, `limitation:`, `honest limit`.
+
+---
+
+## INCIDENT FOLLOW-UP 2026-07-22 — ⏳ OPEN: the spread-close bookkeeping bug (P0 for the next session)
+
+**Symptom (repaired, cause NOT yet fixed):** p212's GOOG 375/380 bear-call
+spread open rows (ids 257/258, written 2026-07-15T19:02, sides sell/buy @
+10.05/8.35, status pending_fill) were CLOBBERED when the spread's
+single-leg closes finally filled on 2026-07-22 13:45 (buy 375C @1.85 order
+8a0a2d3b…, sell 380C @1.19 order 4d12d9f9…): something overwrote the rows'
+order_ids with the CLOSE order ids and stamped per-leg pnl WITH THE LONG
+LEG'S SIGN INVERTED (+2,148 where truth is −2,148), fabricating +4,608
+realized pnl → constant decomposition gap → integrity kill switch, fleet
+halted a full day. Books repaired via
+`scripts/repair_goog_spread_p212_2026_07_22.py` (true pnl +312, broker-
+verified). THE WRITER IS STILL IN THE CODE — any future spread close can
+corrupt the books the same way.
+
+**Eliminated as the writer** (each checked against the row shapes):
+`options_proactive_exits` (writes NEW sell rows only),
+`options_lifecycle` expiry sweep (expiry-only; this spread hadn't expired),
+`bracket_orders.sync_pending_protective_order_ids` (pending_protective
+only), `auto_close_broker_orphans` (writes NEW rows).
+
+**Prime suspects, in order:**
+1. `reconcile_journal_to_broker`'s fill-matching over rows with
+   `status IN ('closed','pending_fill')` (~line 1554) — matches broker
+   fills to journal rows and could stamp order_id + pnl onto the OPEN
+   rows by occ/qty match when the real close was never journaled.
+2. `journal.recompute_realized_pnl` — per-leg sign convention; verify the
+   long-leg (buy-to-open, sell-to-close) direction against a pinned test.
+
+**Definition of fixed:** (a) close fills NEVER mutate open rows' order_id
+(closes get their own rows); (b) per-leg pnl sign test-pinned for BOTH leg
+directions of a credit AND debit spread; (c) a regression test replaying
+this exact incident shape (open pair pending_fill, later single-leg close
+fills) ends with a zero decomposition gap.
