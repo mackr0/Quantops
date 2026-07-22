@@ -1,41 +1,37 @@
 #!/usr/bin/env python3
-"""Repair 2026-07-22 (part 2) — rebuild p212's GOOG 375/380 spread
-round trip from broker truth.
+"""Repair 2026-07-22 (part 2, v2) — rebuild p212's GOOG 375/380 spread
+round trip; the v1 dry run recovered the full true history.
 
-What actually happened (established from broker + journals):
-  * 07-15: p212 OPENED a bear-call credit spread — sell 3x
-    GOOG260724C00375000 (order 8a0a2d3b, filled) + buy 3x
-    GOOG260724C00380000 (order 4d12d9f9, filled). REAL fills.
-  * The journaling path miscoded those opens as P&L-bearing "close"
-    rows (ids 257/258, status pending_fill, booked pnl 2,460 + 2,148
-    = 4,608 — computed against a basis that never existed). No open
-    rows exist in ANY profile journal; submitted_orders never saw
-    them (the option path bypasses the guarded door).
-  * The lifecycle later closed the spread at the broker (buy 375C /
-    sell 380C — the orders that kept 429-failing until one landed;
-    broker is flat both legs today) but the closing fills were never
-    journaled in the 429 chaos.
-  * Net: real round trip at the broker; the journal carries one
-    mis-shaped pair with fabricated pnl. check_decomposition counts
-    that pnl as realized -> the constant −4,608 gap -> kill switch.
+Established, broker-verified:
+  * 07-15 19:02 — p212 OPENED a bear-call credit spread: sell 3x
+    GOOG260724C00375000 @ 10.05, buy 3x GOOG260724C00380000 @ 8.35
+    (net credit $510). Journal rows 257/258 ARE those opens — real.
+  * The lifecycle's close (buy 375C / sell 380C) 429-failed for a week,
+    then FILLED 2026-07-22 13:45: buy 375C @ 1.85 (order 8a0a2d3b…),
+    sell 380C @ 1.19 (order 4d12d9f9…). Close debit $198. Broker flat.
+  * TRUE spread pnl: (10.05−1.85)·300 − (8.35−1.19)·300 = 2,460 −
+    2,148 = +$312.
+  * The close bookkeeping wrote onto the OPEN rows instead of creating
+    close rows: it overwrote their order_ids with the close order ids
+    and stamped per-leg pnl WITH THE LONG LEG'S SIGN INVERTED
+    (+2,148 instead of −2,148) — booking +4,608 phantom realized pnl,
+    which is the integrity gate's constant −4,608 decomposition gap.
 
-The repair (broker-verified, dry-run default, refuses on ambiguity):
-  1. Pull the account's closed orders and find, for each contract,
-     the FILLED opening order (must match ids 8a0a2d3b / 4d12d9f9)
-     and the FILLED closing order (opposite side, after 07-15).
-  2. Verify broker position is 0 for both contracts.
-  3. Rewrite rows 257/258 as consumed OPEN legs: status='closed',
-     pnl=NULL, fill_price = their real open fill price.
-  4. INSERT the two missing CLOSE rows from the broker closing fills,
-     carrying the TRUE per-leg pnl (house convention: pnl lives on
-     the close row):
-        375C short leg: (open_sell - close_buy) * qty * 100
-        380C long  leg: (close_sell - open_buy) * qty * 100
-     Idempotent: skips if the closing order_id already has a row.
-  If the closing fills cannot be found, or anything is ambiguous, it
-  prints what it found and REFUSES to apply. Nothing is guessed.
+The repair (dry-run default; every fact re-verified before applying):
+  1. get_order on the two close ids taken from rows 257/258 —
+     must be status=filled, sides buy(375C)/sell(380C), qty 3.
+  2. Broker position must be flat for both contracts.
+  3. Rows 257/258 must still be status='pending_fill' with the open
+     premiums (10.05 / 8.35) — i.e. the incident state; anything else
+     means the state moved and the script refuses.
+  4. Apply: rows 257/258 become consumed OPEN legs (status='closed',
+     pnl=NULL, fill_price=open premium, order_id='REPAIR-OPEN-…' so
+     the close ids belong solely to the close rows); INSERT the two
+     close rows from the broker fills with the TRUE per-leg pnl
+     (+2,460 short leg / −2,148 long leg — pnl on close rows, house
+     convention). Idempotent: refuses if already applied.
 
-Run from /opt/quantopsai with the venv python:
+Run from /opt/quantopsai:
     venv/bin/python3 scripts/repair_goog_spread_p212_2026_07_22.py           # dry run
     venv/bin/python3 scripts/repair_goog_spread_p212_2026_07_22.py --apply
 """
@@ -52,26 +48,13 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 PID = 212
 DB = f"/opt/quantopsai/quantopsai_profile_{PID}.db"
-LEG_375 = "GOOG260724C00375000"
-LEG_380 = "GOOG260724C00380000"
-OPEN_ROW_375 = 257     # journal row: sell 3 @ 10.05 (the real open)
-OPEN_ROW_380 = 258     # journal row: buy 3 @ 8.35 (the real open)
-OPEN_OID_375 = "8a0a2d3b"
-OPEN_OID_380 = "4d12d9f9"
 CONTRACT_MULT = 100
 
-
-def _filled_orders_for(api, occ):
-    """All FILLED orders for one OCC contract, oldest first."""
-    out = []
-    for o in api.list_orders(status="closed", limit=500, nested=True):
-        if (getattr(o, "symbol", "") or "") != occ:
-            continue
-        if (getattr(o, "status", "") or "").lower() != "filled":
-            continue
-        out.append(o)
-    out.sort(key=lambda o: str(getattr(o, "filled_at", "") or ""))
-    return out
+# (row_id, occ, open_side, open_premium, close_side)
+LEGS = (
+    (257, "GOOG260724C00375000", "sell", 10.05, "buy"),
+    (258, "GOOG260724C00380000", "buy", 8.35, "sell"),
+)
 
 
 def _broker_position_qty(api, occ):
@@ -90,103 +73,108 @@ def main():
     from client import get_api
     api = get_api(build_user_context_from_profile(PID))
 
-    plan = []
     fatal = []
-
-    for occ, open_oid_prefix, open_side, close_side in (
-        (LEG_375, OPEN_OID_375, "sell", "buy"),
-        (LEG_380, OPEN_OID_380, "buy", "sell"),
-    ):
-        orders = _filled_orders_for(api, occ)
-        print(f"\n{occ}: {len(orders)} filled order(s) at the broker:")
-        for o in orders:
-            print(f"  {str(o.id)[:8]} {o.side} qty={o.qty} "
-                  f"avg={getattr(o, 'filled_avg_price', '?')} "
-                  f"filled_at={getattr(o, 'filled_at', '?')}")
-        opens = [o for o in orders
-                 if str(o.id).startswith(open_oid_prefix)
-                 and (o.side or "").lower() == open_side]
-        closes = [o for o in orders
-                  if (o.side or "").lower() == close_side]
-        if len(opens) != 1:
-            fatal.append(f"{occ}: expected exactly 1 filled OPEN "
-                         f"({open_side}, id {open_oid_prefix}…) — "
-                         f"found {len(opens)}")
-            continue
-        if len(closes) != 1:
-            fatal.append(f"{occ}: expected exactly 1 filled CLOSE "
-                         f"({close_side}) — found {len(closes)}; "
-                         f"cannot attribute unambiguously")
-            continue
-        pos = _broker_position_qty(api, occ)
-        if pos != 0:
-            fatal.append(f"{occ}: broker still holds {pos} — the round "
-                         f"trip is NOT complete; refusing")
-            continue
-        plan.append((occ, opens[0], closes[0], open_side, close_side))
-
-    if fatal:
-        print("\nREFUSING to apply — broker record does not match the "
-              "expected shape:")
-        for f in fatal:
-            print(f"  {f}")
-        sys.exit(1)
-
-    # Build the journal changes.
-    changes = []
-    for occ, o_open, o_close, open_side, close_side in plan:
-        qty = float(o_open.qty)
-        open_px = float(o_open.filled_avg_price)
-        close_px = float(o_close.filled_avg_price)
-        if open_side == "sell":     # short leg: credit in, debit out
-            pnl = (open_px - close_px) * qty * CONTRACT_MULT
-        else:                        # long leg: debit in, credit out
-            pnl = (close_px - open_px) * qty * CONTRACT_MULT
-        row_id = OPEN_ROW_375 if occ == LEG_375 else OPEN_ROW_380
-        changes.append((occ, row_id, o_open, o_close, qty,
-                        open_px, close_px, close_side, pnl))
-
-    total_pnl = sum(c[-1] for c in changes)
-    print("\nPLAN:")
-    for occ, row_id, o_open, o_close, qty, open_px, close_px, close_side, pnl in changes:
-        print(f"  row #{row_id} ({occ}): -> consumed OPEN leg "
-              f"(status=closed, pnl=NULL, fill_price={open_px})")
-        print(f"  INSERT close row: {close_side} {qty:g} {occ} "
-              f"@ {close_px} (order {str(o_close.id)[:8]}) "
-              f"pnl={pnl:+,.2f}")
-    print(f"  TRUE spread pnl: {total_pnl:+,.2f} "
-          f"(replaces the fabricated +4,608)")
-
-    if not args.apply:
-        print("\nDRY RUN — re-run with --apply to execute.")
-        return
+    plan = []
 
     with closing(sqlite3.connect(DB)) as conn:
-        for occ, row_id, o_open, o_close, qty, open_px, close_px, close_side, pnl in changes:
-            already = conn.execute(
-                "SELECT 1 FROM trades WHERE order_id = ?",
-                (str(o_close.id),)).fetchone()
+        conn.row_factory = sqlite3.Row
+        for row_id, occ, open_side, open_px, close_side in LEGS:
+            r = conn.execute(
+                "SELECT id, side, qty, price, pnl, status, order_id "
+                "FROM trades WHERE id = ?", (row_id,)).fetchone()
+            if r is None:
+                fatal.append(f"row #{row_id} missing")
+                continue
+            if r["status"] != "pending_fill":
+                fatal.append(
+                    f"row #{row_id} status={r['status']!r} (expected "
+                    f"'pending_fill') — state moved; refusing")
+                continue
+            if (r["side"] or "").lower() != open_side or \
+                    abs(float(r["price"] or 0) - open_px) > 0.001:
+                fatal.append(
+                    f"row #{row_id} side/price {r['side']}/{r['price']} "
+                    f"!= expected {open_side}/{open_px}; refusing")
+                continue
+            close_oid = r["order_id"]
+            try:
+                order = api.get_order(close_oid)
+            except Exception as exc:
+                fatal.append(f"{occ}: get_order({str(close_oid)[:8]}) "
+                             f"failed: {exc}")
+                continue
+            o_status = (getattr(order, "status", "") or "").lower()
+            o_side = (getattr(order, "side", "") or "").lower()
+            o_qty = float(getattr(order, "qty", 0) or 0)
+            o_sym = getattr(order, "symbol", "") or ""
+            close_px = float(getattr(order, "filled_avg_price", 0) or 0)
+            if (o_status != "filled" or o_side != close_side
+                    or o_qty != float(r["qty"]) or o_sym != occ
+                    or close_px <= 0):
+                fatal.append(
+                    f"{occ}: broker order {str(close_oid)[:8]} is "
+                    f"{o_side} {o_qty} {o_sym} status={o_status} "
+                    f"avg={close_px} — does not match the expected "
+                    f"CLOSE fill; refusing")
+                continue
+            pos = _broker_position_qty(api, occ)
+            if pos != 0:
+                fatal.append(f"{occ}: broker still holds {pos}; refusing")
+                continue
+            qty = float(r["qty"])
+            if open_side == "sell":     # short leg
+                pnl = (open_px - close_px) * qty * CONTRACT_MULT
+            else:                        # long leg
+                pnl = (close_px - open_px) * qty * CONTRACT_MULT
+            plan.append((row_id, occ, open_side, open_px, close_side,
+                         close_px, qty, str(close_oid),
+                         str(getattr(order, "filled_at", "") or ""), pnl))
+
+        if fatal:
+            print("REFUSING — facts do not match the established "
+                  "history:")
+            for f in fatal:
+                print(f"  {f}")
+            sys.exit(1)
+
+        total = sum(p[-1] for p in plan)
+        print("PLAN:")
+        for (row_id, occ, open_side, open_px, close_side, close_px,
+             qty, close_oid, filled_at, pnl) in plan:
+            print(f"  row #{row_id}: consumed OPEN {open_side} {qty:g} "
+                  f"{occ} @ {open_px} (status=closed, pnl=NULL, "
+                  f"order_id=REPAIR-OPEN-{row_id})")
+            print(f"  INSERT close: {close_side} {qty:g} {occ} @ "
+                  f"{close_px} order={close_oid[:8]} "
+                  f"filled={filled_at[:19]} pnl={pnl:+,.2f}")
+        print(f"  TRUE spread pnl {total:+,.2f} replaces the fabricated "
+              f"+4,608 (long-leg sign was inverted).")
+
+        if not args.apply:
+            print("\nDRY RUN — re-run with --apply to execute.")
+            return
+
+        for (row_id, occ, open_side, open_px, close_side, close_px,
+             qty, close_oid, filled_at, pnl) in plan:
             conn.execute(
                 "UPDATE trades SET status='closed', pnl=NULL, "
-                "fill_price=? WHERE id = ?", (open_px, row_id))
-            if already:
-                print(f"close row for {str(o_close.id)[:8]} already "
-                      f"journaled — skipping insert (idempotent)")
-            else:
-                conn.execute(
-                    "INSERT INTO trades (timestamp, symbol, side, qty, "
-                    " price, fill_price, pnl, status, order_id, "
-                    " occ_symbol, signal_type, reason) "
-                    "VALUES (?, 'GOOG', ?, ?, ?, ?, ?, 'closed', ?, ?, "
-                    " 'MULTILEG', ?)",
-                    (str(getattr(o_close, "filled_at", "") or ""),
-                     close_side, qty, close_px, close_px, pnl,
-                     str(o_close.id), occ,
-                     "repair 2026-07-22: closing fill reconstructed "
-                     "from broker (was lost in the 429 storm)"))
+                "fill_price=?, order_id=? WHERE id = ?",
+                (open_px, f"REPAIR-OPEN-{row_id}", row_id))
+            conn.execute(
+                "INSERT INTO trades (timestamp, symbol, side, qty, "
+                " price, fill_price, pnl, status, order_id, occ_symbol, "
+                " signal_type, reason) "
+                "VALUES (?, 'GOOG', ?, ?, ?, ?, ?, 'closed', ?, ?, "
+                " 'MULTILEG', ?)",
+                (filled_at, close_side, qty, close_px, close_px, pnl,
+                 close_oid, occ,
+                 "repair 2026-07-22: closing fill reconstructed from "
+                 "broker; open row had been clobbered by the close "
+                 "bookkeeping (order_id overwrite + inverted long-leg "
+                 "pnl sign)"))
         conn.commit()
-    print("\nAPPLIED. The integrity gate re-checks every cycle; the "
-          "kill switch auto-clears once the decomposition gap closes.")
+    print("\nAPPLIED. Integrity gate re-checks every cycle; the kill "
+          "switch auto-clears once the decomposition gap closes.")
 
 
 if __name__ == "__main__":
