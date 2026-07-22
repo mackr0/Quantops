@@ -1483,6 +1483,40 @@ def _task_update_fills(ctx):
                 from order_status_cache import get_order_cached
                 order = get_order_cached(api, trade["order_id"])
             except Exception as exc:
+                # 2026-07-22 — ORDER-NOT-FOUND voiding. A journal row
+                # whose order_id the broker has NEVER heard of (the
+                # submit failed AFTER the row was written — the p212
+                # GOOG 375/380 close pair sat 'pending_fill' for a week
+                # with $4,608 of booked pnl, holding the integrity gap
+                # open) was previously treated as a transient error and
+                # skipped FOREVER: the healer could never classify it.
+                # A 404 that persists past 24h is not transient — the
+                # order does not exist; the row realized nothing. Void
+                # it (status='canceled'; the decomposition and virtual
+                # books both exclude canceled rows). Age-gated so a
+                # brief broker-side propagation delay on a fresh order
+                # can never void a real trade.
+                _es = str(exc).lower()
+                _row_ts = str(trade["timestamp"] or "")[:19].replace("T", " ")
+                _cutoff = (datetime.utcnow() - timedelta(hours=24)
+                           ).strftime("%Y-%m-%d %H:%M:%S")
+                if ("not found" in _es or "404" in _es) and (
+                        _row_ts and _row_ts < _cutoff):
+                    conn.execute(
+                        "UPDATE trades SET status = 'canceled', price = 0 "
+                        "WHERE id = ?", (trade["id"],),
+                    )
+                    conn.commit()
+                    terminal_unfilled += 1
+                    logging.warning(
+                        "[%s] update_fills: order %s for trade #%s (%s) "
+                        "is UNKNOWN at the broker and the row is >24h "
+                        "old — the submit never landed; row voided "
+                        "(status=canceled).",
+                        seg_label, trade["order_id"], trade["id"],
+                        trade["symbol"],
+                    )
+                    continue
                 logging.debug(
                     "[%s] update_fills: get_order(%s) failed: %s",
                     seg_label, trade["order_id"], exc,
