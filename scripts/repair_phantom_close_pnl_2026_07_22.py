@@ -41,7 +41,7 @@ import os
 import re
 import sqlite3
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -72,6 +72,14 @@ def _order_verdict(api, order_id):
 
 def _repair_one_db(conn, pid, apply_changes, cutoff, totals):
     conn.row_factory = sqlite3.Row
+    # Some profile DBs are empty shells (created but never initialized
+    # or never traded) — probe for the trades table so one of them
+    # can't abort the whole repair run.
+    has_trades = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name='trades'").fetchone()
+    if not has_trades:
+        return
     rows = conn.execute(
         "SELECT id, timestamp, symbol, side, qty, pnl, status, "
         "       order_id, occ_symbol FROM trades "
@@ -116,7 +124,7 @@ def main():
     ap.add_argument("--db-glob", default="/opt/quantopsai/quantopsai_profile_*.db")
     args = ap.parse_args()
 
-    cutoff = (datetime.utcnow() - timedelta(hours=24)
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)
               ).strftime("%Y-%m-%d %H:%M:%S")
     totals = {"void": 0, "skip": 0}
 
