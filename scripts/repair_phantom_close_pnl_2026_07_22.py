@@ -80,10 +80,22 @@ def _repair_one_db(conn, pid, apply_changes, cutoff, totals):
         "AND name='trades'").fetchone()
     if not has_trades:
         return
+    # 2026-07-22 (v2): widened from pending_fill-only to ALL live-status
+    # rows (open / pending_fill / pending_protective) older than 24h.
+    # The 429-storm era left journal-only phantoms in every shape — the
+    # GOOG close pair was pending_fill, the acct-56 STX short (broker=0
+    # virtual=-5) is a plain 'open' entry whose order never filled.
+    # Safety is unchanged and lives in _order_verdict: a row is voided
+    # ONLY when the broker confirms its order is unknown (404) or
+    # terminal-unfilled; live or filled orders are reported and
+    # skipped. The integrity gate re-checks each finding class one at
+    # a time, so run this once to clear the whole backlog.
     rows = conn.execute(
         "SELECT id, timestamp, symbol, side, qty, pnl, status, "
         "       order_id, occ_symbol FROM trades "
-        "WHERE status = 'pending_fill' AND order_id IS NOT NULL "
+        "WHERE COALESCE(status, 'open') IN "
+        "      ('open', 'pending_fill', 'pending_protective') "
+        "  AND order_id IS NOT NULL "
         "  AND replace(substr(timestamp, 1, 19), 'T', ' ') < ?",
         (cutoff,),
     ).fetchall()
