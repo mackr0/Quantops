@@ -5,6 +5,10 @@ at the top.
 
 ---
 
+## 2026-07-22 (dashboard, addendum) — Shadow-eval calls were 100% silently failing: unpack-arity bug + unlogged error path. Severity: MEDIUM (551 shadow calls recorded as errors with zero journal lines; the operator's A/B evaluation collected no data).
+
+The dashboard's new $0.00 shadow line was itself the diagnostic: `ai_shadow_calls` held 551 rows, all errored. Anthropic: `_call_provider` has returned a NORMALIZED 4-tuple (text, in_tok, out_tok, cached_tok) since the 2026-07-02 cached-token pricing change, but shadow_eval unpacked 3 — every call died at the unpack. Fixed with an arity-tolerant unpack (accepts legacy 3-tuples too) and the cost estimate now passes cached_tok for honest pricing. The error path also wrote rows WITHOUT any log line — 551 failures, zero journal evidence, the exact silent-failure pattern this week existed to kill — it now logs a WARNING per failed call. (OpenAI's failures were a genuine account-side 429 "exceeded your current quota" — a billing fix, not code.) Pinned in `test_shadow_cost_dashboard_2026_07_22.py` (3 new tests: arity tolerance, error-path logging, cached-token pricing).
+
 ## 2026-07-22 (dashboard) — Shadow-eval spend visible on the dashboard: a live "shadow eval (today)" line under the AI-cost by-model breakdown. Severity: LOW (visibility).
 
 The operator enabled Shadow Model Evaluation and its cost was only reachable via the daily digest email — the dashboard's AI Cost section showed operational spend only. Shadow spend stays in its own ledger by design (ai_shadow_calls must never inflate the trading-cost numbers), but it now renders as its own line: new `ai_cost_ledger.shadow_by_model_today` (same row shape as `by_model_today`, mergeable), carried in `/api/dashboard-totals` for the 30s live refresh, rendered under the by-model row. Pinned in `test_shadow_cost_dashboard_2026_07_22.py` (5 tests).

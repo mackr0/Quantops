@@ -89,3 +89,33 @@ class TestDashboardWiring:
         assert "d.shadow_cost_by_model" in tpl, (
             "the 30s poll must refresh the shadow line, not just the "
             "initial render")
+
+
+class TestShadowCallArityFix:
+    """2026-07-22 — every Anthropic shadow call died on 'too many
+    values to unpack': _call_provider normalized to a 4-tuple
+    (2026-07-02 cached-token pricing) while shadow_eval unpacked 3 —
+    and the error path wrote rows WITHOUT logging, so 551 failed calls
+    produced zero journal lines."""
+
+    def test_unpack_tolerates_both_arities(self):
+        src = open(os.path.join(REPO, "shadow_eval.py")).read()
+        idx = src.index("_res = _call_provider(")
+        window = src[idx:idx + 400]
+        assert "_res[3] if len(_res) > 3 else 0" in window, (
+            "the shadow unpack must accept both the normalized 4-tuple "
+            "and the legacy 3-tuple")
+
+    def test_error_path_logs(self):
+        src = open(os.path.join(REPO, "shadow_eval.py")).read()
+        idx = src.index('base_row["error"] = f"{type(exc).__name__}')
+        window = src[idx:idx + 600]
+        assert "logger.warning" in window, (
+            "a failed shadow call must log — 551 silent failures is "
+            "the pattern this week existed to kill")
+
+    def test_cost_uses_cached_tokens(self):
+        src = open(os.path.join(REPO, "shadow_eval.py")).read()
+        assert "estimate_cost_usd(model, in_tok, out_tok,\n" \
+               "                             cached_tokens=cached_tok)" in src \
+            or "cached_tokens=cached_tok" in src

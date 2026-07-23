@@ -479,17 +479,32 @@ def _run_one_shadow(
 
     try:
         from ai_providers import _call_provider
-        response_text, in_tok, out_tok = _call_provider(
+        # 2026-07-22 — _call_provider returns a NORMALIZED 4-tuple
+        # (text, in_tok, out_tok, cached_tok) since the 2026-07-02
+        # cached-token pricing change; this unpack expected the legacy
+        # 3-tuple, so EVERY shadow call raised
+        # "too many values to unpack" and died — silently, because the
+        # error path below wrote the row without logging (551 failed
+        # calls, zero journal lines). Both fixed.
+        _res = _call_provider(
             provider, prompt, model, api_key, max_tokens,
         )
+        response_text, in_tok, out_tok = _res[0], _res[1], _res[2]
+        cached_tok = _res[3] if len(_res) > 3 else 0
     except Exception as exc:
         base_row["error"] = f"{type(exc).__name__}: {exc}"
         base_row["latency_ms"] = int((time.time() - started) * 1000)
+        logger.warning(
+            "shadow eval: %s/%s call FAILED: %s: %s — recorded with "
+            "error; no agreement/cost data for this call.",
+            provider, model, type(exc).__name__, exc,
+        )
         _write_shadow_row(db_path, base_row)
         return
 
     latency_ms = int((time.time() - started) * 1000)
-    cost = estimate_cost_usd(model, in_tok, out_tok)
+    cost = estimate_cost_usd(model, in_tok, out_tok,
+                             cached_tokens=cached_tok)
 
     # Strip fences and parse. The operational caller's parser sees the
     # stripped form, so we compare the same.
