@@ -2126,9 +2126,13 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
                             )
                             if kind != "partial":
                                 conn.execute(
-                                    "UPDATE trades SET status='closed' "
-                                    "WHERE id=?",
-                                    (a["trade_id"],),
+                                    "UPDATE trades SET status='closed', "
+                                    "reason = COALESCE(reason || ' | ', '') "
+                                    "|| ? WHERE id=?",
+                                    ("closed by reconciler bracket-"
+                                     "protective fill handler (entry "
+                                     "exited by protective fill)",
+                                     a["trade_id"]),
                                 )
                             applied_protective += 1
                             logger.info(
@@ -2177,8 +2181,12 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
                     # the protective fully exited the position.
                     if kind != "partial":
                         conn.execute(
-                            "UPDATE trades SET status='closed' WHERE id=?",
-                            (a["trade_id"],),
+                            "UPDATE trades SET status='closed', "
+                            "reason = COALESCE(reason || ' | ', '') || ? "
+                            "WHERE id=?",
+                            ("closed by reconciler protective-fill "
+                             "handler (entry exited by protective fill)",
+                             a["trade_id"]),
                         )
                     applied_protective += 1
             if applied_protective:

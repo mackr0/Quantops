@@ -1822,7 +1822,10 @@ def _task_update_fills(ctx):
                     and trade["side"] in ("sell", "cover"))
                     or _opt_buy_to_close):
                 conn.execute(
-                    "UPDATE trades SET status = 'closed' WHERE id = ?",
+                    "UPDATE trades SET status = 'closed', "
+                    "reason = COALESCE(reason || ' | ', '') || "
+                    "'closed by update_fills: broker confirmed this "
+                    "exit fill' WHERE id = ?",
                     (trade["id"],),
                 )
                 _close_side = (trade["side"] or "").lower()
@@ -1878,10 +1881,22 @@ def _task_update_fills(ctx):
                 # Close lots whose remaining qty is 0 (within fp tolerance)
                 for lot_id, lot_remaining in lots:
                     if lot_remaining <= 1e-6:
+                        # 2026-07-23 — PROVENANCE: every status flip must
+                        # sign the reason column. The p213 COST buy was
+                        # found wrongly 'closed' minutes after entry with
+                        # NO annotation — an anonymous closer cost a day
+                        # of forensics (drift +5 AND a −4,601
+                        # decomposition gap from one row). Whoever closes
+                        # a lot now names itself and the exit that
+                        # consumed it.
                         conn.execute(
-                            "UPDATE trades SET status = 'closed' "
+                            "UPDATE trades SET status = 'closed', "
+                            "reason = COALESCE(reason || ' | ', '') || ? "
                             "WHERE id = ? AND COALESCE(status, 'open') = 'open'",
-                            (lot_id,),
+                            (f"closed by update_fills FIFO: fully "
+                             f"consumed by confirmed exit row "
+                             f"#{trade['id']} ({trade['side']} "
+                             f"{trade['symbol']})", lot_id),
                         )
                 confirmed_closes += 1
             elif (trade["status"] == "pending_fill"
