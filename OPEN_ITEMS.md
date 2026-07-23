@@ -254,6 +254,39 @@ These are real differentiators of billion-dollar funds but the gap is structural
 
 ---
 
+## INCIDENT FOLLOW-UP 2026-07-23 — ✅ RESOLVED 2026-07-24: the anonymous entry-closer (p213 COST #296)
+
+**Cause (was open; now root-caused + fixed in code).** The 2026-07-23
+provenance commit made every `status='closed'` writer sign the reason
+column and named the reconciler protective-fill handler as prime suspect.
+Live broker forensics **refuted** that suspect: #296's entry
+(`740e9736`) filled 5 COST @920.27; both bracket children never filled
+(canceled 16:03:10, filled_qty 0); the shares were never sold. The real
+writer is `_task_update_fills`'s **FIFO lot-close**, whose scope SELECT
+treated every non-canceled sell — including a bracket's own resting
+`pending_protective` stop/TP — as a completed exit. #296's own two
+resting children (stop 5 + TP 5) FIFO-consumed its 5-share lot to zero
+and closed it while the broker still held the shares (acct-56 drift +5;
+−4,601 decomposition gap). The 16:03:10 child cancel is downstream (a
+'closed' entry's protective sweep cancels its unbacked legs), not cause.
+
+**Fix (2026-07-24, commit on main).** `_fifo_lots_fully_consumed`: a
+consumer consumes a lot only when it carries a `fill_price` (resting/
+unfilled orders are NULL). Fail-closed — a lot can only be under-closed
+(self-heals) never over-closed into a phantom. Pinned in
+`test_fifo_resting_sell_no_phantom_close_2026_07_24.py`. Was a LIVE
+recurrence (#304, the naked-bracket re-arm, would re-close #296);
+deploying the fix defuses it — no data repair needed beyond the
+operator's earlier reopen of #296.
+
+**Fleet-wide "bracket has NO live child" (~1,500×/cycle):** root-caused
+as the shared-account architecture (N virtual profiles' full-size
+protective sells overflow one real position → broker cancels the
+excess). The 2026-06-16 naked-bracket fix re-arms a fresh stop each
+cycle, so it is a re-arm heartbeat, not a protection gap. Eliminating
+the warning is an architectural choice (per-profile synthetic stops vs
+broker brackets) left to the operator; protection is not at risk.
+
 ## INCIDENT FOLLOW-UP 2026-07-22 — ⏳ OPEN: the spread-close bookkeeping bug (P0 for the next session)
 
 **Symptom (repaired, cause NOT yet fixed):** p212's GOOG 375/380 bear-call
@@ -291,20 +324,18 @@ fills) ends with a zero decomposition gap.
 
 ---
 
-## INCIDENT FOLLOW-UP 2026-07-23 — ⏳ OPEN: the anonymous entry-closer (COST #296)
+## INCIDENT FOLLOW-UP 2026-07-23 — ✅ SUPERSEDED by the 2026-07-24 entry above
 
-p213's COST buy #296 (real broker fill) was flipped 'closed' minutes
-after entry by an unsigned writer → acct-56 drift +5 AND a −4,601
-decomposition gap from the one row; kill-switch halt until the row was
-reopened to match broker truth (17:27 deactivation, books clean).
-Prime suspect: the reconciler's protective-fill handler closing the
-entry when a DEAD bracket child (canceled/never-materialized) is
-misclassified as a fill — #296's bracket children were canceled at
-the same instant. As of commit bfe2b1d EVERY status-flip to 'closed'
-signs the reason column, so a recurrence convicts or clears the
-suspect by reading the row. WHEN the signature appears: fix the
-misclassification at its source (the protective-fill kind/status
-check), test-pinned with a dead-child replay. Related, separate: the
-recurring "bracket child canceled/never materialized" pattern itself
-(why do bracket children keep dying?) has never been root-caused and
-is likely upstream of this whole class.
+This entry opened the hunt for the anonymous entry-closer (p213 COST
+#296) and named the reconciler's protective-fill handler as prime
+suspect, pending a signed reason on the next occurrence.
+
+**That suspect was REFUTED on 2026-07-24 by live broker forensics** —
+#296's bracket children were CANCELED UNFILLED (filled_qty 0), and the
+protective-fill path gates on `order.status=='filled'`, so it cannot
+have fired. The real writer was `_task_update_fills`' FIFO lot-close
+counting those still-RESTING children as completed exits. The child
+cancellation was DOWNSTREAM of the wrong close, not its cause. Root
+cause, fix, and the fleet-wide "bracket has NO live child" explanation
+are in the ✅ RESOLVED 2026-07-24 section above; this stub is kept only
+so the original suspect isn't re-investigated from scratch.

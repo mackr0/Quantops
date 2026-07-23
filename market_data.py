@@ -62,6 +62,38 @@ def _path_has_alpaca_table(path: str) -> bool:
         return False
 
 
+def resolve_master_db_path():
+    """Resolve the path to the master DB (holds `users`,
+    `alpaca_accounts`, and the active-symbols mirror), honoring
+    `config.DB_PATH` with CWD-robust fallbacks.
+
+    Centralized so EVERY master-DB reader shares ONE path policy instead
+    of hardcoding a bare relative "quantopsai.db" — the 2026-06-08 bug
+    where a stale 0-byte file auto-created at a cron's CWD shadowed the
+    real DB, and the reason `_resolve_operator_fallback_model` silently
+    read the wrong DB (or none) whenever its process CWD wasn't the repo
+    root. Returns `config.DB_PATH` unchanged when it is absolute or
+    already carries the master tables; otherwise probes the known
+    install locations."""
+    try:
+        from config import DB_PATH as _DB_PATH
+    except Exception:
+        _DB_PATH = os.environ.get("DB_PATH", "quantopsai.db")
+    # Absolute-ify when the resolved path is relative AND either
+    # missing OR pointing at an empty SQLite file with no
+    # alpaca_accounts table (the 2026-06-08 stale-0-byte-file case).
+    if not os.path.isabs(_DB_PATH) and not _path_has_alpaca_table(_DB_PATH):
+        for candidate in (
+            "/opt/quantopsai/quantopsai.db",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "quantopsai.db"),
+        ):
+            if _path_has_alpaca_table(candidate):
+                _DB_PATH = candidate
+                break
+    return _DB_PATH
+
+
 def _resolve_alpaca_credentials():
     """Return (key, secret, base_url) sourced from `alpaca_accounts`.
 
@@ -89,35 +121,10 @@ def _resolve_alpaca_credentials():
                           "https://paper-api.alpaca.markets")
     # Resolve the master DB path through config so cron / altdata
     # invocations that run from a different working directory still
-    # find quantopsai.db. The prior hardcoded relative path caused
-    # 292+ WARN-spam events per day on the /issues page when the
-    # daily altdata cron ran from altdata/<project>/ — every call
-    # to this resolver hit "no such table: alpaca_accounts" because
-    # SQLite created an empty DB at the cron's CWD.
-    try:
-        from config import DB_PATH as _DB_PATH
-    except Exception:
-        _DB_PATH = os.environ.get("DB_PATH", "quantopsai.db")
-    # Absolute-ify when the resolved path is relative AND either
-    # missing OR pointing at an empty SQLite file with no
-    # alpaca_accounts table. The empty-file case bit us 2026-06-08:
-    # an altdata cron subprocess running from /opt/quantopsai/altdata/
-    # <project>/ had a stale empty `quantopsai.db` auto-created by
-    # an earlier sqlite3.connect() call (SQLite creates a 0-byte
-    # file on connect if the path doesn't exist). Pre-fix this
-    # branch ONLY triggered on file-doesn't-exist, so the resolver
-    # ran against the empty file and threw "no such table" warnings
-    # on every cron run. Now we verify the table is actually
-    # present before declaring the path usable.
-    if not os.path.isabs(_DB_PATH) and not _path_has_alpaca_table(_DB_PATH):
-        for candidate in (
-            "/opt/quantopsai/quantopsai.db",
-            os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          "quantopsai.db"),
-        ):
-            if _path_has_alpaca_table(candidate):
-                _DB_PATH = candidate
-                break
+    # find quantopsai.db (the prior hardcoded relative path caused
+    # 292+ WARN-spam events per day when the daily altdata cron ran
+    # from altdata/<project>/). Centralized in resolve_master_db_path.
+    _DB_PATH = resolve_master_db_path()
     try:
         import sqlite3 as _sq3
         from contextlib import closing as _closing

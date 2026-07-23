@@ -32,6 +32,24 @@ def _reset_circuits():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_operator_fallback_db(monkeypatch, tmp_path):
+    """2026-07-24 — hermetic isolation of the operator-fallback lookup.
+
+    `ai_providers._resolve_operator_fallback_model` reads the master DB's
+    first `users` row (Settings → Fallback LLM). On the production host
+    that row selects Gemini with a real key, so `call_ai`'s fallback
+    chain served a LIVE google call — returning real text and defeating
+    these tests' `_call_openai`/`_call_anthropic` mocks (the assertion
+    saw a real Gemini response instead of the mocked fallback). Point the
+    master-DB path at an isolated, nonexistent temp file so the lookup
+    finds no operator row and returns None — the clean-machine behavior
+    these tests were written against. A test that specifically WANTS an
+    operator fallback patches `_resolve_operator_fallback_model` itself."""
+    import config
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "no_master.db"))
+
+
+@pytest.fixture(autouse=True)
 def _disable_retry_sleeps(monkeypatch):
     """The 2026-05-19 in-call retry adds 2s + 4s sleeps on transient
     failures. Tests would block for 6s per failover scenario without

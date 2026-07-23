@@ -137,18 +137,32 @@ def test_resolver_uses_mode_ro_uri():
 
 
 def test_resolver_path_check_uses_table_helper():
-    """The resolver's absolute-ify branch MUST validate that
-    candidates have the alpaca_accounts table, not just that a
-    file exists at the path."""
+    """The master-DB path resolution MUST validate that candidates have
+    the alpaca_accounts table, not just that a file exists at the path.
+
+    2026-07-24 — this table-helper check was centralized out of the
+    resolver's inline branch into `resolve_master_db_path()` so every
+    master-DB reader shares ONE CWD-robust policy. The guardrail follows
+    it there AND pins that the credential resolver routes through it (so
+    the check can't be bypassed by reintroducing inline path logic)."""
     src = (REPO_ROOT / "market_data.py").read_text()
-    m = re.search(
+    resolver = re.search(
+        r"def resolve_master_db_path\(\):(.*?)(?=^def |\Z)",
+        src, re.DOTALL | re.MULTILINE,
+    )
+    resolver_body = resolver.group(1) if resolver else ""
+    assert "_path_has_alpaca_table" in resolver_body, (
+        "resolve_master_db_path must use _path_has_alpaca_table to "
+        "validate candidates. The pre-2026-06-08 os.path.exists() check "
+        "let an empty 0-byte sqlite file masquerade as a usable master DB."
+    )
+    cred = re.search(
         r"def _resolve_alpaca_credentials\(\):(.*?)(?=^def |\Z)",
         src, re.DOTALL | re.MULTILINE,
     )
-    body = m.group(1) if m else ""
-    assert "_path_has_alpaca_table" in body, (
-        "_resolve_alpaca_credentials must use _path_has_alpaca_table "
-        "to validate candidates. The pre-2026-06-08 os.path.exists() "
-        "check let an empty 0-byte sqlite file masquerade as a "
-        "usable master DB."
+    cred_body = cred.group(1) if cred else ""
+    assert "resolve_master_db_path()" in cred_body, (
+        "_resolve_alpaca_credentials must resolve its DB path through "
+        "resolve_master_db_path() — the centralized table-helper check — "
+        "not a reintroduced inline os.path.exists() branch."
     )

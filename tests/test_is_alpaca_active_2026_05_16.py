@@ -63,9 +63,16 @@ class TestIsAlpacaActive:
     def test_empty_cache_is_permissive(self):
         """Cold start / Alpaca outage → empty cache. Returning False
         for everything would block ALL yfinance lookups forever.
-        Permissive on empty cache."""
+        Permissive on empty cache.
+
+        Isolate the cross-process persisted cache too: it reads a
+        hardcoded /opt/quantopsai/quantopsai.db, so on the prod host it
+        found the REAL active-symbols mirror (2026-07-24) and returned
+        False. A true cold start = BOTH caches empty."""
         from screener import is_alpaca_active
         with patch("screener.get_active_alpaca_symbols",
+                   return_value=set()), \
+             patch("screener._read_persisted_active_symbols",
                    return_value=set()):
             assert is_alpaca_active("AAPL") is True
             assert is_alpaca_active("BRK.B") is True

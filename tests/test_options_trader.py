@@ -16,6 +16,25 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 
+@pytest.fixture(autouse=True)
+def _stub_live_options_chain(monkeypatch):
+    """2026-07-24 — the parse-layer OPTIONS validation calls the LIVE
+    Alpaca options chain (`options_chain_alpaca.list_available_contracts`)
+    and fail-opens when it's empty. On the prod host it returned the real
+    chain, which has no contract for this test's now-past expiry, so the
+    proposal was rejected (0 trades). Stub the chain to empty so the
+    fail-open path runs — deterministic, network-free, and faithful to
+    the clean-machine behavior the test was written against."""
+    try:
+        import options_chain_alpaca
+        monkeypatch.setattr(
+            options_chain_alpaca, "list_available_contracts",
+            lambda *a, **k: [],
+        )
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Black-Scholes Greeks
 # ---------------------------------------------------------------------------

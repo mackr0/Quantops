@@ -1399,6 +1399,58 @@ def _task_cancel_stale_orders(ctx):
         logging.exception(f"[{seg_label}] Failed to cancel stale orders")
 
 
+def _fifo_lots_fully_consumed(rows, opp_side):
+    """Return the ids of entry lots that are FULLY consumed by
+    *completed* exits, under FIFO in the given row order.
+
+    `rows` is an ordered iterable of ``(id, side, qty, fill_price)``
+    for one instrument scope — already filtered to the two relevant
+    sides, non-canceled, and ordered by ``timestamp ASC, id ASC``.
+    Rows whose ``side == opp_side`` are entry lots; the rest are
+    exits that consume lots FIFO.
+
+    2026-07-24 — a consumer may ONLY be an exit the broker actually
+    FILLED. A resting, still-unfilled order — a bracket's own
+    protective stop/TP (``pending_protective``), a ``pending_fill``
+    sell in flight, an un-filled ``open`` exit — is NOT an exit yet
+    and must never consume a lot. Counting them was the anonymous
+    closer that cost a day: p213's COST buy #296 (5 shares) was
+    FIFO-consumed by its OWN two resting bracket children (stop 5 +
+    TP 5) the instant a sibling COST exit triggered this walk, so the
+    entry flipped ``closed`` minutes after it filled while the broker
+    still held all 5 shares — acct-56 drift +5 and a −4,601
+    decomposition gap from that one row. A filled exit always carries
+    a ``fill_price``; a resting/unfilled order has ``fill_price IS
+    NULL`` — that is the discriminator, and it matches the outer
+    loop's own "genuinely FILLED orders" gate (the triggering exit is
+    backfilled with its fill_price and flipped to ``closed`` before
+    this walk, so it still consumes correctly). Fail-closed: an
+    ambiguous row (no fill_price) is NOT counted, so a lot can only
+    ever be under-closed (it heals next cycle when the real exit
+    confirms), never over-closed into a phantom the broker never sold.
+    """
+    lots = []  # [trade_id, qty_remaining]
+    for r in rows:
+        _id = r[0]
+        side_i = r[1]
+        qty_i = float(r[2] or 0)
+        fill_price_i = r[3]
+        if side_i == opp_side:
+            lots.append([_id, qty_i])
+        elif fill_price_i is not None:  # completed (filled) exit only
+            remaining = qty_i
+            for lot in lots:
+                if remaining <= 0:
+                    break
+                if lot[1] <= 0:
+                    continue
+                consumed = min(lot[1], remaining)
+                lot[1] -= consumed
+                remaining -= consumed
+    return [lot_id for lot_id, lot_remaining in lots
+            if lot_remaining <= 1e-6]
+
+
 def _task_update_fills(ctx):
     """Update fill prices + state-machine transitions on recent trades.
 
@@ -1853,51 +1905,39 @@ def _task_update_fills(ctx):
                 else:
                     occ_filter = "AND occ_symbol IS NULL"
                     extra_params = []
+                # fill_price is the FILLED-exit discriminator: a resting
+                # protective/pending sell (fill_price IS NULL) must never
+                # consume a lot (see _fifo_lots_fully_consumed).
                 rows = conn.execute(
-                    "SELECT id, side, qty FROM trades "
+                    "SELECT id, side, qty, fill_price FROM trades "
                     "WHERE symbol = ? AND side IN (?, ?) "
                     f"  {occ_filter} "
                     "  AND COALESCE(status, 'open') != 'canceled' "
                     "ORDER BY timestamp ASC, id ASC",
                     [trade["symbol"], opp_side, exit_side] + extra_params,
                 ).fetchall()
-                # FIFO walk: entries open lots, exits consume them
-                lots = []  # [trade_id, qty_remaining]
-                for r in rows:
-                    side_i = r[1]
-                    qty_i = float(r[2] or 0)
-                    if side_i == opp_side:
-                        lots.append([r[0], qty_i])
-                    else:  # exit side
-                        remaining = qty_i
-                        for lot in lots:
-                            if remaining <= 0:
-                                break
-                            if lot[1] <= 0:
-                                continue
-                            consumed = min(lot[1], remaining)
-                            lot[1] -= consumed
-                            remaining -= consumed
-                # Close lots whose remaining qty is 0 (within fp tolerance)
-                for lot_id, lot_remaining in lots:
-                    if lot_remaining <= 1e-6:
-                        # 2026-07-23 — PROVENANCE: every status flip must
-                        # sign the reason column. The p213 COST buy was
-                        # found wrongly 'closed' minutes after entry with
-                        # NO annotation — an anonymous closer cost a day
-                        # of forensics (drift +5 AND a −4,601
-                        # decomposition gap from one row). Whoever closes
-                        # a lot now names itself and the exit that
-                        # consumed it.
-                        conn.execute(
-                            "UPDATE trades SET status = 'closed', "
-                            "reason = COALESCE(reason || ' | ', '') || ? "
-                            "WHERE id = ? AND COALESCE(status, 'open') = 'open'",
-                            (f"closed by update_fills FIFO: fully "
-                             f"consumed by confirmed exit row "
-                             f"#{trade['id']} ({trade['side']} "
-                             f"{trade['symbol']})", lot_id),
-                        )
+                # FIFO walk: entries open lots, only FILLED exits consume
+                # them. Close lots whose remaining qty is 0.
+                #
+                # 2026-07-23 — PROVENANCE: every status flip signs the
+                # reason column. The p213 COST buy was found wrongly
+                # 'closed' minutes after entry with NO annotation — an
+                # anonymous closer cost a day of forensics (drift +5 AND a
+                # −4,601 decomposition gap from one row). Whoever closes a
+                # lot now names itself and the exit that consumed it.
+                # 2026-07-24 — and only a broker-FILLED exit may consume;
+                # the closer WAS this walk counting #296's own resting
+                # bracket children as exits (see _fifo_lots_fully_consumed).
+                for lot_id in _fifo_lots_fully_consumed(rows, opp_side):
+                    conn.execute(
+                        "UPDATE trades SET status = 'closed', "
+                        "reason = COALESCE(reason || ' | ', '') || ? "
+                        "WHERE id = ? AND COALESCE(status, 'open') = 'open'",
+                        (f"closed by update_fills FIFO: fully "
+                         f"consumed by confirmed exit row "
+                         f"#{trade['id']} ({trade['side']} "
+                         f"{trade['symbol']})", lot_id),
+                    )
                 confirmed_closes += 1
             elif (trade["status"] == "pending_fill"
                     and trade["occ_symbol"]

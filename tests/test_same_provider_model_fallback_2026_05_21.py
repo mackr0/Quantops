@@ -137,6 +137,12 @@ class TestResolveSameProviderFallback:
         conn.commit()
         conn.close()
         monkeypatch.chdir(tmp_path)
+        # Pin the master-DB path so the resolver reads THIS db, not the
+        # host's real /opt/quantopsai/quantopsai.db (2026-07-24: the
+        # lookup now resolves through config.DB_PATH, not a bare relative
+        # "quantopsai.db").
+        import config
+        monkeypatch.setattr(config, "DB_PATH", str(db_path))
         return db_path
 
     def _set_user(self, db_path, provider, model,
@@ -215,6 +221,10 @@ class TestResolveSameProviderFallback:
         """No master DB → helper falls through cleanly. Don't break
         ai_providers in test environments without a populated DB."""
         monkeypatch.chdir(tmp_path)
+        # Point at a nonexistent master so the resolver can't fall back
+        # to the host's real /opt/quantopsai/quantopsai.db.
+        import config
+        monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "quantopsai.db"))
         from ai_providers import _resolve_operator_fallback_model
         out = _resolve_operator_fallback_model(
             "google", "gemini-2.5-flash-lite")
@@ -248,6 +258,8 @@ class TestFallbackChainInsertion:
         conn.commit()
         conn.close()
         monkeypatch.chdir(tmp_path)
+        import config
+        monkeypatch.setattr(config, "DB_PATH", str(db_path))
         return db_path
 
     def test_same_provider_entry_at_chain_head(self, master_db, monkeypatch):
@@ -291,6 +303,7 @@ class TestFallbackChainInsertion:
         conn.commit()
         conn.close()
         monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(config, "DB_PATH", str(db_path))
 
         monkeypatch.setattr(config, "OPENAI_API_KEY", "sk-test")
         monkeypatch.setattr(config, "GEMINI_API_KEY", "g-test")
@@ -334,6 +347,7 @@ class TestFallbackChainInsertion:
         conn.commit()
         conn.close()
         monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(config, "DB_PATH", str(db_path))
 
         monkeypatch.setattr(config, "OPENAI_API_KEY", "sk-test")
         monkeypatch.setattr(config, "GEMINI_API_KEY", "g-test")

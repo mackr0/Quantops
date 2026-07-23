@@ -385,9 +385,24 @@ def _resolve_operator_fallback_model(primary_provider: str,
     aren't needed — the read is ~ms and only happens on chain-build.
     """
     try:
+        import os as _os
         import sqlite3 as _sq3
         from contextlib import closing as _closing
-        with _closing(_sq3.connect("quantopsai.db")) as conn:
+        # 2026-07-24 — honor the canonical master-DB path instead of a
+        # bare relative "quantopsai.db". The old relative connect read
+        # the wrong DB (or auto-created a 0-byte file) whenever this ran
+        # from a non-repo CWD (altdata cron subprocesses), silently
+        # disabling the operator fallback there; and it made the read
+        # non-hermetic in tests, pulling the real operator row on the
+        # prod host. resolve_master_db_path centralizes the CWD-robust
+        # policy; RO connect never auto-creates a stale file.
+        from market_data import resolve_master_db_path
+        _db = resolve_master_db_path()
+        if not _os.path.exists(_db):
+            return None
+        with _closing(
+            _sq3.connect(f"file:{_db}?mode=ro", uri=True)
+        ) as conn:
             conn.row_factory = _sq3.Row
             row = conn.execute(
                 "SELECT llm_provider, llm_model, anthropic_api_key_enc "

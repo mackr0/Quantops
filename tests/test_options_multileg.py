@@ -22,6 +22,30 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 EXPIRY = date(2099, 1, 16)
 
 
+@pytest.fixture(autouse=True)
+def _stub_live_options_chain(monkeypatch):
+    """2026-07-24 — these unit tests build payloads / validate
+    pass-through; they must not depend on the LIVE Alpaca options chain.
+    Both the executor's leg-snap gate and the parse-layer contract check
+    call `options_chain_alpaca.list_available_contracts`, and both
+    explicitly fail-open ("chain unavailable → proceed without contract
+    validation"). On the prod host that call returns the real chain,
+    which has no contract for these tests' synthetic strikes/expiries
+    (the far-future 2099 spec, or now-past 2026 dates), so the gate
+    rejected them. Stub the chain to empty so both call sites take the
+    documented fail-open path — deterministic and network-free, exactly
+    the clean-machine behavior these tests were written against. The
+    snap logic itself is pinned by dedicated options_chain tests."""
+    try:
+        import options_chain_alpaca
+        monkeypatch.setattr(
+            options_chain_alpaca, "list_available_contracts",
+            lambda *a, **k: [],
+        )
+    except Exception:
+        pass
+
+
 class TestOptionLeg:
     def test_signed_qty_long(self):
         from options_multileg import OptionLeg

@@ -121,6 +121,13 @@ class TestResolverIsDbOnly:
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("ALPACA_API_KEY", "env-would-have-saved-us")
         monkeypatch.setenv("ALPACA_SECRET_KEY", "env-would-have-saved-us")
+        # Pin the resolver at THIS empty-table master (absolute) so it
+        # can't fall through to the host's real /opt/quantopsai/
+        # quantopsai.db — the same pin `isolated_master_db` uses. Without
+        # it the test read real accounts on the prod host (2026-07-24).
+        monkeypatch.setenv("DB_PATH", str(master))
+        import config
+        monkeypatch.setattr(config, "DB_PATH", str(master))
         if "market_data" in sys.modules:
             del sys.modules["market_data"]
         from market_data import _resolve_alpaca_credentials
