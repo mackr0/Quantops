@@ -288,3 +288,23 @@ only), `auto_close_broker_orphans` (writes NEW rows).
 directions of a credit AND debit spread; (c) a regression test replaying
 this exact incident shape (open pair pending_fill, later single-leg close
 fills) ends with a zero decomposition gap.
+
+---
+
+## INCIDENT FOLLOW-UP 2026-07-23 — ⏳ OPEN: the anonymous entry-closer (COST #296)
+
+p213's COST buy #296 (real broker fill) was flipped 'closed' minutes
+after entry by an unsigned writer → acct-56 drift +5 AND a −4,601
+decomposition gap from the one row; kill-switch halt until the row was
+reopened to match broker truth (17:27 deactivation, books clean).
+Prime suspect: the reconciler's protective-fill handler closing the
+entry when a DEAD bracket child (canceled/never-materialized) is
+misclassified as a fill — #296's bracket children were canceled at
+the same instant. As of commit bfe2b1d EVERY status-flip to 'closed'
+signs the reason column, so a recurrence convicts or clears the
+suspect by reading the row. WHEN the signature appears: fix the
+misclassification at its source (the protective-fill kind/status
+check), test-pinned with a dead-child replay. Related, separate: the
+recurring "bracket child canceled/never materialized" pattern itself
+(why do bracket children keep dying?) has never been root-caused and
+is likely upstream of this whole class.
