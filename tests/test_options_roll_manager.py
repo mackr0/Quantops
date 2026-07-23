@@ -149,21 +149,34 @@ class TestAutoCloseHighProfitCredits:
         assert kwargs["side"] == "buy"
         assert kwargs["qty"] == 1
 
-        # Journal updated. Status is 'pending_fill' until
-        # _task_update_fills confirms the broker fill (changed
-        # 2026-05-07 — the immediate 'closed' write created a
-        # phantom-close window if Alpaca async-canceled).
+        # 2026-07-22 — the p212 GOOG-spread corruption fix changed the
+        # journal contract: the OPEN row is NEVER mutated (the old
+        # in-place flip overwrote its order_id with the close order's
+        # id on every retry, and its short-leg-only pnl formula
+        # inverted long-leg signs, fabricating +4,608 realized P&L).
+        # The close gets its OWN pending_fill row carrying the
+        # direction-aware estimate; the fill machinery flips both
+        # rows when the broker confirms.
         from journal import _get_conn
         conn = _get_conn(tmp_db)
-        row = conn.execute(
+        open_row = conn.execute(
             "SELECT status, pnl, order_id FROM trades WHERE id=1"
         ).fetchone()
-        assert row[0] == "pending_fill"
-        # P&L = (2.00 - 0.30) * 100 = $170 (computed at close-time;
-        # gets corrected by reconcile if the broker async-cancels).
-        assert row[1] == pytest.approx(170.0)
-        # order_id wired so update_fills can flip pending_fill to closed
-        assert row[2] == "close-order-1"
+        assert open_row[0] == "open", (
+            "the open row must stay untouched — closes get their own row")
+        assert open_row[1] is None
+        assert open_row[2] != "close-order-1", (
+            "the open row's order_id must never be overwritten with "
+            "the close order's id")
+        close_row = conn.execute(
+            "SELECT status, pnl, side FROM trades "
+            "WHERE order_id = 'close-order-1'"
+        ).fetchone()
+        assert close_row is not None, "the close must journal its own row"
+        assert close_row[0] == "pending_fill"
+        # Short leg: P&L = (2.00 - 0.30) * 100 = $170.
+        assert close_row[1] == pytest.approx(170.0)
+        assert close_row[2] == "buy"
 
     def test_skips_below_threshold(self, tmp_db):
         from options_roll_manager import auto_close_high_profit_credits

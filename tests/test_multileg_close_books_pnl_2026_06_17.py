@@ -239,17 +239,30 @@ def test_O6_partner_close_stamps_pnl(db):
         MagicMock(id="close-short"), MagicMock(id="close-long")]
     auto_close_high_profit_credits(
         api, db, quote_lookup=lambda occ: 0.05, today=date.today())
+    # 2026-07-22 contract change (the p212 clobber fix): entry rows are
+    # never mutated; each close journals its OWN pending_fill row and
+    # the pnl estimate lives THERE — direction-aware via
+    # journal.realized_option_close_pnl (the long partner's sign was
+    # the inverted half of the fabricated +4,608).
     with closing(sqlite3.connect(db)) as c:
-        rows = c.execute(
+        entries = c.execute(
             "SELECT occ_symbol, status, pnl FROM trades "
-            "WHERE signal_type='MULTILEG'").fetchall()
-    by_occ = {r[0]: (r[1], r[2]) for r in rows}
+            "WHERE order_id = 'comboA'").fetchall()
+        closes = {r[0]: (r[1], r[2]) for r in c.execute(
+            "SELECT order_id, status, pnl FROM trades "
+            "WHERE order_id IN ('close-short', 'close-long')")}
+    assert all(r[1] == "open" and r[2] is None for r in entries), (
+        f"entry rows must stay untouched: {entries}")
     # long partner closed at 0.05 (entry 0.50) → (0.05-0.50)*100 = -45
-    p_status, p_pnl = by_occ["SMR260724P00011000"]
+    p_status, p_pnl = closes["close-long"]
     assert p_status == "pending_fill"
     assert p_pnl is not None and abs(p_pnl - (-45.0)) < 0.01, (
-        f"the in-place LONG partner close must stamp realized pnl so it "
-        f"routes via the pnl branch instead of re-opening; got {p_pnl}")
+        f"the LONG partner's close row must carry the direction-aware "
+        f"realized estimate (a LOSS here); got {p_pnl}")
+    # short credit leg closed at 0.05 (entry 1.50) → +145
+    s_status, s_pnl = closes["close-short"]
+    assert s_status == "pending_fill"
+    assert s_pnl is not None and abs(s_pnl - 145.0) < 0.01
 
 
 # ---------------------------------------------------------------------------

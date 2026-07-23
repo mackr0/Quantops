@@ -423,6 +423,7 @@ def test_no_direct_journal_mutation_outside_authorized_modules():
         "halt_helpers.py",       # writes audit_alerts only
         "stat_arb_pair_book.py",  # writes via journal + own row UPDATEs
         "multi_scheduler.py",    # _task_update_fills mutates pending_fill -> closed
+        "phantom_sweep.py",      # 2026-07-22 — per-cycle broker-confirmed voiding of journal-only phantom rows (the permanent form of the incident repair scripts); reconciler-class writer
         "aggregate_audit.py",    # reads only; included if it grew an update
         "pipelines/outcomes/backfill.py",  # Phase 5d backfill
         "pipelines/outcomes/option_resolver.py",  # resolved-prediction updates

@@ -38,6 +38,24 @@ AUTO_CLOSE_PROFIT_PCT = 0.80
 ROLL_RECOMMEND_PROFIT_PCT = 0.50
 
 
+def _close_pnl_estimate(entry_side: str, premium_in: float,
+                        cur_price: float, qty: int) -> float:
+    """Direction-aware realized-P&L estimate for closing one option leg.
+
+    2026-07-22 — the p212 GOOG-spread incident: the old inline formula
+    `(premium_in - cur_price) * mult` is only correct for a SHORT leg.
+    Applying it to the long 380C booked +2,148 where the truth was
+    −2,148 — fabricating +4,608 of realized P&L and latching the
+    integrity kill switch for a full trading day. Delegates to
+    journal.realized_option_close_pnl — the SINGLE source of the sign
+    convention (the bug existed precisely because this path had its
+    own inline copy). Returns None when inputs are missing/non-sane;
+    callers journal pnl NULL and the fill-true recompute books it."""
+    from journal import realized_option_close_pnl
+    return realized_option_close_pnl(premium_in, cur_price, qty,
+                                     entry_side)
+
+
 def find_near_expiry_options(db_path: str,
                                 today: Optional[_date] = None,
                                 window_days: int = ROLL_WINDOW_DAYS
@@ -288,15 +306,14 @@ def _close_combo_partner_legs(api, conn, closed_row, summary,
     the count closed. A submit failure is logged loudly (never silent)
     and leaves the sibling open.
 
-    Each sibling is an IN-PLACE close (status→pending_fill on the entry
-    row, keeping its entry side). A LONG partner (side='buy') has net
-    position ≥0, so the fill state-machine routes it through the
-    `pnl IS NOT NULL` branch — it MUST carry a realized-P&L stamp or it
-    re-opens (branch C) and orphans. So we stamp the close-time estimate
-    from the entry premium and a fresh quote, exactly like the credit
-    leg (recompute can't true an in-place row, so this estimate is its
-    final value). A SHORT partner (side='sell') routes through the
-    sell/cover FIFO branch regardless.
+    2026-07-22 — closes journal their OWN pending_fill row (the old
+    in-place status flip overwrote the partner OPEN row's order_id
+    with the close order's id — the second instance of the p212
+    clobber). The open row is never mutated; the fill state machine
+    flips it when the close confirms. Routing: a short partner's
+    buy-close hits the net-short buy-to-close branch; a long partner's
+    sell-close hits the sell/cover FIFO branch — pnl NULL is safe in
+    both (the fill-true recompute books it).
     """
     from journal import realized_option_close_pnl
     swept = 0
@@ -359,16 +376,29 @@ def _close_combo_partner_legs(api, conn, closed_row, summary,
                 "fill-true recompute (entry_px=%s close_px=%s)",
                 sib_id, sib_occ, entry_px, close_px,
             )
+        # 2026-07-22 — same corruption fix as the primary leg: the old
+        # in-place UPDATE overwrote the partner OPEN row's order_id
+        # with the close order's id (the second instance of the p212
+        # clobber). The close now journals its OWN pending_fill row;
+        # the open row is never mutated. Routing is safe both ways:
+        # a short partner's buy-close hits the net-short buy-to-close
+        # branch; a long partner's sell-close hits the sell/cover FIFO
+        # branch — pnl NULL allowed in both (fill-true recompute books
+        # it).
         try:
             conn.execute(
-                "UPDATE trades SET status='pending_fill', order_id=?, "
-                "pnl = COALESCE(pnl, ?), "
-                "reason = COALESCE(reason || ' | ', '') || ? WHERE id=?",
-                (sib_close_id, est,
-                 "Auto-close partner: combo %s leg closed alongside its "
-                 "credit leg (#%s)" % (
-                     closed_row.get("option_strategy"), closed_row["id"]),
-                 sib_id),
+                "INSERT INTO trades (timestamp, symbol, side, qty, "
+                " price, pnl, status, order_id, occ_symbol, "
+                " signal_type, option_strategy, reason) "
+                "VALUES (datetime('now'), ?, ?, ?, ?, ?, "
+                " 'pending_fill', ?, ?, 'OPTIONS', ?, ?)",
+                (closed_row.get("symbol"), rev_side, sib_qty,
+                 close_px, est, sib_close_id, sib_occ,
+                 closed_row.get("option_strategy"),
+                 "Auto-close partner: combo %s leg closed alongside "
+                 "its credit leg (#%s)" % (
+                     closed_row.get("option_strategy"),
+                     closed_row["id"])),
             )
             conn.commit()
         except Exception as exc:
@@ -455,6 +485,36 @@ def auto_close_high_profit_credits(
                 qty = int(row.get("qty") or 0)
                 if qty <= 0:
                     continue
+                # RESUBMIT DEDUP (2026-07-22) — the old code's in-place
+                # status flip doubled as the retry guard; now that the
+                # open row stays untouched, an in-flight close from an
+                # earlier cycle must be detected explicitly or every
+                # cycle would submit another close. Skip when a pending
+                # close row for this OCC+side has a live (or
+                # unverifiable) order; a terminal-unfilled one falls
+                # through to a fresh submit and the phantom sweep voids
+                # the stale row.
+                try:
+                    _pending = conn.execute(
+                        "SELECT order_id FROM trades WHERE occ_symbol=? "
+                        "AND side=? AND status='pending_fill' "
+                        "AND order_id IS NOT NULL "
+                        "ORDER BY id DESC LIMIT 1", (occ, close_side),
+                    ).fetchone()
+                except Exception:
+                    _pending = None
+                if _pending and _pending[0]:
+                    try:
+                        from order_status_cache import get_order_cached
+                        _po = get_order_cached(api, _pending[0])
+                        _ps = (getattr(_po, "status", "") or "").lower()
+                    except Exception:
+                        _ps = "unverifiable"
+                    if _ps not in ("canceled", "expired", "rejected",
+                                   "done_for_day", "filled"):
+                        continue  # close already in flight — don't stack
+                    if _ps == "filled":
+                        continue  # fill machinery is mid-flight — defer
                 try:
                     order = api.submit_order(
                         symbol=occ, qty=qty, side=close_side,
@@ -469,24 +529,46 @@ def auto_close_high_profit_credits(
                     })
                     continue
 
-                # Mark journal — premium realized = (entry_price - cur_price) * mult
-                # NEW (2026-05-07): status='pending_fill' until broker
-                # confirms. _task_update_fills will flip to 'closed' once
-                # filled_avg_price populates on this row's order_id.
-                # Without this, an async-canceled close would leave the
-                # journal claiming realized P&L the broker didn't honor.
+                # 2026-07-22 — THE p212 GOOG-SPREAD CORRUPTION FIX.
+                # The old code did an in-place
+                #   UPDATE trades SET status='pending_fill', pnl=?,
+                #   order_id=? WHERE id=<open row>
+                # which (a) CLOBBERED the open row — its order_id was
+                # overwritten with the close order's id (re-stamped on
+                # every retry, so a week of 429-failed closes left the
+                # final close ids on the open rows), and (b) computed
+                # pnl with a SHORT-LEG-ONLY formula — a LONG leg's sign
+                # came out inverted (+2,148 booked where truth was
+                # −2,148), fabricating +4,608 realized P&L and latching
+                # the integrity kill switch for a full trading day.
+                # Now: the open row is NEVER mutated; the close gets its
+                # OWN pending_fill row carrying the direction-aware
+                # estimate (pnl on close rows is the house convention
+                # AND the fill state machine's discriminator for option
+                # closes); the fill machinery flips both rows and trues
+                # the pnl when the broker confirms.
                 premium_in = float(
                     row.get("decision_price") or row.get("price") or 0)
-                mult = qty * 100
-                realized_pnl = (premium_in - cur_price) * mult
-                conn.execute(
-                    """UPDATE trades
-                       SET status='pending_fill', pnl=?, reason=?,
-                           order_id=?
-                       WHERE id=?""",
-                    (realized_pnl, outcome["reason"], order_id, row["id"]),
+                realized_est = _close_pnl_estimate(
+                    entry_side, premium_in, cur_price, qty)
+                from journal import log_trade
+                log_trade(
+                    symbol=row.get("symbol"),
+                    side=close_side,
+                    qty=qty,
+                    price=cur_price,
+                    order_id=order_id,
+                    signal_type="OPTIONS",
+                    option_strategy=row.get("option_strategy"),
+                    expiry=row.get("expiry"),
+                    strike=row.get("strike"),
+                    occ_symbol=occ,
+                    status="pending_fill",
+                    pnl=realized_est,
+                    reason=outcome["reason"],
+                    db_path=db_path,
                 )
-                conn.commit()
+                realized_pnl = realized_est
                 summary["auto_closed"] += 1
                 summary["details"].append({
                     "id": row["id"], "occ": occ,

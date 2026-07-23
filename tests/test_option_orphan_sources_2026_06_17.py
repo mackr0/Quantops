@@ -73,14 +73,26 @@ class TestO6PartnerSweep:
         assert api.submit_order.call_count == 2, (
             "the credit leg AND its surviving partner must both be closed"
         )
+        # 2026-07-22 contract change (the p212 clobber fix): entry rows
+        # are NEVER mutated by a close — each close journals its OWN
+        # pending_fill row. The no-naked-partner invariant is now
+        # "every entry leg has a matching pending close row".
         with closing(sqlite3.connect(db)) as c:
-            statuses = [r[0] for r in c.execute(
-                "SELECT status FROM trades WHERE signal_type='MULTILEG'")]
-        assert all(s == "pending_fill" for s in statuses), statuses
-        assert "open" not in statuses, (
-            "no combo leg may be left status='open' (the naked-partner "
-            "orphan)"
-        )
+            entry_statuses = [r[0] for r in c.execute(
+                "SELECT status FROM trades WHERE order_id LIKE 'entry-%'")]
+            close_rows = c.execute(
+                "SELECT status, occ_symbol FROM trades "
+                "WHERE order_id IN ('close-short', 'close-long')"
+            ).fetchall()
+        assert all(s == "open" for s in entry_statuses), (
+            f"entry rows must stay untouched until fill confirmation: "
+            f"{entry_statuses}")
+        assert len(close_rows) == 2, (
+            "the credit leg AND its partner must each journal a close "
+            "row (the naked-partner orphan otherwise)")
+        assert all(r[0] == "pending_fill" for r in close_rows)
+        assert {r[1] for r in close_rows} == {
+            "SMR260724P00012000", "SMR260724P00011000"}
         assert res.get("partner_legs_closed", 0) == 1
 
     def test_partner_pairing_is_exact_by_combo_order_id(self, db):
@@ -117,16 +129,24 @@ class TestO6PartnerSweep:
                                    "SMR260724P00011000") else 1.55
         auto_close_high_profit_credits(api, db, quote_lookup=_q,
                                        today=date.today())
+        # 2026-07-22 contract change: closes journal their own rows;
+        # entry rows stay 'open' until fill confirmation. Combo A must
+        # have TWO pending close rows; decoy combo B must have NO new
+        # rows and untouched entries.
         with closing(sqlite3.connect(db)) as c:
-            a = [r[0] for r in c.execute(
-                "SELECT status FROM trades WHERE order_id IN "
-                "('comboA') OR occ_symbol IN "
-                "('SMR260724P00012000','SMR260724P00011000')")]
-            b = [r[0] for r in c.execute(
+            a_closes = c.execute(
+                "SELECT COUNT(*) FROM trades WHERE occ_symbol IN "
+                "('SMR260724P00012000','SMR260724P00011000') "
+                "AND status = 'pending_fill' "
+                "AND order_id != 'comboA'").fetchone()[0]
+            b_rows = c.execute(
                 "SELECT status FROM trades WHERE occ_symbol IN "
-                "('SMR260724P00013000','SMR260724P00010000')")]
-        assert all(s == "pending_fill" for s in a), a
-        assert all(s == "open" for s in b), (
+                "('SMR260724P00013000','SMR260724P00010000')").fetchall()
+        assert a_closes == 2, (
+            "combo A's credit leg AND partner must each journal a "
+            "pending close row")
+        assert len(b_rows) == 2 and all(
+            r[0] == "open" for r in b_rows), (
             "the decoy combo B (different combo id) must NOT be "
             "partner-swept — pairing is exact by combo order_id"
         )

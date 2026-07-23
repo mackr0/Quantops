@@ -1938,6 +1938,27 @@ def _task_update_fills(ctx):
                 )
             logging.info(f"[{seg_label}] update_fills: " + "; ".join(parts))
 
+        # 2026-07-22 — PER-CYCLE PHANTOM SWEEP. The permanent form of
+        # the incident repair scripts: every live journal row older
+        # than 24h whose order the broker confirms unknown or
+        # terminal-unfilled is voided HERE, automatically, every
+        # cycle — so a journal-only phantom can never again accumulate
+        # for a week and latch the integrity kill switch one finding
+        # at a time. Broker-confirmed only; budget-safe via the
+        # order-status cache; never raises.
+        try:
+            from phantom_sweep import sweep_profile
+            _ps = sweep_profile(ctx, api=api)
+            if _ps.get("voided"):
+                logging.info(
+                    "[%s] phantom sweep: %d row(s) voided "
+                    "(checked=%d)", seg_label,
+                    _ps["voided"], _ps["checked"],
+                )
+        except Exception:
+            logging.exception(
+                "[%s] phantom sweep failed (non-fatal)", seg_label)
+
         # 2026-06-11 — fill-true realized-P&L pass. Exit rows are
         # stamped with a submit-time ESTIMATE (prorated unrealized at
         # decision prices); now that this cycle's broker fills are

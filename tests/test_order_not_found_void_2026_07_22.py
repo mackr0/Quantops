@@ -76,7 +76,61 @@ class TestRepairScript:
             "a live-or-filled order must be reported and skipped — "
             "the script never guesses")
 
-    def test_targets_pending_fill_older_than_24h(self):
+    def test_targets_live_rows_older_than_24h(self):
+        """v2 widened from pending_fill-only to every live status —
+        the 429-era backlog left phantoms in all three shapes."""
         src = self._src()
-        assert "status = 'pending_fill'" in src
+        assert "'open', 'pending_fill', 'pending_protective'" in src
         assert "timedelta(hours=24)" in src
+
+
+class TestPhantomSweepIsAutomatic:
+    """The permanent fix: the repair scripts' verdict logic runs
+    fleet-wide every cycle (and therefore also in the integrity
+    gate's heal-before-halt, which invokes _task_update_fills)."""
+
+    def test_sweep_module_verdicts_are_broker_confirmed(self):
+        from unittest.mock import MagicMock
+        from phantom_sweep import _row_verdict
+        from order_status_cache import TERMINAL_STATUSES
+
+        def _cached(api, oid):
+            return api.get_order(oid)
+
+        api = MagicMock()
+        api.get_order.side_effect = RuntimeError("order not found")
+        assert _row_verdict(api, "x", TERMINAL_STATUSES, _cached) is not None
+
+        api = MagicMock()
+        o = MagicMock(); o.status = "expired"; o.filled_qty = 0
+        api.get_order.return_value = o
+        assert _row_verdict(api, "x", TERMINAL_STATUSES, _cached) is not None
+
+        o2 = MagicMock(); o2.status = "filled"; o2.filled_qty = 3
+        api.get_order.return_value = o2
+        assert _row_verdict(api, "x", TERMINAL_STATUSES, _cached) is None
+
+        o3 = MagicMock(); o3.status = "new"; o3.filled_qty = 0
+        api.get_order.return_value = o3
+        assert _row_verdict(api, "x", TERMINAL_STATUSES, _cached) is None
+
+        api = MagicMock()
+        api.get_order.side_effect = RuntimeError("connection reset")
+        assert _row_verdict(api, "x", TERMINAL_STATUSES, _cached) is None
+
+    def test_sweep_wired_into_update_fills(self):
+        src = open(os.path.join(REPO, "multi_scheduler.py")).read()
+        fn = src.index("def _task_update_fills")
+        end = src.index("\ndef ", fn + 1)
+        assert "sweep_profile" in src[fn:end], (
+            "the phantom sweep must run at the tail of "
+            "_task_update_fills — every profile, every cycle, and "
+            "inherited by the integrity gate's heal-before-halt")
+
+    def test_sweep_stands_down_during_429_cooldown(self):
+        src = open(os.path.join(REPO, "phantom_sweep.py")).read()
+        assert "rate_limited()" in src
+
+    def test_sweep_is_age_gated(self):
+        from phantom_sweep import DEFAULT_MAX_AGE_HOURS
+        assert DEFAULT_MAX_AGE_HOURS >= 24
