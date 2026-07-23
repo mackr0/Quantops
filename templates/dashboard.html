@@ -266,6 +266,18 @@
                         </span>
                     </td>
                 </tr>
+                <tr id="ai-cost-shadow-row" style="font-weight:normal;">
+                    <td colspan="8" class="muted" style="padding-top:4px; font-size:0.9em;">
+                        <span style="opacity:0.75;">shadow eval (today):</span>
+                        <span id="ai-cost-shadow">
+                        {% for m in shadow_cost_by_model %}
+                            <span style="margin-right:14px; white-space:nowrap;">{{ m.model }} — ${{ "%.2f"|format(m.usd) }} <span style="opacity:0.7;">({{ m.calls }} call{{ '' if m.calls == 1 else 's' }})</span></span>
+                        {% else %}
+                            <span style="opacity:0.7;">no shadow spend today</span>
+                        {% endfor %}
+                        </span>
+                    </td>
+                </tr>
             </tfoot>
         </table>
         <script>
@@ -346,6 +358,28 @@
                                 span.textContent = m.model + ' — ' + QF.dollars2(m.usd || 0);
                                 span.appendChild(calls);
                                 bm.appendChild(span);
+                            });
+                        }
+                    }
+                    // Shadow-eval spend (today) — separate ledger, own line.
+                    var sh = document.getElementById('ai-cost-shadow');
+                    if (sh && d.shadow_cost_by_model) {
+                        if (!d.shadow_cost_by_model.length) {
+                            sh.textContent = 'no shadow spend today';
+                        } else {
+                            sh.innerHTML = '';
+                            d.shadow_cost_by_model.forEach(function(m) {
+                                var span = document.createElement('span');
+                                span.style.marginRight = '14px';
+                                span.style.whiteSpace = 'nowrap';
+                                var calls = document.createElement('span');
+                                calls.style.opacity = '0.7';
+                                var n = (m.calls || 0);
+                                calls.textContent = ' (' + n + ' call' + (n === 1 ? '' : 's') + ')';
+                                // textContent for the model id keeps this XSS-safe.
+                                span.textContent = m.model + ' — ' + QF.dollars2(m.usd || 0);
+                                span.appendChild(calls);
+                                sh.appendChild(span);
                             });
                         }
                     }

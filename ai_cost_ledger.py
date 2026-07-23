@@ -136,6 +136,44 @@ def by_model_today(db_path: str) -> List[Dict[str, Any]]:
     return out
 
 
+def shadow_by_model_today(db_path: str) -> List[Dict[str, Any]]:
+    """Per-(provider, model) SHADOW-EVAL spend for TODAY (ET) on one
+    profile DB — reads ai_shadow_calls (the shadow ledger is separate
+    from the operational ai_cost_ledger by design: shadow spend must
+    never inflate the trading-cost numbers). Same row shape as
+    by_model_today so merge_model_breakdowns works on both. Safe on
+    missing table / db: returns []. Added 2026-07-22 so the dashboard
+    can show shadow spend next to operational spend instead of hiding
+    it until the daily digest email."""
+    out: List[Dict[str, Any]] = []
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+    except Exception:
+        return out
+    try:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        et_today = datetime.now(
+            ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        rows = conn.execute(
+            "SELECT provider, model, COUNT(*) AS n, "
+            "       COALESCE(SUM(cost_usd), 0) AS usd "
+            "FROM ai_shadow_calls WHERE timestamp >= ? "
+            "GROUP BY provider, model ORDER BY usd DESC",
+            (et_today,),
+        ).fetchall()
+        out = [{"provider": r["provider"], "model": r["model"],
+                "calls": int(r["n"] or 0),
+                "usd": round(float(r["usd"] or 0), 4)}
+               for r in rows]
+    except sqlite3.OperationalError:
+        pass  # table not created yet — return []
+    finally:
+        conn.close()
+    return out
+
+
 def merge_model_breakdowns(
         breakdowns: "List[List[Dict[str, Any]]]") -> List[Dict[str, Any]]:
     """Combine per-profile ``by_model_today()`` lists into one book-wide

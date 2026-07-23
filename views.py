@@ -1363,9 +1363,16 @@ def dashboard():
     # Cost-per-LLM breakdown (today, across all profiles) for the dashboard's
     # "AI cost by model" rows — lets the operator see primary-vs-fallback spend
     # at a glance (e.g. cheap Gemini primary vs. an expensive Claude fallback).
-    from ai_cost_ledger import by_model_today, merge_model_breakdowns
+    from ai_cost_ledger import (
+        by_model_today, merge_model_breakdowns, shadow_by_model_today)
     cost_by_model = merge_model_breakdowns([
         by_model_today(f"quantopsai_profile_{prof['id']}.db")
+        for prof in profiles
+    ])
+    # Shadow-eval spend (today, all profiles) — shown as its own line so
+    # the operator sees it live instead of waiting for the daily digest.
+    shadow_cost_by_model = merge_model_breakdowns([
+        shadow_by_model_today(f"quantopsai_profile_{prof['id']}.db")
         for prof in profiles
     ])
 
@@ -1506,6 +1513,7 @@ def dashboard():
                            kill_switch=kill_switch_state,
                            halted_profiles=halted_profiles,
                            cost_by_model=cost_by_model,
+                           shadow_cost_by_model=shadow_cost_by_model,
                            cost_status=cost_status)
 
 
@@ -6326,7 +6334,8 @@ def api_dashboard_totals():
     """
     from models import get_active_profiles, build_user_context_from_profile
     from ai_cost_ledger import (
-        spend_summary, by_model_today, merge_model_breakdowns)
+        spend_summary, by_model_today, merge_model_breakdowns,
+        shadow_by_model_today)
     from client import get_account_info, get_positions
 
     cache_key = ("api_dashboard_totals", current_user.effective_user_id)
@@ -6341,6 +6350,7 @@ def api_dashboard_totals():
     # across heterogeneous strategies; compare by per-row P&L % instead).
     total_cost = 0.0
     model_breakdowns = []  # per-profile cost-per-LLM, merged below
+    shadow_breakdowns = []  # per-profile shadow-eval spend, merged below
     for p in profiles:
         try:
             ctx = build_user_context_from_profile(p["id"])
@@ -6355,6 +6365,8 @@ def api_dashboard_totals():
                     .get("today", {}).get("usd") or 0
                 )
                 model_breakdowns.append(by_model_today(ctx.db_path))
+                shadow_breakdowns.append(
+                    shadow_by_model_today(ctx.db_path))
             except Exception as exc:
                 logger.warning(
                     "dashboard-totals: spend_summary failed for "
@@ -6413,6 +6425,10 @@ def api_dashboard_totals():
         # Cost-per-LLM breakdown (today, all profiles) so the operator can
         # see how much each model — primary vs. fallback — is costing.
         "cost_by_model": merge_model_breakdowns(model_breakdowns),
+        # Shadow-eval spend (today, all profiles) — separate ledger by
+        # design (never inflates trading cost); shown as its own
+        # dashboard line so the operator sees it live.
+        "shadow_cost_by_model": merge_model_breakdowns(shadow_breakdowns),
     }
     # Cache only on success. The endpoint never raises explicitly
     # (per-profile failures are absorbed via the WARNING above), so
