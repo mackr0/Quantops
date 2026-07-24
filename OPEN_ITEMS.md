@@ -287,7 +287,28 @@ cycle, so it is a re-arm heartbeat, not a protection gap. Eliminating
 the warning is an architectural choice (per-profile synthetic stops vs
 broker brackets) left to the operator; protection is not at risk.
 
-## INCIDENT FOLLOW-UP 2026-07-24 — ⏳ OPEN: the NFLX 123-share cross-profile oversell + acct-56 cash drift (P1)
+## INCIDENT FOLLOW-UP 2026-07-24 — ✅ RESOLVED same day: the NFLX 123-share cross-profile oversell + acct-56 cash drift
+
+**Both repaired from broker truth, same session (see the 2026-07-24
+"session close" CHANGELOG entry).** The cash drift was NOT the NFLX
+flows: a per-symbol bisect landed it on p212's CVX 180C expiry
+auto-liquidation (broker BUY 4 @7.10, order 3b5758a0) that the
+pre-07-20 assignment sweep never journaled (−$2,840 missing +
+fabricated +416 pnl) — repaired via
+`scripts/repair_cvx_assignment_cash_p212_2026_07_24.py`. The NFLX
+oversell was enabled by an 8-day-unconfirmed PARTIAL trailing-stop
+fill (123/269) leaving p214's believed inventory stale — its 07-17
+stop-loss then legally oversold 123 shares delivered from p213's
+inventory; repaired via
+`scripts/repair_nflx_inventory_transfer_2026_07_24.py` (internal
+transfer @66.57, the actual exit price; account aggregates unchanged
+by construction). Prevention already shipped: update_fills
+qty-truthing (test-pinned) + the 07-22 rate-limit/cache work keep
+fill confirmation in budget every cycle. Verified live mid-trading:
+position drift 0, cash drift 0, p213 NFLX = 147 = broker backing,
+p214 flat. The original P1 text is preserved below for the record.
+
+**(original P1 text)** ⏳ was: the NFLX 123-share cross-profile oversell + acct-56 cash drift (P1)
 
 **Symptom (live audit errors, damage NOT yet repaired):** acct 56 NFLX
 journal_open +270 (p213 row #53, real filled buy, order 78992a37) vs
