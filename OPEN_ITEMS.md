@@ -307,13 +307,13 @@ oversell door (order_guard own-journal cap) during the 429 storm;
 short vs. reducing p213's lot — broker truth first, operator visibility
 required); (c) tie out the −$2,851.43 cash drift against the same flows.
 
-**Also open (design decision, operator's call):** the aggregate audit's
-`_journal_open_qty_per_symbol` counts only open/pending_fill rows, so
-closed exits that PARTIALLY consumed a still-open lot are invisible —
-it reports the GOOG acct-56 drift as −9 when the books actually
-reconcile to the broker exactly (−1). Aligning the audit lens with
-read-time FIFO would kill that false-ERROR class but changes audit
-semantics.
+**~~Also open (design decision)~~ ✅ DONE 2026-07-24 (operator decided:
+"make the system reflect" reconciled books):** the audit's parallel
+live-only FIFO is retired; `_journal_open_qty_per_symbol` now delegates
+to `journal.get_virtual_positions` (`include_unpriced=True` quantity
+truth). GOOG/WMT/NFLX all audit at the broker's exact number; only
+genuine broker↔books divergence can flag. Pinned in
+`test_audit_lens_canonical_2026_07_24.py`.
 
 ## INCIDENT FOLLOW-UP 2026-07-22 — ⏳ OPEN: the spread-close bookkeeping bug (P0 for the next session)
 

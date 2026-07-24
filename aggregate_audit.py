@@ -71,107 +71,75 @@ _QTY_TOLERANCE = 0.05
 
 
 def _journal_open_qty_per_symbol(db_path: str) -> Dict[str, float]:
-    """Sum of open virtual qty per symbol for one profile's journal.
+    """Open virtual qty per symbol for one profile's journal — computed
+    by `journal.get_virtual_positions`, the ONE canonical own-book
+    position lens.
 
     Aggregates by `occ_symbol` if set (option contracts use OCC at the
-    broker), else by underlying. This matches Alpaca's
-    list_positions output exactly so the audit doesn't false-flag
-    multi-leg option trades whose journal rows store
-    symbol="MSFT" + occ_symbol="MSFT260612P00375000".
+    broker), else by underlying, matching Alpaca's list_positions.
 
-    Long positions (side=buy) add positive qty; shorts (side=short)
-    subtract; matching SELL/COVER consume their respective lots
-    via FIFO so closed round-trips net to zero.
+    2026-07-24 — the parallel FIFO this function used to carry has been
+    RETIRED. It counted only `open`/`pending_fill` rows (the 2026-05-16/
+    17 "live-state filter"), so a closed exit that PARTIALLY consumed a
+    still-open lot was invisible: acct-56 GOOG read journal −9 vs broker
+    −1 as an ERROR while the books reconciled to the broker exactly
+    (p212's open 19-short had 8 broker-filled closed covers against it),
+    and acct-56 NFLX read +270 vs +147 while the system's own position
+    view already showed p214 short 123 (its closed oversell) — i.e. the
+    audit disagreed with `get_virtual_positions` about what the books
+    say, and every disagreement was a false ERROR. Two FIFO
+    implementations of "what does this profile hold" WILL drift; the
+    audit now asks the same lens the dashboard, the certify gate's
+    inputs, and the protective sweep use, so "audit says drift" can only
+    ever mean "the SYSTEM's books disagree with the broker" — never
+    "two internal copies disagree with each other". (The stale-SELL
+    concern that motivated the live-only filter is handled inside
+    get_virtual_positions' status semantics: closed ENTRIES are
+    excluded, closed EXITS consume, canceled/expired never count.)
+
+    The price_fetcher is a constant stub — this audit needs quantities
+    only, no marks, no network. Safe on any failure: returns {} (the
+    caller treats the profile as errored, same as before).
     """
-    import sqlite3 as _sqlite3
     out: Dict[str, float] = {}
-    # Long lots and short lots tracked per (effective) symbol so a
-    # profile can have both a long and a short on the same name without
-    # the FIFO consuming the wrong side.
-    long_lots: Dict[str, list] = {}
-    short_lots: Dict[str, list] = {}
     try:
-        conn = _sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-        cur = conn.execute("PRAGMA table_info(trades)")
-        cols = {r[1] for r in cur.fetchall()}
-        select_cols = "side, qty, price"
-        has_occ = "occ_symbol" in cols
-        if has_occ:
-            select_cols = "COALESCE(occ_symbol, symbol) as eff_symbol, " + select_cols
-        else:
-            select_cols = "symbol as eff_symbol, " + select_cols
-        # Live-state filter (2026-05-16 + 2026-05-17 refinement):
-        # only LIVE rows (status='open' / 'pending_fill') contribute
-        # to current journal position. Closed rows are HISTORY; they
-        # already netted to zero in their lifetime and re-including
-        # them in FIFO would cause stale SELLs to consume unrelated
-        # newer BUYs (caught when the AUTO_RECONCILE backfill of
-        # STRC was being eaten by a closed-but-still-included SELL
-        # from an earlier round-trip).
-        _LIVE_STATUSES = ("open", "pending_fill")
-        rows = conn.execute(
-            f"SELECT {select_cols} FROM trades "
-            "WHERE COALESCE(status, 'open') IN ('open', 'pending_fill') "
-            "ORDER BY timestamp ASC, id ASC"
-        ).fetchall()
-        conn.close()
+        from journal import get_virtual_positions
+        positions = get_virtual_positions(
+            db_path=db_path,
+            price_fetcher=lambda _s, side="buy": 1.0,
+            # Quantity truth: a just-filled leg whose price backfill
+            # lags is already at the broker — its qty must count or the
+            # audit false-flags a broker_orphan (2026-05-06 class).
+            include_unpriced=True,
+        )
     except Exception:
         return out
-
-    for row in rows:
-        sym = (row[0] or "").upper()
-        side = (row[1] or "").lower()
-        qty = float(row[2] or 0)
-        price = float(row[3] or 0)
-        if qty <= 0:
+    for p in positions:
+        try:
+            occ = getattr(p, "occ_symbol", None)
+            und = getattr(p, "underlying", None)
+            if occ is None and und is None and hasattr(p, "get"):
+                occ = p.get("occ_symbol")
+                und = p.get("underlying") or p.get("symbol")
+            eff = ((occ or und) or "").upper()
+            qty = getattr(p, "qty_signed", None)
+            if qty is None and hasattr(p, "get"):
+                qty = p.get("qty_signed")
+            qty = float(qty or 0)
+        except Exception as _pos_exc:
+            # A position the audit can't read is a position the audit
+            # UNDER-COUNTS — the exact false-drift disease this module
+            # exists to catch. Surface it; never swallow.
+            logger.warning(
+                "aggregate audit: unreadable position object from "
+                "get_virtual_positions on %s (%s: %s) — journal qty "
+                "for its symbol will be under-counted this pass",
+                db_path, type(_pos_exc).__name__, _pos_exc,
+            )
             continue
-        # NOTE: price=0 is allowed for the audit (option log_trade
-        # calls store NULL price; the audit only needs qty for
-        # FIFO matching). Don't filter on price.
-        if side == "buy":
-            long_lots.setdefault(sym, []).append([qty, price])
-        elif side == "short":
-            short_lots.setdefault(sym, []).append([qty, price])
-        elif side == "sell":
-            ll = long_lots.setdefault(sym, [])
-            remaining = qty
-            while remaining > 0 and ll:
-                consumed = min(ll[0][0], remaining)
-                ll[0][0] -= consumed
-                remaining -= consumed
-                if ll[0][0] <= 0.001:
-                    ll.pop(0)
-            # 2026-06-22 — book the sell REMAINDER as a short, mirroring
-            # get_virtual_positions (journal.py). A sell beyond any long is
-            # a real broker short: an option sell-to-open leg (the short
-            # side of a bear-call / bull-put / etc. spread) or a stock
-            # oversell. The old code DISCARDED this remainder, so every
-            # live option short leg read journal_qty=0 → a FALSE
-            # broker_orphan on /issues, and a real stock oversell short
-            # would have been hidden from the aggregate drift audit. The
-            # live-status filter above already excludes closed /
-            # auto_reconciled_phantom_close rows, so only genuinely-open
-            # shorts are booked (matching get_virtual's occ exclusion).
-            if remaining > 0.001:
-                short_lots.setdefault(sym, []).append([remaining, price])
-        elif side == "cover":
-            sl = short_lots.setdefault(sym, [])
-            remaining = qty
-            while remaining > 0 and sl:
-                consumed = min(sl[0][0], remaining)
-                sl[0][0] -= consumed
-                remaining -= consumed
-                if sl[0][0] <= 0.001:
-                    sl.pop(0)
-
-    for sym in set(long_lots.keys()) | set(short_lots.keys()):
-        long_remaining = sum(lot[0] for lot in long_lots.get(sym, []))
-        short_remaining = sum(lot[0] for lot in short_lots.get(sym, []))
-        net = long_remaining - short_remaining
-        if abs(net) > 0.001:
-            out[sym] = net
+        if eff and abs(qty) > 0.001:
+            out[eff] = out.get(eff, 0.0) + qty
     return out
-
 
 def _broker_qty_per_symbol(api) -> Dict[str, float]:
     """Symbol → signed qty for everything the broker shows on this

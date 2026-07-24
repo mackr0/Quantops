@@ -2040,7 +2040,8 @@ def prune_journaled_submitted_orders(db_path) -> None:
             "prune_journaled_submitted_orders failed (best-effort): %s", exc)
 
 
-def get_virtual_positions(db_path=None, price_fetcher=None):
+def get_virtual_positions(db_path=None, price_fetcher=None,
+                          include_unpriced=False):
     """Compute net open positions from the trades table using FIFO lots.
 
     This is the core of the virtual-account layer: instead of asking
@@ -2054,6 +2055,17 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
         price_fetcher: optional `callable(symbol) -> float` that returns
             the current market price. Used for unrealized P&L. When
             None, uses the last trade price as a fallback.
+        include_unpriced: default False — rows with price<=0 (a freshly
+            opened multileg leg whose per-leg fill hasn't backfilled
+            yet, or a corruption artifact) are EXCLUDED, because this
+            lens's default consumers value positions and a price-less
+            row can't be valued (it self-heals within a cycle). Pass
+            True for QUANTITY-truth consumers — the aggregate drift
+            audit (2026-07-24, which delegates here as the single
+            canonical lens): the broker already holds a just-filled
+            leg while the price backfill lags, so skipping its qty
+            false-flags a broker_orphan (the 2026-05-06 audit bug
+            class). The stuck-row telemetry is recorded either way.
 
     Returns:
         List of position dicts:
@@ -2308,7 +2320,14 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
                         _stuck = True  # unparseable ts → surface it
                 if _stuck:
                     skipped_bad_price += 1
-            continue
+            if qty <= 0 or not include_unpriced:
+                # Default consumers value positions — a price-less row
+                # can't be valued, so it stays out until backfilled.
+                # QUANTITY-truth consumers (include_unpriced=True: the
+                # aggregate drift audit) keep the row — the broker
+                # already holds the just-filled leg, and dropping its
+                # qty false-flags a broker_orphan (2026-05-06 class).
+                continue
         # Position key: OCC for options, underlying symbol for stock.
         key = occ_symbol if occ_symbol else symbol
         if key not in pos_meta:
