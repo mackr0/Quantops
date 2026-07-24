@@ -318,19 +318,102 @@ def _shadow_cap_exceeded(db_path: str, est_cost: float) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Quota stand-down
+# ---------------------------------------------------------------------------
+
+_QUOTA_MARKERS = ("exceeded your current quota", "insufficient_quota")
+_STANDDOWN_MEMO: Dict[str, float] = {}   # f"{db}|{provider}" -> expiry ts
+_STANDDOWN_TTL = 600.0                    # re-check the DB every 10 min
+_STANDDOWN_LOG_MEMO: Dict[str, float] = {}
+_STANDDOWN_LOG_INTERVAL = 3600.0
+
+
+def _quota_standdown(db_path: str, provider: str) -> bool:
+    """True when this (db, provider)'s last 3 shadow attempts TODAY all
+    failed with the account-billing quota signature — meaning every
+    further call today is guaranteed to fail identically. Memoised for
+    10 minutes so the check costs ~nothing per call; a fresh ET day
+    (or a funded account succeeding on the day's first 3 probes)
+    clears it naturally. Only the unambiguous BILLING markers count —
+    a transient provider rate-limit ('rate limit', Anthropic 429/529)
+    never triggers stand-down."""
+    key = f"{db_path}|{provider}"
+    now = time.time()
+    if _STANDDOWN_MEMO.get(key, 0) > now:
+        return True
+    try:
+        conn = sqlite3.connect(db_path)
+        try:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            et_today = datetime.now(
+                ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+            rows = conn.execute(
+                "SELECT error FROM ai_shadow_calls "
+                "WHERE provider = ? AND timestamp >= ? "
+                "  AND (error IS NULL OR error NOT LIKE '%cost cap%') "
+                "ORDER BY id DESC LIMIT 3",
+                (provider, et_today),
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception:
+        return False   # can't read the ledger — never block the call
+    if len(rows) < 3:
+        return False
+    if not all(r[0] and any(m in r[0] for m in _QUOTA_MARKERS)
+               for r in rows):
+        return False
+    _STANDDOWN_MEMO[key] = now + _STANDDOWN_TTL
+    if now - _STANDDOWN_LOG_MEMO.get(key, 0) >= _STANDDOWN_LOG_INTERVAL:
+        _STANDDOWN_LOG_MEMO[key] = now
+        logger.warning(
+            "shadow eval: %s standing down for the day on %s — last 3 "
+            "attempts all failed with the account-billing quota error "
+            "('exceeded your current quota'). No code path can succeed "
+            "until the provider account is funded; probes resume next "
+            "ET day.", provider, db_path,
+        )
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Agreement scoring
 # ---------------------------------------------------------------------------
 
-_SIGNAL_FIELDS = ("signal", "action", "recommendation", "direction")
+_SIGNAL_FIELDS = ("signal", "action", "recommendation", "direction",
+                  "verdict", "tone")
 
 
 def _extract_signal(parsed: Any) -> Optional[str]:
-    """Pull the primary BUY/SELL/HOLD-style decision out of a parsed
-    response. Tolerates the various keys different prompts use. Returns
-    an uppercased string or None when nothing recognisable is present.
+    """Pull the decision out of a parsed response, schema-aware for
+    every house prompt shape. Returns an uppercased canonical string or
+    None when nothing recognisable is present.
+
+    2026-07-24 — the original key list (signal/action/recommendation/
+    direction) matched NONE of the actual house schemas, so agreement
+    was None on 100% of 543 successful shadow calls ever made — the
+    operator paid for an A/B evaluation whose comparison never ran.
+    The real shapes:
+      - ensemble:* specialists  -> {"verdict": "VETO|SELL|HOLD|..."}
+      - transcript_sentiment    -> {"tone": "neutral|positive|..."}
+      - batch_select (apex)     -> {"trades": [{symbol, action, ...}]}
+        canonicalised to a sorted "SYM:ACTION,SYM:ACTION" set string
+        (empty list -> "PASS"), so two models agree iff they picked the
+        same trade set. Both sides run through THIS extractor, so the
+        comparison is symmetric by construction.
     """
     if not isinstance(parsed, dict):
         return None
+    # Apex batch_select shape: the decision IS the trade set.
+    trades = parsed.get("trades")
+    if isinstance(trades, list):
+        picks = sorted(
+            f"{str(t.get('symbol', '?')).upper()}:"
+            f"{str(t.get('action', '?')).upper()}"
+            for t in trades if isinstance(t, dict)
+        )
+        return ",".join(picks) if picks else "PASS"
     for key in _SIGNAL_FIELDS:
         v = parsed.get(key)
         if isinstance(v, str) and v.strip():
@@ -463,6 +546,20 @@ def _run_one_shadow(
         "primary_parsed": (json.dumps(primary_parsed)
                            if primary_parsed is not None else None),
     }
+
+    # Quota stand-down (2026-07-24): a provider whose account has no
+    # billing credit fails EVERY call with the same "exceeded your
+    # current quota" 429 — no code path can succeed until the operator
+    # funds the account. Pre-fix this burned ~280 pointless API calls +
+    # error rows per day per provider (1,229 rows in two days) and made
+    # the digest read as "all errors". After 3 consecutive quota
+    # failures today, further calls for that (db, provider) stand down
+    # for the ET day — no call, no row spam; one rate-limited log line
+    # names the cause, and the digest annotates the provider as
+    # billing-dead from the rows already present. A funded account
+    # clears naturally: the next ET day probes again (3 fresh attempts).
+    if _quota_standdown(db_path, provider):
+        return
 
     # Pre-flight cost cap. Use the same worst-case estimator the
     # operational call uses: input ≈ len(prompt)//3, output = max_tokens.

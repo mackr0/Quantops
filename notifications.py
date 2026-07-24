@@ -991,7 +991,8 @@ def notify_shadow_eval_daily(ctx=None):
     from collections import defaultdict
     per_model = defaultdict(lambda: {
         "calls": 0, "agree": 0, "disagree": 0, "unscored": 0,
-        "errors": 0, "cost": 0.0, "latency_ms": 0,
+        "errors": 0, "quota": 0, "throttled": 0,
+        "cost": 0.0, "latency_ms": 0,
     })
     primary_total = 0
     for r in rows:
@@ -1000,8 +1001,21 @@ def notify_shadow_eval_daily(ctx=None):
         agg["calls"] += 1
         agg["cost"] += float(r.get("cost_usd") or 0.0)
         agg["latency_ms"] += int(r.get("latency_ms") or 0)
-        if r.get("error"):
-            agg["errors"] += 1
+        err = r.get("error") or ""
+        if err:
+            # 2026-07-24 — the old single "Errors" bucket conflated
+            # three different stories and read as "paying for nothing":
+            # deliberate cost-cap THROTTLING (working as configured),
+            # account-billing QUOTA deaths (operator action needed, not
+            # code), and genuine call errors. Count them separately so
+            # the digest says which is which.
+            if "cost cap" in err:
+                agg["throttled"] += 1
+            elif ("exceeded your current quota" in err
+                    or "insufficient_quota" in err):
+                agg["quota"] += 1
+            else:
+                agg["errors"] += 1
         elif r.get("agreement") == 1:
             agg["agree"] += 1
         elif r.get("agreement") == 0:
@@ -1012,6 +1026,7 @@ def notify_shadow_eval_daily(ctx=None):
                             if r.get("call_id")))
 
     summary_rows = []
+    quota_dead = []
     for label, agg in sorted(per_model.items()):
         scored = agg["agree"] + agg["disagree"]
         agreement_pct = (
@@ -1026,9 +1041,14 @@ def notify_shadow_eval_daily(ctx=None):
             agreement_pct,
             f"{agg['disagree']}",
             f"{agg['errors']}",
+            f"{agg['quota']}",
+            f"{agg['throttled']}",
             f"${agg['cost']:.4f}",
             avg_lat,
         ])
+        if agg["quota"] and not (agg["agree"] + agg["disagree"]
+                                 + agg["unscored"]):
+            quota_dead.append(label)
 
     body = ""
     intro = (
@@ -1043,11 +1063,24 @@ def notify_shadow_eval_daily(ctx=None):
         body += _section(
             "Per-Model Summary",
             _table(
-                ["Model", "Calls", "Agreement",
-                 "Disagree", "Errors", "Cost", "Avg Latency"],
+                ["Model", "Calls", "Agreement", "Disagree", "Errors",
+                 "Quota (billing)", "Throttled (cap)", "Cost",
+                 "Avg Latency"],
                 summary_rows,
             ),
         )
+        if quota_dead:
+            body += (
+                '<div style="color:#b00;font-size:13px;padding:6px 0">'
+                + ", ".join(quota_dead)
+                + ": every call failed with the provider's "
+                "&ldquo;exceeded your current quota&rdquo; billing "
+                "error &mdash; the API key is valid but the account "
+                "has no usable credit. No code change can fix this; "
+                "add billing credit on the provider account. Shadow "
+                "calls to this provider stand down after 3 such "
+                "failures each day.</div>"
+            )
 
     primary_label = "primary"
     sample_primary = next(
