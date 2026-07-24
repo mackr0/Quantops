@@ -12,6 +12,24 @@ set -e
 DROPLET_IP=${1:-"67.205.155.63"}
 REMOTE_DIR="/opt/quantopsai"
 
+# ---------------------------------------------------------------------------
+# Detach guard (2026-07-24, operator directive): the whole deploy runs
+# immune to hangups — closing the terminal/laptop lid mid-deploy can no
+# longer leave prod half-deployed (rsync done, git-reset never run — the
+# exact silent-drift class the 2026-06-10 hardening fought). Output goes
+# to deploy_logs/sync-<UTC>.log; the launching shell prints the log path
+# and returns immediately. Follow with: tail -f <log>.
+# Set SYNC_FOREGROUND=1 to opt out (e.g. CI wrappers that capture stdout).
+# ---------------------------------------------------------------------------
+if [ -z "$SYNC_DETACHED" ] && [ -z "$SYNC_FOREGROUND" ]; then
+    mkdir -p "$(dirname "$0")/deploy_logs"
+    _LOG="$(dirname "$0")/deploy_logs/sync-$(date -u +%Y%m%dT%H%M%SZ).log"
+    SYNC_DETACHED=1 nohup "$0" "$@" > "$_LOG" 2>&1 < /dev/null &
+    echo "sync: detached (pid $!) — survives terminal close."
+    echo "log: $_LOG"
+    exit 0
+fi
+
 # Handle flags
 FORCE_MODE=""
 if [[ "$1" == "--web" || "$2" == "--web" ]]; then FORCE_MODE="web"; fi

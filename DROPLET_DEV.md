@@ -75,30 +75,34 @@ machine. Seen 2026-07-24 (16 failures, all this class):
 
 ---
 
-## 3. Deploy from the droplet
+## 3. Deploy from the droplet — `./droplet-sync.sh`
 
-Prod's `.git` must always track `origin/main`. Deploying un-pushed code is the
-silent-revert trap: the next `git reset --hard origin/main` wipes it. So
-**push first, always.**
+**One command (2026-07-24, operator directive — no more hand-derived
+steps):**
 
 ```bash
 cd /opt/quantopsai
-git push origin main                      # via gh credential helper
-
-git fetch origin
-git reset --hard origin/main
-git rev-parse HEAD                        # must equal origin/main
-git status --porcelain | grep -v '^??'    # must be EMPTY (no tracked drift)
-
-echo "$(git rev-parse HEAD)" > .deploy_sha
-date -u +"%Y-%m-%dT%H:%M:%SZ" > .deploy_timestamp
-
-# Restart from an idle window — check for "Market closed, sleeping until ..."
-journalctl -u quantopsai --no-pager -n 3 -o cat
-systemctl restart quantopsai
-systemctl restart quantopsai-web          # if web-loaded modules changed
-systemctl is-active quantopsai quantopsai-web
+git push origin main          # via gh credential helper
+./droplet-sync.sh             # the deploy. That's it.
 ```
+
+`droplet-sync.sh` is `sync.sh` stage for stage — pre-flight gate
+(clean tree, HEAD == origin/main), changed-set detection (previous
+deployed sha → HEAD), `git reset --hard origin/main`, HEAD + tracked-
+drift + content-sha verification, deploy markers, the same restart
+patterns with the same scheduler idle-window wait, and the same final
+service/marker/rehash verification. The ONLY structural difference:
+no Mac→droplet rsync (the code is pushed from here; the laptop catches
+up on its next `git pull` + `./sync.sh`). Flags are identical:
+`--web` / `--scheduler` / `--all`.
+
+**Both scripts self-detach by default**: the run survives the terminal
+closing, output lands in `deploy_logs/<name>-<UTC>.log` (gitignored),
+and the launching shell prints the log path immediately. Follow with
+`tail -f <log>`; `SYNC_FOREGROUND=1 ./sync.sh` opts out on the Mac.
+
+Prod's `.git` must always track `origin/main`. Deploying un-pushed code
+is the silent-revert trap — the pre-flight gate enforces push-first.
 
 Then **verify against the live system** — not just "services are up." Import
 the deployed function and replay real journal/broker data through it; prove
@@ -119,5 +123,9 @@ API and the journal DBs, not logs.
   Applications when done, then `gh auth login` next time.
 - **`node` / `pyflakes` / `gh` are host-level** — `sync.sh` does not manage
   them and a rebuild won't restore them. Re-install per §1.
+- **sshd keepalives are host-level too**: `/etc/ssh/sshd_config.d/`
+  `99-session-keepalive.conf` (ClientAliveInterval 60, CountMax 120,
+  TCPKeepAlive yes — 2026-07-24, stops idle web/terminal sessions being
+  dropped). A rebuilt host loses it; recreate + `systemctl reload ssh`.
 - Set git identity if commits fail: the repo uses
   `Claude <noreply@anthropic.com>`.

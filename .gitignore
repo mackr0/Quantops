@@ -39,3 +39,4 @@ scheduler_status.json
 
 # Cloudflare Worker local state
 osha_proxy/.wrangler/
+deploy_logs/

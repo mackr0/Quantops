@@ -328,14 +328,23 @@ _STANDDOWN_LOG_MEMO: Dict[str, float] = {}
 _STANDDOWN_LOG_INTERVAL = 3600.0
 
 
+_STANDDOWN_REPROBE_SEC = 7200.0   # one real probe every 2 hours
+
+
 def _quota_standdown(db_path: str, provider: str) -> bool:
     """True when this (db, provider)'s last 3 shadow attempts TODAY all
-    failed with the account-billing quota signature — meaning every
-    further call today is guaranteed to fail identically. Memoised for
-    10 minutes so the check costs ~nothing per call; a fresh ET day
-    (or a funded account succeeding on the day's first 3 probes)
-    clears it naturally. Only the unambiguous BILLING markers count —
-    a transient provider rate-limit ('rate limit', Anthropic 429/529)
+    failed with the account-billing quota signature AND the newest of
+    them is less than 2 hours old — meaning further calls right now are
+    guaranteed to fail identically. After 2 quiet hours, ONE real probe
+    is allowed through: if the account is still unfunded it re-arms the
+    stand-down for another 2 hours (max ~5 wasted calls/day instead of
+    ~280); the moment the operator funds the account, the next probe
+    SUCCEEDS and permanently clears the condition — same-day, not
+    next-day (2026-07-24: the operator funded OpenAI mid-day and the
+    original next-ET-day resumption would have wasted the rest of the
+    day's paid evaluation). Memoised for 10 minutes so the check costs
+    ~nothing per call. Only the unambiguous BILLING markers count — a
+    transient provider rate-limit ('rate limit', Anthropic 429/529)
     never triggers stand-down."""
     key = f"{db_path}|{provider}"
     now = time.time()
@@ -344,12 +353,12 @@ def _quota_standdown(db_path: str, provider: str) -> bool:
     try:
         conn = sqlite3.connect(db_path)
         try:
-            from datetime import datetime
+            from datetime import datetime, timezone
             from zoneinfo import ZoneInfo
             et_today = datetime.now(
                 ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
             rows = conn.execute(
-                "SELECT error FROM ai_shadow_calls "
+                "SELECT error, timestamp FROM ai_shadow_calls "
                 "WHERE provider = ? AND timestamp >= ? "
                 "  AND (error IS NULL OR error NOT LIKE '%cost cap%') "
                 "ORDER BY id DESC LIMIT 3",
@@ -364,6 +373,27 @@ def _quota_standdown(db_path: str, provider: str) -> bool:
     if not all(r[0] and any(m in r[0] for m in _QUOTA_MARKERS)
                for r in rows):
         return False
+    # Re-probe window: ledger timestamps are UTC (datetime('now')).
+    # If the newest quota error is >2h old, let one real attempt
+    # through — its outcome re-arms or permanently clears the state.
+    try:
+        newest = str(rows[0][1])[:19].replace("T", " ")
+        newest_ts = datetime.strptime(
+            newest, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - newest_ts).total_seconds()
+        if age > _STANDDOWN_REPROBE_SEC:
+            return False
+    except (ValueError, TypeError) as _ts_exc:
+        # Unparseable ledger timestamp — keep the conservative
+        # stand-down, but surface it: a systematically malformed
+        # timestamp would silently disable the 2h re-probe and a
+        # funded account would stay dark until the next ET day.
+        logger.warning(
+            "shadow eval: unparseable ai_shadow_calls timestamp %r "
+            "on %s (%s) — re-probe window can't be evaluated; "
+            "stand-down stays conservative",
+            rows[0][1], db_path, _ts_exc,
+        )
     _STANDDOWN_MEMO[key] = now + _STANDDOWN_TTL
     if now - _STANDDOWN_LOG_MEMO.get(key, 0) >= _STANDDOWN_LOG_INTERVAL:
         _STANDDOWN_LOG_MEMO[key] = now

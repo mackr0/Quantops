@@ -121,6 +121,28 @@ class TestQuotaStanddown:
                             "shadow daily cost cap reached (est $0.01)"])
         assert _quota_standdown(db, "openai") is True
 
+    def test_stale_errors_allow_a_reprobe(self, tmp_path):
+        """The mid-day-funding case (2026-07-24): quota errors older
+        than the 2h re-probe window must let ONE real attempt through,
+        so a newly funded account resumes the SAME day."""
+        db = str(tmp_path / "r.db")
+        conn = sqlite3.connect(db)
+        conn.execute(
+            "CREATE TABLE ai_shadow_calls ("
+            " id INTEGER PRIMARY KEY,"
+            " timestamp TEXT NOT NULL DEFAULT (datetime('now')),"
+            " provider TEXT, model TEXT, cost_usd REAL, error TEXT)")
+        for _ in range(3):
+            conn.execute(
+                "INSERT INTO ai_shadow_calls (timestamp, provider, "
+                "model, error) VALUES (datetime('now', '-3 hours'), "
+                "'openai', 'nano', ?)", (QUOTA,))
+        conn.commit(); conn.close()
+        assert _quota_standdown(db, "openai") is False, (
+            "3h-old quota errors still blocked the probe — a funded "
+            "account would stay dark until the next ET day."
+        )
+
 
 class TestDigestTaxonomy:
     def test_digest_separates_throttled_quota_and_errors(self):
