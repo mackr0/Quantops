@@ -99,6 +99,31 @@ def log_ai_call(
 # Read path — spend summaries
 # ---------------------------------------------------------------------------
 
+def _utc_start_of_et_today(now_utc=None) -> str:
+    """The UTC instant of today's ET midnight, formatted like the
+    ledgers' timestamps (`YYYY-MM-DD HH:MM:SS`).
+
+    Both ledger tables stamp rows with SQLite's `datetime('now')` —
+    **UTC**. The pre-2026-07-24 "today (ET)" readers compared those UTC
+    stamps against the bare ET *date string*, which is UTC midnight of
+    the ET-labeled day — a window opening 4–5 hours early (8 PM the
+    previous ET evening), so late-evening rows counted toward the next
+    ET day. Everything displayed is ET, so the boundary must be the
+    true ET midnight, converted to UTC to compare like-with-like.
+    DST is handled by zoneinfo (EDT/EST offset comes from the date).
+
+    `now_utc` (aware datetime) is injectable for tests; defaults to now.
+    """
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    et = ZoneInfo("America/New_York")
+    now_et = (now_utc or datetime.now(timezone.utc)).astimezone(et)
+    midnight_et = now_et.replace(hour=0, minute=0, second=0,
+                                 microsecond=0)
+    return midnight_et.astimezone(timezone.utc).strftime(
+        "%Y-%m-%d %H:%M:%S")
+
+
 def by_model_today(db_path: str) -> List[Dict[str, Any]]:
     """Per-(provider, model) spend for TODAY (ET) on one profile DB.
 
@@ -114,16 +139,12 @@ def by_model_today(db_path: str) -> List[Dict[str, Any]]:
     except Exception:
         return out
     try:
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
-        et_today = datetime.now(
-            ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
         rows = conn.execute(
             "SELECT provider, model, COUNT(*) AS n, "
             "       COALESCE(SUM(estimated_cost_usd), 0) AS usd "
             "FROM ai_cost_ledger WHERE timestamp >= ? "
             "GROUP BY provider, model ORDER BY usd DESC",
-            (et_today,),
+            (_utc_start_of_et_today(),),
         ).fetchall()
         out = [{"provider": r["provider"], "model": r["model"],
                 "calls": int(r["n"] or 0),
@@ -152,16 +173,12 @@ def shadow_by_model_today(db_path: str) -> List[Dict[str, Any]]:
     except Exception:
         return out
     try:
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
-        et_today = datetime.now(
-            ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
         rows = conn.execute(
             "SELECT provider, model, COUNT(*) AS n, "
             "       COALESCE(SUM(cost_usd), 0) AS usd "
             "FROM ai_shadow_calls WHERE timestamp >= ? "
             "GROUP BY provider, model ORDER BY usd DESC",
-            (et_today,),
+            (_utc_start_of_et_today(),),
         ).fetchall()
         out = [{"provider": r["provider"], "model": r["model"],
                 "calls": int(r["n"] or 0),
@@ -212,16 +229,15 @@ def spend_summary(db_path: str) -> Dict[str, Any]:
         return result
 
     try:
-        # Use ET date boundaries so "today" means today in Eastern Time,
-        # not UTC (which flips to the next day at 7/8 PM ET).
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
-        et_today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        # "today" means today in Eastern Time: boundary is ET midnight
+        # converted to UTC (the ledgers stamp rows in UTC), so it can't
+        # flip early at 7/8 PM ET nor leak the prior ET evening in.
+        et_start_utc = _utc_start_of_et_today()
         for key, window in (("today", "start of day"),
                             ("7d",    "-7 days"),
                             ("30d",   "-30 days")):
             if key == "today":
-                sql_where = f"timestamp >= '{et_today}'"
+                sql_where = f"timestamp >= '{et_start_utc}'"
             else:
                 sql_where = "timestamp >= datetime('now', '%s')" % window
             row = conn.execute(
