@@ -287,6 +287,34 @@ cycle, so it is a re-arm heartbeat, not a protection gap. Eliminating
 the warning is an architectural choice (per-profile synthetic stops vs
 broker brackets) left to the operator; protection is not at risk.
 
+## INCIDENT FOLLOW-UP 2026-07-24 — ⏳ OPEN: the NFLX 123-share cross-profile oversell + acct-56 cash drift (P1)
+
+**Symptom (live audit errors, damage NOT yet repaired):** acct 56 NFLX
+journal_open +270 (p213 row #53, real filled buy, order 78992a37) vs
+broker +147 — because p214 sold **392** NFLX against only **269** ever
+bought (raw rows; every sell broker-filled). Its 123-share oversell
+physically sold shares backing p213's live lot during the 07-22 rate-
+limit storm. Signed own-fill sums still equal the broker (+270 −123 =
++147), so the integrity gate correctly does not halt — but p213's book
+claims inventory the account no longer holds, and p214's book shows no
+live short. Related: acct-56 cash parity drift −$2,851.43 (profiles
+211–215), not yet root-caused. `reconcile_aggregate_drift` dry-run
+REFUSES all rows (all broker-filled — nothing voidable): correct.
+
+**To do:** (a) root-cause how 123 shares of sells passed the guarded-api
+oversell door (order_guard own-journal cap) during the 429 storm;
+(b) decide + execute the repair (p214's oversell surfacing as its live
+short vs. reducing p213's lot — broker truth first, operator visibility
+required); (c) tie out the −$2,851.43 cash drift against the same flows.
+
+**Also open (design decision, operator's call):** the aggregate audit's
+`_journal_open_qty_per_symbol` counts only open/pending_fill rows, so
+closed exits that PARTIALLY consumed a still-open lot are invisible —
+it reports the GOOG acct-56 drift as −9 when the books actually
+reconcile to the broker exactly (−1). Aligning the audit lens with
+read-time FIFO would kill that false-ERROR class but changes audit
+semantics.
+
 ## INCIDENT FOLLOW-UP 2026-07-22 — ⏳ OPEN: the spread-close bookkeeping bug (P0 for the next session)
 
 **Symptom (repaired, cause NOT yet fixed):** p212's GOOG 375/380 bear-call

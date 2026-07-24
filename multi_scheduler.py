@@ -1409,25 +1409,38 @@ def _fifo_lots_fully_consumed(rows, opp_side):
     Rows whose ``side == opp_side`` are entry lots; the rest are
     exits that consume lots FIFO.
 
-    2026-07-24 — a consumer may ONLY be an exit the broker actually
-    FILLED. A resting, still-unfilled order — a bracket's own
+    2026-07-24 — BOTH sides of the walk are gated on broker truth:
+    a row participates ONLY if the broker actually FILLED it (it
+    carries a ``fill_price``; resting/never-filled rows are NULL).
+
+    EXIT side: a resting, still-unfilled order — a bracket's own
     protective stop/TP (``pending_protective``), a ``pending_fill``
     sell in flight, an un-filled ``open`` exit — is NOT an exit yet
     and must never consume a lot. Counting them was the anonymous
     closer that cost a day: p213's COST buy #296 (5 shares) was
     FIFO-consumed by its OWN two resting bracket children (stop 5 +
-    TP 5) the instant a sibling COST exit triggered this walk, so the
-    entry flipped ``closed`` minutes after it filled while the broker
-    still held all 5 shares — acct-56 drift +5 and a −4,601
-    decomposition gap from that one row. A filled exit always carries
-    a ``fill_price``; a resting/unfilled order has ``fill_price IS
-    NULL`` — that is the discriminator, and it matches the outer
-    loop's own "genuinely FILLED orders" gate (the triggering exit is
-    backfilled with its fill_price and flipped to ``closed`` before
-    this walk, so it still consumes correctly). Fail-closed: an
-    ambiguous row (no fill_price) is NOT counted, so a lot can only
-    ever be under-closed (it heals next cycle when the real exit
-    confirms), never over-closed into a phantom the broker never sold.
+    TP 5), flipping the entry ``closed`` while the broker still held
+    all 5 shares — acct-56 drift +5 and a −4,601 decomposition gap
+    from that one row.
+
+    LOT side (same day, mirror case): a never-filled BUY-side row —
+    an expired/canceled/resting protective for a SHORT (journaled
+    side='buy'/'short', ``fill_price NULL``) — is NOT inventory and
+    must never absorb an exit. Counting one was the WMT +98 drift:
+    p210's expired 79-share protective TP #125 sat first in FIFO and
+    swallowed a real 49-share sell, so the genuine lot #271 was never
+    consumed and stayed open against a broker that had sold it
+    (audit journal +98 vs broker +49). Fleet-verified 2026-07-24:
+    every entry-side row missing fill_price is a never-filled
+    PROTECTIVE_* (canceled/expired) — no real lot is excluded.
+
+    The outer loop backfills the triggering exit's fill_price and
+    flips it ``closed`` before this walk, so real exits still consume.
+    Fail-closed both ways: an ambiguous row (no fill_price) is simply
+    not counted — a lot can only ever be under-closed (heals when the
+    real exit confirms), never over-closed into a phantom, and an
+    exit can only ever be under-matched, never absorbed by inventory
+    the broker never delivered.
     """
     lots = []  # [trade_id, qty_remaining]
     for r in rows:
@@ -1435,9 +1448,11 @@ def _fifo_lots_fully_consumed(rows, opp_side):
         side_i = r[1]
         qty_i = float(r[2] or 0)
         fill_price_i = r[3]
+        if fill_price_i is None:  # never filled — neither lot nor exit
+            continue
         if side_i == opp_side:
             lots.append([_id, qty_i])
-        elif fill_price_i is not None:  # completed (filled) exit only
+        else:  # completed (filled) exit
             remaining = qty_i
             for lot in lots:
                 if remaining <= 0:
@@ -1912,7 +1927,8 @@ def _task_update_fills(ctx):
                     "SELECT id, side, qty, fill_price FROM trades "
                     "WHERE symbol = ? AND side IN (?, ?) "
                     f"  {occ_filter} "
-                    "  AND COALESCE(status, 'open') != 'canceled' "
+                    "  AND COALESCE(status, 'open') "
+                    "      NOT IN ('canceled', 'expired') "
                     "ORDER BY timestamp ASC, id ASC",
                     [trade["symbol"], opp_side, exit_side] + extra_params,
                 ).fetchall()

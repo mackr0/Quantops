@@ -128,6 +128,52 @@ class TestFilledExitsStillClose:
         assert _fifo_lots_fully_consumed(rows, opp_side="buy") == [1]
 
 
+class TestPhantomLotsNeverAbsorb:
+    """Mirror case (2026-07-24, same day): a never-filled BUY-side row
+    (expired/canceled/resting protective for a short — fill_price NULL)
+    must not act as a LOT that absorbs real exits. p210 WMT: expired
+    79-share protective TP #125 sat first in FIFO and swallowed real
+    sell #275 (49 shares), so genuine lot #271 stayed open against a
+    broker that had sold it — audit journal +98 vs broker +49."""
+
+    def test_incident_wmt_expired_protective_does_not_absorb_sell(self):
+        """The exact p210 WMT shape. With the phantom #125 excluded,
+        #275's filled sell consumes the REAL lot #271; #276 stays open
+        (49 held = broker truth)."""
+        rows = [
+            _lot(125, "buy", 79.0, fill_price=None),    # expired TP
+            _lot(271, "buy", 49.0, fill_price=108.01),  # real entry
+            _lot(275, "sell", 49.0, fill_price=107.92),  # real exit
+            _lot(276, "buy", 49.0, fill_price=107.90),  # real re-entry
+            _lot(277, "sell", 49.0, fill_price=None),   # resting stop
+            _lot(278, "sell", 49.0, fill_price=None),   # resting TP
+        ]
+        closed = _fifo_lots_fully_consumed(rows, opp_side="buy")
+        assert closed == [271], (
+            "The expired protective #125 absorbed the real sell again "
+            "(or a resting sell consumed a lot) — WMT +98 drift shape."
+        )
+
+    def test_unfilled_lot_never_reported_closed(self):
+        """A never-filled buy-side row must not even be reported as a
+        closable lot (it isn't inventory)."""
+        rows = [
+            _lot(1, "buy", 10.0, fill_price=None),   # phantom lot
+            _lot(2, "sell", 10.0, fill_price=50.0),  # real exit
+        ]
+        assert _fifo_lots_fully_consumed(rows, opp_side="buy") == []
+
+    def test_short_side_mirror_pending_cover_protective(self):
+        """Shorts: a never-filled SHORT-side row must not absorb a
+        real cover; the real short lot closes instead."""
+        rows = [
+            _lot(1, "short", 20.0, fill_price=None),  # phantom
+            _lot(2, "short", 20.0, fill_price=99.0),  # real short
+            _lot(3, "cover", 20.0, fill_price=95.0),  # real cover
+        ]
+        assert _fifo_lots_fully_consumed(rows, opp_side="short") == [2]
+
+
 class TestProductionBinding:
     def test_production_selects_fill_price_and_uses_helper(self):
         """The un-gated inline walk must not return: production must
@@ -145,3 +191,9 @@ class TestProductionBinding:
             src,
         ), "The FIFO scope SELECT dropped fill_price — the resting-sell "\
            "discriminator is gone."
+        # And the scope must exclude BOTH never-filled terminals.
+        assert re.search(
+            r"NOT\s+IN\s*\(\s*'canceled'\s*,\s*'expired'\s*\)", src,
+        ), "The FIFO scope no longer excludes 'expired' — expired "\
+           "protectives will re-enter the walk as phantom lots (the "\
+           "WMT +98 shape)."
