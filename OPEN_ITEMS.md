@@ -336,7 +336,15 @@ truth). GOOG/WMT/NFLX all audit at the broker's exact number; only
 genuine broker↔books divergence can flag. Pinned in
 `test_audit_lens_canonical_2026_07_24.py`.
 
-## INCIDENT FOLLOW-UP 2026-07-22 — ⏳ OPEN: the spread-close bookkeeping bug (P0 for the next session)
+## INCIDENT FOLLOW-UP 2026-07-22 — ✅ RESOLVED 2026-07-22 (header updated 2026-07-25; the fix shipped same-day but this ledger entry was never flipped): the spread-close bookkeeping bug
+
+**Fixed by the 2026-07-22 "THE CREATOR FIX" commit** (see CHANGELOG):
+the roll manager's auto-close journals its own close row (no open-row
+clobber, direction-aware pnl via journal.realized_option_close_pnl),
+resubmit dedup replaces the in-place flip, and the per-cycle phantom
+sweep runs automatically. Pinned in
+`test_roll_close_corruption_fix_2026_07_22.py` (7 tests). The original
+text below is preserved for the record.
 
 **Symptom (repaired, cause NOT yet fixed):** p212's GOOG 375/380 bear-call
 spread open rows (ids 257/258, written 2026-07-15T19:02, sides sell/buy @
