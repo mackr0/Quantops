@@ -118,16 +118,14 @@ class TestIdentityBroken:
         # table or if the journal had non-trade cash entries.)
         db = _make_profile_db(tmp_path, 1, [])
         ctx = _mock_ctx(1, db, initial_capital=100_000.0)
+        # 2026-07-24 — the audit now derives actual equity from
+        # get_virtual_cash + the positions snapshot (race-free single
+        # source), so the hidden-cash injection point moved there.
         with patch(
             "models.build_user_context_from_profile", return_value=ctx,
         ), patch(
-            "journal.get_virtual_account_info",
-            return_value={
-                "equity": 99_500.0,  # $500 short!
-                "cash": 99_500.0,
-                "portfolio_value": 0.0,
-                "buying_power": 99_500.0, "status": "ACTIVE",
-            },
+            "journal.get_virtual_cash",
+            return_value=99_500.0,  # $500 short!
         ):
             result = audit_equity_identity(1)
         assert result["has_drift"] is True
@@ -180,20 +178,18 @@ class TestBatchAndErrors:
                 return _mock_ctx(2, db2, 100_000.0)
             raise ValueError("no such profile")
 
-        def _equity(db_path=None, initial_capital=0, price_fetcher=None):
-            # Force pid 2's equity to mismatch
+        def _cash(db_path=None, initial_capital=0):
+            # 2026-07-24: hidden-cash injection point is get_virtual_cash
+            # (the audit's race-free single cash source). Force pid 2's
+            # cash to mismatch.
             if db_path == db2:
-                return {"equity": 95_000.0, "cash": 95_000.0,
-                        "portfolio_value": 0.0,
-                        "buying_power": 95_000.0, "status": "ACTIVE"}
-            return {"equity": initial_capital, "cash": initial_capital,
-                    "portfolio_value": 0.0,
-                    "buying_power": initial_capital, "status": "ACTIVE"}
+                return 95_000.0
+            return float(initial_capital)
 
         with patch(
             "models.build_user_context_from_profile", side_effect=_build,
         ), patch(
-            "journal.get_virtual_account_info", side_effect=_equity,
+            "journal.get_virtual_cash", side_effect=_cash,
         ):
             result = audit_equity_identity_all([1, 2, 3])
 
