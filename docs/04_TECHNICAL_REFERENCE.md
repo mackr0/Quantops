@@ -381,7 +381,7 @@ Multiple TTL-based caches across the system. Source of TTLs: `alternative_data._
 
 ## 10. Test suite
 
-Source: `tests/`. 516 test files covering:
+Source: `tests/`. 521 test files covering:
 
 - **Per-module unit tests** (~170 files): one per major module.
 - **Integration tests**: `test_today_integration.py` (scheduler wiring), `test_pipeline.py` (end-to-end cycle).
@@ -392,7 +392,7 @@ Run: `venv/bin/python -m pytest tests/ -q`.
 
 Test discipline:
 
-- 5,640 tests, zero skipped (runtime `pytest.skip()` guards were systematically removed 2026-06-24; a structural guard now blocks broad-`except`→`skip`).
+- 6,277 tests, zero skipped (runtime `pytest.skip()` guards were systematically removed 2026-06-24; a structural guard now blocks broad-`except`→`skip`).
 - pytest-randomly for order-independence.
 - 30s default timeout per test.
 - Mocked external APIs (no network calls).

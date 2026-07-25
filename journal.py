@@ -1256,6 +1256,31 @@ def _migrate_daily_snapshots_unique(conn):
         raise
 
 
+def close_leg_rows_for_occ(db_path, occ_symbol, reason):
+    """Flip every LIVE row for an OCC contract to 'closed' with a
+    signed reason — the origin-leg half of a broker-initiated option
+    close (expiry/assignment/exercise), so both sides of the pair end
+    terminal per house convention. Lives in journal.py because direct
+    trades-table mutation is restricted to the authorized journal
+    layer (test_no_direct_journal_mutation guardrail). Returns the
+    number of rows flipped; 0 on any error (caller logs)."""
+    if not db_path or not occ_symbol:
+        return 0
+    try:
+        with closing(sqlite3.connect(db_path)) as conn:
+            cur = conn.execute(
+                "UPDATE trades SET status='closed', "
+                "reason = COALESCE(reason || ' | ', '') || ? "
+                "WHERE occ_symbol = ? "
+                "AND COALESCE(status, 'open') IN ('open', 'pending_fill')",
+                (reason, occ_symbol),
+            )
+            conn.commit()
+            return cur.rowcount
+    except sqlite3.Error:
+        return 0
+
+
 def log_trade(symbol, side, qty, price=None, order_id=None, signal_type=None,
               strategy=None, reason=None, ai_reasoning=None, ai_confidence=None,
               stop_loss=None, take_profit=None, status="open", pnl=None,
@@ -2307,9 +2332,15 @@ def get_virtual_positions(db_path=None, price_fetcher=None,
             # of exactly 0/NULL is the shape of a just-entered leg
             # awaiting its fill; only surface THAT if it stayed so past
             # the backfill window (genuinely stuck, not self-healing).
-            if qty > 0 and price < 0:
+            # Terminal rows are EXEMPT from the stuck-price warning
+            # (2026-07-25): a $0 price on a closed row is a legitimate
+            # worthless-expiry/assignment close (the OPEXP/OPASN
+            # convention), not stuck data — pre-fix, every dashboard
+            # render warned about p212's booked expiry closes forever.
+            _row_live = row_status in ("open", "pending_fill")
+            if qty > 0 and price < 0 and _row_live:
                 skipped_bad_price += 1
-            elif qty > 0 and price <= 0:
+            elif qty > 0 and price <= 0 and _row_live:
                 _stuck = True
                 if row_ts:
                     try:
@@ -2621,7 +2652,17 @@ def get_virtual_cash(db_path=None, initial_capital=100000.0):
             continue
         multiplier = 100.0 if occ else 1.0
         notional = qty * price * multiplier
-        if side in ("buy", "cover"):
+        if side in ("buy", "cover", "cash_debit"):
+            # 'cash_debit' (2026-07-25): cash-only debit with NO
+            # position effect — the mirror of 'dividend'. Born from the
+            # CVX 185/190 assignment settlement: Alpaca paper settles a
+            # fully-ITM spread via MISC "Options Trade" share-flow rows
+            # (net −$1,000 = spread width) with NO fills and NO
+            # position rows — cash the journal had nowhere to put.
+            # Position lenses ignore unknown sides by construction, so
+            # these rows can never pollute FIFO. Carry pnl equal to the
+            # net so realized composes with the $0 leg closes and the
+            # equity identity holds.
             total_buys += notional
         elif side in ("sell", "short", "dividend"):
             total_sells += notional

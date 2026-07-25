@@ -227,7 +227,11 @@ class TestSourceClassification:
         import inspect
         from journal import get_virtual_cash, get_virtual_account_info
         src = inspect.getsource(get_virtual_cash)
-        assert "(\"buy\", \"cover\")" in src or "('buy', 'cover')" in src, (
+        # 2026-07-25: the cash-OUT tuple gained 'cash_debit' (the
+        # cash-only settlement primitive). The pinned property is
+        # unchanged: cover lives in the cash-OUT bucket.
+        assert ("(\"buy\", \"cover\", \"cash_debit\")" in src
+                or "('buy', 'cover', 'cash_debit')" in src), (
             "get_virtual_cash must bucket 'cover' alongside 'buy' "
             "(both are cash-OUT). If you refactor the tuple shape, "
             "keep the property: cover is NOT in the cash-IN tuple "

@@ -519,8 +519,10 @@ def test_preopen_disarm_fires_inside_the_parked_sleep_loop():
     assert loop.count("_preopen_disarm_sweep(now)") >= 2, (
         "disarm must be called from BOTH the outer profile branch and "
         "the inner closed-market sleep loop")
-    # the sleep-loop block: break-at-open, then disarm, then sleep(60)
-    sleep_block = loop.split("Market closed, sleeping until")[1][:2000]
+    # the sleep-loop block: break-at-open, then disarm, then sleep(60).
+    # Window widened 2000→5000 (2026-07-25): the closed-market
+    # housekeeping block now sits between the break and the disarm.
+    sleep_block = loop.split("Market closed, sleeping until")[1][:5000]
     brk = sleep_block.find("break")
     disarm = sleep_block.find("_preopen_disarm_sweep(now)")
     slp = sleep_block.find("time.sleep(60)")

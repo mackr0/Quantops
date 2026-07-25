@@ -1466,6 +1466,43 @@ def _fifo_lots_fully_consumed(rows, opp_side):
             if lot_remaining <= 1e-6]
 
 
+_last_closed_housekeeping = 0.0
+_CLOSED_HOUSEKEEPING_INTERVAL = 3600.0
+
+
+def _closed_market_housekeeping():
+    """Hourly while the market is closed: heal fills and capture
+    broker-initiated activities so books never sit divergent through a
+    night or weekend (see the call site in the sleep loop). Per-profile
+    failures are isolated; the 429 breaker and order-status cache keep
+    the API cost bounded."""
+    global _last_closed_housekeeping
+    import time as _time
+    now = _time.time()
+    if now - _last_closed_housekeeping < _CLOSED_HOUSEKEEPING_INTERVAL:
+        return
+    _last_closed_housekeeping = now
+    from models import get_active_profiles, build_user_context_from_profile
+    from activities_capture import capture_activities_for_profile
+    healed = 0
+    for p in get_active_profiles():
+        try:
+            ctx = build_user_context_from_profile(p["id"])
+            _task_update_fills(ctx)
+            capture_activities_for_profile(ctx)
+            healed += 1
+        except Exception as _p_exc:
+            logging.warning(
+                "closed-market housekeeping: profile %s failed "
+                "(%s: %s) — continuing",
+                p.get("id"), type(_p_exc).__name__, _p_exc,
+            )
+    logging.info(
+        "closed-market housekeeping: %d profile(s) healed/captured",
+        healed,
+    )
+
+
 def _task_update_fills(ctx):
     """Update fill prices + state-machine transitions on recent trades.
 
@@ -1641,9 +1678,14 @@ def _task_update_fills(ctx):
             if (broker_status in ("expired", "canceled", "rejected",
                                   "done_for_day")
                     and filled_qty == 0):
+                # pnl=NULL (2026-07-25): a terminal-unfilled row carries
+                # no realized pnl — the estimate stamped at journaling
+                # time never happened. Leaving it (p211 #353: an expired
+                # sell kept its +35 estimate) breaks the equity identity,
+                # whose realized side sums ALL non-NULL pnl.
                 conn.execute(
-                    "UPDATE trades SET status = ?, price = 0 "
-                    "WHERE id = ?",
+                    "UPDATE trades SET status = ?, price = 0, "
+                    "pnl = NULL WHERE id = ?",
                     (broker_status, trade["id"]),
                 )
                 terminal_unfilled += 1
@@ -6461,6 +6503,24 @@ def main_loop(active_segments=None, legacy_mode=False):
                 now = datetime.now(ET)
                 if is_market_open(now):
                     break
+                # CLOSED-MARKET HOUSEKEEPING (2026-07-25): the broker
+                # keeps acting after the close — Friday's option expiry
+                # activities (OPASN/OPEXP/settlements) posted at ~01:00
+                # UTC SATURDAY, and day orders die at the bell — but
+                # every booking task was market-hours-only, so the books
+                # sat divergent ALL WEEKEND while /issues screamed
+                # (operator-reported, 2026-07-25). Hourly from inside
+                # this sleep loop: confirm/expire fills and capture
+                # broker-initiated activities, so books converge within
+                # the hour around the clock. Trading tasks stay
+                # market-hours-only.
+                try:
+                    _closed_market_housekeeping()
+                except Exception as _hk_exc:
+                    logging.warning(
+                        "closed-market housekeeping failed (%s: %s)",
+                        type(_hk_exc).__name__, _hk_exc,
+                    )
                 # PRE-OPEN DISARM must fire from HERE: a market-hours
                 # fleet spends every night/weekend parked in this loop
                 # and exits only AT the open — the outer-loop call

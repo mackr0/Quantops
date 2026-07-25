@@ -726,6 +726,52 @@ def _journal_cash(db_path: str, initial_capital: float) -> float:
         return 0.0
 
 
+# Account-level fee cache: fees only accrue daily (post-close), so a
+# 6h TTL keeps the parity audit at ~zero added API cost. Keyed by the
+# account's API key id.
+_FEE_NET_CACHE: Dict[str, tuple] = {}
+_FEE_NET_TTL = 6 * 3600.0
+
+
+def _account_fee_net(api) -> float:
+    """Cumulative net of the account's FEE activities (negative =
+    fees charged). Cached 6h per account. Fail-open to 0.0 — a fee
+    fetch hiccup must not fail the parity audit; the uncorrected
+    drift is at most the fee total (~$1/day), far under tolerance."""
+    import time as _time
+    key = str(getattr(api, "_key_id", "") or "") or "default"
+    now = _time.time()
+    hit = _FEE_NET_CACHE.get(key)
+    if hit is not None and (now - hit[0]) < _FEE_NET_TTL:
+        return hit[1]
+    total = 0.0
+    try:
+        token = None
+        while True:
+            kw = dict(activity_types="FEE", page_size=100)
+            if token:
+                kw["page_token"] = token
+            acts = api.get_activities(**kw) or []
+            if not acts:
+                break
+            for a in acts:
+                try:
+                    total += float(getattr(a, "net_amount", 0) or 0)
+                except (ValueError, TypeError):
+                    continue
+            token = getattr(acts[-1], "id", None)
+            if len(acts) < 100:
+                break
+    except Exception as exc:
+        logger.warning(
+            "aggregate_audit: FEE fetch failed (%s) — parity runs "
+            "without the fee adjustment this pass", exc,
+        )
+        return hit[1] if hit is not None else 0.0
+    _FEE_NET_CACHE[key] = (now, total)
+    return total
+
+
 def audit_account_cash_parity(
     profile_ids: Iterable[int],
     tolerance_abs: float = _CASH_TOLERANCE_ABS,
@@ -786,12 +832,21 @@ def audit_account_cash_parity(
             continue
         broker_cash = round(_broker_cash(api), 2)
         journal_cash = round(info["journal_cash"], 2)
-        d = round(broker_cash - journal_cash, 2)
+        # 2026-07-25 — account-level broker FEES (Alpaca paper charges
+        # real TAF/ORF/CAT fees: 79 rows, −$16.16 in the cohort's first
+        # 17 days). Fees are account-day aggregates ("proceed of 1547
+        # shares (101 trades)") — NOT attributable to any profile's
+        # own-book, so they cannot be journaled; the parity comparison
+        # accounts for them broker-side instead. Left unmodeled they
+        # accumulate toward the tolerance and eventually false-flag.
+        fee_net = _account_fee_net(api)
+        d = round(broker_cash - (journal_cash + fee_net), 2)
         tol = max(tolerance_abs, abs(broker_cash) * tolerance_pct)
         row = {
             "account": acct,
             "broker_cash": broker_cash,
             "journal_cash": journal_cash,
+            "broker_fees": round(fee_net, 2),
             "drift": d,
             "tolerance": round(tol, 2),
             "profile_ids": sorted(info["profile_ids"]),

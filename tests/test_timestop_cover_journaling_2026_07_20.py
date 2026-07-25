@@ -188,7 +188,10 @@ class TestActivitiesFetchPerType:
         api = self._RejectingApi()
         ctx.get_alpaca_api = lambda: api
         capture_activities_for_profile(ctx)
-        assert set(api.calls) == set(_HANDLED_TYPES), (
+        # 2026-07-25: the MISC stream joined the contract (exercises
+        # can appear ONLY as MISC rows, and assignment settlement cash
+        # arrives via MISC 'Options Trade') — still one call per type.
+        assert set(api.calls) == set(_HANDLED_TYPES) | {"MISC"}, (
             f"expected one call per type, got {api.calls}")
         assert not any("," in c for c in api.calls)
 

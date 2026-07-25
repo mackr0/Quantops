@@ -161,10 +161,28 @@ class TestDividendCreditsVirtualCash:
 # Option assignment / expiration
 # ─────────────────────────────────────────────────────────────────────
 
+def _seed_leg(db, occ, side, qty, price):
+    """Seed an owned live option leg — the 2026-07-25 ownership gate
+    only books broker events into the profile whose journal holds the
+    OCC (the CVX assignment was journaled into all five acct-56
+    profiles before the gate existed)."""
+    underlying = occ[:-15]
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "INSERT INTO trades (timestamp, symbol, occ_symbol, side, "
+            "qty, price, fill_price, status) VALUES "
+            "('2026-05-10T14:00:00', ?, ?, ?, ?, ?, ?, 'open')",
+            (underlying, occ, side, qty, price, price))
+        conn.commit()
+
+
 class TestOptionEventCapture:
     def test_option_assignment_writes_close_row(self, tmp_path):
+        """2026-07-25 contract: a SHORT leg's assignment closes with a
+        BUY @0 (premium kept as pnl), only in the OWNING profile."""
         from activities_capture import capture_activities_for_profile
         db = _make_profile_db(tmp_path, 1)
+        _seed_leg(db, "AAPL260618C00200000", "sell", 5, 2.50)
         api = MagicMock()
         api.get_activities.return_value = [
             _opasn_activity(
@@ -176,20 +194,24 @@ class TestOptionEventCapture:
         assert summary["OPASN"] == 1
         with sqlite3.connect(db) as conn:
             row = conn.execute(
-                "SELECT symbol, side, qty, price, occ_symbol, signal_type "
-                "FROM trades WHERE order_id = ?", ("act-opasn-1",)
+                "SELECT symbol, side, qty, price, occ_symbol, "
+                "signal_type, pnl FROM trades WHERE order_id = ?",
+                ("act-opasn-1",)
             ).fetchone()
         # symbol extracted as underlying, occ_symbol preserved
         assert row[0] == "AAPL"
-        assert row[1] == "sell"
+        assert row[1] == "buy"      # short leg closes with a BUY
         assert row[2] == 5.0
-        assert row[3] == 2.50
+        assert row[3] == 0.0        # always $0; cash flows via MISC
         assert row[4] == "AAPL260618C00200000"
         assert row[5] == "OPASN"
+        assert row[6] == 1250.0     # premium 2.50 x 5 x 100 kept
 
     def test_option_expiration_writes_close_row_at_zero(self, tmp_path):
+        """A LONG leg's expiry closes with a SELL @0 (premium lost)."""
         from activities_capture import capture_activities_for_profile
         db = _make_profile_db(tmp_path, 1)
+        _seed_leg(db, "AAPL260618C00500000", "buy", 10, 0.40)
         api = MagicMock()
         api.get_activities.return_value = [
             _opexp_activity("act-opexp-1", "AAPL260618C00500000",
@@ -200,12 +222,14 @@ class TestOptionEventCapture:
         assert summary["OPEXP"] == 1
         with sqlite3.connect(db) as conn:
             row = conn.execute(
-                "SELECT signal_type, price, qty FROM trades "
+                "SELECT signal_type, price, qty, side, pnl FROM trades "
                 "WHERE order_id = ?", ("act-opexp-1",)
             ).fetchone()
         assert row[0] == "OPEXP"
         assert row[1] == 0.0
         assert row[2] == 10.0
+        assert row[3] == "sell"     # long leg closes with a SELL
+        assert row[4] == -400.0     # premium 0.40 x 10 x 100 lost
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -271,6 +295,7 @@ class TestAlpacaFieldContract:
         movement comes via the separate FILL activity)."""
         from activities_capture import capture_activities_for_profile
         db = _make_profile_db(tmp_path, 1)
+        _seed_leg(db, "AAPL260618C00200000", "sell", 5, 2.50)
         api = MagicMock()
         # OPASN with NO `price` field at all
         no_price = SimpleNamespace(
@@ -298,7 +323,7 @@ class TestErrorHandling:
         api.get_activities.side_effect = OSError("network down")
         ctx = _ctx(1, db, api)
         summary = capture_activities_for_profile(ctx)
-        assert summary == {"DIV": 0, "OPEXP": 0, "OPASN": 0, "OPXRC": 0}
+        assert summary == {"DIV": 0, "OPEXP": 0, "OPASN": 0, "OPEXC": 0}
 
     def test_activity_without_id_skipped(self, tmp_path):
         from activities_capture import capture_activities_for_profile

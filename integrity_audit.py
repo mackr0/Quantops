@@ -42,12 +42,14 @@ def audit_equity_identity(profile_id: int) -> Dict[str, Any]:
     Realized P&L comes from the `pnl` column on closed trades (populated
     by `journal.reconcile_trade_statuses`'s FIFO matcher). Unrealized
     P&L comes from `get_virtual_positions` on currently-open positions.
-    Actual equity comes from `get_virtual_account_info` (cash +
-    portfolio_value).
+    Actual equity is `get_virtual_cash` + Σ market_value of that SAME
+    positions snapshot (2026-07-24 — one snapshot, so mark terms cancel
+    algebraically in `drift`; moving prices between two separate reads
+    used to produce phantom cents of drift on volatile minutes).
 
     If these don't match, ONE of the following is wrong:
       - FIFO matcher: pnl column inconsistent with cash flows
-      - market_value: differs from unrealized_pl computation
+      - avg_entry bookkeeping: open-lot cost inconsistent with flows
       - Hidden cash flow: deposit, dividend, fee, manual adjustment
         affecting equity without a matching trade row
 
@@ -58,7 +60,7 @@ def audit_equity_identity(profile_id: int) -> Dict[str, Any]:
         'realized_total': float,        # sum of pnl on closed trades
         'unrealized_total': float,      # sum of unrealized_pl on open
         'expected_equity': float,       # init_cap + realized + unrealized
-        'actual_equity': float,         # from get_virtual_account_info
+        'actual_equity': float,         # cash + Σ mv (same snapshot)
         'drift': float,                 # actual - expected
         'has_drift': bool,              # abs(drift) > _EQUITY_TOLERANCE
         'errored': str | None,          # populated if check itself failed
@@ -87,9 +89,22 @@ def audit_equity_identity(profile_id: int) -> Dict[str, Any]:
 
     try:
         with sqlite3.connect(ctx.db_path) as conn:
+            # Status filter (2026-07-25): dead rows (canceled/expired/
+            # rejected/...) carry no realized pnl by house convention,
+            # but a stale estimate CAN survive on one (p211 #353: an
+            # expired sell kept its +35 estimate and broke the identity
+            # by exactly that amount). The healer now clears pnl when
+            # marking terminal-unfilled; this filter is the defense in
+            # depth — the identity must be immune to any stray stamp on
+            # a row every other lens already excludes.
             row = conn.execute(
                 "SELECT COALESCE(SUM(pnl), 0) FROM trades "
-                "WHERE pnl IS NOT NULL"
+                "WHERE pnl IS NOT NULL "
+                "AND COALESCE(status, 'open') NOT IN "
+                "('pending_protective', 'canceled', 'expired', "
+                " 'rejected', 'done_for_day', "
+                " 'auto_reconciled_phantom_close', "
+                " 'auto_closed_external')"
             ).fetchone()
             realized_total = float(row[0] or 0)
     except sqlite3.OperationalError as exc:
@@ -123,16 +138,33 @@ def audit_equity_identity(profile_id: int) -> Dict[str, Any]:
     out["unrealized_total"] = round(unrealized_total, 2)
 
     try:
-        from journal import get_virtual_account_info
-        # Reuse the same price_fetcher so unrealized and equity see
-        # identical marks — otherwise a snapshot lag would show up as
-        # false drift.
-        account = get_virtual_account_info(
-            db_path=ctx.db_path,
-            initial_capital=initial_capital,
-            price_fetcher=fetcher,
+        from journal import get_virtual_cash
+        # 2026-07-24 — actual equity is cash + Σ market_value of the
+        # SAME positions list used for unrealized above. The previous
+        # code read equity via a second, separate account-info call;
+        # "reusing the price_fetcher" did NOT freeze marks — the caches
+        # (30s price TTL; broker marks only for account-held symbols)
+        # could serve a moved mark between the two reads, so a volatile
+        # minute produced cents of PHANTOM drift on a quarter-million
+        # book (p210 flagged −$1.03 mid-trading while the books were
+        # penny-exact — verified 0.00 drift twice at frozen marks).
+        # With one snapshot, the mark terms cancel algebraically in
+        # `drift`, leaving the pure books identity:
+        #     cash + Σ open_qty×avg_entry == initial + Σ pnl
+        # which moving prices cannot touch — a nonzero drift is now
+        # ALWAYS a real bookkeeping error. Cash comes from
+        # get_virtual_cash (mark-independent by definition; the same
+        # single source the buy-side cash door uses).
+        cash_val = get_virtual_cash(
+            db_path=ctx.db_path, initial_capital=initial_capital,
         )
-        actual_equity = float(account.get("equity", 0) or 0)
+        if cash_val is None:
+            out["errored"] = "actual equity read failed: cash unreadable"
+            return out
+        market_value = sum(
+            float(p.get("market_value", 0) or 0) for p in positions
+        )
+        actual_equity = float(cash_val) + market_value
     except Exception as exc:
         out["errored"] = (
             f"actual equity read failed: {type(exc).__name__}: {exc}"
