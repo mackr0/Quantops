@@ -120,6 +120,12 @@ def backup_all(
 
 _DATE_RE = re.compile(r"\.(\d{4}-\d{2}-\d{2})\.db$")
 
+# Leftovers from interrupted backup_one runs: the .tmp working file and
+# the -wal/-shm sidecars SQLite creates next to it. Never restorable,
+# and _DATE_RE doesn't match them, so without this they accumulate
+# forever.
+_TMP_RE = re.compile(r"\.(\d{4}-\d{2}-\d{2})\.db\.tmp(-wal|-shm)?$")
+
 
 def prune_old_backups(backup_dir: str, retain_days: int) -> int:
     """Remove backups with a date stamp older than `retain_days`. Returns count."""
@@ -128,7 +134,7 @@ def prune_old_backups(backup_dir: str, retain_days: int) -> int:
     cutoff = datetime.utcnow().date() - timedelta(days=retain_days)
     removed = 0
     for fname in os.listdir(backup_dir):
-        m = _DATE_RE.search(fname)
+        m = _DATE_RE.search(fname) or _TMP_RE.search(fname)
         if not m:
             continue
         try:

@@ -10,6 +10,12 @@
 # Uses sqlite3 .backup (online backup — safe while the DB is being
 # written by the scheduler). Prunes files older than 14 days. Logs to
 # syslog under tag "quantopsai-backup".
+#
+# Backups older than ~2 days are gzipped to keep disk usage sane
+# (biotechevents.db + edgar13f.db alone are ~2GB/day uncompressed).
+# The newest backups stay uncompressed because
+# db_integrity.find_latest_backup / restore_from_backup do not read
+# .gz — to restore from an older backup, gunzip it first.
 set -u
 
 LOG_TAG="${BACKUP_LOG_TAG:-quantopsai-backup}"
@@ -62,12 +68,44 @@ for f in "${REPO_ROOT}"/altdata/*/data/*.db; do
     [[ -e "$f" ]] && backup_one "$f"
 done
 
+# Glob-style pattern for the TS suffix we write: YYYYMMDD-HHMM
+TS_GLOB='[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9]'
+
+# Compress backups older than ~2 days. The newest ones are left
+# uncompressed so db_integrity.find_latest_backup (which does not
+# understand .gz) always has a directly restorable file, even if a
+# day's backup run fails.
+COMPRESSED=0
+while IFS= read -r f; do
+    if nice -n 10 gzip -f "$f"; then
+        COMPRESSED=$((COMPRESSED+1))
+    else
+        log "WARN: gzip failed for $f"
+    fi
+done < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name "*.${TS_GLOB}" -mtime +1)
+log "compressed ${COMPRESSED} backups"
+
+# Remove -shm/-wal sidecars whose parent backup is gone (created when a
+# post-run integrity check opens a backup; never restorable on their
+# own, and the TS prune pattern below does not match them).
+ORPHANS=0
+while IFS= read -r sc; do
+    parent="${sc%-shm}"
+    parent="${parent%-wal}"
+    [[ -f "$parent" ]] || { rm -f "$sc" && ORPHANS=$((ORPHANS+1)); }
+done < <(find "$BACKUP_DIR" -maxdepth 1 -type f \
+    \( -name "*.${TS_GLOB}-shm" -o -name "*.${TS_GLOB}-wal" \))
+log "removed ${ORPHANS} orphaned sidecar files"
+
 # Prune backups older than RETAIN_DAYS. Only files we wrote (TS suffix
-# format), so we never delete legacy hand-named files.
+# format, plus their gzipped form), so we never delete legacy
+# hand-named files.
 PRUNED=0
 while IFS= read -r victim; do
     rm -f "$victim" && PRUNED=$((PRUNED+1))
-done < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name '*.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9]' -mtime "+${RETAIN_DAYS}")
+done < <(find "$BACKUP_DIR" -maxdepth 1 -type f \
+    \( -name "*.${TS_GLOB}" -o -name "*.${TS_GLOB}.gz" \) \
+    -mtime "+${RETAIN_DAYS}")
 log "pruned ${PRUNED} backups older than ${RETAIN_DAYS} days"
 
 log "backup run complete"
