@@ -161,6 +161,36 @@ def init_tracker_db(db_path=None):
 # 1. Record predictions
 # ---------------------------------------------------------------------------
 
+def update_prediction_meta_scores(pred_id, meta_score, online_score,
+                                  db_path=None):
+    """Refine a just-written prediction row with the STEP-4.5 meta
+    scores (2026-07-26). The pipeline journals the prediction BEFORE
+    the post-AI suppression pass computes its richer meta_prob +
+    online_prob on the full features payload; this write-back gives
+    SELECTED trades' rows the exact scores that gated them. Best-effort
+    (a failed score write must never affect trading); no-op when both
+    scores are None or the id is invalid."""
+    if not pred_id or (meta_score is None and online_score is None):
+        return False
+    try:
+        with _get_conn(db_path) as conn:
+            conn.execute(
+                "UPDATE ai_predictions SET "
+                " meta_model_score = COALESCE(?, meta_model_score), "
+                " online_meta_score = COALESCE(?, online_meta_score) "
+                "WHERE id = ?",
+                (meta_score, online_score, int(pred_id)),
+            )
+            conn.commit()
+        return True
+    except Exception as exc:
+        logging.warning(
+            "update_prediction_meta_scores failed for pred %s: %s",
+            pred_id, exc,
+        )
+        return False
+
+
 def record_prediction(symbol, predicted_signal, confidence, reasoning,
                       price_at_prediction, price_targets=None, db_path=None,
                       regime=None, strategy_type=None, features=None,

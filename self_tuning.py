@@ -2779,6 +2779,32 @@ def _optimize_position_size_upward(conn, ctx, profile_id, user_id,
 # on no-op.
 # ---------------------------------------------------------------------------
 
+_REFERENCE_BOOK_USD = 200_000.0
+
+
+def _book_scaled_dollars(ctx, base_at_200k: float) -> float:
+    """Scale a dollar threshold to the profile's book size (2026-07-26).
+
+    The tuner's dollar triggers were written for the $200K books:
+    e.g. concentration_reduce fires at avg_loss < −$200 ≈ 0.1% of a
+    200K book. On the $25K books the same constant demanded a 0.8%-of-
+    book average loss — 8× stricter — so the tuner sat idle on exactly
+    the profiles doing worst (A3-25K-Candidate at 13–18% WR with the
+    reducer structurally unable to fire). Same ECONOMIC trigger
+    everywhere: base × (initial_capital / 200K), floored at 10% of
+    base so micro-books keep a sane minimum. A 200K book is unchanged
+    (backward compatible); 25K scales to a quarter-strength trigger…
+    i.e. −$25; 700K scales to −$700."""
+    try:
+        cap = float(getattr(ctx, "initial_capital", 0) or 0)
+    except (TypeError, ValueError):
+        cap = 0.0
+    if cap <= 0:
+        return base_at_200k
+    scale = max(0.10, cap / _REFERENCE_BOOK_USD)
+    return base_at_200k * scale
+
+
 def _bound(name, value):
     """Clamp helper — wraps param_bounds.clamp with a stable import."""
     from param_bounds import clamp
@@ -2840,7 +2866,9 @@ def _optimize_max_total_positions(conn, ctx, profile_id, user_id,
         current = int(current)
 
     # Reduce when losses are deep AND we're losing broadly.
-    if overall_wr < 40 and avg_loss < -200:
+    # Thresholds are book-scaled (2026-07-26): −$200 on a 200K book
+    # ≡ −$25 on 25K ≡ −$700 on 700K — the same economic trigger.
+    if overall_wr < 40 and avg_loss < -_book_scaled_dollars(ctx, 200):
         new_val = _bound("max_total_positions", current - 1)
         if new_val == current:
             return None
@@ -2863,7 +2891,7 @@ def _optimize_max_total_positions(conn, ctx, profile_id, user_id,
     ).fetchone()
     avg_win = row["avg_win"] if row and row["avg_win"] is not None else 0
 
-    if overall_wr >= 60 and avg_win > 100:
+    if overall_wr >= 60 and avg_win > _book_scaled_dollars(ctx, 100):
         new_val = _bound("max_total_positions", current + 1)
         if new_val == current:
             return None

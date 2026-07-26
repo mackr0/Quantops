@@ -578,6 +578,15 @@ def _meta_pregate_candidates(candidates: List[Dict[str, Any]],
                 # at the per-candidate level too).
                 kept.append(c)
                 continue
+            # 2026-07-26 — stamp the score on the candidate so the
+            # prediction journal can persist it. meta_model_score sat
+            # NULL on all 21,000 predictions ever made because the
+            # score was computed HERE and discarded — record_prediction
+            # accepted the kwarg all along but no caller carried it.
+            # Without persistence the "is the meta-model predictive"
+            # audit (WR by score quartile) is uncomputable and the
+            # model's veto power is unfalsifiable.
+            c["_meta_prob"] = round(float(meta_prob), 4)
             if meta_prob >= threshold:
                 kept.append(c)
             else:
@@ -3200,10 +3209,15 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 features_payload["_market_gex_regime"] = _macro.get("market_gex", {}).get("net_regime", "balanced")
 
                 # 2026-05-19 (Phase B1) — capture the meta-model
-                # scores that influenced this prediction. The features
-                # dict already exposes meta_score if available; pull
-                # for first-class storage.
-                _meta_score = features_payload.get("meta_model_score")
+                # scores that influenced this prediction.
+                # 2026-07-26 — the candidate's pregate stamp is the
+                # primary source (features_payload never actually
+                # carried these keys, which is why the columns were
+                # NULL on every prediction ever made). The richer
+                # STEP-4.5 pair refines SELECTED trades' rows after
+                # the fact via update_prediction_meta_scores.
+                _meta_score = c.get(
+                    "_meta_prob", features_payload.get("meta_model_score"))
                 _online_meta_score = features_payload.get("online_meta_score")
                 pred_id = record_prediction(
                     symbol=sym,
@@ -3340,6 +3354,29 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                     if online_prob is not None:
                         t["online_meta_prob"] = round(online_prob, 4)
                         t["meta_divergence"] = round(online_prob - meta_prob, 4)
+
+                    # 2026-07-26 — write the STEP-4.5 scores back onto
+                    # this trade's prediction row (linked via _pred_id).
+                    # These are computed on the FULL features payload,
+                    # so they're the highest-fidelity scores available —
+                    # and without persistence the meta-model's veto
+                    # power stays unfalsifiable (all 21,000 prior
+                    # predictions have NULL scores).
+                    if t.get("_pred_id"):
+                        try:
+                            from ai_tracker import (
+                                update_prediction_meta_scores)
+                            update_prediction_meta_scores(
+                                t["_pred_id"], round(meta_prob, 4),
+                                (round(online_prob, 4)
+                                 if online_prob is not None else None),
+                                db_path=ctx.db_path if ctx else None,
+                            )
+                        except Exception as _ms_exc:
+                            logging.warning(
+                                "meta-score write-back failed for pred "
+                                "%s: %s", t.get("_pred_id"), _ms_exc,
+                            )
 
                     _meta_scored.append((t, meta_prob, online_prob))
 
