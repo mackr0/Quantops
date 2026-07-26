@@ -162,10 +162,25 @@ DESIGNED AI inputs; [exec] = execution change, operator times it.
       costs. Pinned: test_realized_slippage_labels_2026_07_26.py
       (+ legacy short fixture fixed from side='sell' — it mirrored
       the mapping bug).
-- [ ] P2.2 [exec — operator times rollout] Equity path never reads the
-      NBBO though it's in the snapshot payload. Step 1: record spread
-      at decision (telemetry, no behavior change). Step 2:
-      marketable-limit orders + never-market multi-leg options.
+- [ ] P2.2 [exec — operator times rollout] NBBO + marketable limits.
+      STEP 1 DONE 2026-07-26: get_nbbo_spread_bps() (real two-sided
+      quote or None — one-sided/crossed refused); get_snapshot's
+      bid/ask now the real NBBO (was: trade-price alias) + spread_bps
+      key; spread_bps_at_decision column stamped on buy AND short
+      entries. Telemetry only — the entry estimator still receives
+      spread_bps=None (pinned: feeding it the live spread shifts
+      predicted costs + wide_spread/slippage_high firing, which is
+      the step-2 behavior change). Pinned:
+      test_nbbo_spread_telemetry_2026_07_26.py (8).
+      STEP 2 [awaits operator go]: marketable-limit orders +
+      never-market multi-leg options + feed real spread to the
+      estimator/specialists. Data to time it: spread_bps_at_decision
+      accumulates from step-1 deploy; compare vs realized
+      slippage_pct per symbol/size before flipping.
+      RE-REVIEW 2026-08-10 (guaranteed 4 ways: this open box; Claude
+      droplet memory p22-step2-pending-decision; session task; and a
+      one-time cloud routine trig_019jvekvKcSfSq6h9NEoermf firing
+      2026-08-10T13:00Z with the analysis request).
 - [ ] P2.3 [none] Backtester slippage: drop hardcoded adv=1M /
       constant 12.67bps.
 

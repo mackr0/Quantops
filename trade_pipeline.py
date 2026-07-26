@@ -1893,6 +1893,20 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                     "(non-fatal — journal still writes): %s: %s",
                     symbol, type(_ps_exc).__name__, _ps_exc,
                 )
+            # P2.2 step 1 — record the NBBO spread at decision time.
+            # Telemetry only: nothing reads it yet; step 2 (marketable
+            # limits / spread-aware sizing) is operator-timed.
+            spread_at_decision = None
+            try:
+                from market_data import get_nbbo_spread_bps
+                _nbbo = get_nbbo_spread_bps(symbol)
+                spread_at_decision = _nbbo["spread_bps"] if _nbbo else None
+            except Exception as _sp_exc:
+                logger.debug(
+                    "NBBO spread capture failed for %s on BUY "
+                    "(non-fatal — journal still writes): %s: %s",
+                    symbol, type(_sp_exc).__name__, _sp_exc,
+                )
             log_trade(
                 symbol=symbol,
                 side="buy",
@@ -1909,6 +1923,7 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                 decision_price=price,
                 predicted_slippage_bps=predicted_slip,
                 adv_at_decision=adv_at_decision,
+                spread_bps_at_decision=spread_at_decision,
                 db_path=db_path,
             )
             # Stamp the bracket child IDs onto the just-written entry
@@ -2371,6 +2386,20 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                     result["take_profit_pct"] = short_tp
 
                     if log:
+                        # P2.2 step 1 — NBBO spread telemetry at the
+                        # short-entry decision (see buy path).
+                        _short_spread = None
+                        try:
+                            from market_data import get_nbbo_spread_bps
+                            _nbbo = get_nbbo_spread_bps(symbol)
+                            _short_spread = (
+                                _nbbo["spread_bps"] if _nbbo else None)
+                        except Exception as _sp_exc:
+                            logger.debug(
+                                "NBBO spread capture failed for %s on "
+                                "SHORT: %s: %s",
+                                symbol, type(_sp_exc).__name__, _sp_exc,
+                            )
                         log_trade(
                             symbol=symbol,
                             side="short",
@@ -2385,6 +2414,7 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                             stop_loss=stop_price,
                             take_profit=target_price,
                             decision_price=price,
+                            spread_bps_at_decision=_short_spread,
                             db_path=db_path,
                         )
                         # Stamp bracket child IDs onto the entry row

@@ -871,6 +871,13 @@ def _migrate_all_columns(conn):
             # (qty * price / adv_dollars) instead of the coarse
             # `assumed_adv_dollars=$50M` default.
             ("adv_at_decision", "REAL"),
+            # P2.2 step 1 (2026-07-26) — NBBO spread (bps of mid) at
+            # decision time. Pure telemetry: the equity path never
+            # read the quote before, so execution realism (marketable
+            # limits, spread-aware sizing — step 2, operator-timed)
+            # had no data. NULL when no valid two-sided quote was
+            # available at decision.
+            ("spread_bps_at_decision", "REAL"),
             # Phase 5e (2026-05-12) — generic data-quality marker.
             # NULL on normal trades. Set to a tag string for rows
             # excluded from analytics aggregates due to a known
@@ -1287,7 +1294,7 @@ def log_trade(symbol, side, qty, price=None, order_id=None, signal_type=None,
               decision_price=None, fill_price=None, slippage_pct=None,
               occ_symbol=None, option_strategy=None, expiry=None, strike=None,
               predicted_slippage_bps=None, adv_at_decision=None,
-              spread_max_loss=None,
+              spread_max_loss=None, spread_bps_at_decision=None,
               db_path=None):
     """Log a trade execution to the journal.
 
@@ -1371,6 +1378,11 @@ def log_trade(symbol, side, qty, price=None, order_id=None, signal_type=None,
                 if "spread_max_loss" in _have:
                     cols.append("spread_max_loss")
                     vals.append(spread_max_loss)
+                # P2.2 step 1 — migrated column, same include-if-present
+                # treatment as spread_max_loss.
+                if "spread_bps_at_decision" in _have:
+                    cols.append("spread_bps_at_decision")
+                    vals.append(spread_bps_at_decision)
                 _ph = ", ".join(["?"] * len(vals))
                 cursor = conn.execute(
                     f"INSERT INTO trades ({', '.join(cols)}) VALUES ({_ph})",

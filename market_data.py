@@ -600,10 +600,41 @@ def _guess_sector(symbol):
         return "unclassified"  # honest unknown — never counted as tech
 
 
+def get_nbbo_spread_bps(symbol):
+    """Latest NBBO for an equity symbol: {bid, ask, spread_bps} or
+    None when no valid two-sided quote is available.
+
+    P2.2 step 1 (2026-07-26) — the equity path never read the NBBO
+    (get_snapshot faked bid/ask as the last trade price). This is
+    the telemetry primitive: spread recorded at decision time, no
+    execution behavior change.
+    """
+    if "/" in symbol:
+        return None
+    client = _get_alpaca_data_client()
+    if client is None:
+        return None
+    try:
+        q = client.get_latest_quote(symbol)
+        bid = float(getattr(q, "bidprice", 0) or 0)
+        ask = float(getattr(q, "askprice", 0) or 0)
+    except (AttributeError, ValueError, TypeError, OSError,
+            ConnectionError, TimeoutError) as _qe:
+        logger.debug("NBBO fetch failed for %s: %s: %s",
+                     symbol, type(_qe).__name__, _qe)
+        return None
+    if bid <= 0 or ask <= 0 or ask < bid:
+        # One-sided / crossed / empty quote — no honest spread.
+        return None
+    mid = (bid + ask) / 2
+    return {"bid": bid, "ask": ask,
+            "spread_bps": round((ask - bid) / mid * 10000, 2)}
+
+
 def get_snapshot(symbol, api=None):
     """Get the latest quote/trade snapshot for a symbol.
 
-    Primary: Alpaca (latest trade + recent bars).
+    Primary: Alpaca (latest trade + latest NBBO + recent bars).
     Fallback: yfinance (crypto or if Alpaca fails).
     """
     is_crypto = "/" in symbol
@@ -618,10 +649,15 @@ def get_snapshot(symbol, api=None):
                 latest_price = float(trade.price) if trade else 0.0
                 prev_close = float(bars["close"].iloc[-2]) if bars is not None and len(bars) >= 2 else latest_price
                 daily_volume = int(bars["volume"].iloc[-1]) if bars is not None and not bars.empty else 0
+                # P2.2 step 1 — real NBBO instead of aliasing the
+                # trade price into bid/ask. Falls back to the trade
+                # price when no valid two-sided quote exists.
+                nbbo = get_nbbo_spread_bps(symbol)
                 return {
                     "latest_trade_price": latest_price,
-                    "latest_bid": latest_price,
-                    "latest_ask": latest_price,
+                    "latest_bid": nbbo["bid"] if nbbo else latest_price,
+                    "latest_ask": nbbo["ask"] if nbbo else latest_price,
+                    "spread_bps": nbbo["spread_bps"] if nbbo else None,
                     "daily_bar_close": prev_close,
                     "daily_bar_volume": daily_volume,
                 }
@@ -652,6 +688,7 @@ def get_snapshot(symbol, api=None):
             "latest_trade_price": latest_price,
             "latest_bid": latest_price,
             "latest_ask": latest_price,
+            "spread_bps": None,
             "daily_bar_close": prev_close,
             "daily_bar_volume": daily_volume,
         }
@@ -660,6 +697,7 @@ def get_snapshot(symbol, api=None):
             "latest_trade_price": 0.0,
             "latest_bid": 0.0,
             "latest_ask": 0.0,
+            "spread_bps": None,
             "daily_bar_close": 0.0,
             "daily_bar_volume": 0,
         }
