@@ -56,9 +56,21 @@ DESIGNED AI inputs; [exec] = execution change, operator times it.
       extraction; prompt shows pct + week. Live: AAPL wk 2026-06-29
       45.7M sh / 30 venues / 17.8%; 752 stale cache rows purged.
       Pinned: test_dark_pool_fresh_2026_07_26.py (10).
-- [ ] P1.3 [none] Slippage calibrator queries status='filled' which the
-      journal never writes → K frozen at 12.0 default forever
-      (predicted ~12.5bps constant vs realized ±850bps).
+- [x] P1.3 [none] Slippage calibrator — RESOLVED 2026-07-26. The
+      journal never writes status='filled' (real lifecycle:
+      pending_* → open → closed/canceled/expired), so the calibrator
+      matched zero rows on every profile and K stayed at the 12.0
+      default. Predicate now `status IN ('open','closed')` (the only
+      statuses that ever carry fill_price); 'cover' side signed as a
+      buy in the sample loop; the SAME dead predicate killed three
+      views.py analytics (two MC round-trip joins → 'closed' legs;
+      predicted-vs-realized series → real-fill whitelist). Live:
+      p212 fits 242 samples (230 real-ADV) + 200-sample bootstrap
+      bucket. Honest note for P2.1: the interceptless sqrt fit
+      absorbs decision-to-fill drift, so fitted K rides the 200
+      clamp on paper fills — bootstrap residuals carry the real
+      noise. Pinned: test_slippage_calibrator_2026_07_26.py
+      (+ repo-wide status='filled' predicate ban).
 - [ ] P1.4 [inputs] wide_spread_caution + slippage_high_caution parse
       '%' from a string that says 'bps' — both dead since the format
       change.

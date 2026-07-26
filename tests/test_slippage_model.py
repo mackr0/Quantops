@@ -40,11 +40,16 @@ def tmp_db_with_trades():
         else:
             side = "sell"
             fp = dp * (1 - bps / 10000)
+        # Real journal lifecycle statuses: filled rows are 'open'
+        # (still held) or 'closed' (exited) — 'filled' is never
+        # written, and seeding it here is how the dead calibrator
+        # predicate (P1.3) hid from this suite for months.
+        status = "open" if i % 10 == 0 else "closed"
         conn.execute(
             "INSERT INTO trades (symbol, qty, side, status, price, "
             "decision_price, fill_price, slippage_pct) "
-            "VALUES (?, ?, ?, 'filled', ?, ?, ?, ?)",
-            (f"SYM{i % 5}", qty, side, dp, dp, fp,
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (f"SYM{i % 5}", qty, side, status, dp, dp, fp,
              (fp - dp) / dp * 100),
         )
     conn.commit()

@@ -167,11 +167,15 @@ def calibrate_from_history(
             # uses real participation rate (qty / adv_shares) instead of the
             # coarse $50M ADV proxy. Legacy rows pre-dating the column fall
             # back to that proxy in the per-row branch below.
+            # Filled rows live as status 'open' (still held) or
+            # 'closed' (exited) — the journal never writes 'filled'.
+            # canceled / expired / pending_* rows never carry
+            # fill_price, so this whitelist matches every real fill.
             rows = conn.execute(
                 "SELECT symbol, qty, decision_price, fill_price, "
                 "side, adv_at_decision FROM trades "
                 "WHERE decision_price IS NOT NULL AND fill_price IS NOT NULL "
-                "AND decision_price > 0 AND status = 'filled'"
+                "AND decision_price > 0 AND status IN ('open', 'closed')"
             ).fetchall()
     except Exception as exc:
         logger.debug("calibrate_from_history: query failed: %s", exc)
@@ -190,8 +194,9 @@ def calibrate_from_history(
                 continue
             # Slippage in bps in the ADVERSE direction. For a buy,
             # adverse = paid more than decision; for a sell, adverse =
-            # received less. Always express as positive bps.
-            if side in ("buy", "buy_to_open", "buy_to_close"):
+            # received less. Always express as positive bps. 'cover'
+            # (buy-to-close a short) pays the ask like any buy.
+            if side in ("buy", "buy_to_open", "buy_to_close", "cover"):
                 bps = (fp - dp) / dp * 10000
             else:
                 bps = (dp - fp) / dp * 10000

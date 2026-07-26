@@ -5200,7 +5200,7 @@ def api_mc_backtest(profile_id):
                     WHERE t1.side='buy' AND t2.side='sell'
                       AND t1.fill_price IS NOT NULL
                       AND t2.fill_price IS NOT NULL
-                      AND t1.status='filled' AND t2.status='filled'
+                      AND t1.status='closed' AND t2.status='closed'
                       AND t2.timestamp >= datetime('now', '-{lookback_days} days')
                     ORDER BY t2.timestamp DESC
                     LIMIT 200
@@ -5473,7 +5473,7 @@ def api_mc_backtest_by_strategy(profile_id):
                 JOIN trades t2 ON t2.symbol = t1.symbol AND t2.id > t1.id
                 WHERE t1.side='buy' AND t2.side='sell'
                   AND t1.fill_price IS NOT NULL AND t2.fill_price IS NOT NULL
-                  AND t1.status='filled' AND t2.status='filled'
+                  AND t1.status='closed' AND t2.status='closed'
                   AND t2.timestamp >= datetime('now', '-{lookback_days} days')
                 ORDER BY t2.timestamp DESC
                 LIMIT 500"""
@@ -5553,7 +5553,7 @@ def api_slippage_history(profile_id):
                 WHERE predicted_slippage_bps IS NOT NULL
                   AND fill_price IS NOT NULL
                   AND decision_price IS NOT NULL
-                  AND status='filled'
+                  AND status IN ('open', 'closed')
                 ORDER BY timestamp DESC
                 LIMIT 200"""
             ).fetchall()
