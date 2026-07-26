@@ -466,30 +466,39 @@ def classify_prediction_type(signal, held_qty=0.0):
     return "directional_long"        # HOLD / unknown — neutral
 
 
-def _estimate_round_trip_cost_pct(prediction, db_path):
-    """Estimate the % cost (slippage) of a round-trip trade matching
-    this prediction. Used to compute actual_return_pct_net (#186
-    Phase A, 2026-05-20).
+# P2.1 — short-sale borrow accrual. Paper fills don't charge borrow,
+# but real shorts pay it every day held; netting it keeps the tuner /
+# meta optimizing real edge. General-collateral average — hard-to-
+# borrow names cost more (honest under-estimate; refine with per-
+# symbol borrow data if a source lands).
+BORROW_RATE_ANNUAL_PCT = 0.30
+
+
+def _estimate_round_trip_cost_pct(prediction, db_path, days_held=0,
+                                   exit_window_days=None):
+    """Realized % cost (slippage + borrow) of the round-trip trade
+    matching this prediction. Used to compute actual_return_pct_net
+    (#186 Phase A; P2.1 2026-07-26 — realized both-leg netting).
 
     Look-up strategy:
-      1. Match the prediction to an entry trade row by (symbol +
+      1. Match the prediction to an ENTRY trade row by (symbol +
          predicted side + timestamp within +/- 10 min). Take its
-         slippage_pct.
-      2. Round-trip estimate = 2 × entry_slippage_pct (assumes
-         symmetric exit slippage — coarse but a defensible first
-         cut; refine when we instrument exit-side fill timing).
+         realized slippage_pct (decision vs fill, stored at fill).
+      2. Find the EXIT leg (opposite side, after the entry, within
+         the holding window) and use ITS realized slippage_pct.
+         Only when no exit row exists (still holding / expired /
+         legacy) fall back to the symmetric 2 × entry estimate.
+      3. SHORT predictions accrue borrow at BORROW_RATE_ANNUAL_PCT
+         over days_held.
+
+    P2.1 also fixed: SHORT/STRONG_SHORT entries are journaled with
+    side='short' (exits with 'cover') — the old 'everything not BUY
+    is sell' mapping matched NO short entry ever, so every short
+    prediction netted zero cost.
 
     Returns the % cost (always non-negative for sane data). Returns
-    0.0 when no matching trade is found (so net == gross — better
-    than NULL-ing the column for legacy / unmatched rows).
-
-    Honest caveat: this is an APPROXIMATION. For predictions that
-    never traded (AI said BUY but pre-filter / blacklist / cash
-    blocked the entry), cost is genuinely 0 — the prediction is
-    purely a directional bet on paper. For trades that did execute,
-    the 2× entry-slippage assumption may over- or under-estimate
-    depending on the actual exit market state. Better than nothing;
-    iterates later as data on exit slippage accumulates.
+    0.0 when no matching trade is found (so net == gross — an
+    untraded prediction genuinely paid nothing).
     """
     if not db_path:
         return 0.0
@@ -500,7 +509,15 @@ def _estimate_round_trip_cost_pct(prediction, db_path):
         # First cut: zero out, refine later with option-specific
         # commission ($0.65/contract × contracts) and bid-ask spread.
         return 0.0
-    side = "buy" if signal in ("BUY", "STRONG_BUY") else "sell"
+    if signal in ("BUY", "STRONG_BUY"):
+        side, exit_side = "buy", "sell"
+        is_short = False
+    elif signal in ("SHORT", "STRONG_SHORT"):
+        side, exit_side = "short", "cover"
+        is_short = True
+    else:
+        side, exit_side = "sell", "buy"
+        is_short = False
     # Narrow exception scope: only sqlite3.Error caught here. A bad
     # `prediction` dict (missing keys) is a caller bug and should
     # raise loudly; only DB-level failures fall through to the
@@ -510,7 +527,7 @@ def _estimate_round_trip_cost_pct(prediction, db_path):
     with closing(_get_conn(db_path)) as conn:
         try:
             row = conn.execute(
-                "SELECT slippage_pct FROM trades "
+                "SELECT timestamp, slippage_pct FROM trades "
                 "WHERE symbol = ? AND side = ? "
                 "  AND slippage_pct IS NOT NULL "
                 "  AND ABS(julianday(timestamp) - julianday(?)) <= (10.0 / (24*60)) "
@@ -519,6 +536,24 @@ def _estimate_round_trip_cost_pct(prediction, db_path):
                 (prediction["symbol"], side, prediction["timestamp"],
                  prediction["timestamp"]),
             ).fetchone()
+            exit_row = None
+            if row is not None:
+                # The closing leg: opposite side, after the entry,
+                # within the holding window (+1d of grace for the
+                # resolve lag).
+                _window = (float(exit_window_days)
+                           if exit_window_days is not None
+                           else max(float(days_held or 0), 0) + 1.0)
+                exit_row = conn.execute(
+                    "SELECT slippage_pct FROM trades "
+                    "WHERE symbol = ? AND side = ? "
+                    "  AND slippage_pct IS NOT NULL "
+                    "  AND timestamp > ? "
+                    "  AND julianday(timestamp) - julianday(?) <= ? "
+                    "ORDER BY timestamp ASC LIMIT 1",
+                    (prediction["symbol"], exit_side, row[0], row[0],
+                     _window),
+                ).fetchone()
         except sqlite3.Error as exc:
             logger.warning(
                 "round-trip-cost lookup DB failure for %s/%s: %s: %s — "
@@ -526,12 +561,19 @@ def _estimate_round_trip_cost_pct(prediction, db_path):
                 prediction["symbol"], signal, type(exc).__name__, exc,
             )
             return 0.0
-    if not row or row[0] is None:
+    if not row or row[1] is None:
         return 0.0
-    entry_slip_pct = abs(float(row[0]))
-    # 2x to model symmetric round-trip cost. Exit slippage is not yet
-    # captured separately at resolve time for stocks.
-    return entry_slip_pct * 2.0
+    entry_slip_pct = abs(float(row[1]))
+    if exit_row is not None and exit_row[0] is not None:
+        # Realized both-leg cost (P2.1) — no symmetry assumption.
+        cost = entry_slip_pct + abs(float(exit_row[0]))
+    else:
+        # No exit leg journaled (still holding / expired / legacy):
+        # symmetric estimate remains the honest fallback.
+        cost = entry_slip_pct * 2.0
+    if is_short and days_held:
+        cost += BORROW_RATE_ANNUAL_PCT / 365.0 * float(days_held)
+    return cost
 
 
 # ---------------------------------------------------------------------------
@@ -628,6 +670,9 @@ def _measure_one_prediction(conn, pred, bars, db_path, now_iso):
     if entry_idx is None:
         return 0
 
+    # P2.1 — the widest horizon bounds the exit-leg search; borrow
+    # accrual stays out of the horizon labels (days_held=0) because
+    # one cost is applied across all five horizons.
     cost_pct = _estimate_round_trip_cost_pct(
         {
             "symbol": pred["symbol"],
@@ -635,6 +680,7 @@ def _measure_one_prediction(conn, pred, bars, db_path, now_iso):
             "timestamp": pred["timestamp"],
         },
         db_path,
+        exit_window_days=max(HORIZON_DAYS) + 1,
     )
 
     written = 0
@@ -1286,7 +1332,8 @@ def resolve_predictions(api=None, db_path=None, profile_id=None):
             # price prediction. For directional-LONG winners, costs
             # eat into the gain; for losers, costs deepen the loss
             # (cost is added to magnitude regardless of direction).
-            cost_pct = _estimate_round_trip_cost_pct(prediction_dict, db_path)
+            cost_pct = _estimate_round_trip_cost_pct(
+                prediction_dict, db_path, days_held=days_held)
             if return_pct >= 0:
                 net_pct = return_pct - cost_pct
             else:

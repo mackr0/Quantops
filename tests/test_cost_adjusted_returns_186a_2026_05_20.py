@@ -105,11 +105,15 @@ class TestRoundTripCostEstimator:
         )
 
     def test_returns_double_entry_slippage_for_short(self, tmp_path):
-        """A SHORT prediction matched to a sell entry with 0.20%
-        slippage should produce a 0.40% round-trip cost."""
+        """A SHORT prediction matched to its entry with 0.20%
+        slippage should produce a 0.40% round-trip cost (no exit
+        row seeded → symmetric fallback). P2.1: short entries are
+        journaled with side='short' — this fixture's old side='sell'
+        mirrored the very mapping bug that made every short
+        prediction net zero cost."""
         from ai_tracker import _estimate_round_trip_cost_pct
         db, ts = self._make_db_with_trade(
-            tmp_path, symbol="MSFT", side="sell", slippage_pct=0.20,
+            tmp_path, symbol="MSFT", side="short", slippage_pct=0.20,
             ts_offset_min=1,
         )
         prediction = {

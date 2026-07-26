@@ -147,11 +147,21 @@ DESIGNED AI inputs; [exec] = execution change, operator times it.
       test_structurally_zero_sources_2026_07_26.py (14).
 
 **Phase 2 — cost truth & execution:**
-- [ ] P2.1 [none — labels only] actual_return_pct_net nets a CONSTANT
-      2×12.5bps estimate; use per-row realized entry/exit slippage
-      (decision vs fill, already stored) + short borrow accrual so the
-      tuner/meta optimize NET edge. (Not commissions — Alpaca is
-      commission-free; the gap is slippage/spread realism.)
+- [x] P2.1 [none — labels only] Realized-slippage labels — RESOLVED
+      2026-07-26. The "constant 2×12.5bps" claim was stale (per-row
+      realized ENTRY slippage landed with #186/c240b8c); the real
+      gaps: (1) exit legs assumed symmetric 2×entry even with the
+      closing trade's realized slippage_pct in the journal — now
+      the exit leg's own number is used (symmetric = no-exit-row
+      fallback only); (2) SHORT predictions matched NOTHING (short
+      entries journal as side='short'/'cover', the matcher mapped
+      every non-BUY to 'sell') — every short netted ZERO cost since
+      #186; (3) shorts now accrue BORROW_RATE_ANNUAL_PCT (0.30 GC)
+      over days_held. Multi-horizon writer bounds exit search at
+      max-horizon window. Resolved rows backfilled with honest
+      costs. Pinned: test_realized_slippage_labels_2026_07_26.py
+      (+ legacy short fixture fixed from side='sell' — it mirrored
+      the mapping bug).
 - [ ] P2.2 [exec — operator times rollout] Equity path never reads the
       NBBO though it's in the snapshot payload. Step 1: record spread
       at decision (telemetry, no behavior change). Step 2:
