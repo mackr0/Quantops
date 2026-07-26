@@ -71,9 +71,21 @@ DESIGNED AI inputs; [exec] = execution change, operator times it.
       clamp on paper fills — bootstrap residuals carry the real
       noise. Pinned: test_slippage_calibrator_2026_07_26.py
       (+ repo-wide status='filled' predicate ban).
-- [ ] P1.4 [inputs] wide_spread_caution + slippage_high_caution parse
-      '%' from a string that says 'bps' — both dead since the format
-      change.
+- [x] P1.4 [inputs] Execution-cost specialists — RESOLVED 2026-07-26.
+      wide_spread_caution + slippage_high_caution regexed '%' out of
+      a string that says 'bps' — zero fires since the format change.
+      Both now read the structured slippage_estimate dict
+      (total_bps; thresholds 15-30 / 30+ bps ≡ old 0.15%/0.30%)
+      with a bps-string parse fallback. Folded in:
+      multi_alt_data_silent was dead the other way — its len(v)>1
+      carrier heuristic counted every source as signal because all
+      readers return multi-key dicts even when empty
+      ({"is_cluster": false}, {"ats_volume": 0}) → never fired; now
+      per-source has-signal predicates on the live payload shapes
+      (patent_activity dropped — source disabled upstream). All
+      three fixture rows re-seeded to real payload shapes (the old
+      fixtures mirrored the bugs). Pinned:
+      test_execution_cost_specialists_2026_07_26.py.
 - [ ] P1.5 [none] wheel_symbols stored as '["[]"]' on 10 profiles →
       wheel iterates a ticker named []. Fix values + views.py writer.
 - [ ] P1.6 [exec: p216 only] Meta-pregate has no AUC floor — p216's
