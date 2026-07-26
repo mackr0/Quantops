@@ -86,8 +86,18 @@ DESIGNED AI inputs; [exec] = execution change, operator times it.
       three fixture rows re-seeded to real payload shapes (the old
       fixtures mirrored the bugs). Pinned:
       test_execution_cost_specialists_2026_07_26.py.
-- [ ] P1.5 [none] wheel_symbols stored as '["[]"]' on 10 profiles →
-      wheel iterates a ticker named []. Fix values + views.py writer.
+- [x] P1.5 [none] Wheel config corruption — RESOLVED 2026-07-26.
+      Mechanism: DB stores JSON text; the settings template only
+      joins LIST values; custom_watchlist is parsed to a list by
+      every profile-dict builder but wheel_symbols never was — so
+      the textarea displayed the raw text '[]' and the next save
+      split it on commas into a "ticker". Fixed at the root: all
+      three profile-dict builders parse wheel_symbols
+      (custom_watchlist treatment); writer + parser share a
+      ticker-shape filter (junk logged + dropped, never traded);
+      10 corrupt rows repaired live ('["[]"]' → '[]'). Pinned:
+      test_wheel_symbols_integrity_2026_07_26.py (incl. the exact
+      corruption round-trip now converging).
 - [ ] P1.6 [exec: p216 only] Meta-pregate has no AUC floor — p216's
       AUC-0.397 (anti-predictive) model still trims its candidates.
 - [ ] P1.7 [none] Meta retrain isn't gated on enable_meta_model —
@@ -97,6 +107,18 @@ DESIGNED AI inputs; [exec] = execution change, operator times it.
       insider_track_records) + constant meta features (reddit_*,
       _cpi_yoy, dark_pool_pct) + 999-sentinels fed as real values.
       Fix or honest-disable; sentinels → missing.
+      ADDED 2026-07-26 (found during P1.4 live verify): NEITHER
+      cache layer refuses to cache empty payloads — a transient
+      blip (rate limit / DB lock / circuit breaker, e.g. Google
+      Trends 429 → {}) poisons a (symbol, source) for the full TTL
+      (up to 24h-7d), and the two layers re-seed each other. AAPL
+      served {} for ~20 sources through the bundle while direct
+      reads were fine. One-time purge done (2,414 + 139 empty
+      rows); the FIX (negative-cache short-TTL or refuse-empty in
+      alt_data_cache.cache_set + ad._set_cached) belongs here.
+      Also fold in: trade_pipeline reads alt.get("congressional")
+      (not a bundle key) → congress_direction constant "neutral";
+      multi_alt_data_silent len>1 note RESOLVED with P1.4.
 
 **Phase 2 — cost truth & execution:**
 - [ ] P2.1 [none — labels only] actual_return_pct_net nets a CONSTANT

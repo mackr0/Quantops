@@ -8,6 +8,7 @@ single database file.
 import sqlite3
 import json
 import logging
+import re
 from contextlib import closing
 from datetime import datetime, date
 from typing import Optional, Dict, List, Any
@@ -1333,6 +1334,11 @@ def get_trading_profile(profile_id: int) -> Optional[Dict[str, Any]]:
         d["custom_watchlist"] = json.loads(d.get("custom_watchlist", "[]"))
     except (json.JSONDecodeError, TypeError):
         d["custom_watchlist"] = []
+    # P1.5 — wheel_symbols must be a parsed list in the profile dict,
+    # exactly like custom_watchlist. Without this the settings page
+    # rendered the raw JSON text '[]' into the textarea and a save
+    # round-tripped it as a "ticker" ('["[]"]' on 10 profiles).
+    d["wheel_symbols"] = _parse_wheel_symbols(d.get("wheel_symbols"))
     # Human-readable label: post-2026-05-19 the displayed concept is
     # asset classes (Stocks / Options / Crypto), not market_type.
     d["market_type_name"] = asset_classes_label(d)
@@ -1353,6 +1359,9 @@ def get_user_profiles(user_id: int) -> List[Dict[str, Any]]:
             d["custom_watchlist"] = json.loads(d.get("custom_watchlist", "[]"))
         except (json.JSONDecodeError, TypeError):
             d["custom_watchlist"] = []
+        # P1.5 — same parsed-list guarantee as custom_watchlist (see
+        # get_trading_profile).
+        d["wheel_symbols"] = _parse_wheel_symbols(d.get("wheel_symbols"))
         d["market_type_name"] = asset_classes_label(d)
         results.append(d)
     return results
@@ -1385,6 +1394,9 @@ def get_active_profiles(user_id: Optional[int] = None) -> List[Dict[str, Any]]:
             d["custom_watchlist"] = json.loads(d.get("custom_watchlist", "[]"))
         except (json.JSONDecodeError, TypeError):
             d["custom_watchlist"] = []
+        # P1.5 — same parsed-list guarantee as custom_watchlist (see
+        # get_trading_profile).
+        d["wheel_symbols"] = _parse_wheel_symbols(d.get("wheel_symbols"))
         d["market_type_name"] = asset_classes_label(d)
         results.append(d)
     return results
@@ -1632,16 +1644,37 @@ def delete_trading_profile(profile_id: int) -> None:
     logger.info("Deleted trading profile #%d", profile_id)
 
 
+# P1.5 — a wheel symbol must LOOK like a ticker. The settings page
+# once round-tripped the raw JSON text '[]' into a stored "ticker"
+# ('["[]"]' on 10 profiles) and the wheel iterated a symbol named
+# []. Shape: letters/digits/dot/hyphen, leading letter (BRK.B, BF-B).
+_TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
+
+
+def _valid_wheel_tickers(items):
+    kept = []
+    for s in items:
+        tok = str(s).strip().upper()
+        if _TICKER_RE.match(tok):
+            kept.append(tok)
+        elif tok:
+            logger.warning(
+                "wheel_symbols: dropping non-ticker token %r "
+                "(the '[]'-round-trip corruption class)", tok)
+    return kept
+
+
 def _parse_wheel_symbols(raw):
-    """JSON list or empty when missing/invalid."""
+    """JSON list or empty when missing/invalid; tokens that don't
+    look like tickers are dropped (with a warning), never traded."""
     if not raw:
         return []
     if isinstance(raw, list):
-        return [str(s).upper() for s in raw if s]
+        return _valid_wheel_tickers(raw)
     try:
         parsed = json.loads(raw)
         if isinstance(parsed, list):
-            return [str(s).upper() for s in parsed if s]
+            return _valid_wheel_tickers(parsed)
     except (json.JSONDecodeError, TypeError, ValueError) as _js_exc:
         # JSON list-of-symbols parse fallback; returns [] on
         # malformed input. Surface for follow-up.

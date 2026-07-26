@@ -1991,10 +1991,14 @@ def save_profile(profile_id):
     else:
         config_updates["custom_watchlist"] = []
 
-    # OPEN_ITEMS #4 — wheel symbols (comma-separated → JSON list)
+    # OPEN_ITEMS #4 — wheel symbols (comma-separated → JSON list).
+    # P1.5 — tokens are validated through the same ticker filter the
+    # reader uses, so junk (like the raw JSON text '[]' the template
+    # once round-tripped) can never persist as a "symbol".
+    from models import _valid_wheel_tickers
     wheel_raw = form.get("wheel_symbols", "").strip()
     if wheel_raw:
-        wheel_syms = [s.strip().upper() for s in wheel_raw.split(",") if s.strip()]
+        wheel_syms = _valid_wheel_tickers(wheel_raw.split(","))
         config_updates["wheel_symbols"] = json.dumps(wheel_syms)
     else:
         config_updates["wheel_symbols"] = "[]"
