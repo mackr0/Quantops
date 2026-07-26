@@ -15,6 +15,77 @@ When something here moves to ✅, update the entry with the commit + date. When 
 
 ---
 
+## 0. THE CONNECTIONS FIX LIST (2026-07-26 exploration → operator-approved work queue)
+
+The 2026-07-26 docs+code exploration found the system's documented
+capability materially exceeds its operating capability — mostly broken
+CONNECTIONS, not missing components. Operator directive: "make a plan
+to fix it all and check off the list one thing at a time." Each item
+ships through the full gate (suite green → commit → push →
+./droplet-sync.sh → live verify). Behavior-impact tags protect the
+running cohort: [none] = no trading change; [inputs] = restores
+DESIGNED AI inputs; [exec] = execution change, operator times it.
+
+**Phase 1 — silently broken (all ⏳ free):**
+- [ ] P1.1 [inputs] Alt-data reconnect: readers return empties against
+      healthy local DBs (13F 965k rows, StockTwits 65k, biotech 50k).
+      ALTDATA_BASE_PATH unset; ticker↔CIK join broken.
+- [ ] P1.2 [inputs] Dark pool: 86% of payloads are 2023-11-06 data
+      served as current; extraction reads nonexistent key
+      `ats_pct_of_total` (trade_pipeline.py:3153).
+- [ ] P1.3 [none] Slippage calibrator queries status='filled' which the
+      journal never writes → K frozen at 12.0 default forever
+      (predicted ~12.5bps constant vs realized ±850bps).
+- [ ] P1.4 [inputs] wide_spread_caution + slippage_high_caution parse
+      '%' from a string that says 'bps' — both dead since the format
+      change.
+- [ ] P1.5 [none] wheel_symbols stored as '["[]"]' on 10 profiles →
+      wheel iterates a ticker named []. Fix values + views.py writer.
+- [ ] P1.6 [exec: p216 only] Meta-pregate has no AUC floor — p216's
+      AUC-0.397 (anti-predictive) model still trims its candidates.
+- [ ] P1.7 [none] Meta retrain isn't gated on enable_meta_model —
+      p212 (NoMetaModel ablation) trains a model it never uses.
+- [ ] P1.8 [inputs] Structurally-zero sources (finra_short_vol,
+      activist_13dg, star_manager, risk_factor_diff,
+      insider_track_records) + constant meta features (reddit_*,
+      _cpi_yoy, dark_pool_pct) + 999-sentinels fed as real values.
+      Fix or honest-disable; sentinels → missing.
+
+**Phase 2 — cost truth & execution:**
+- [ ] P2.1 [none — labels only] actual_return_pct_net nets a CONSTANT
+      2×12.5bps estimate; use per-row realized entry/exit slippage
+      (decision vs fill, already stored) + short borrow accrual so the
+      tuner/meta optimize NET edge. (Not commissions — Alpaca is
+      commission-free; the gap is slippage/spread realism.)
+- [ ] P2.2 [exec — operator times rollout] Equity path never reads the
+      NBBO though it's in the snapshot payload. Step 1: record spread
+      at decision (telemetry, no behavior change). Step 2:
+      marketable-limit orders + never-market multi-leg options.
+- [ ] P2.3 [none] Backtester slippage: drop hardcoded adv=1M /
+      constant 12.67bps.
+
+**Phase 3 — breadth:**
+- [ ] P3.1 [proposal → operator decision] The 93% HOLD wall: funnel
+      telemetry → evidence-driven threshold proposal. IR = skill ×
+      √breadth; calibration proves the skill, the funnel starves the
+      breadth (1-2 candidates from ~8,000).
+
+**Phase 4 — structural:**
+- [ ] P4.1 [none] portfolio_risk_snapshots has NEVER written a row
+      (713-line factor model, flag on for all 13) — fix "insufficient
+      factor data" so it at least reports.
+- [ ] P4.2 [design decision] Binding vol-aware sizing (Kelly/parity are
+      computed, rendered as prompt English, and ignored by the
+      fixed-fraction formula).
+- [ ] P4.3 [gated on corpus ~2 months at current 21k/2.5wk cadence]
+      Fine-tune training_runner (archive empty, no trainer, registry
+      tables never created, use_finetuned_ai column doesn't exist).
+- [ ] P4.4 [docs] Truth pass: "$0.27/day" → real spend (~$2.6
+      operational + shadow, <$10/day); "50K rows after 12 months" →
+      ~2 months at current cadence; stale reset framing.
+
+---
+
 ## 1. COMPETITIVE_GAP_PLAN.md
 
 | Item | Status | Notes |
