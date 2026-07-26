@@ -113,8 +113,13 @@ WEIGHTABLE_SIGNALS: Tuple[Tuple[str, str, "callable"], ...] = (
         lambda f: abs(float(f.get("wikipedia_pageviews_z", 0) or 0)) >= 1.0),
     # Item 3a — App Store ranking (consumer-app tickers only).
     # Materially present when in top-100 grossing or top-50 free.
+    # P1.8: payloads now carry charting SCOREs (201-rank, 0 = not
+    # charting); the legacy rank keys cover pre-P1.8 stored rows.
+    # top-100 grossing ⇔ score >= 101; top-50 free ⇔ score >= 151.
     ("app_store_ranking",         "App Store Ranking",
-        lambda f: ((f.get("app_store_grossing_rank") or 999) <= 100
+        lambda f: ((f.get("app_store_grossing_score") or 0) >= 101
+                    or (f.get("app_store_free_score") or 0) >= 151
+                    or (f.get("app_store_grossing_rank") or 999) <= 100
                     or (f.get("app_store_free_rank") or 999) <= 50)),
     ("rel_strength_vs_sector",   "Relative Strength vs Sector",
         lambda f: abs(float(f.get("rel_strength_vs_sector", 0) or 0)) >= 5),

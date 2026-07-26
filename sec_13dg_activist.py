@@ -140,23 +140,35 @@ def _extract_filer_and_role(title: str) -> Dict[str, str]:
     return {"filer_name": title, "filer_cik": ""}
 
 
-# Pattern for the subject-company link on a 13D filing index page.
-# EDGAR renders the subject as another "Filer" entry below the
-# primary filer (the activist). The subject's CIK is the second
-# CIK on the index page.
-_SUBJECT_CIK_RE = re.compile(
-    r"CIK=(\d{10}).*?</a>\s*\(Subject", re.DOTALL | re.IGNORECASE
-)
-_SUBJECT_NAME_RE = re.compile(
-    r">\s*([A-Z0-9][^<]+?)\s*</a>\s*CIK=\d{10}\s*\(Subject",
+# P1.8 (2026-07-26): the filing-index page renders the subject block
+# as `<span class="companyName">NAME (Subject) ... CIK ...
+# <a href="...CIK=0001326200...">` — the NAME and "(Subject)" come
+# BEFORE the CIK link. The original regexes expected CIK-then-
+# "(Subject)" (inverted order), never matched a single real page,
+# and every stored row had empty subject fields — the reader matches
+# on subject_ticker, so the whole source was structurally zero.
+_SUBJECT_BLOCK_RE = re.compile(
+    r'companyName">\s*(.*?)\s*\(Subject\).*?CIK=(\d{1,10})',
     re.DOTALL | re.IGNORECASE,
 )
+
+# Subject CIK fallback: the filing's archive path IS the subject's
+# CIK directory (/Archives/edgar/data/<cik>/...).
+_URL_CIK_RE = re.compile(r"/edgar/data/(\d+)/")
+
+# Role suffix on atom titles: 'SC 13D - NAME (0001326200) (Subject)'
+# vs '(Filer)' / '(Filed by)'. The feed emits one entry per role for
+# the same accession; whichever arrives first wins the INSERT OR
+# IGNORE, so both must stamp the subject correctly.
+_TITLE_ROLE_RE = re.compile(r"\((Subject|Filer|Filed by)\)\s*$",
+                             re.IGNORECASE)
 
 
 def _extract_subject_from_filing_page(filing_url: str) -> Dict[str, str]:
     """Fetch the EDGAR filing-index page and extract the subject
     company (the target of the activist position). Returns
     {subject_name, subject_cik} or empty strings on failure."""
+    import html as _html
     try:
         from sec_filings import _rate_limited_get
         raw = _rate_limited_get(filing_url)
@@ -169,11 +181,12 @@ def _extract_subject_from_filing_page(filing_url: str) -> Dict[str, str]:
     if not raw:
         return {"subject_name": "", "subject_cik": ""}
     text = raw.decode("utf-8", errors="replace")
-    cik_m = _SUBJECT_CIK_RE.search(text)
-    name_m = _SUBJECT_NAME_RE.search(text)
+    m = _SUBJECT_BLOCK_RE.search(text)
+    if not m:
+        return {"subject_name": "", "subject_cik": ""}
     return {
-        "subject_name": name_m.group(1).strip() if name_m else "",
-        "subject_cik": cik_m.group(1) if cik_m else "",
+        "subject_name": _html.unescape(m.group(1)).strip(),
+        "subject_cik": m.group(2).zfill(10),
     }
 
 
@@ -215,6 +228,23 @@ def scrape_recent_13dg_filings(max_per_form: int = 100) -> Dict[str, Any]:
                     subject = _extract_subject_from_filing_page(
                         entry["link"]
                     )
+                    # P1.8 — the archive path always carries the
+                    # subject's CIK; use it when the page parse fails.
+                    if not subject.get("subject_cik"):
+                        url_m = _URL_CIK_RE.search(entry["link"])
+                        if url_m:
+                            subject["subject_cik"] = url_m.group(1).zfill(10)
+                    # P1.8 — role-aware title: a '(Subject)' entry's
+                    # name/CIK ARE the subject company, not the filer
+                    # (this is how Genco ended up stored as a "filer"
+                    # with empty subject fields).
+                    role_m = _TITLE_ROLE_RE.search(entry["title"])
+                    if role_m and role_m.group(1).lower() == "subject":
+                        if not subject.get("subject_name"):
+                            subject["subject_name"] = filer["filer_name"]
+                        if not subject.get("subject_cik"):
+                            subject["subject_cik"] = filer["filer_cik"]
+                        filer = {"filer_name": "", "filer_cik": ""}
                     subject_ticker = reverse_cik.get(
                         subject.get("subject_cik", ""), ""
                     )

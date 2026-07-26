@@ -48,7 +48,11 @@ NUMERIC_FEATURES = [
     "score", "rsi", "volume_ratio", "atr", "adx", "stoch_rsi", "roc_10",
     "pct_from_52w_high", "mfi", "cmf", "squeeze", "pct_from_vwap",
     "nearest_fib_dist", "gap_pct", "rel_strength_vs_sector", "short_pct_float",
-    "put_call_ratio", "pe_trailing", "reddit_mentions", "reddit_sentiment",
+    "put_call_ratio", "pe_trailing",
+    # P1.8 — reddit_mentions/reddit_sentiment DROPPED: the Reddit
+    # source is credential-gated and unconfigured, so both were
+    # constant 0 on every prediction ever made — pure dilution.
+    # Re-add only if REDDIT_CLIENT_ID/SECRET are ever configured.
     "_market_signal_count",
     # New per-symbol features
     "finra_short_vol_ratio", "insider_cluster", "eps_revision_magnitude",
@@ -56,9 +60,12 @@ NUMERIC_FEATURES = [
     "_yield_spread_10y2y", "_cboe_skew", "_unemployment_rate", "_cpi_yoy",
     # Wave 2
     "dark_pool_pct", "earnings_surprise_streak",
-    # Item 3a — web-scraped attention signals
+    # Item 3a — web-scraped attention signals. P1.8: rank features
+    # (999 sentinel for unranked) replaced by charting scores
+    # (201-rank, honest 0 for not-charting — no sentinel value fed
+    # to the GBM as if it were a real rank).
     "google_trends_z", "wikipedia_pageviews_z",
-    "app_store_grossing_rank", "app_store_free_rank",
+    "app_store_grossing_score", "app_store_free_score",
 ]
 
 # Categorical features — one-hot encoded

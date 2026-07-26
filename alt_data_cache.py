@@ -81,6 +81,11 @@ def _ensure_cache_db() -> str:
 # Per-source TTL — single source of truth
 # ---------------------------------------------------------------------------
 
+# P1.8 — TTL cap for EMPTY payloads (see cache_set): transient
+# failures self-heal within the hour instead of poisoning a
+# (symbol, source) for the source's full TTL.
+NEGATIVE_CACHE_TTL_SECONDS = 3600
+
 SOURCE_TTL_SECONDS = {
     # Insider / FINRA / dark pool — daily reporting cadence
     "insider": 86_400,
@@ -206,6 +211,17 @@ def cache_set(symbol: str, source: str, payload: Dict[str, Any],
                 source,
             )
             return False
+    # P1.8 (2026-07-26) — NEGATIVE-CACHE empty payloads at a short
+    # TTL instead of the source's full one. A transient blip (rate
+    # limit, locked DB, circuit breaker) returning {} used to poison
+    # a (symbol, source) for up to 24h-7d — AAPL served {} for ~20
+    # sources through the bundle while direct reads were fine. One
+    # hour bounds refetch load on genuinely-empty sources while
+    # self-healing quickly. (Sources that MEAN "not applicable"
+    # return marker dicts like {"has_data": false}, not {} — those
+    # still cache at full TTL.)
+    if payload is not None and len(payload) == 0:
+        ttl_seconds = min(int(ttl_seconds), NEGATIVE_CACHE_TTL_SECONDS)
     try:
         payload_json = json.dumps(payload)
     except (TypeError, ValueError) as exc:

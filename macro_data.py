@@ -139,6 +139,37 @@ def _fred_fetch(series_id, limit=5):
     return values
 
 
+def _fred_fetch_with_dates(series_id, limit=5):
+    """Like _fred_fetch but returns [(date_iso, float), ...] newest
+    first, skipping FRED's "." not-yet-released markers. Date-aware
+    consumers (CPI YoY) need this to survive observation gaps."""
+    url = (
+        f"https://api.stlouisfed.org/fred/series/observations"
+        f"?series_id={series_id}&api_key={_FRED_API_KEY}"
+        f"&file_type=json&limit={limit}&sort_order=desc"
+    )
+    req = Request(url, headers={"User-Agent": _USER_AGENT})
+    with _http_lock:
+        resp = urlopen(req, timeout=15)
+        raw = resp.read()
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        logger.warning(
+            "FRED returned non-JSON for series_id=%s (len=%d); "
+            "treating as no observations",
+            series_id, len(raw or b""),
+        )
+        return []
+    pairs = []
+    for obs in data.get("observations", []):
+        try:
+            pairs.append((obs["date"], float(obs["value"])))
+        except (ValueError, KeyError):
+            pass
+    return pairs
+
+
 # ---------------------------------------------------------------------------
 # 1. Treasury Yield Curve
 # ---------------------------------------------------------------------------
@@ -357,11 +388,27 @@ def get_fred_macro() -> Dict[str, Any]:
                 type(_ur_exc).__name__, _ur_exc,
             )
 
-        # CPI (CPIAUCSL) — compute YoY from 13-month span
+        # CPI (CPIAUCSL) — compute YoY by DATE, not fixed index.
+        # P1.8: FRED marks not-yet-released observations as "." —
+        # one missing month made len(vals) 12 < 13 and cpi_yoy sat
+        # at 0 forever. Date-pairing survives gaps: latest value vs
+        # the observation closest to 12 months earlier.
         try:
-            vals = _fred_fetch("CPIAUCSL", limit=13)
-            if vals and len(vals) >= 13:
-                result["cpi_yoy"] = round((vals[0] / vals[12] - 1) * 100, 1)
+            pairs = _fred_fetch_with_dates("CPIAUCSL", limit=18)
+            if len(pairs) >= 2:
+                latest_date, latest_val = pairs[0]
+                from datetime import datetime as _dt, timedelta as _td
+                target = _dt.fromisoformat(latest_date) - _td(days=365)
+                prior_date, prior_val = min(
+                    pairs[1:],
+                    key=lambda p: abs(_dt.fromisoformat(p[0]) - target),
+                )
+                # Accept only a genuine ~1-year-ago observation
+                # (within 45 days of the target).
+                if (abs(_dt.fromisoformat(prior_date) - target)
+                        <= _td(days=45) and prior_val > 0):
+                    result["cpi_yoy"] = round(
+                        (latest_val / prior_val - 1) * 100, 1)
         except (URLError, json.JSONDecodeError, KeyError, ValueError,
                 TypeError, IndexError, ZeroDivisionError, OSError) as _cpi_exc:
             # CPI annotation; rest of macro dict still returned.

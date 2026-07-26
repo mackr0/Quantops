@@ -329,6 +329,10 @@ _DISPLAY_NAMES = {
     "app_store_ranking":         "App Store Ranking",
     "app_store_grossing_rank":   "App Store Grossing Rank",
     "app_store_free_rank":       "App Store Free Rank",
+    # P1.8 — rank features replaced by charting scores (201-rank,
+    # 0 = not charting); rank names kept for pre-P1.8 stored rows.
+    "app_store_grossing_score":  "App Store Grossing Score",
+    "app_store_free_score":      "App Store Free Score",
     "rising":                    "Rising",
     "falling":                   "Falling",
 

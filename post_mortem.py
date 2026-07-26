@@ -67,7 +67,10 @@ _SKIP_FEATURES = {
     # app-store ranks default 999 → 'high'; nearest_fib_dist default 99 →
     # 'high'; pct_from_52w_high is negative for nearly every name → 'low'),
     # so they seize the 4 dominant-pattern slots and crowd out real patterns.
+    # P1.8: score variants excluded for the same reason — 0 ("not
+    # charting") buckets identically on virtually every candidate.
     "days_to_earnings", "app_store_grossing_rank", "app_store_free_rank",
+    "app_store_grossing_score", "app_store_free_score",
     "nearest_fib_dist", "pct_from_52w_high", "roc_10",
 }
 

@@ -120,6 +120,14 @@ def _get_cached(key, ttl_type="insider"):
 
 def _set_cached(key, value):
     global _table_ensured
+    # P1.8 — never cache an EMPTY payload: this layer has no per-row
+    # TTL (read-side TTL by type), so a cached {} from a transient
+    # failure self-perpetuates for the full type TTL and re-seeds the
+    # outer alt_data_cache layer. Readers that mean "no data for this
+    # symbol" return marker dicts ({"has_data": false, ...}), which
+    # cache normally; a bare {} is a failure, not a fact.
+    if value is not None and len(value) == 0:
+        return
     if not _table_ensured:
         _ensure_cache_table()
         _table_ensured = True
@@ -714,9 +722,13 @@ def get_finra_short_volume(symbol):
                         continue
                     parts = line.split("|")
                     if len(parts) >= 5 and parts[1].strip().upper() == symbol.upper():
-                        short_vol = int(parts[2].strip())
+                        # P1.8: FINRA now publishes DECIMAL volumes
+                        # (fractional shares, e.g. 9492768.874270) —
+                        # int() raised ValueError on every row and the
+                        # source read zero for every symbol forever.
+                        short_vol = int(float(parts[2].strip()))
                         # parts[3] is short exempt volume
-                        total_vol = int(parts[4].strip())
+                        total_vol = int(float(parts[4].strip()))
                         ratio = short_vol / total_vol if total_vol > 0 else 0
 
                         result["short_volume"] = short_vol

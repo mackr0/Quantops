@@ -91,10 +91,11 @@ def get_risk_factor_diff(symbol: str) -> Dict[str, Any]:
         _cache_put(ck, result)
         return result
     try:
-        current_text = fetch_filing_text(filings[0].get("primaryDocumentUrl")
-                                          or filings[0].get("url"))
-        prior_text = fetch_filing_text(filings[1].get("primaryDocumentUrl")
-                                        or filings[1].get("url"))
+        # P1.8: get_company_filings returns `primary_doc_url` — the
+        # old camelCase/url keys never existed, so this fetched None
+        # and the source read zero for every symbol forever.
+        current_text = fetch_filing_text(filings[0].get("primary_doc_url"))
+        prior_text = fetch_filing_text(filings[1].get("primary_doc_url"))
         if not (current_text and prior_text):
             _cache_put(ck, result)
             return result
@@ -106,7 +107,8 @@ def get_risk_factor_diff(symbol: str) -> Dict[str, Any]:
         added = cur_risks - prior_risks
         result["added_risk_count"] = len(added)
         result["has_new_risks"] = len(added) > 0
-        result["latest_filing_date"] = filings[0].get("filing_date")
+        # P1.8: real key is filed_date (filing_date never existed)
+        result["latest_filing_date"] = filings[0].get("filed_date")
     except Exception as exc:
         logger.debug("risk-factor diff: parse failed for %s: %s",
                      symbol, exc)
@@ -521,14 +523,20 @@ def get_insider_track_records(symbol: str) -> Dict[str, Any]:
     try:
         with sqlite3.connect(dbp) as conn:
             conn.row_factory = sqlite3.Row
-            # Top 3 insiders by lifetime activity for this symbol
+            # Top 3 insiders by lifetime activity for this symbol.
+            # P1.8: real form4 schema — owner name is rpt_owner_name,
+            # code is txn_code, and insider_txns has no ticker column
+            # (join companies on the issuer cik). The old query raised
+            # OperationalError on every call and the source read
+            # empty for every symbol forever.
             rows = conn.execute(
-                "SELECT insider_name, "
-                "  SUM(CASE WHEN transaction_code='P' THEN 1 ELSE 0 END) AS buys, "
-                "  SUM(CASE WHEN transaction_code='S' THEN 1 ELSE 0 END) AS sells "
-                "FROM insider_txns "
-                "WHERE ticker = ? "
-                "GROUP BY insider_name "
+                "SELECT t.rpt_owner_name AS insider_name, "
+                "  SUM(CASE WHEN t.txn_code='P' THEN 1 ELSE 0 END) AS buys, "
+                "  SUM(CASE WHEN t.txn_code='S' THEN 1 ELSE 0 END) AS sells "
+                "FROM insider_txns t "
+                "JOIN companies c ON t.cik = c.cik "
+                "WHERE UPPER(c.ticker) = ? "
+                "GROUP BY t.rpt_owner_name "
                 "ORDER BY (buys + sells) DESC LIMIT 3",
                 (symbol.upper(),),
             ).fetchall()
@@ -587,19 +595,24 @@ def get_star_manager_holdings(symbol: str) -> Dict[str, Any]:
             conn.row_factory = sqlite3.Row
             # Most recent quarter's holdings for our star CIKs
             placeholders = ",".join("?" * len(_STAR_MANAGER_CIKS))
+            # P1.8: the edgar13f schema joins on accession_number
+            # (holdings has no filing_id, filings has no id) and the
+            # date column is filed_date — the old query raised
+            # OperationalError on every call and the source read
+            # empty for every symbol forever.
             rows = conn.execute(
-                f"SELECT cik, MAX(filing_date) AS filing_date "
+                f"SELECT f.cik AS cik, MAX(f.filed_date) AS filed_date "
                 f"FROM holdings h "
-                f"JOIN filings f ON h.filing_id = f.id "
+                f"JOIN filings f ON h.accession_number = f.accession_number "
                 f"WHERE h.ticker = ? AND f.cik IN ({placeholders}) "
-                f"GROUP BY cik",
+                f"GROUP BY f.cik",
                 (symbol.upper(), *_STAR_MANAGER_CIKS.keys()),
             ).fetchall()
         holders = []
         for r in rows:
             holders.append({
                 "manager": _STAR_MANAGER_CIKS.get(r["cik"], r["cik"]),
-                "as_of": r["filing_date"],
+                "as_of": r["filed_date"],
             })
         result["holders"] = holders
         result["count"] = len(holders)

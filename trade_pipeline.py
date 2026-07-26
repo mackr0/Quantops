@@ -3175,7 +3175,12 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                     features_payload["vwap_position"] = alt.get("intraday", {}).get("vwap_position", "at")
                     features_payload["pe_trailing"] = alt.get("fundamentals", {}).get("pe_trailing", 0)
                     # New per-symbol alt data
-                    features_payload["congress_direction"] = alt.get("congressional", {}).get("net_direction", "neutral")
+                    # P1.8 — the bundle key is congressional_recent;
+                    # "congressional" never existed, so this model
+                    # feature was constant "neutral" forever.
+                    features_payload["congress_direction"] = (
+                        alt.get("congressional_recent") or {}
+                    ).get("net_direction", "neutral")
                     features_payload["finra_short_vol_ratio"] = alt.get("finra_short_vol", {}).get("short_volume_ratio", 0)
                     features_payload["insider_cluster"] = 1 if alt.get("insider_cluster", {}).get("is_cluster") else 0
                     features_payload["eps_revision_direction"] = alt.get("analyst_estimates", {}).get("eps_revision_direction", "flat")
@@ -3212,16 +3217,19 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                     wp = alt.get("wikipedia_pageviews") or {}
                     features_payload["wikipedia_pageviews_z"] = wp.get("pageview_z_score") or 0
                     features_payload["wikipedia_pageviews_spike"] = 1 if wp.get("pageview_spike_flag") else 0
-                    # Item 3a — App Store ranking. Use 999 sentinel for
-                    # "not in top-200 chart" so the meta-model doesn't
-                    # misread missing-data as "rank #1" (which `or 0`
-                    # would imply).
+                    # Item 3a — App Store ranking. P1.8: the old 999
+                    # sentinel fed "999" to the GBM as if it were a
+                    # real rank. Charting SCORE instead: 201-rank for
+                    # charted apps (higher = better), honest 0 for
+                    # "not charting / no app" — no sentinel.
                     ap = alt.get("app_store_ranking") or {}
-                    features_payload["app_store_grossing_rank"] = (
-                        ap.get("best_grossing_rank") or 999
+                    _gr = ap.get("best_grossing_rank")
+                    _fr = ap.get("best_free_rank")
+                    features_payload["app_store_grossing_score"] = (
+                        max(0, 201 - int(_gr)) if _gr else 0
                     )
-                    features_payload["app_store_free_rank"] = (
-                        ap.get("best_free_rank") or 999
+                    features_payload["app_store_free_score"] = (
+                        max(0, 201 - int(_fr)) if _fr else 0
                     )
                 social = c.get("social") or {}
                 if social:

@@ -120,23 +120,31 @@ DESIGNED AI inputs; [exec] = execution change, operator times it.
       CREATE a bundle (pinned), so gate + deletion make the
       subsystem structurally inert for ablation arms. Pinned:
       test_meta_retrain_ablation_gate_2026_07_26.py (3).
-- [ ] P1.8 [inputs] Structurally-zero sources (finra_short_vol,
-      activist_13dg, star_manager, risk_factor_diff,
-      insider_track_records) + constant meta features (reddit_*,
-      _cpi_yoy, dark_pool_pct) + 999-sentinels fed as real values.
-      Fix or honest-disable; sentinels → missing.
-      ADDED 2026-07-26 (found during P1.4 live verify): NEITHER
-      cache layer refuses to cache empty payloads — a transient
-      blip (rate limit / DB lock / circuit breaker, e.g. Google
-      Trends 429 → {}) poisons a (symbol, source) for the full TTL
-      (up to 24h-7d), and the two layers re-seed each other. AAPL
-      served {} for ~20 sources through the bundle while direct
-      reads were fine. One-time purge done (2,414 + 139 empty
-      rows); the FIX (negative-cache short-TTL or refuse-empty in
-      alt_data_cache.cache_set + ad._set_cached) belongs here.
-      Also fold in: trade_pipeline reads alt.get("congressional")
-      (not a bundle key) → congress_direction constant "neutral";
-      multi_alt_data_silent len>1 note RESOLVED with P1.4.
+- [x] P1.8 [inputs] Structurally-zero sources — RESOLVED 2026-07-26.
+      All five root-caused and fixed: finra_short_vol (FINRA now
+      publishes DECIMAL volumes; int() ValueError'd every row →
+      int(float())); star_manager_holdings (joined on phantom
+      filing_id/id columns → accession_number; filing_date →
+      filed_date); insider_track_records (phantom insider_name/
+      transaction_code/ticker columns → rpt_owner_name/txn_code +
+      companies join); risk_factor_diff (phantom primaryDocumentUrl/
+      url keys → primary_doc_url; + filed_date); activist_13dg
+      (filing-page regexes expected CIK-then-"(Subject)" but EDGAR
+      renders NAME (Subject)...CIK — never matched once; + URL-path
+      CIK fallback + role-aware titles; 19 stored rows backfilled →
+      GNK 13D events now surface). Meta features: congress_direction
+      rewired to congressional_recent (phantom key = constant
+      neutral); reddit_* DROPPED from NUMERIC_FEATURES
+      (credential-gated off — re-add only if REDDIT_CLIENT_ID/SECRET
+      configured); _cpi_yoy fixed (FRED "." gap marker broke the
+      13-obs fixed-index math → date-aware pairing); 999 sentinels
+      replaced by charting scores (201-rank, honest 0; signal_weights
+      + post_mortem + display_names updated). Negative caching:
+      cache_set caps empty-payload TTL at 3600s; ad._set_cached
+      refuses bare {}. Purged 2,558 + 1,131 stale zero rows. Live:
+      FINRA AAPL 47.2% ratio wk 07-24, Berkshire-holds-AAPL, Cook
+      track record, AAPL 9 new 10-K risks. Pinned:
+      test_structurally_zero_sources_2026_07_26.py (14).
 
 **Phase 2 — cost truth & execution:**
 - [ ] P2.1 [none — labels only] actual_return_pct_net nets a CONSTANT
