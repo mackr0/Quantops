@@ -750,17 +750,39 @@ def get_finra_short_volume(symbol):
 
 _CACHE_TTL["dark_pool"] = 604800  # 7 days (weekly data)
 
-def get_dark_pool_volume(symbol):
-    """Fetch dark pool (ATS) trading volume from FINRA OTC transparency.
+# Only ATS data younger than this counts as "current". FINRA publishes
+# ATS weekly summaries with a ~2-4 week lag; beyond 6 weeks something
+# is wrong and serving it as current would repeat the 2023-11-06
+# incident (see below).
+_DARK_POOL_MAX_AGE_DAYS = 42
 
-    Uses POST to filter by symbol. Sums across all ATS venues to get
-    total dark pool volume for the symbol.
+
+def get_dark_pool_volume(symbol):
+    """Latest-week dark pool (ATS) volume from FINRA OTC transparency.
+
+    2026-07-26 rewrite (P1.2). The original query had no date filter
+    and FINRA's default ordering returned week 2023-11-06 — three-
+    year-old rows served as current on 86% of payloads. It also
+    summed EVERY row: the per-symbol aggregate (`ATS_W_SMBL`), the
+    per-firm breakdown of the same volume (`ATS_W_SMBL_FIRM` —
+    double count), AND non-ATS wholesaler OTC rows. And the pipeline
+    consumed a key (`ats_pct_of_total`) this function never returned,
+    so the meta feature was a constant 0 either way.
+
+    Now: recent-window `dateRangeFilters` query; latest week only;
+    volume/trades from the ATS per-symbol aggregate rows; venue count
+    from the per-firm rows; `ats_pct_of_total` computed against the
+    week's consolidated volume (yfinance); data older than
+    `_DARK_POOL_MAX_AGE_DAYS` is reported as absent, not current.
 
     Returns dict with:
-        ats_volume: int — total shares traded across all dark pools
-        ats_trade_count: int — number of dark pool trades
-        num_venues: int — how many ATS venues traded this symbol
+        ats_volume: int — ATS shares, latest published week
+        ats_trade_count: int — ATS trades, latest published week
+        num_venues: int — distinct ATS venues (per-firm rows)
         week_start: str or None — week the data covers
+        ats_pct_of_total: float or None — ATS share of that week's
+            consolidated volume, percent (the key the pipeline's
+            `dark_pool_pct` feature reads)
     """
     cache_key = f"dark_pool_{symbol}"
     cached = _get_cached(cache_key, "dark_pool")
@@ -772,10 +794,15 @@ def get_dark_pool_volume(symbol):
         "ats_trade_count": 0,
         "num_venues": 0,
         "week_start": None,
+        "ats_pct_of_total": None,
     }
 
     try:
         import json as _json
+        from datetime import date, timedelta
+
+        today = date.today()
+        window_start = (today - timedelta(days=_DARK_POOL_MAX_AGE_DAYS))
 
         body = _json.dumps({
             "compareFilters": [{
@@ -783,7 +810,12 @@ def get_dark_pool_volume(symbol):
                 "fieldValue": symbol.upper(),
                 "compareType": "EQUAL",
             }],
-            "limit": 50,
+            "dateRangeFilters": [{
+                "fieldName": "weekStartDate",
+                "startDate": window_start.isoformat(),
+                "endDate": today.isoformat(),
+            }],
+            "limit": 500,
         }).encode()
 
         req = Request(
@@ -803,13 +835,37 @@ def get_dark_pool_volume(symbol):
                 data = _json.loads(resp.read())
 
             if isinstance(data, list) and data:
-                # Sum across all ATS venues for total dark pool volume
-                total_shares = sum(int(r.get("totalWeeklyShareQuantity", 0) or 0) for r in data)
-                total_trades = sum(int(r.get("totalWeeklyTradeCount", 0) or 0) for r in data)
-                result["ats_volume"] = total_shares
-                result["ats_trade_count"] = total_trades
-                result["num_venues"] = len(data)
-                result["week_start"] = data[0].get("weekStartDate")
+                # Belt-and-braces: the window is in the request, but
+                # the 2023-11-06 incident WAS a server-side ordering
+                # surprise — never trust the response to be fresh.
+                weeks = {r.get("weekStartDate") for r in data
+                         if r.get("weekStartDate")
+                         and r["weekStartDate"] >= window_start.isoformat()}
+                latest = max(weeks) if weeks else None
+                if latest:
+                    wk = [r for r in data
+                          if r.get("weekStartDate") == latest]
+                    # Per-symbol ATS aggregates (may split by tier);
+                    # per-firm rows are the SAME volume broken out by
+                    # venue — count them, never sum them on top.
+                    ats_sym = [r for r in wk
+                               if r.get("summaryTypeCode") == "ATS_W_SMBL"]
+                    ats_firm = [r for r in wk
+                                if r.get("summaryTypeCode") == "ATS_W_SMBL_FIRM"]
+                    result["ats_volume"] = sum(
+                        int(r.get("totalWeeklyShareQuantity", 0) or 0)
+                        for r in ats_sym)
+                    result["ats_trade_count"] = sum(
+                        int(r.get("totalWeeklyTradeCount", 0) or 0)
+                        for r in ats_sym)
+                    result["num_venues"] = len(
+                        {r.get("MPID") for r in ats_firm if r.get("MPID")})
+                    result["week_start"] = latest
+
+                    if result["ats_volume"] > 0:
+                        result["ats_pct_of_total"] = (
+                            _ats_pct_of_consolidated(
+                                symbol, latest, result["ats_volume"]))
         except (URLError, _json.JSONDecodeError, KeyError, ValueError,
                 TypeError, AttributeError, OSError) as _ats_exc:
             # ATS volume enrichment; per-symbol info still returned.
@@ -824,6 +880,27 @@ def get_dark_pool_volume(symbol):
 
     _set_cached(cache_key, result)
     return result
+
+
+def _ats_pct_of_consolidated(symbol, week_start_iso, ats_volume):
+    """ATS share of the week's consolidated volume, percent (rounded),
+    or None when the denominator can't be established."""
+    try:
+        from datetime import date, timedelta
+        start = date.fromisoformat(week_start_iso)
+        hist = yf.Ticker(symbol).history(
+            start=start, end=start + timedelta(days=7))
+        total = float(hist["Volume"].sum()) if len(hist) else 0.0
+        # ATS volume can't plausibly exceed consolidated volume; a
+        # denominator smaller than the numerator means the yf window
+        # is broken (split, halt, bad data) — refuse rather than emit
+        # a >100% artifact.
+        if total <= 0 or ats_volume > total:
+            return None
+        return round(100.0 * ats_volume / total, 1)
+    except Exception as exc:
+        logger.debug("ATS pct denominator failed for %s: %s", symbol, exc)
+        return None
 
 
 # ---------------------------------------------------------------------------

@@ -1742,9 +1742,13 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context,
                     f"Insiders selling {ie.get('days_to_earnings', '?')}d before earnings (bearish)")
             dp = alt.get("dark_pool", {})
             if dp.get("ats_volume", 0) > 0:
+                pct = dp.get("ats_pct_of_total")
+                pct_str = (f" = {pct:.1f}% of consolidated volume"
+                           if pct is not None else "")
                 txt = _weighted_signal_text("dark_pool_pct",
-                    f"Dark pool: {dp.get('ats_volume', 0):,} shares across "
-                    f"{dp.get('num_venues', 0)} ATS venues")
+                    f"Dark pool (wk {dp.get('week_start', '?')}): "
+                    f"{dp.get('ats_volume', 0):,} shares across "
+                    f"{dp.get('num_venues', 0)} ATS venues{pct_str}")
                 if txt: alt_parts.append(txt)
             es = alt.get("earnings_surprise", {})
             if es.get("total_quarters", 0) >= 4:

@@ -44,9 +44,18 @@ DESIGNED AI inputs; [exec] = execution change, operator times it.
       trials; 13F informative 13/14 universe probe (was ~0);
       stale cache purged (2,256 rows). Pinned:
       test_altdata_reconnect_2026_07_26.py (19).
-- [ ] P1.2 [inputs] Dark pool: 86% of payloads are 2023-11-06 data
-      served as current; extraction reads nonexistent key
-      `ats_pct_of_total` (trade_pipeline.py:3153).
+- [x] P1.2 [inputs] Dark pool — RESOLVED 2026-07-26. Was triple-
+      broken: no date filter (FINRA default order = week 2023-11-06
+      on 86% of payloads); summed aggregate + per-firm (double count)
+      + non-ATS OTC wholesaler rows; pipeline read nonexistent
+      `ats_pct_of_total` → feature constant 0. Rewrote reader:
+      dateRangeFilters 42d window + client-side freshness guard,
+      latest week only, ATS_W_SMBL aggregates for volume, firm rows
+      for venue count, real ats_pct_of_total vs yf consolidated
+      weekly volume (refuses >100% artifacts → None). Null-safe
+      extraction; prompt shows pct + week. Live: AAPL wk 2026-06-29
+      45.7M sh / 30 venues / 17.8%; 752 stale cache rows purged.
+      Pinned: test_dark_pool_fresh_2026_07_26.py (10).
 - [ ] P1.3 [none] Slippage calibrator queries status='filled' which the
       journal never writes → K frozen at 12.0 default forever
       (predicted ~12.5bps constant vs realized ±850bps).

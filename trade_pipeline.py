@@ -3150,7 +3150,10 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                     features_payload["eps_revision_direction"] = alt.get("analyst_estimates", {}).get("eps_revision_direction", "flat")
                     features_payload["eps_revision_magnitude"] = alt.get("analyst_estimates", {}).get("revision_magnitude_pct", 0)
                     features_payload["insider_near_earnings"] = alt.get("insider_earnings", {}).get("insider_direction_near_earnings", "neutral")
-                    features_payload["dark_pool_pct"] = alt.get("dark_pool", {}).get("ats_pct_of_total", 0)
+                    # ats_pct_of_total exists since the 2026-07-26 dark-pool
+                    # rewrite but is None when the consolidated-volume
+                    # denominator is unavailable — feature stays 0 then.
+                    features_payload["dark_pool_pct"] = alt.get("dark_pool", {}).get("ats_pct_of_total") or 0
                     features_payload["earnings_surprise_streak"] = alt.get("earnings_surprise", {}).get("streak", 0)
                     features_payload["earnings_surprise_direction"] = alt.get("earnings_surprise", {}).get("surprise_direction", "mixed")
                     # 4 local-SQLite alt-data sources — flatten into
