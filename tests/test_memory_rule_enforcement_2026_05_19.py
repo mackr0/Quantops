@@ -137,6 +137,11 @@ def test_working_tree_has_changelog_update_when_modifying_production_source():
 # emergency rollbacks). Keep this list SHORT — each entry should
 # have a one-line justification.
 CHANGELOG_PARITY_EXEMPT_SHAS = {
+    # 2026-07-25 — pre-existing uncommitted backup-rotation changes
+    # (predating the session) surfaced by droplet-sync.sh's pre-flight
+    # gate and committed with provenance; the CHANGELOG entry ships in
+    # the following commit ("Backup rotation" entry, 2026-07-25).
+    "5fd5a6160524cb9628b42d3a3f06fbc6e7f50308",
     # 2026-06-04 multi-commit orphan-prevention series. CHANGELOG
     # entries for all five ship in the D commit at the end of the
     # series (consolidated "Orphan-prevention contract: all known

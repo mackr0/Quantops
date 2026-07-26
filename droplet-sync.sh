@@ -134,14 +134,27 @@ elif [ "$FORCE_MODE" = "web" ]; then
 elif [ "$FORCE_MODE" = "scheduler" ]; then
     NEED_SCHEDULER=true
 else
-    WEB_PATTERNS="templates/|static/|views\.py|display_names\.py|app\.py|auth\.py|models\.py"
+    # 2026-07-25 — the web app imports the ENTIRE book-computation
+    # stack (journal, aggregate_audit, integrity_audit, client, ...),
+    # so ANY production .py change requires a web restart too. The old
+    # narrow WEB_PATTERNS (inherited from sync.sh) left gunicorn
+    # running STALE journal code after a journal-only deploy: the
+    # /issues page then audited the books with old algebra and showed
+    # a phantom $38,000 equity/cash error while the books and the
+    # scheduler were correct. Web restarts are graceful and cheap —
+    # restart both on any .py change; templates/static stay web-only;
+    # docs/tests restart nothing.
+    WEB_PATTERNS="templates/|static/|\.py$"
     SCHED_PATTERNS="\.py$"
     while IFS= read -r file; do
         [ -z "$file" ] && continue
+        if echo "$file" | grep -qE "^(tests/|scripts/)"; then
+            continue
+        fi
         if echo "$file" | grep -qE "$WEB_PATTERNS"; then
             NEED_WEB=true
         fi
-        if echo "$file" | grep -qE "$SCHED_PATTERNS" && ! echo "$file" | grep -qE "^(templates/|static/|tests/)"; then
+        if echo "$file" | grep -qE "$SCHED_PATTERNS" && ! echo "$file" | grep -qE "^(templates/|static/)"; then
             if ! echo "$file" | grep -qE "^(views\.py|display_names\.py|app\.py|auth\.py)$"; then
                 NEED_SCHEDULER=true
             fi

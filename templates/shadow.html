@@ -1,104 +1,185 @@
 {% extends "base.html" %}
 
 {% block content %}
-<h2>Pipeline Shadow Eval</h2>
+<h2>Shadow Model Evaluation</h2>
 <p class="muted">
-    Per-profile comparison of the legacy
-    <code>trade_pipeline.run_trade_cycle</code> dispatch against
-    the new <code>Pipeline.run_cycle</code> dispatch. Read-only —
-    shadow code never submits broker orders. Captures every layer
-    (candidates → prompt → AI proposals → specialist verdict).
-    Opt-in per profile via the <em>Enable Pipeline Shadow Eval</em>
-    flag on the profile edit page.
+    Fleet-wide A/B comparison of shadow models against the primary on
+    every shadowed call ({{ m.overview.since_days }}-day window).
+    Observational only &mdash; shadow calls never affect trading.
+    The decision-quality judge is <strong>resolved disagreements</strong>:
+    when a shadow model disagreed and the underlying prediction has
+    since resolved, whose stance matched the realized price move.
 </p>
 
-{% if per_profile %}
-    {% for entry in per_profile %}
-    <article>
-        <header>
-            <h3 style="margin:0;">{{ entry.profile.name }}
-                <small class="muted">
-                    {{ entry.row_count }} cycle{{ 's' if entry.row_count != 1 else '' }} captured
-                </small>
-            </h3>
-        </header>
-
-        <div class="grid">
-            <div>
-                <strong>Rolling agreement (last 20)</strong><br>
-                {% if entry.rolling_agreement_pct is not none %}
-                <span style="font-size:1.4rem;">{{ entry.rolling_agreement_pct }}%</span>
-                <small class="muted">verdict-layer agreement between legacy and pipeline paths</small>
-                {% else %}
-                <span class="muted">(no comparable verdicts yet)</span>
-                {% endif %}
-            </div>
-            <div>
-                <strong>Shadow AI cost (lifetime)</strong><br>
-                <span style="font-size:1.4rem;">${{ "%.4f"|format(entry.total_shadow_cost_usd) }}</span>
-                <small class="muted">extra spend from the pipeline-path AI calls</small>
-            </div>
-            <div>
-                <strong>Status</strong><br>
-                {% if entry.shadow_eval_enabled %}
-                <span class="pnl-pos">Enabled</span> — soaking
-                {% else %}
-                <span class="muted">Disabled</span> — flip the per-profile flag to enable
-                {% endif %}
-            </div>
-        </div>
-
-        <details style="margin-top:1rem;">
-            <summary>Recent cycles ({{ entry.row_count }})</summary>
-            <div class="overflow-auto">
-                <table class="striped">
-                    <thead>
-                        <tr>
-                            <th>Timestamp</th>
-                            <th>Legacy props</th>
-                            <th>Pipeline props</th>
-                            <th>Legacy approved</th>
-                            <th>Pipeline approved</th>
-                            <th>Agreement %</th>
-                            <th>Layers diverged</th>
-                            <th>Cost</th>
-                            <th>Success</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                    {% for r in entry.rows %}
-                        <tr>
-                            <td><small>{{ r.timestamp|friendly_time }}</small></td>
-                            <td>{{ r.legacy_proposal_count }}</td>
-                            <td>{{ r.pipeline_proposal_count }}</td>
-                            <td>{{ r.legacy_approved_count }}</td>
-                            <td>{{ r.pipeline_approved_count }}</td>
-                            <td>{% if r.agreement_pct is not none %}{{ r.agreement_pct }}%{% else %}<span class="muted">—</span>{% endif %}</td>
-                            <td>{{ r.layers_with_divergence }}</td>
-                            <td><small>${{ "%.4f"|format(r.shadow_ai_cost_usd or 0) }}</small></td>
-                            <td>{% if r.success %}<span class="pnl-pos">✓</span>{% else %}<span class="pnl-neg">✗ {{ (r.error_message or '')|truncate(60) }}</span>{% endif %}</td>
-                        </tr>
-                    {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </details>
-    </article>
-    {% endfor %}
-{% else %}
 <article>
-    <p>No shadow-eval data yet. Turn on
-    <strong>Enable Pipeline Shadow Eval</strong> on a profile's
-    edit page to start the soak. The harness will then write one
-    row per cycle here.</p>
-    <p class="muted">
-        Recommended soak: turn on for one profile first, let it run
-        for 1-2 trading days, review the agreement % and per-layer
-        divergence breakdown above. If &gt;95% verdict agreement
-        with no critical-layer divergence, the cutover from legacy
-        to <code>Pipeline.run_cycle</code> dispatch is safe.
+    <header><h3 style="margin:0;">Overview</h3></header>
+    <p>
+        <strong>{{ m.overview.calls }}</strong> shadow calls &middot;
+        <strong>{{ m.overview.graded }}</strong> graded (agreement computed) &middot;
+        <strong>${{ "%.4f"|format(m.overview.cost) }}</strong> spend &middot;
+        {{ m.overview.profiles }} profiles reporting
     </p>
 </article>
-{% endif %}
 
+<article>
+    <header><h3 style="margin:0;">Per-model summary</h3></header>
+    <div class="overflow-auto">
+    <table class="striped">
+        <thead><tr>
+            <th>Model</th><th>Calls</th><th>Graded</th>
+            <th>Agreement</th><th>Disagree</th>
+            <th title="disagreements whose prediction has resolved">Resolved</th>
+            <th title="shadow's stance matched the realized move">Shadow right</th>
+            <th title="primary's stance matched the realized move">Primary right</th>
+            <th>Pending</th><th>Errors</th><th>Quota</th>
+            <th>Throttled</th><th>Cost</th><th>Latency</th>
+        </tr></thead>
+        <tbody>
+        {% for mk, v in m.per_model.items() %}
+        <tr>
+            <td><code>{{ mk }}</code></td>
+            <td>{{ v.calls }}</td>
+            <td>{{ v.graded }}</td>
+            <td><strong>{{ v.agreement_pct if v.agreement_pct is not none else "—" }}{% if v.agreement_pct is not none %}%{% endif %}</strong></td>
+            <td>{{ v.disagree }}</td>
+            <td>{{ v.dis_resolved }}</td>
+            <td class="pnl-pos"><strong>{{ v.shadow_right }}</strong></td>
+            <td><strong>{{ v.primary_right }}</strong></td>
+            <td class="muted">{{ v.dis_pending }}</td>
+            <td>{{ v.errors }}</td>
+            <td>{{ v.quota }}</td>
+            <td class="muted">{{ v.throttled }}</td>
+            <td>${{ "%.4f"|format(v.cost) }}</td>
+            <td>{{ v.avg_latency_ms }} ms</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    <p class="muted" style="font-size:0.85em;">
+        Low agreement is not bad by itself &mdash; a contrarian model is
+        only valuable if it's RIGHT when it disagrees. Watch
+        Shadow-right vs Primary-right as resolutions accrue
+        (predictions resolve in ~1&ndash;6 days).
+    </p>
+</article>
+
+<article>
+    <header><h3 style="margin:0;">By decision category (purpose)</h3></header>
+    <p class="muted" style="font-size:0.9em;">Where each model differs
+        from the primary, by what KIND of decision was being made
+        &mdash; this is where per-category edges show up.</p>
+    <div class="overflow-auto">
+    <table class="striped">
+        <thead><tr>
+            <th>Purpose</th><th>Model</th><th>Graded</th>
+            <th>Agreement</th><th>Resolved</th>
+            <th>Shadow right</th><th>Primary right</th><th>Pending</th>
+        </tr></thead>
+        <tbody>
+        {% for purpose, models in m.by_purpose.items() %}
+            {% for mk, v in models.items() %}
+            <tr>
+                <td>{% if loop.first %}<code>{{ purpose }}</code>{% endif %}</td>
+                <td><code>{{ mk.split(":")[1][:26] }}</code></td>
+                <td>{{ v.graded }}</td>
+                <td>{{ v.agreement_pct if v.agreement_pct is not none else "—" }}{% if v.agreement_pct is not none %}%{% endif %}</td>
+                <td>{{ v.dis_resolved }}</td>
+                <td class="pnl-pos">{{ v.shadow_right }}</td>
+                <td>{{ v.primary_right }}</td>
+                <td class="muted">{{ v.dis_pending }}</td>
+            </tr>
+            {% endfor %}
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</article>
+
+<article>
+    <header><h3 style="margin:0;">By primary action</h3></header>
+    <p class="muted" style="font-size:0.9em;">Does a shadow model
+        push back more on bullish calls, bearish calls, or holds?
+        ("set-level" = whole-trade-set apex decisions.)</p>
+    <div class="overflow-auto">
+    <table class="striped">
+        <thead><tr>
+            <th>Primary said</th><th>Model</th><th>Graded</th>
+            <th>Agreement</th><th>Resolved</th>
+            <th>Shadow right</th><th>Primary right</th>
+        </tr></thead>
+        <tbody>
+        {% for act, models in m.by_primary_action.items() %}
+            {% for mk, v in models.items() %}
+            <tr>
+                <td>{% if loop.first %}<strong>{{ act }}</strong>{% endif %}</td>
+                <td><code>{{ mk.split(":")[1][:26] }}</code></td>
+                <td>{{ v.graded }}</td>
+                <td>{{ v.agreement_pct if v.agreement_pct is not none else "—" }}{% if v.agreement_pct is not none %}%{% endif %}</td>
+                <td>{{ v.dis_resolved }}</td>
+                <td class="pnl-pos">{{ v.shadow_right }}</td>
+                <td>{{ v.primary_right }}</td>
+            </tr>
+            {% endfor %}
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</article>
+
+<article>
+    <header><h3 style="margin:0;">Daily agreement trend</h3></header>
+    <div class="overflow-auto">
+    <table class="striped">
+        <thead><tr><th>Day (UTC)</th>
+        {% for mk in m.per_model.keys() %}<th><code>{{ mk.split(":")[1][:22] }}</code></th>{% endfor %}
+        </tr></thead>
+        <tbody>
+        {% for day, models in m.daily.items()|sort(reverse=true) %}
+        <tr>
+            <td>{{ day }}</td>
+            {% for mk in m.per_model.keys() %}
+                {% set v = models.get(mk) %}
+                <td>{% if v and v.agreement_pct is not none %}{{ v.agreement_pct }}% <span class="muted">({{ v.graded }})</span>{% else %}—{% endif %}</td>
+            {% endfor %}
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</article>
+
+<article>
+    <header><h3 style="margin:0;">Recent disagreements</h3></header>
+    <p class="muted" style="font-size:0.9em;">The raw material: each
+        row is a call where the shadow model said something different.
+        Outcome fills in when the prediction resolves.</p>
+    <div class="overflow-auto">
+    <table class="striped">
+        <thead><tr>
+            <th>When (UTC)</th><th>Profile</th><th>Symbol</th>
+            <th>Purpose</th><th>Model</th><th>Primary said</th>
+            <th>Shadow said</th><th>Outcome</th><th>Right</th>
+        </tr></thead>
+        <tbody>
+        {% for r in m.recent_disagreements %}
+        <tr>
+            <td><small>{{ r.ts }}</small></td>
+            <td>{{ r.profile }}</td>
+            <td><strong>{{ r.symbol }}</strong></td>
+            <td class="muted"><small>{{ r.purpose }}</small></td>
+            <td class="muted"><small>{{ r.model.split(":")[1][:20] }}</small></td>
+            <td>{{ r.primary[:34] }}</td>
+            <td>{{ r.shadow[:34] }}</td>
+            <td>{% if r.outcome_pct is not none %}{{ "%+.2f"|format(r.outcome_pct) }}%{% else %}<span class="muted">pending</span>{% endif %}</td>
+            <td>{% if r.who_right == "shadow" %}<span class="pnl-pos">shadow</span>
+                {% elif r.who_right == "primary" %}<span>primary</span>
+                {% elif r.who_right %}{{ r.who_right }}
+                {% else %}<span class="muted">—</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</article>
 {% endblock %}

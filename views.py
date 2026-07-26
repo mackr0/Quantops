@@ -1070,119 +1070,34 @@ def issues_page():
 @views_bp.route("/shadow")
 @login_required
 def shadow_page():
-    """Scope C of the per-pipeline refactor: cross-path comparison
-    dashboard. Shows recent `pipeline_shadow_runs` rows aggregated
-    per profile so the operator can monitor agreement between the
-    legacy `trade_pipeline.run_trade_cycle` dispatch and the new
-    `Pipeline.run_cycle` dispatch — read from any profile DB that
-    has rows.
+    """Shadow MODEL evaluation dashboard (rebuilt 2026-07-25).
 
-    Surfaces:
-      - per-profile recent rows (last 50)
-      - rolling agreement % over the last N cycles
-      - per-layer divergence breakdown
-      - total shadow AI cost
+    The page previously read `pipeline_shadow_runs` — the retired
+    legacy-vs-Pipeline dispatch comparison, whose table is empty — so
+    it showed nothing while the LIVE model shadow-eval (ai_shadow_calls,
+    2026-07-22+) had no page at all. It now renders the full
+    decision-quality metric set from `shadow_metrics
+    .collect_fleet_metrics`: per-model agreement, RESOLVED-disagreement
+    rightness (the "which model is actually right" judge), per-purpose
+    and per-primary-action category cuts, daily trend, and the raw
+    recent disagreements with outcomes.
     """
-    import sqlite3, json as _json
-    from contextlib import closing as _closing
+    from shadow_metrics import collect_fleet_metrics
     profiles = get_user_profiles(current_user.effective_user_id)
-    per_profile = []
-    for p in profiles:
-        pid = p["id"]
-        db = f"/opt/quantopsai/quantopsai_profile_{pid}.db"
-        try:
-            with _closing(sqlite3.connect(db)) as conn:
-                conn.row_factory = sqlite3.Row
-                # Verify table exists (migrations may lag)
-                exists = conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' "
-                    "AND name='pipeline_shadow_runs'"
-                ).fetchone()
-                if not exists:
-                    continue
-                rows = list(conn.execute(
-                    "SELECT * FROM pipeline_shadow_runs "
-                    "ORDER BY id DESC LIMIT 50"
-                ).fetchall())
-                if not rows:
-                    continue
-                rolling = [r["verdict_diff"] for r in rows[:20]]
-                # Compute agreement %
-                agreements = []
-                for vd in rolling:
-                    try:
-                        d = _json.loads(vd) if vd else {}
-                        a = d.get("agreement_pct")
-                        if a is not None:
-                            agreements.append(a)
-                    except Exception as _vd_exc:
-                        # Skip malformed verdict_diff rows but log so a
-                        # systemic corruption pattern surfaces.
-                        logger.debug(
-                            "shadow_page: skipped malformed "
-                            "verdict_diff (%s)",
-                            type(_vd_exc).__name__,
-                        )
-                rolling_agreement = (
-                    round(sum(agreements) / len(agreements), 1)
-                    if agreements else None
-                )
-                total_cost = 0.0
-                for r in rows:
-                    try:
-                        sd = _json.loads(r["symbols_diff"] or "{}")
-                        total_cost += float(
-                            sd.get("aggregate", {}).get("shadow_ai_cost_usd", 0)
-                        )
-                    except Exception as _sd_exc:
-                        logger.debug(
-                            "shadow_page: skipped malformed "
-                            "symbols_diff (%s)",
-                            type(_sd_exc).__name__,
-                        )
-                # Decode JSON columns to dicts so the template
-                # doesn't need a custom filter
-                decoded_rows = []
-                for r in rows:
-                    d = dict(r)
-                    for k in ("legacy_symbols", "pipeline_symbols",
-                               "symbols_diff", "verdict_diff"):
-                        try:
-                            d[k] = _json.loads(d[k]) if d.get(k) else {}
-                        except Exception:
-                            d[k] = {}
-                    # Promote agreement_pct + layers_with_divergence
-                    # from nested JSON to top-level for easier rendering
-                    sd = d.get("symbols_diff", {}) or {}
-                    agg = sd.get("aggregate", {}) if isinstance(sd, dict) else {}
-                    vd = d.get("verdict_diff", {}) or {}
-                    d["agreement_pct"] = (
-                        vd.get("agreement_pct") if isinstance(vd, dict) else None
-                    )
-                    d["layers_with_divergence"] = agg.get(
-                        "layers_with_divergence", 0,
-                    )
-                    d["shadow_ai_cost_usd"] = agg.get(
-                        "shadow_ai_cost_usd", 0,
-                    )
-                    decoded_rows.append(d)
-                per_profile.append({
-                    "profile": p,
-                    "rows": decoded_rows,
-                    "rolling_agreement_pct": rolling_agreement,
-                    "total_shadow_cost_usd": round(total_cost, 4),
-                    "shadow_eval_enabled": bool(
-                        p.get("enable_pipeline_shadow_eval", 0)
-                    ),
-                    "row_count": len(rows),
-                })
-        except Exception as exc:
-            logger.warning(
-                "shadow_page: read profile %d failed: %s", pid, exc,
-            )
-    return render_template("shadow.html",
-                            per_profile=per_profile,
-                            profiles=profiles)
+    dbs = [f"/opt/quantopsai/quantopsai_profile_{p['id']}.db"
+           for p in profiles]
+    try:
+        metrics = collect_fleet_metrics(dbs)
+    except Exception as exc:
+        logger.warning("shadow_page: metrics collection failed: %s", exc)
+        metrics = {
+            "overview": {"calls": 0, "graded": 0, "cost": 0.0,
+                         "profiles": 0, "since_days": 30},
+            "per_model": {}, "by_purpose": {},
+            "by_primary_action": {}, "recent_disagreements": [],
+            "daily": {},
+        }
+    return render_template("shadow.html", m=metrics)
 
 
 @views_bp.route("/api/issues-count")

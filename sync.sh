@@ -254,21 +254,31 @@ elif [ "$FORCE_MODE" = "web" ]; then
 elif [ "$FORCE_MODE" = "scheduler" ]; then
     NEED_SCHEDULER=true
 else
-    # Auto-detect from changed files
-    # Web-needed files: anything the gunicorn process loads on startup,
-    # including the schema migration in models.py (init_user_db runs in
-    # create_app — without a web restart, ALTER TABLE migrations never
-    # apply and per-DB writes that need new columns fail).
-    WEB_PATTERNS="templates/|static/|views\.py|display_names\.py|app\.py|auth\.py|models\.py"
+    # Auto-detect from changed files.
+    # 2026-07-25 — the web app imports the ENTIRE book-computation
+    # stack (journal, aggregate_audit, integrity_audit, client, ...),
+    # so ANY production .py change requires a web restart too. The old
+    # narrow WEB_PATTERNS left gunicorn running STALE journal code
+    # after a journal-only deploy: the /issues page then audited the
+    # books with old algebra and showed a phantom $38,000 equity/cash
+    # error while the books and the scheduler were correct (caught
+    # live via droplet-sync.sh, which replicates this logic). Web
+    # restarts are graceful and cheap — restart both on any .py
+    # change; templates/static stay web-only; docs/tests/scripts
+    # restart nothing.
+    WEB_PATTERNS="templates/|static/|\.py$"
     # Scheduler files: everything else that's Python
     SCHED_PATTERNS="\.py$"
 
     while IFS= read -r file; do
+        if echo "$file" | grep -qE "^(tests/|scripts/)"; then
+            continue
+        fi
         if echo "$file" | grep -qE "$WEB_PATTERNS"; then
             NEED_WEB=true
         fi
         # Any .py file that isn't web-only requires scheduler restart
-        if echo "$file" | grep -qE "$SCHED_PATTERNS" && ! echo "$file" | grep -qE "^(templates/|static/|tests/)"; then
+        if echo "$file" | grep -qE "$SCHED_PATTERNS" && ! echo "$file" | grep -qE "^(templates/|static/)"; then
             # Check if it's ONLY a web file
             if ! echo "$file" | grep -qE "^(views\.py|display_names\.py|app\.py|auth\.py)$"; then
                 NEED_SCHEDULER=true
