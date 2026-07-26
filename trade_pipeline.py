@@ -449,6 +449,14 @@ def _get_shared_ensemble(candidates_data, ctx):
 # Lever 2 of COST_AND_QUALITY_LEVERS_PLAN.md — meta-model pre-gate.
 # ---------------------------------------------------------------------------
 
+# P1.6 — minimum holdout AUC for the meta-pregate to be allowed to
+# DROP candidates. Below this the model may score (audit trail) but
+# not trim: 0.50 is a coin flip, and a coin flip plus holdout noise
+# is not a licence to cut live candidates. Retrains that clear the
+# floor regain the knife automatically on the next cycle.
+META_PREGATE_MIN_AUC = 0.55
+
+
 def _meta_pregate_candidates(candidates: List[Dict[str, Any]],
                               ctx: Any) -> List[Dict[str, Any]]:
     """Drop candidates the meta-model deems likely-wrong before the
@@ -499,6 +507,29 @@ def _meta_pregate_candidates(candidates: List[Dict[str, Any]],
             return candidates
     except Exception:
         return candidates
+
+    # P1.6 (2026-07-26) — AUC floor: a model that is not predictive on
+    # its own holdout has no business trimming candidates. p216 sat at
+    # AUC 0.397 (ANTI-predictive) and still cut its shortlist. Below
+    # the floor the pregate goes AUDIT-ONLY: it still scores every
+    # candidate (so meta_model_score persists and the WR-by-quartile
+    # audit stays computable — the evidence a retrain needs) but drops
+    # nothing. Models without an auc metric (legacy bundles) keep the
+    # old trimming behavior.
+    audit_only = False
+    try:
+        _auc = ((meta_bundle or {}).get("metrics") or {}).get("auc")
+        if _auc is not None and float(_auc) < META_PREGATE_MIN_AUC:
+            audit_only = True
+            logging.warning(
+                "Meta-pregate: profile %d model holdout AUC %.3f < %.2f "
+                "floor — not predictive enough to trim. Scoring "
+                "candidates for the audit trail, dropping NONE until a "
+                "retrain clears the floor.",
+                profile_id, float(_auc), META_PREGATE_MIN_AUC,
+            )
+    except (TypeError, ValueError):
+        pass
 
     # Per-direction confidence: when the model was trained on too few
     # samples of a given direction, its predictions for that direction
@@ -587,7 +618,7 @@ def _meta_pregate_candidates(candidates: List[Dict[str, Any]],
             # audit (WR by score quartile) is uncomputable and the
             # model's veto power is unfalsifiable.
             c["_meta_prob"] = round(float(meta_prob), 4)
-            if meta_prob >= threshold:
+            if meta_prob >= threshold or audit_only:
                 kept.append(c)
             else:
                 below.append((float(meta_prob), c))

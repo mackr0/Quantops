@@ -98,8 +98,17 @@ DESIGNED AI inputs; [exec] = execution change, operator times it.
       10 corrupt rows repaired live ('["[]"]' → '[]'). Pinned:
       test_wheel_symbols_integrity_2026_07_26.py (incl. the exact
       corruption round-trip now converging).
-- [ ] P1.6 [exec: p216 only] Meta-pregate has no AUC floor — p216's
-      AUC-0.397 (anti-predictive) model still trims its candidates.
+- [x] P1.6 [exec: p216 only] Meta-pregate AUC floor — RESOLVED
+      2026-07-26. META_PREGATE_MIN_AUC = 0.55: below the floor the
+      pregate goes AUDIT-ONLY — still scores every candidate (so
+      meta_model_score persists and the WR-by-quartile audit stays
+      computable, the evidence a retrain needs) but drops nothing;
+      retrains that clear the floor regain the knife automatically.
+      Legacy bundles without an auc metric keep old behavior. Live
+      probe: p216 (AUC 0.397) kept 4/4 with scores stamped (its
+      uniform 0.019 scores would have zeroed the cohort). Fleet:
+      only p216 below floor (rest 0.56-0.82). Pinned:
+      test_meta_pregate_auc_floor_2026_07_26.py (5).
 - [ ] P1.7 [none] Meta retrain isn't gated on enable_meta_model —
       p212 (NoMetaModel ablation) trains a model it never uses.
 - [ ] P1.8 [inputs] Structurally-zero sources (finra_short_vol,
