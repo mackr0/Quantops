@@ -109,8 +109,17 @@ DESIGNED AI inputs; [exec] = execution change, operator times it.
       uniform 0.019 scores would have zeroed the cohort). Fleet:
       only p216 below floor (rest 0.56-0.82). Pinned:
       test_meta_pregate_auc_floor_2026_07_26.py (5).
-- [ ] P1.7 [none] Meta retrain isn't gated on enable_meta_model —
-      p212 (NoMetaModel ablation) trains a model it never uses.
+- [x] P1.7 [none] Meta retrain ablation gate — RESOLVED 2026-07-26.
+      _task_retrain_meta_model now returns early for
+      enable_meta_model=False profiles AND self-heals by deleting
+      leftover model files (GBM + SGD online). Both consumers were
+      already gated; the trainer was the leak. Found in the fix:
+      p215 is ALSO an ablation arm (item said p212 only) — both had
+      trained models (p212 AUC 0.82, p215 AUC 0.74); all four files
+      deleted live. The online model's incremental update can never
+      CREATE a bundle (pinned), so gate + deletion make the
+      subsystem structurally inert for ablation arms. Pinned:
+      test_meta_retrain_ablation_gate_2026_07_26.py (3).
 - [ ] P1.8 [inputs] Structurally-zero sources (finra_short_vol,
       activist_13dg, star_manager, risk_factor_diff,
       insider_track_records) + constant meta features (reddit_*,

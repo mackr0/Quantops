@@ -4280,6 +4280,30 @@ def _task_retrain_meta_model(ctx):
         import meta_model
         profile_id = getattr(ctx, "profile_id", 0)
         seg_label = ctx.display_name or ctx.segment
+        # P1.7 (2026-07-26) — ablation purity: the NoMetaModel arm must
+        # not TRAIN a model either. p212 trained an AUC-0.82 model it
+        # never used — wasted compute, and a standing risk that any
+        # future ungated reader quietly un-ablates the arm. Self-heals:
+        # leftover model files from before this gate are deleted here.
+        if not getattr(ctx, "enable_meta_model", True):
+            import os as _os
+            from online_meta_model import _model_path as _online_path
+            for _p in (meta_model.model_path_for_profile(profile_id),
+                       _online_path(profile_id, ".")):
+                try:
+                    if _os.path.exists(_p):
+                        _os.unlink(_p)
+                        logging.info(
+                            "[%s] Meta-model ablation purity: deleted "
+                            "leftover model file %s", seg_label, _p)
+                except OSError as _rm_exc:
+                    logging.warning(
+                        "[%s] Could not delete leftover model file %s: %s",
+                        seg_label, _p, _rm_exc)
+            logging.info(
+                "[%s] Meta-model retrain skipped — enable_meta_model=False "
+                "(NoMetaModel ablation arm trains nothing)", seg_label)
+            return
         bundle = meta_model.train_and_save(profile_id, ctx.db_path)
         if bundle is None:
             logging.info(f"[{seg_label}] Meta-model: insufficient training data yet")
