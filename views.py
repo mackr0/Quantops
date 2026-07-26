@@ -7106,9 +7106,16 @@ def api_autonomy_timeline():
         from models import _get_conn
         from display_names import display_name
         with closing(_get_conn()) as conn:
+            # 2026-07-26 — the column is `adjustment_type`; this query
+            # said `change_type`, threw OperationalError on EVERY call,
+            # and the except below swallowed it at debug — so the
+            # Autonomy Timeline showed "No autonomous changes" for
+            # every profile since the endpoint shipped, and the
+            # operator reasonably concluded the AI layers were dead.
             rows = conn.execute(
-                "SELECT timestamp, change_type, parameter_name, old_value, "
-                " new_value, reason, win_rate_at_change, outcome_after "
+                "SELECT timestamp, adjustment_type, parameter_name, "
+                " old_value, new_value, reason, win_rate_at_change, "
+                " outcome_after "
                 "FROM tuning_history "
                 "WHERE profile_id = ? "
                 "  AND datetime(timestamp) >= datetime('now', '-' || ? || ' days') "
@@ -7119,14 +7126,19 @@ def api_autonomy_timeline():
             events.append({
                 "timestamp": r["timestamp"],
                 "kind": "tuning",
-                "label": display_name(r["parameter_name"] or r["change_type"]),
+                "label": display_name(
+                    r["parameter_name"] or r["adjustment_type"]),
                 "from": r["old_value"], "to": r["new_value"],
                 "reason": r["reason"],
                 "outcome": r["outcome_after"],
                 "win_rate_at": r["win_rate_at_change"],
             })
     except Exception as exc:
-        logger.debug("tuning_history fetch failed: %s", exc)
+        # WARNING, not debug (2026-07-26): a failed source here blanks
+        # the whole timeline while looking like "no events" — the
+        # exact silent-failure shape that hid the schema drift above.
+        logger.warning("autonomy timeline: tuning_history fetch "
+                       "failed: %s", exc)
 
     # Per-profile DB events
     db_path = f"quantopsai_profile_{profile_id}.db"
