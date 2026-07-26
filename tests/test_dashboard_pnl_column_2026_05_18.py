@@ -90,8 +90,12 @@ def test_dashboard_totals_api_dropped_dead_book_totals():
     """The endpoint must not recompute the removed book-wide totals on
     every 30s poll (dead work + a vector for the dead UI to return)."""
     src = _views()
-    # Scope the check to the api_dashboard_totals function body.
-    start = src.index("def api_dashboard_totals(")
+    # Scope the check to the payload builder. 2026-07-26: the body was
+    # extracted from the route into _dashboard_totals_payload so the
+    # profile-medal context processor shares the same cached payload —
+    # the invariant (no dead book-wide totals, total_cost kept) lives
+    # wherever the payload is BUILT.
+    start = src.index("def _dashboard_totals_payload(")
     end = src.index("\n@views_bp.route", start)
     body = src[start:end]
     for dead in ('"total_equity"', '"total_pnl"',

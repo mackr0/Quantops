@@ -6230,35 +6230,24 @@ def api_positions_html(profile_id):
         return f"<p class='muted'>Failed to refresh: {exc}</p>", 500
 
 
-@views_bp.route("/api/dashboard-totals")
-@login_required
-def api_dashboard_totals():
-    """Live per-profile equity / cash / positions / P&L / AI-cost-today
-    snapshot for the dashboard overview. Polled by JS at 30s cadence
-    during market hours and 5min otherwise. Returns:
-      {profiles: [{id, name, equity, cash, num_positions, cost_today,
-                   initial_capital, pnl, pnl_pct}],
-       total_cost}
-    Book-wide equity/P&L/cash/position sums were dropped 2026-05-22 — not
-    additive across heterogeneous strategies; per-account P&L % (in each
-    row) is the cross-profile comparison. AI cost is the one true total.
-
-    Cached 30s per user — JS polls this every 30s, so every-poll
-    Alpaca calls were wasted (11 profiles × 2 calls = 22/poll).
-    See Issue 14 deep-dive in `AUDIT_2026_05_09.md`.
-    """
+def _dashboard_totals_payload(user_id):
+    """Compute (or serve cached) the per-profile totals payload —
+    extracted 2026-07-26 from the /api/dashboard-totals route so the
+    profile-medal context processor can reuse the SAME cached data
+    (one ranking source; the dropdown medals can never disagree with
+    the dashboard's)."""
     from models import get_active_profiles, build_user_context_from_profile
     from ai_cost_ledger import (
         spend_summary, by_model_today, merge_model_breakdowns,
         shadow_by_model_today)
     from client import get_account_info, get_positions
 
-    cache_key = ("api_dashboard_totals", current_user.effective_user_id)
+    cache_key = ("api_dashboard_totals", user_id)
     cached = _ttl_cache_get(cache_key)
     if cached is not None:
-        return jsonify(cached)
+        return cached
 
-    profiles = get_active_profiles(user_id=current_user.effective_user_id)
+    profiles = get_active_profiles(user_id=user_id)
     rows = []
     # AI cost is the only book-wide total still shown on the overview —
     # equity/P&L/cash/position sums were removed 2026-05-22 (not additive
@@ -6350,7 +6339,79 @@ def api_dashboard_totals():
     # we get here for any non-empty result. An empty `rows` list with
     # no profiles configured is still a valid payload to cache.
     _ttl_cache_set(cache_key, payload)
-    return jsonify(payload)
+    return payload
+
+
+@views_bp.route("/api/dashboard-totals")
+@login_required
+def api_dashboard_totals():
+    """Live per-profile equity / cash / positions / P&L / AI-cost-today
+    snapshot for the dashboard overview. Polled by JS at 30s cadence
+    during market hours and 5min otherwise. Returns:
+      {profiles: [{id, name, equity, cash, num_positions, cost_today,
+                   initial_capital, pnl, pnl_pct}],
+       total_cost}
+    Book-wide equity/P&L/cash/position sums were dropped 2026-05-22 — not
+    additive across heterogeneous strategies; per-account P&L % (in each
+    row) is the cross-profile comparison. AI cost is the one true total.
+
+    Cached 30s per user — JS polls this every 30s, so every-poll
+    Alpaca calls were wasted (11 profiles × 2 calls = 22/poll).
+    See Issue 14 deep-dive in `AUDIT_2026_05_09.md`.
+    """
+    return jsonify(
+        _dashboard_totals_payload(current_user.effective_user_id))
+
+
+def _medals_from_payload(payload) -> dict:
+    """{profile_id: 🥇/🥈/🥉} for the top 3 by pnl_pct — the SAME
+    ranking the dashboard's medal column and its JS refresh use."""
+    try:
+        rows = list((payload or {}).get("profiles") or [])
+        rows.sort(key=lambda p: float(p.get("pnl_pct") or 0),
+                  reverse=True)
+        medals = ["🥇", "🥈", "🥉"]
+        return {p["id"]: medals[i] for i, p in enumerate(rows[:3])}
+    except Exception:
+        return {}
+
+
+_MEDAL_WARM_MEMO: dict = {}
+_MEDAL_WARM_INTERVAL = 60.0
+
+
+@views_bp.app_context_processor
+def inject_profile_medals():
+    """Make `profile_medals` ({id: medal emoji}) available to EVERY
+    template so the profile dropdowns (trades / performance / ai /
+    ai-performance) show who's winning without visiting the dashboard
+    (operator request 2026-07-26).
+
+    CACHE-ONLY on the request path — this runs on every render, so it
+    must never add broker latency. On a cold cache it returns {} for
+    THIS render and kicks a once-per-minute background warm of the
+    same payload the dashboard uses; medals appear on the next
+    render. While the dashboard/API poll is active the cache is
+    always warm and this is a dict lookup."""
+    try:
+        if not getattr(current_user, "is_authenticated", False):
+            return {"profile_medals": {}}
+        uid = current_user.effective_user_id
+        cached = _ttl_cache_get(("api_dashboard_totals", uid))
+        if cached is not None:
+            return {"profile_medals": _medals_from_payload(cached)}
+        import threading
+        import time as _time
+        now = _time.time()
+        if now - _MEDAL_WARM_MEMO.get(uid, 0) >= _MEDAL_WARM_INTERVAL:
+            _MEDAL_WARM_MEMO[uid] = now
+            threading.Thread(
+                target=_dashboard_totals_payload, args=(uid,),
+                daemon=True, name=f"medal-warm-{uid}",
+            ).start()
+        return {"profile_medals": {}}
+    except Exception:
+        return {"profile_medals": {}}
 
 
 @views_bp.route("/api/cycle-data/<int:profile_id>")

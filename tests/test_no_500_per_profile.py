@@ -371,6 +371,13 @@ class TestNoApiRoute500s:
             out.append(path)
         return sorted(set(out))
 
+    # 2026-07-26 — slow-integration timeout (house rule: 30s default,
+    # 60s+ for slow integration tests). This test walks EVERY /api/*
+    # route × profile variations through real view code; under full-
+    # suite CPU load it exceeded the 30s default twice in two days
+    # (passes in ~12s standalone) — a scheduling flake, not a
+    # regression. The assertion (no 5xx anywhere) is unchanged.
+    @pytest.mark.timeout(120)
     def test_no_5xx_on_any_api_route(self, patched_user_with_profiles):
         client, app = _logged_in_client()
         routes = self._discover_api_routes(app)

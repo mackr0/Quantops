@@ -9,7 +9,7 @@
         <select name="profile_id" onchange="this.form.submit()" style="width:auto;margin:0;">
             <option value="">All Profiles</option>
             {% for p in profiles %}
-            <option value="{{ p.id }}" {{ 'selected' if selected_profile == p.id else '' }}>{{ p.name }}</option>
+            <option value="{{ p.id }}" {{ 'selected' if selected_profile == p.id else '' }}>{{ p.name }}{{ " " ~ profile_medals[p.id] if profile_medals.get(p.id) }}</option>
             {% endfor %}
         </select>
         {# Search input + button as a single visual unit. type="text"
