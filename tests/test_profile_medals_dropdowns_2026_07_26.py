@@ -41,6 +41,44 @@ class TestRanking:
         assert _medals_from_payload({"profiles": [{"id": 1}]}) == {1: "🥇"}
 
 
+class TestCrossProcessFallback:
+    """gunicorn runs multiple workers with independent in-process
+    caches — cache-only medals rendered flakily (operator: 'i do not
+    see the medals'). Any process that computes the payload persists
+    the ranking to a tiny file; every worker serves it instantly."""
+
+    def test_write_then_read_restores_int_keys(self, monkeypatch,
+                                               tmp_path):
+        import views
+        monkeypatch.setattr(views, "_MEDALS_FILE",
+                            str(tmp_path / "medals.json"))
+        payload = {"profiles": [
+            {"id": 218, "pnl_pct": 9.0}, {"id": 217, "pnl_pct": 5.0},
+            {"id": 211, "pnl_pct": 2.0}, {"id": 210, "pnl_pct": 1.0},
+        ]}
+        views._write_medals_file(1, payload)
+        m = views._read_medals_file(1)
+        assert m == {218: "🥇", 217: "🥈", 211: "🥉"}
+        assert all(isinstance(k, int) for k in m), (
+            "JSON stringifies keys; the reader must restore ints — "
+            "templates look up profile_medals by integer p.id"
+        )
+
+    def test_stale_file_ignored(self, monkeypatch, tmp_path):
+        import json, views
+        f = tmp_path / "medals.json"
+        monkeypatch.setattr(views, "_MEDALS_FILE", str(f))
+        f.write_text(json.dumps(
+            {"1": {"ts": 1000.0, "medals": {"218": "🥇"}}}))
+        assert views._read_medals_file(1) == {}
+
+    def test_missing_file_safe(self, monkeypatch, tmp_path):
+        import views
+        monkeypatch.setattr(views, "_MEDALS_FILE",
+                            str(tmp_path / "nope.json"))
+        assert views._read_medals_file(1) == {}
+
+
 class TestStructural:
     def test_context_processor_registered_cache_only(self):
         src = open(os.path.join(

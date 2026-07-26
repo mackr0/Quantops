@@ -6339,7 +6339,61 @@ def _dashboard_totals_payload(user_id):
     # we get here for any non-empty result. An empty `rows` list with
     # no profiles configured is still a valid payload to cache.
     _ttl_cache_set(cache_key, payload)
+    _write_medals_file(user_id, payload)
     return payload
+
+
+_MEDALS_FILE = "/opt/quantopsai/.medals_cache.json"
+_MEDALS_FILE_TTL = 600.0
+
+
+def _write_medals_file(user_id, payload) -> None:
+    """Persist the medal ranking cross-process (2026-07-26): gunicorn
+    runs multiple workers, each with an independent in-process TTL
+    cache, so cache-only medals appeared flakily — whichever worker
+    served the request might never have computed the payload. Any
+    process that computes it (any web worker, a warm thread, an
+    external script) writes this tiny file atomically; every worker's
+    context processor can then serve medals instantly. Best-effort:
+    failures only cost medals, never a page."""
+    import json as _json
+    import os as _os
+    import time as _time
+    try:
+        data = {}
+        try:
+            with open(_MEDALS_FILE) as fh:
+                data = _json.load(fh) or {}
+        except (OSError, ValueError):
+            data = {}
+        data[str(user_id)] = {
+            "ts": _time.time(),
+            "medals": {str(k): v for k, v in
+                       _medals_from_payload(payload).items()},
+        }
+        tmp = _MEDALS_FILE + ".tmp"
+        with open(tmp, "w") as fh:
+            _json.dump(data, fh)
+        _os.replace(tmp, _MEDALS_FILE)
+    except Exception as exc:
+        logger.debug("medals file write failed: %s", exc)
+
+
+def _read_medals_file(user_id) -> dict:
+    """Cross-process medal fallback — microsecond file read, int keys
+    restored (JSON stringifies them; templates look up by int id)."""
+    import json as _json
+    import time as _time
+    try:
+        with open(_MEDALS_FILE) as fh:
+            data = _json.load(fh) or {}
+        entry = data.get(str(user_id)) or {}
+        if _time.time() - float(entry.get("ts", 0)) > _MEDALS_FILE_TTL:
+            return {}
+        return {int(k): v for k, v in
+                (entry.get("medals") or {}).items()}
+    except Exception:
+        return {}
 
 
 @views_bp.route("/api/dashboard-totals")
@@ -6400,6 +6454,11 @@ def inject_profile_medals():
         cached = _ttl_cache_get(("api_dashboard_totals", uid))
         if cached is not None:
             return {"profile_medals": _medals_from_payload(cached)}
+        # Cross-process fallback (2026-07-26): another gunicorn worker
+        # (or a warm thread anywhere) may have computed the payload —
+        # serve its persisted medals instantly instead of rendering
+        # bare while THIS worker warms.
+        file_medals = _read_medals_file(uid)
         import threading
         import time as _time
         now = _time.time()
@@ -6409,7 +6468,7 @@ def inject_profile_medals():
                 target=_dashboard_totals_payload, args=(uid,),
                 daemon=True, name=f"medal-warm-{uid}",
             ).start()
-        return {"profile_medals": {}}
+        return {"profile_medals": file_medals}
     except Exception:
         return {"profile_medals": {}}
 
