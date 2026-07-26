@@ -115,6 +115,22 @@ for proj in "${PROJECTS_TO_RUN[@]}"; do
     fi
 done
 
+# Enrichment pass — stamps tickers + backfills 13F periods on the
+# rows the scrapers just inserted (2026-07-26 connections audit:
+# without this, 13F/biotech rows are invisible to the per-symbol
+# readers). Idempotent; a failure here must not mask scraper status.
+echo ""
+echo "----------------------------------------------------------------------"
+echo "[enrich] altdata_enrich (ticker stamping + 13F period backfill)"
+echo "----------------------------------------------------------------------"
+if (cd "$REPO_ROOT" && "$VENV_PYTHON" altdata_enrich.py); then
+    echo "  ✓ enrichment done"
+    SUCCEEDED+=("enrich")
+else
+    echo "  ✗ enrichment failed"
+    FAILED+=("enrich (run error)")
+fi
+
 END_TIME=$(date -u +%s)
 ELAPSED=$((END_TIME - START_TIME))
 

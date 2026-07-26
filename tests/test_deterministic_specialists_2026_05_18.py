@@ -526,8 +526,16 @@ _FIRE_CASES = [
       "alt_data": {"stocktwits_sentiment": {"net_sentiment_7d": -0.4}}},
      "CAUTION", None),
     ("stocktwits_data_absent",
+     # 2026-07-26: the positive case now requires covered=True — the
+     # scraper tracks the symbol and it STILL has no chatter. An
+     # untracked symbol (covered missing/False) is a coverage gap,
+     # not a signal, and must not fire (pinned in
+     # test_altdata_reconnect_2026_07_26.py).
      {"signal": "BUY", "price": 20.0,
-      "alt_data": {"insider": {"net_direction": "neutral"}}},
+      "alt_data": {"insider": {"net_direction": "neutral"},
+                   "stocktwits_sentiment": {"covered": True,
+                                            "message_count_7d": 0,
+                                            "net_sentiment_7d": None}}},
      "CAUTION", None),
     ("macro_oil_vol_high",
      {"signal": "BUY",

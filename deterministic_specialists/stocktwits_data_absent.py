@@ -16,6 +16,13 @@ def evaluate(candidate: Dict[str, Any], ctx: Any = None) -> Optional[Dict[str, A
         return None
     if s.get("has_data") or s.get("net_sentiment_7d") is not None:
         return None
+    # Absence is only a signal when the scraper actually tracks this
+    # symbol (covered=True but no chatter). Before the 2026-07-26
+    # universe expansion the watchlist held 37 tickers, so this
+    # specialist fired a false CAUTION on every small-cap outside it —
+    # reading our own coverage gap as "no retail attention".
+    if not s.get("covered"):
+        return None
     p = candidate.get("price")
     if p is None:
         return None

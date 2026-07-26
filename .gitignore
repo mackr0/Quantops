@@ -41,3 +41,4 @@ scheduler_status.json
 osha_proxy/.wrangler/
 deploy_logs/
 .medals_cache.json*
+altdata/company_tickers.json

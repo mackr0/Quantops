@@ -153,7 +153,12 @@ def list_13f_filings_for_filer(
     recent = data.get("filings", {}).get("recent", {})
     forms = recent.get("form", [])
     acc_nums = recent.get("accessionNumber", [])
-    periods = recent.get("periodOfReport", [])
+    # SEC's submissions JSON names the period field "reportDate"
+    # (NOT "periodOfReport" — that name only appears inside the
+    # filing documents themselves). The wrong key + the _safe("")
+    # fallback below silently stored '' for every filing until the
+    # 2026-07-26 audit.
+    periods = recent.get("reportDate") or recent.get("periodOfReport") or []
     filed = recent.get("filingDate", [])
     primary_docs = recent.get("primaryDocument", [])
 

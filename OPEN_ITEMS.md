@@ -27,9 +27,23 @@ running cohort: [none] = no trading change; [inputs] = restores
 DESIGNED AI inputs; [exec] = execution change, operator times it.
 
 **Phase 1 — silently broken (all ⏳ free):**
-- [ ] P1.1 [inputs] Alt-data reconnect: readers return empties against
-      healthy local DBs (13F 965k rows, StockTwits 65k, biotech 50k).
-      ALTDATA_BASE_PATH unset; ticker↔CIK join broken.
+- [x] P1.1 [inputs] Alt-data reconnect — RESOLVED 2026-07-26. Real
+      causes (paths were fine): 13F ticker on 1.2% of 965k rows
+      (35-CUSIP hand seed) + period_of_report '' on ALL filings
+      (scraper read "periodOfReport"; SEC calls it "reportDate") +
+      QoQ summed ALL prior quarters (SUM+LIMIT no-op) → every QoQ
+      ≈−100%; biotech ticker on 6.4% (hand sponsor map); StockTwits
+      watchlist 37 vs ~400-symbol universe, and stocktwits_data_absent
+      fired CAUTION off our own coverage gap. Shipped: altdata_enrich.py
+      (SEC-registrant name matching; equity-class-only stamping;
+      period backfill incl. paginated submissions) wired into
+      run-altdata-daily.sh; reportDate key fix; per-filer-latest
+      reader fallback; QoQ = immediately-preceding quarter; covered
+      flag + specialist guard; universe watchlist. Backfilled live:
+      443k holdings rows stamped (47%), 581/581 periods, +1,561
+      trials; 13F informative 13/14 universe probe (was ~0);
+      stale cache purged (2,256 rows). Pinned:
+      test_altdata_reconnect_2026_07_26.py (19).
 - [ ] P1.2 [inputs] Dark pool: 86% of payloads are 2023-11-06 data
       served as current; extraction reads nonexistent key
       `ats_pct_of_total` (trade_pipeline.py:3153).

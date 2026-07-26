@@ -59,6 +59,30 @@ DEFAULT_WATCHLIST = [
 ]
 
 
+def _universe_watchlist() -> List[str]:
+    """Quantops trading universe (segments.STOCK_UNIVERSE) plus the
+    historical defaults, order-preserving and deduped.
+
+    2026-07-26 connections audit: the scraper tracked 37 tickers
+    while the platform trades a ~400-symbol universe, so the
+    stocktwits reader returned nothing for ~90% of candidates.
+    Tracking the real universe closes that gap. Raises on import
+    failure so the caller can fall back."""
+    import sys
+    repo_root = str(Path(__file__).resolve().parents[3])
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    from segments import STOCK_UNIVERSE
+    seen = set()
+    out: List[str] = []
+    for sym in list(STOCK_UNIVERSE) + DEFAULT_WATCHLIST:
+        s = sym.strip().upper()
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+
 def _load_watchlist() -> List[str]:
     if WATCHLIST_FILE.exists():
         text = WATCHLIST_FILE.read_text().strip()
@@ -66,7 +90,13 @@ def _load_watchlist() -> List[str]:
             line.strip().upper() for line in text.splitlines()
             if line.strip() and not line.strip().startswith("#")
         ]
-    return DEFAULT_WATCHLIST
+    try:
+        return _universe_watchlist()
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "universe watchlist unavailable (%s) — using the 37-ticker "
+            "default", exc)
+        return DEFAULT_WATCHLIST
 
 
 def _setup_logging(verbose: bool):
@@ -92,9 +122,12 @@ def cli(ctx, verbose):
 def daily_(max_tickers, skip_trending):
     """One-button refresh — every ticker on the watchlist + trending.
 
-    Default watchlist is ~37 tickers. With 20s/req politeness, full
-    daily run takes ~13-14 minutes. Override by writing one ticker per
-    line to ~/stocktwits_watchlist.txt.
+    Default watchlist is the Quantops trading universe (~400
+    tickers). With 20s/req politeness (~180 req/hr, under the 200/hr
+    unauthenticated limit) a full daily run takes ~2.5 hours — fine
+    for the 06:00 UTC cron, done hours before the 13:30 UTC open.
+    Override by writing one ticker per line to
+    ~/stocktwits_watchlist.txt.
     """
     watchlist = _load_watchlist()
     if max_tickers:

@@ -1310,6 +1310,7 @@ def _altdata_query(project: str, db_filename: str, sql: str,
     locked DB)."""
     path = _altdata_db(project, db_filename)
     if not os.path.exists(path):
+        # Expected on hosts without the altdata/ deploy — not an error.
         return []
     try:
         with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True,
@@ -1318,7 +1319,12 @@ def _altdata_query(project: str, db_filename: str, sql: str,
             rows = conn.execute(sql, params).fetchall()
         return rows
     except Exception as exc:
-        logger.debug("altdata query failed (%s): %s", project, exc)
+        # The DB exists but the query failed (schema drift, lock,
+        # corruption) — that is a real defect, and at debug level it
+        # hid the broken 13F/biotech joins for months (2026-07-26
+        # audit). Warn so /issues surfaces it.
+        logger.warning("altdata query failed (%s/%s): %s: %s",
+                       project, db_filename, type(exc).__name__, exc)
         return []
 
 
@@ -1424,13 +1430,18 @@ def get_13f_institutional(symbol: str) -> Dict[str, Any]:
     latest_q = latest[0]["latest_quarter"] or ""
     has_period = bool(latest_q)
 
-    # Aggregate the latest quarter (or all matching rows if
-    # period_of_report isn't populated on this DB).
+    # Aggregate the latest quarter. If period_of_report isn't
+    # populated (pre-enrichment DB), restrict to each filer's LATEST
+    # filing instead — summing across all filings would double-count
+    # every quarter a filer held the name (the 2026-07-26 audit found
+    # exactly that: all 581 filings had period '' and the totals
+    # mixed 3+ years of quarters).
     if has_period:
         period_clause = "AND f.period_of_report = ?"
         period_params = (symbol, latest_q)
     else:
-        period_clause = ""
+        period_clause = ("AND f.filed_date = (SELECT MAX(f2.filed_date) "
+                         "FROM filings f2 WHERE f2.cik = f.cik)")
         period_params = (symbol,)
 
     rows = _altdata_query(
@@ -1467,6 +1478,11 @@ def get_13f_institutional(symbol: str) -> Dict[str, Any]:
     # Prior quarter for QoQ delta — only meaningful with period data
     prior_rows = []
     if has_period:
+        # NOTE: SUM() collapses to a single row, so "ORDER BY ...
+        # LIMIT 1" cannot pick the newest prior quarter — the original
+        # form summed shares across EVERY prior quarter and made every
+        # QoQ read ≈ -100% (2026-07-26 audit). Resolve the immediately
+        # preceding quarter first, then aggregate within it.
         prior_rows = _altdata_query(
             "edgar13f", "edgar13f.db",
             """
@@ -1474,11 +1490,17 @@ def get_13f_institutional(symbol: str) -> Dict[str, Any]:
             FROM holdings h
             JOIN filings f ON h.accession_number = f.accession_number
             WHERE UPPER(h.ticker) = UPPER(?)
-              AND f.period_of_report < ?
-              AND f.period_of_report != ''
-            ORDER BY f.period_of_report DESC LIMIT 1
+              AND (h.put_call IS NULL OR h.put_call = '')
+              AND f.period_of_report = (
+                  SELECT MAX(f2.period_of_report)
+                  FROM holdings h2
+                  JOIN filings f2
+                    ON h2.accession_number = f2.accession_number
+                  WHERE UPPER(h2.ticker) = UPPER(?)
+                    AND f2.period_of_report < ?
+                    AND f2.period_of_report != '')
             """,
-            (symbol, latest_q),
+            (symbol, symbol, latest_q),
         )
 
     result = {
@@ -1681,7 +1703,19 @@ def get_stocktwits_sentiment(symbol: str) -> Dict[str, Any]:
         (symbol,),
     )
 
+    # Coverage honesty (2026-07-26): distinguish "the scraper does
+    # not track this symbol" from "tracked, but genuinely no chatter".
+    # Consumers (e.g. the stocktwits_data_absent specialist) must not
+    # read our own coverage gap as a bearish-liquidity signal.
+    covered_rows = _altdata_query(
+        "stocktwits", "stocktwits.db",
+        "SELECT 1 FROM ticker_sentiment_daily "
+        "WHERE UPPER(ticker) = UPPER(?) LIMIT 1",
+        (symbol,),
+    )
+
     result: Dict[str, Any] = {
+        "covered": bool(covered_rows),
         "message_count_7d": 0,
         "net_sentiment_7d": None,
         "vs_avg_message_count": None,
