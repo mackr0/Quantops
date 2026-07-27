@@ -2369,7 +2369,15 @@ def reset_segment(segment):
 @views_bp.route("/trades")
 @login_required
 def trades():
-    profiles = [p for p in get_user_profiles(current_user.effective_user_id) if p.get("enabled")]
+    # 2026-07-27 (operator request) — exclude the baseline/benchmark
+    # control profiles (BuyHoldSPY / RandomA / RandomB) like every
+    # other page and dropdown does: controls aren't part of "the
+    # book" (same is_baseline_profile predicate the dashboard
+    # aggregate uses). This scopes BOTH the profile dropdown and the
+    # all-profiles trade list.
+    from profile_classification import is_baseline_profile
+    profiles = [p for p in get_user_profiles(current_user.effective_user_id)
+                if p.get("enabled") and not is_baseline_profile(p)]
 
     # Parse optional profile filter
     selected_profile = request.args.get("profile_id", "", type=str)
