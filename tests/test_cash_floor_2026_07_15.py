@@ -43,11 +43,13 @@ import config
 @pytest.fixture
 def profile_db(tmp_path):
     path = str(tmp_path / "quantopsai_profile_9.db")
+    # 2026-07-27 fail-closed sweep: the hand-rolled minimal table
+    # (no timestamp column) now correctly RAISES in
+    # get_virtual_positions — a mis-migrated schema must never read
+    # as a flat book. Build the REAL schema instead.
+    from journal import init_db
+    init_db(path)
     conn = sqlite3.connect(path)
-    conn.execute(
-        "CREATE TABLE trades (id INTEGER PRIMARY KEY, symbol TEXT, "
-        "occ_symbol TEXT, side TEXT, qty REAL, price REAL, "
-        "fill_price REAL, status TEXT, data_quality TEXT)")
     rows = [
         # open long: buy 10 @ decision 100, filled 101 → cash -1010
         ("AAPL", None, "buy", 10, 100.0, 101.0, "open", None),

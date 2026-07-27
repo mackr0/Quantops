@@ -218,9 +218,10 @@ def test_filled_orders_excluded_from_audit(tmp_path):
 # 6. API errors don't crash
 # ---------------------------------------------------------------------------
 
-def test_api_error_returns_empty_for_that_account(tmp_path):
-    """If list_orders raises, the audit logs a warning and the account
-    contributes 0 manual orders + 0 known — doesn't crash."""
+def test_api_error_marks_account_unverifiable(tmp_path):
+    """2026-07-27 fail-closed sweep: a failed list_orders used to
+    read as '0 manual orders' — silently suppressing manual-order
+    alerts. It now marks the account UNVERIFIABLE."""
     from aggregate_audit import audit_manual_broker_orders
     db = _make_journal(tmp_path, "p1", order_ids=["sys"])
     api = MagicMock()
@@ -229,7 +230,8 @@ def test_api_error_returns_empty_for_that_account(tmp_path):
     with _patch_build_ctx(profiles, api):
         out = audit_manual_broker_orders(profile_ids=[1])
     assert out["manual"] == []
-    assert out["accounts"][13]["total_broker_active"] == 0
+    assert out["accounts"][13].get("unverifiable") is True
+    assert out["unverifiable_accounts"] == [13]
 
 
 # ---------------------------------------------------------------------------

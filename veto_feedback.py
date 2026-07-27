@@ -51,12 +51,12 @@ def load_veto_discounts(db_path) -> Dict[Tuple[str, str], float]:
         # veto-quality per pair (needs enough RESOLVED would-be outcomes)
         quality: Dict[Tuple[str, str], float] = {}
         for strategy, sector, resolved, losses in \
-                option_veto_quality_counts(db_path):
+                (option_veto_quality_counts(db_path) or []):
             if resolved >= _MIN_RESOLVED:
                 quality[(str(strategy), str(sector or ""))] = (
                     (losses / resolved) if resolved > 0 else 1.0)
         out: Dict[Tuple[str, str], float] = {}
-        for strategy, sector, vetoed, total in option_veto_counts(db_path):
+        for strategy, sector, vetoed, total in (option_veto_counts(db_path) or []):
             if not strategy or total < _MIN_SAMPLES:
                 continue
             key = (str(strategy), str(sector or ""))
@@ -132,7 +132,7 @@ def resolve_option_proposal_outcomes(db_path, spot_lookup, today):
                          row.get("id"), exc)
 
     resolved = 0
-    for row in pending_veto_outcomes(db_path, today):
+    for row in (pending_veto_outcomes(db_path, today) or []):
         try:
             spot = spot_lookup(row.get("symbol"), row.get("expiry"))
             pnl = None

@@ -157,13 +157,16 @@ class TestGetRecentBrokerRejections:
         finally:
             os.unlink(db)
 
-    def test_db_read_failure_returns_empty_logs_warning(self, caplog):
+    def test_db_read_failure_returns_none_logs_warning(self, caplog):
+        """2026-07-27 fail-closed sweep: a failed read is UNVERIFIABLE
+        (None), never 'no rejections' — [] hid real rejections behind
+        any DB hiccup."""
         import logging
         from journal import get_recent_broker_rejections
         with patch("journal._get_conn",
                    side_effect=RuntimeError("DB locked")):
             with caplog.at_level(logging.WARNING):
                 rows = get_recent_broker_rejections("/nope.db")
-        assert rows == []
+        assert rows is None
         assert any("get_recent_broker_rejections" in r.getMessage()
                    for r in caplog.records)

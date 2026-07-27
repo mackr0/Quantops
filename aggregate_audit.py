@@ -112,8 +112,17 @@ def _journal_open_qty_per_symbol(db_path: str) -> Dict[str, float]:
             # audit false-flags a broker_orphan (2026-05-06 class).
             include_unpriced=True,
         )
-    except Exception:
-        return out
+    except Exception as exc:
+        # 2026-07-27 fail-closed sweep: an unreadable journal is NOT
+        # an empty journal. Returning {} here made every broker
+        # position on the account read as a broker_orphan. Refuse —
+        # the caller marks the profile errored/unverifiable.
+        logger.warning(
+            "aggregate_audit: journal read failed for %s: %s — "
+            "profile UNVERIFIABLE this pass (never treated as flat).",
+            db_path, exc,
+        )
+        return None
     for p in positions:
         try:
             occ = getattr(p, "occ_symbol", None)
@@ -141,15 +150,24 @@ def _journal_open_qty_per_symbol(db_path: str) -> Dict[str, float]:
             out[eff] = out.get(eff, 0.0) + qty
     return out
 
-def _broker_qty_per_symbol(api) -> Dict[str, float]:
+def _broker_qty_per_symbol(api):
     """Symbol → signed qty for everything the broker shows on this
-    account. Negative = short."""
+    account. Negative = short. Returns None (UNVERIFIABLE) when the
+    broker read fails.
+
+    2026-07-27 fail-closed sweep: returning {} on a failed
+    list_positions told the qty audit "the broker holds nothing" and
+    fanned out one fake journal_phantom ERROR per journal symbol —
+    the 48-error incident. Unverifiable is not flat."""
     out: Dict[str, float] = {}
     try:
         positions = api.list_positions()
     except Exception as exc:
-        logger.warning("aggregate_audit: list_positions failed: %s", exc)
-        return out
+        logger.warning(
+            "aggregate_audit: list_positions failed: %s — account "
+            "qty parity UNVERIFIABLE this pass (never treated as "
+            "flat).", exc)
+        return None
     for p in positions:
         sym = (getattr(p, "symbol", "") or "").upper()
         try:
@@ -187,6 +205,7 @@ def audit_aggregate_drift(profile_ids: Iterable[int],
     journal_per_acct: Dict[int, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
     api_per_acct: Dict[int, object] = {}
     errored: List[int] = []
+    unverifiable_accts: set = set()
 
     for p_id in profile_ids:
         try:
@@ -206,13 +225,27 @@ def audit_aggregate_drift(profile_ids: Iterable[int],
         # Sum this profile's open virtual qty per symbol into the
         # per-account aggregate.
         per_sym = _journal_open_qty_per_symbol(ctx.db_path)
+        if per_sym is None:
+            # 2026-07-27 fail-closed sweep: unreadable journal — the
+            # whole ACCOUNT is unverifiable this pass (its aggregate
+            # can't be computed without this profile's legs).
+            errored.append(p_id)
+            unverifiable_accts.add(acct)
+            continue
         for sym, qty in per_sym.items():
             journal_per_acct[acct][sym] += qty
 
     # Broker aggregates
     broker_per_acct: Dict[int, Dict[str, float]] = {}
     for acct, api in api_per_acct.items():
-        broker_per_acct[acct] = _broker_qty_per_symbol(api)
+        b = _broker_qty_per_symbol(api)
+        if b is None:
+            # 2026-07-27 fail-closed sweep: failed broker read — the
+            # account is UNVERIFIABLE, never compared against "flat"
+            # (the 48-fake-phantom incident).
+            unverifiable_accts.add(acct)
+            continue
+        broker_per_acct[acct] = b
 
     # Compare per (account, symbol). Drift kind classification is
     # by ABSOLUTE qty, not signed: a broker short with no matching
@@ -221,6 +254,12 @@ def audit_aggregate_drift(profile_ids: Iterable[int],
     accounts: Dict[int, Dict[str, Dict[str, float]]] = {}
     drift: List[Dict] = []
     for acct in set(list(journal_per_acct.keys()) + list(broker_per_acct.keys())):
+        if acct in unverifiable_accts:
+            continue
+        if acct not in broker_per_acct:
+            # No broker aggregate (read refused above) — never
+            # compare journal symbols against an implicit zero.
+            continue
         symbols = set(journal_per_acct[acct].keys()) | set(broker_per_acct.get(acct, {}).keys())
         accounts[acct] = {}
         for sym in symbols:
@@ -243,7 +282,8 @@ def audit_aggregate_drift(profile_ids: Iterable[int],
                     "kind": kind,
                 })
 
-    return {"accounts": accounts, "drift": drift, "errored": errored}
+    return {"accounts": accounts, "drift": drift, "errored": errored,
+            "unverifiable_accounts": sorted(unverifiable_accts)}
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -356,10 +396,14 @@ def _broker_active_orders(api) -> List[Dict]:
     try:
         orders = api.list_orders(status="open", limit=500)
     except Exception as exc:
+        # 2026-07-27 fail-closed sweep: a failed list_orders is not
+        # "no active orders" — that silently suppresses manual-order
+        # alerts. Refuse; the caller marks the account unverifiable.
         logger.warning(
-            "manual-order audit: list_orders failed: %s", exc,
+            "manual-order audit: list_orders failed: %s — account "
+            "UNVERIFIABLE this pass.", exc,
         )
-        return []
+        return None
     out: List[Dict] = []
     for o in orders or []:
         status = (getattr(o, "status", "") or "").lower()
@@ -433,8 +477,15 @@ def audit_manual_broker_orders(profile_ids: Iterable[int]) -> Dict:
 
     accounts: Dict[int, Dict] = {}
     manual_flat: List[Dict] = []
+    unverifiable_accts: List[int] = []
     for acct, api in api_per_acct.items():
         broker_orders = _broker_active_orders(api)
+        if broker_orders is None:
+            # 2026-07-27 fail-closed sweep: failed read — report
+            # unverifiable, don't silently report "0 manual orders".
+            accounts[acct] = {"unverifiable": True}
+            unverifiable_accts.append(acct)
+            continue
         journal_ids = journal_ids_per_acct.get(acct, set())
         manual = [o for o in broker_orders
                    if o["order_id"] not in journal_ids]
@@ -450,6 +501,7 @@ def audit_manual_broker_orders(profile_ids: Iterable[int]) -> Dict:
         "accounts": accounts,
         "manual": manual_flat,
         "errored": errored,
+        "unverifiable_accounts": sorted(unverifiable_accts),
     }
 
 
@@ -522,11 +574,15 @@ def _journal_positions_value(db_path: str, price_fetcher=None) -> float:
             db_path=db_path, price_fetcher=price_fetcher,
         )
     except Exception as exc:
+        # 2026-07-27 fail-closed sweep: an unreadable journal is not a
+        # $0 journal — refuse; the caller marks the account
+        # UNVERIFIABLE instead of drifting against a fabricated zero.
         logger.warning(
             "aggregate_audit value-parity: get_virtual_positions failed "
-            "for %s: %s: %s", db_path, type(exc).__name__, exc,
+            "for %s: %s: %s — profile UNVERIFIABLE this pass.",
+            db_path, type(exc).__name__, exc,
         )
-        return 0.0
+        return None
     return sum(
         float(p.get("market_value", 0) or 0)
         for p in positions
@@ -543,15 +599,24 @@ def _broker_positions_value(api) -> float:
 
     Option legs are EXCLUDED (2026-06-29) to match the journal side —
     value-parity is a STOCK-only dollar check; option position truth is
-    enforced by per-OCC quantity parity. See _journal_positions_value."""
+    enforced by per-OCC quantity parity. See _journal_positions_value.
+
+    2026-07-27: returns None (NOT 0.0) when the broker read fails. A
+    failed read used to report "the broker holds $0.00" and the caller
+    compared that against the journals — one transient list_positions
+    failure rendered a screaming −$481,798 journal_value_phantom on
+    the issues page while the books were fine. Unverifiable is not
+    zero; the caller marks the account UNVERIFIABLE and skips the
+    comparison."""
     try:
         positions = api.list_positions()
     except Exception as exc:
         logger.warning(
-            "aggregate_audit value-parity: list_positions failed: %s",
+            "aggregate_audit value-parity: list_positions failed: %s "
+            "— account value UNVERIFIABLE this pass (never $0).",
             exc,
         )
-        return 0.0
+        return None
     total = 0.0
     for p in positions:
         if _is_broker_option_position(p):
@@ -626,17 +691,38 @@ def audit_account_value_parity(
         except Exception:
             fetcher = None
         v = _journal_positions_value(ctx.db_path, price_fetcher=fetcher)
+        if v is None:
+            # 2026-07-27 fail-closed sweep: one unreadable profile
+            # journal makes the whole ACCOUNT sum unverifiable.
+            errored.append(p_id)
+            by_account[acct]["unverifiable"] = True
+            by_account[acct]["profile_ids"].append(p_id)
+            continue
         by_account[acct]["journal_value"] += v
         by_account[acct]["profile_ids"].append(p_id)
 
     accounts: Dict[int, Dict] = {}
     drift: List[Dict] = []
+    unverifiable: List[Dict] = []
     for acct, info in by_account.items():
         api = info["api"]
         if api is None:
             continue
         broker_value = _broker_positions_value(api)
         journal_value = round(info["journal_value"], 2)
+        if broker_value is None or info.get("unverifiable"):
+            # 2026-07-27 — failed broker OR journal read: report
+            # UNVERIFIABLE, never compare against a fabricated $0.
+            row = {
+                "account": acct,
+                "broker_value": None,
+                "journal_value": journal_value,
+                "kind": "unverifiable",
+                "profile_ids": sorted(info["profile_ids"]),
+            }
+            accounts[acct] = row
+            unverifiable.append(row)
+            continue
         broker_value = round(broker_value, 2)
         d = round(broker_value - journal_value, 2)
         tol = max(tolerance_abs, abs(broker_value) * tolerance_pct)
@@ -657,20 +743,30 @@ def audit_account_value_parity(
             )
             drift.append(row)
 
-    return {"accounts": accounts, "drift": drift, "errored": errored}
+    return {"accounts": accounts, "drift": drift, "errored": errored,
+            "unverifiable": unverifiable}
 
 
 def format_value_drift_summary(audit: Dict) -> str:
     drift = audit.get("drift", [])
-    if not drift:
+    unverifiable = audit.get("unverifiable", [])
+    if not drift and not unverifiable:
         return "value-parity audit: 0 drift items, all account values match"
-    lines = [f"value-parity audit: {len(drift)} drift item(s)"]
-    for d in drift:
+    lines = []
+    if drift:
+        lines.append(f"value-parity audit: {len(drift)} drift item(s)")
+        for d in drift:
+            lines.append(
+                f"  acct{d['account']}: broker=${d['broker_value']:>12,.2f}  "
+                f"journal=${d['journal_value']:>12,.2f}  "
+                f"drift=${d['drift']:>+12,.2f}  "
+                f"(tol=${d['tolerance']:,.2f}, {d.get('kind', '?')})"
+            )
+    for u in unverifiable:
         lines.append(
-            f"  acct{d['account']}: broker=${d['broker_value']:>12,.2f}  "
-            f"journal=${d['journal_value']:>12,.2f}  "
-            f"drift=${d['drift']:>+12,.2f}  "
-            f"(tol=${d['tolerance']:,.2f}, {d.get('kind', '?')})"
+            f"  acct{u['account']}: UNVERIFIABLE this pass (broker read "
+            f"failed; journal=${u['journal_value']:,.2f} not compared — "
+            "a failed read is not $0)"
         )
     return "\n".join(lines)
 
@@ -696,22 +792,27 @@ _CASH_TOLERANCE_ABS = 50.0
 _CASH_TOLERANCE_PCT = 0.001
 
 
-def _broker_cash(api) -> float:
-    """Broker's reported cash for this account. 0.0 on failure
-    (logged loudly)."""
+def _broker_cash(api):
+    """Broker's reported cash for this account. None (UNVERIFIABLE)
+    on failure — 2026-07-27 fail-closed sweep: a failed get_account
+    is not $0 of cash; comparing a fabricated zero manufactures a
+    full-account cash-parity ERROR."""
     try:
         account = api.get_account()
         return float(getattr(account, "cash", 0) or 0)
     except Exception as exc:
         logger.warning(
-            "aggregate_audit cash-parity: get_account failed: %s", exc,
+            "aggregate_audit cash-parity: get_account failed: %s — "
+            "account cash UNVERIFIABLE this pass.", exc,
         )
-        return 0.0
+        return None
 
 
-def _journal_cash(db_path: str, initial_capital: float) -> float:
+def _journal_cash(db_path: str, initial_capital: float):
     """One profile's virtual cash (same algebra as
-    journal.get_virtual_account_info, but isolated to a single profile)."""
+    journal.get_virtual_account_info, but isolated to a single
+    profile). None (UNVERIFIABLE) on failure — 2026-07-27 fail-closed
+    sweep: an unreadable journal is not $0 of cash."""
     from journal import get_virtual_account_info
     try:
         info = get_virtual_account_info(
@@ -721,9 +822,10 @@ def _journal_cash(db_path: str, initial_capital: float) -> float:
     except Exception as exc:
         logger.warning(
             "aggregate_audit cash-parity: get_virtual_account_info "
-            "failed for %s: %s: %s", db_path, type(exc).__name__, exc,
+            "failed for %s: %s: %s — profile cash UNVERIFIABLE this "
+            "pass.", db_path, type(exc).__name__, exc,
         )
-        return 0.0
+        return None
 
 
 # Account-level fee cache: fees only accrue daily (post-close), so a
@@ -821,16 +923,41 @@ def audit_account_cash_parity(
             getattr(ctx, "initial_capital", 0) or 0
         )
         cash = _journal_cash(ctx.db_path, initial_capital)
+        if cash is None:
+            # 2026-07-27 fail-closed sweep: one unreadable profile
+            # journal makes the whole ACCOUNT cash sum unverifiable.
+            errored.append(p_id)
+            by_account[acct]["unverifiable"] = True
+            by_account[acct]["profile_ids"].append(p_id)
+            continue
         by_account[acct]["journal_cash"] += cash
         by_account[acct]["profile_ids"].append(p_id)
 
     accounts: Dict[int, Dict] = {}
     drift: List[Dict] = []
+    unverifiable: List[Dict] = []
     for acct, info in by_account.items():
         api = info["api"]
         if api is None:
             continue
-        broker_cash = round(_broker_cash(api), 2)
+        _bc = _broker_cash(api)
+        if _bc is None or info.get("unverifiable"):
+            # 2026-07-27 fail-closed sweep — failed broker OR journal
+            # read: report UNVERIFIABLE, never drift against a
+            # fabricated $0.
+            row = {
+                "account": acct,
+                "broker_cash": None,
+                "journal_cash": (round(info["journal_cash"], 2)
+                                 if not info.get("unverifiable")
+                                 else None),
+                "kind": "unverifiable",
+                "profile_ids": sorted(info["profile_ids"]),
+            }
+            accounts[acct] = row
+            unverifiable.append(row)
+            continue
+        broker_cash = round(_bc, 2)
         journal_cash = round(info["journal_cash"], 2)
         # 2026-07-25 — account-level broker FEES (Alpaca paper charges
         # real TAF/ORF/CAT fees: 79 rows, −$16.16 in the cohort's first
@@ -858,7 +985,8 @@ def audit_account_cash_parity(
             )
             drift.append(row)
 
-    return {"accounts": accounts, "drift": drift, "errored": errored}
+    return {"accounts": accounts, "drift": drift, "errored": errored,
+            "unverifiable": unverifiable}
 
 
 # ─────────────────────────────────────────────────────────────────────

@@ -243,6 +243,46 @@ DESIGNED AI inputs; [exec] = execution change, operator times it.
       docs/20's corpus-clock-reset framing checked: accurate as
       written (reset 2026-06-04, training gated ~Aug), left alone.
 
+**Phase 5 — books-truth class kill (added 2026-07-27 after the
+p211 +$335 / fake −$481,798 incidents):**
+- [x] P5.0 Incident fixes SHIPPED 2026-07-27: (a) option-orphan
+      write-offs now REQUIRE broker-verified closing-activity
+      evidence (OPASN/OPEXC/OPXRC/FILL, id recorded on the row) —
+      positions-snapshot absence alone refuses and self-heals;
+      p211 XOM lot repaired (+$105 real P&L), kill switch
+      auto-released. (b) value-parity audit fails CLOSED — a failed
+      broker read reports UNVERIFIABLE (WARNING), never broker=$0
+      compared as truth. Pinned:
+      test_orphan_close_needs_evidence_2026_07_27.py (6),
+      test_value_parity_fail_closed_2026_07_27.py (5).
+- [x] P5.1 FULL fail-open sweep — RESOLVED 2026-07-27 (operator
+      directive: ALL, no allowlist, no burn-down). Every fail-open
+      return (numbers AND empty containers) inside except handlers
+      across the nine books-critical modules converted to refusal
+      semantics, with every caller taught to handle it:
+      • Audits: qty/value/cash parity + manual-orders now report
+        UNVERIFIABLE accounts (issues page WARNING "couldn't
+        check"), never compare against fabricated zeros/empties.
+      • Doors (fail closed = refuse the action): cooldown reads
+        (wash/HTB/re-entry) unverifiable → no fresh entries that
+        cycle; HTB per-symbol gates refuse on error; options
+        capital-at-risk unverifiable → budget treated EXHAUSTED;
+        protective-buy commitment unverifiable → cash door refuses
+        the buy; get_virtual_positions RAISES on unreadable trades
+        (a loud aborted cycle beats a fabricated flat book;
+        no-such-table fresh DB still honestly empty).
+      • Reconcile/settlement: _broker_qty_for None on unreadable
+        matched qty (never "flat"); orphan pass skips; recovery
+        ledger + realized-pnl repair return None ("did not run" ≠
+        "nothing found"); activities settlement defers on
+        unverifiable ownership/basis (idempotent retry).
+      • Telemetry readers: fresh-DB → [], real errors → WARN +
+        None; all consumers wrapped None-safe.
+      RATCHET (test_no_failopen_numeric_returns_2026_07_27.py):
+      ZERO-allowlist AST ban on the whole shape; the single
+      permitted empty is inside an explicit "no such table"
+      fresh-DB guard. New instances are un-writable.
+
 ---
 
 ## 1. COMPETITIVE_GAP_PLAN.md

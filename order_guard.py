@@ -946,7 +946,21 @@ def assert_buy_within_own_cash(api, ctx, kwargs: dict,
         # reconciler flips the row — reserving the commitment closes
         # that approval window (review 2026-07-15 #6) and is the
         # correct cash-account treatment of short-cover liability.
-        cash -= get_pending_protective_buy_commitment(db_path)
+        _commit = get_pending_protective_buy_commitment(db_path)
+        if _commit is None:
+            # 2026-07-27 fail-closed sweep: reserved-cash commitment
+            # unverifiable → the spendable number is unverifiable →
+            # refuse the buy (same treatment as unreadable cash).
+            who = getattr(ctx, "display_name", None) or db_path or "?"
+            logger.error(
+                "CASH DOOR: protective-buy commitment UNVERIFIABLE "
+                "for BUY %s qty=%d [%s]. Refusing the buy "
+                "(fail-closed).", sym, qty, who,
+            )
+            raise CashFloorGuardError(
+                "BUY %s qty=%d refused: protective commitment "
+                "unverifiable" % (sym, qty))
+        cash -= _commit
     if cash is None:
         who = getattr(ctx, "display_name", None) or db_path or "?"
         logger.error(

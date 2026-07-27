@@ -1084,7 +1084,7 @@ def build_training_dataset(db_path=None, min_horizons_required=1,
     if include_veto_counterfactuals:
         try:
             from journal import resolved_veto_counterfactuals
-            for r in resolved_veto_counterfactuals(db_path):
+            for r in (resolved_veto_counterfactuals(db_path) or []):
                 out.append({
                     "source": "veto_counterfactual",
                     "is_real": False,

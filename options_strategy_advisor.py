@@ -625,12 +625,29 @@ def _options_budget_exhausted(ctx: Any) -> bool:
         if equity <= 0:
             equity = float(getattr(ctx, "initial_capital", 0) or 0)
         if equity <= 0:
-            return False
+            # 2026-07-27 fail-closed sweep: no readable equity → the
+            # budget denominator is unverifiable → treat as exhausted.
+            logger.warning(
+                "options budget: equity unreadable — treating budget "
+                "as EXHAUSTED (fail closed).")
+            return True
         open_ml = open_options_capital_at_risk(getattr(ctx, "db_path", None))
+        if open_ml is None:
+            # 2026-07-27 fail-closed sweep: capital-at-risk
+            # unverifiable → refuse NEW option risk this pass.
+            logger.warning(
+                "options budget: open capital-at-risk UNVERIFIABLE — "
+                "treating budget as EXHAUSTED (fail closed).")
+            return True
         return open_ml >= risk_pct * equity
     except Exception as exc:
-        logger.debug("options budget check unavailable (fail-open): %s", exc)
-        return False
+        # 2026-07-27 fail-closed sweep: a failed budget check refuses
+        # new option risk — the old fail-open approved risk against a
+        # book it couldn't read.
+        logger.warning(
+            "options budget check failed (%s) — treating budget as "
+            "EXHAUSTED (fail closed).", exc)
+        return True
 
 
 # NOTE (2026-07-01, selection-engine P2b): the standalone

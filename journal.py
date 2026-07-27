@@ -707,8 +707,13 @@ def record_wash_cooldown(db_path: str, symbol: str) -> None:
         )
 
 
-def get_wash_cooldown_symbols(db_path: str, days: int = 30) -> set:
-    """Return symbols currently in wash-trade cooldown (30-day window)."""
+def get_wash_cooldown_symbols(db_path: str, days: int = 30):
+    """Return symbols currently in wash-trade cooldown (30-day window).
+
+    2026-07-27 fail-closed sweep: returns None when the cooldown table
+    is UNREADABLE — an empty set on a failed read silently REMOVES the
+    wash-trade protection (every cooled-down name becomes tradable).
+    Callers refuse new entries when they can't verify cooldowns."""
     if not db_path:
         return set()
     try:
@@ -720,8 +725,16 @@ def get_wash_cooldown_symbols(db_path: str, days: int = 30) -> set:
                 (f"-{int(days)} days",),
             ).fetchall()
         return {r[0] for r in rows}
-    except Exception:
-        return set()
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc).lower():
+            return set()  # fresh DB — genuinely no cooldowns yet
+        logging.warning("wash-cooldown read UNVERIFIABLE for %s: %s",
+                         db_path, exc)
+        return None
+    except Exception as exc:
+        logging.warning("wash-cooldown read UNVERIFIABLE for %s: %s",
+                         db_path, exc)
+        return None
 
 
 def record_htb_cooldown(db_path: str, symbol: str) -> None:
@@ -781,12 +794,25 @@ def get_htb_cooldown_symbols(db_path: str, days: int = 30) -> set:
                 (f"-{int(days)} days",),
             ).fetchall()
         return {r[0] for r in rows}
-    except Exception:
-        return set()
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc).lower():
+            return set()  # fresh DB — genuinely no cooldowns yet
+        # 2026-07-27 fail-closed sweep: an unreadable HTB list is not
+        # an empty one — empty silently re-enables entries in names we
+        # PROVED we cannot protect with a standing stop.
+        logging.warning("HTB-cooldown read UNVERIFIABLE for %s: %s",
+                         db_path, exc)
+        return None
+    except Exception as exc:
+        logging.warning("HTB-cooldown read UNVERIFIABLE for %s: %s",
+                         db_path, exc)
+        return None
 
 
-def get_recently_exited(db_path: str, cooldown_minutes: int = 60) -> set:
-    """Return the set of symbols currently in the post-exit cooldown window."""
+def get_recently_exited(db_path: str, cooldown_minutes: int = 60):
+    """Return the set of symbols currently in the post-exit cooldown
+    window. None when UNREADABLE (2026-07-27 fail-closed sweep —
+    empty-on-error silently disabled the re-entry cooldown)."""
     try:
         with closing(_get_conn(db_path)) as conn:
             rows = conn.execute(
@@ -795,8 +821,16 @@ def get_recently_exited(db_path: str, cooldown_minutes: int = 60) -> set:
                 (f"-{int(cooldown_minutes)} minutes",),
             ).fetchall()
         return {r["symbol"] for r in rows}
-    except Exception:
-        return set()
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc).lower():
+            return set()  # fresh DB — genuinely no exits yet
+        logging.warning("recently-exited read UNVERIFIABLE for %s: %s",
+                         db_path, exc)
+        return None
+    except Exception as exc:
+        logging.warning("recently-exited read UNVERIFIABLE for %s: %s",
+                         db_path, exc)
+        return None
 
 
 def _migrate_all_columns(conn):
@@ -1284,8 +1318,14 @@ def close_leg_rows_for_occ(db_path, occ_symbol, reason):
             )
             conn.commit()
             return cur.rowcount
-    except sqlite3.Error:
-        return 0
+    except sqlite3.Error as exc:
+        # 2026-07-27 fail-closed sweep: 0 conflated "no rows matched"
+        # with "couldn't run". None = the close DID NOT happen;
+        # callers warn and the idempotent pass retries next cycle.
+        logging.warning(
+            "close_leg_rows_for_occ UNVERIFIABLE for %s/%s: %s",
+            db_path, occ_symbol, exc)
+        return None
 
 
 def log_trade(symbol, side, qty, price=None, order_id=None, signal_type=None,
@@ -1565,10 +1605,15 @@ def option_veto_counts(db_path):
         return [(r["strategy"], r["sector"], int(r["vetoed"] or 0),
                  int(r["total"] or 0)) for r in rows]
     except Exception as exc:
+        # 2026-07-27 fail-closed sweep: [] on error said "no
+        # rows" for an unreadable table. Fresh DB (no table)
+        # is honestly empty; anything else is UNVERIFIABLE.
+        if "no such table" in str(exc).lower():
+            return []
         import logging as _logging
-        _logging.getLogger(__name__).debug(
-            "option_veto_counts unavailable (fail-open): %s", exc)
-        return []
+        _logging.getLogger(__name__).warning(
+            "option_veto_counts UNVERIFIABLE: %s", exc)
+        return None
 
 
 def pending_veto_outcomes(db_path, strictly_before):
@@ -1601,10 +1646,15 @@ def pending_veto_outcomes(db_path, strictly_before):
             ).fetchall()
         return [dict(r) for r in rows]
     except Exception as exc:
+        # 2026-07-27 fail-closed sweep: [] on error said "no
+        # rows" for an unreadable table. Fresh DB (no table)
+        # is honestly empty; anything else is UNVERIFIABLE.
+        if "no such table" in str(exc).lower():
+            return []
         import logging as _logging
-        _logging.getLogger(__name__).debug(
-            "pending_veto_outcomes unavailable (fail-open): %s", exc)
-        return []
+        _logging.getLogger(__name__).warning(
+            "pending_veto_outcomes UNVERIFIABLE: %s", exc)
+        return None
 
 
 def mark_veto_outcome_resolved(db_path, row_id, *, outcome, pnl):
@@ -1682,10 +1732,15 @@ def option_veto_quality_counts(db_path):
         return [(r["strategy"], r["sector"], int(r["resolved"] or 0),
                  int(r["losses"] or 0)) for r in rows]
     except Exception as exc:
+        # 2026-07-27 fail-closed sweep: [] on error said "no
+        # rows" for an unreadable table. Fresh DB (no table)
+        # is honestly empty; anything else is UNVERIFIABLE.
+        if "no such table" in str(exc).lower():
+            return []
         import logging as _logging
-        _logging.getLogger(__name__).debug(
-            "option_veto_quality_counts unavailable (fail-open): %s", exc)
-        return []
+        _logging.getLogger(__name__).warning(
+            "option_veto_quality_counts UNVERIFIABLE: %s", exc)
+        return None
 
 
 def resolved_veto_counterfactuals(db_path):
@@ -1717,10 +1772,15 @@ def resolved_veto_counterfactuals(db_path):
             ).fetchall()
         return [dict(r) for r in rows]
     except Exception as exc:
+        # 2026-07-27 fail-closed sweep: [] on error said "no
+        # rows" for an unreadable table. Fresh DB (no table)
+        # is honestly empty; anything else is UNVERIFIABLE.
+        if "no such table" in str(exc).lower():
+            return []
         import logging as _logging
-        _logging.getLogger(__name__).debug(
-            "resolved_veto_counterfactuals unavailable (fail-open): %s", exc)
-        return []
+        _logging.getLogger(__name__).warning(
+            "resolved_veto_counterfactuals UNVERIFIABLE: %s", exc)
+        return None
 
 
 def open_options_capital_at_risk(db_path=None) -> float:
@@ -1749,17 +1809,16 @@ def open_options_capital_at_risk(db_path=None) -> float:
             ).fetchone()
             return float(row[0] or 0.0) if row else 0.0
     except Exception as exc:
-        # module-level `logging` — `_logging` was never imported in
-        # this function, so the very handler meant to log the failure
-        # raised NameError instead, broke the fail-open 0.0 contract,
-        # and let the caller's best-effort wrapper silently skip the
-        # options risk budget (2026-07-15 undefined-name sweep — the
-        # same masked-error class as the trades-page equity NameError).
+        # 2026-07-27 fail-closed sweep: returning 0.0 here told the
+        # options risk-budget door "no capital at risk" whenever the
+        # journal was unreadable — the door would then approve NEW
+        # option risk against a fabricated empty book. Unverifiable
+        # refuses; the advisor blocks new option proposals this pass.
         logging.warning(
-            "open_options_capital_at_risk failed (fail-open, returning 0): %s",
-            exc,
+            "open_options_capital_at_risk UNVERIFIABLE (caller must "
+            "refuse new option risk this pass): %s", exc,
         )
-        return 0.0
+        return None
 
 
 def record_trade_drop(db_path, symbol, side, drop_code, drop_reason,
@@ -1817,11 +1876,15 @@ def get_recent_trade_drops(db_path, hours=24, limit=200):
             ).fetchall()
         return [dict(r) for r in rows]
     except Exception as exc:
+        # 2026-07-27 fail-closed sweep: fresh DB is honestly empty;
+        # anything else is UNVERIFIABLE, not "no drops".
+        if "no such table" in str(exc).lower():
+            return []
         _logging.warning(
-            "get_recent_trade_drops(%s) failed: %s",
+            "get_recent_trade_drops(%s) UNVERIFIABLE: %s",
             db_path, exc,
         )
-        return []
+        return None
 
 
 def get_recent_broker_rejections(db_path, hours=24, limit=200):
@@ -1842,11 +1905,15 @@ def get_recent_broker_rejections(db_path, hours=24, limit=200):
             ).fetchall()
         return [dict(r) for r in rows]
     except Exception as exc:
+        # 2026-07-27 fail-closed sweep: fresh DB is honestly empty;
+        # anything else is UNVERIFIABLE, not "no rejections".
+        if "no such table" in str(exc).lower():
+            return []
         _logging.warning(
-            "get_recent_broker_rejections(%s) failed: %s",
+            "get_recent_broker_rejections(%s) UNVERIFIABLE: %s",
             db_path, exc,
         )
-        return []
+        return None
 
 
 def get_open_entry_metadata(db_path, symbol, occ_symbol=None):
@@ -1921,11 +1988,19 @@ def get_symbol_epoch(db_path, symbol) -> int:
                 "SELECT last_reconciled_epoch FROM reconcile_state "
                 "WHERE symbol = ?", ((symbol or "").upper(),)).fetchone()
             return int(row[0]) if row and row[0] is not None else 0
-    except sqlite3.Error:
-        # Missing table / locked DB → treat as stale (fail-safe): the door
-        # will force a just-in-time reconcile rather than trust a maybe-
-        # stale journal.
-        return 0
+    except sqlite3.Error as exc:
+        if "no such table" in str(exc).lower():
+            # Fresh DB: never stamped → epoch 0 is the TRUTH ("never
+            # reconciled"), which the door maps to stale → forces the
+            # just-in-time reconcile. Not a fabrication.
+            return 0
+        # Locked/corrupt DB → UNVERIFIABLE (2026-07-27 fail-closed
+        # sweep); the caller maps None → stale explicitly, forcing
+        # the reconcile rather than trusting a maybe-stale journal.
+        logging.warning("get_symbol_epoch UNVERIFIABLE for %s/%s: %s "
+                         "(treated as stale — forces reconcile)",
+                         db_path, symbol, exc)
+        return None
 
 
 def stamp_symbols_fresh(db_path, symbols, epoch) -> None:
@@ -2026,8 +2101,16 @@ def unjournaled_submitted_orders(db_path) -> list:
             return [{"order_id": r[0], "symbol": r[1], "side": r[2],
                      "qty": r[3], "occ_symbol": r[4], "intent": r[5]}
                     for r in rows]
-    except sqlite3.Error:
-        return []
+    except sqlite3.Error as exc:
+        # 2026-07-27 fail-closed sweep: [] on a failed read said
+        # "nothing to recover" — an unreadable recovery ledger is not
+        # an empty one. None = skip recovery THIS pass (ledger
+        # persists; retried next cycle), loudly.
+        logging.warning(
+            "unjournaled_submitted_orders UNVERIFIABLE for %s: %s "
+            "(recovery skipped this pass, retried next cycle)",
+            db_path, exc)
+        return None
 
 
 def drop_submitted_order(db_path, order_id) -> None:
@@ -2304,8 +2387,26 @@ def get_virtual_positions(db_path=None, price_fetcher=None,
                         }
             except sqlite3.OperationalError:
                 per_trade_targets = {}
-        except Exception:
-            return []
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc).lower():
+                return []  # fresh DB — genuinely no positions yet
+            # 2026-07-27 fail-closed sweep: an unreadable trades table
+            # is NOT a flat book. Returning [] here told every
+            # consumer — entry doors, exit managers, audits,
+            # dashboards — "this profile holds nothing". Raise: a
+            # loud aborted cycle beats trading against a fabricated
+            # empty book.
+            logging.error(
+                "get_virtual_positions: trades read failed for %s — "
+                "book UNVERIFIABLE, raising (never a fake flat "
+                "book): %s", db_path, exc)
+            raise
+        except Exception as exc:
+            logging.error(
+                "get_virtual_positions: trades read failed for %s — "
+                "book UNVERIFIABLE, raising (never a fake flat "
+                "book): %s", db_path, exc)
+            raise
     finally:
         conn.close()
 
@@ -2732,11 +2833,15 @@ def get_pending_protective_buy_commitment(db_path=None) -> float:
             ).fetchone()
         return float(row[0] or 0.0)
     except Exception as exc:
+        # 2026-07-27 fail-closed sweep: 0.0 here told the cash door
+        # "nothing is reserved for resting protective buys" whenever
+        # the read failed — the door could then double-spend reserved
+        # cash. Unverifiable refuses; the door blocks the buy.
         logging.warning(
-            "pending-protective buy commitment unreadable for %s "
-            "(door treats as 0; its other floors still apply): %s: %s",
+            "pending-protective buy commitment UNVERIFIABLE for %s "
+            "(cash door must refuse buys this pass): %s: %s",
             db_path, type(exc).__name__, exc)
-        return 0.0
+        return None
 
 
 def get_virtual_account_info(db_path=None, initial_capital=100000.0,
@@ -2880,8 +2985,13 @@ def recompute_realized_pnl(db_path=None):
         try:
             cols = {r[1] for r in conn.execute(
                 "PRAGMA table_info(trades)").fetchall()}
-        except sqlite3.Error:
-            return 0
+        except sqlite3.Error as exc:
+            # 2026-07-27 fail-closed sweep: 0 conflated "nothing to
+            # re-true" with "couldn't read". None = repair did not run.
+            logging.warning(
+                "recompute_realized_pnl UNVERIFIABLE for %s: %s",
+                db_path, exc)
+            return None
         px_expr = ("COALESCE(NULLIF(fill_price, 0), price)"
                    if "fill_price" in cols else "price")
         occ_expr = "occ_symbol" if "occ_symbol" in cols else "NULL"
@@ -2910,8 +3020,13 @@ def recompute_realized_pnl(db_path=None):
                 f"{dq_guard} "
                 "ORDER BY timestamp ASC, id ASC"
             ).fetchall()
-        except sqlite3.Error:
-            return 0
+        except sqlite3.Error as exc:
+            # 2026-07-27 fail-closed sweep: None = the repair did not
+            # run (see the cols read above).
+            logging.warning(
+                "recompute_realized_pnl UNVERIFIABLE for %s: %s",
+                db_path, exc)
+            return None
         long_lots: Dict[str, list] = {}
         short_lots: Dict[str, list] = {}
         for tid, symbol, side, qty, pxv, occ, old_pnl in rows:
@@ -3538,8 +3653,16 @@ def get_multileg_legs_by_combo_order(db_path, combo_order_id):
             ]
         finally:
             conn.close()
-    except Exception:
-        return []
+    except Exception as exc:
+        # 2026-07-27 fail-closed sweep: fresh DB is honestly empty;
+        # anything else is UNVERIFIABLE — the option resolver defers
+        # this combo instead of resolving against fabricated legs.
+        if "no such table" in str(exc).lower():
+            return []
+        logging.warning(
+            "get_multileg_legs_by_combo_order UNVERIFIABLE for %s: %s",
+            db_path, exc)
+        return None
 
 
 def data_quality_clause(conn, table: str = "trades") -> str:

@@ -85,7 +85,7 @@ def compute_option_return_pct(
         from journal import get_multileg_legs_by_combo_order
         db_path = prediction.get("db_path")
         get_legs = lambda combo_id: (
-            get_multileg_legs_by_combo_order(db_path, combo_id)
+            (get_multileg_legs_by_combo_order(db_path, combo_id) or [])
             if db_path else []
         )
 

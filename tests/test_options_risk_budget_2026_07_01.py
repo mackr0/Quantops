@@ -96,7 +96,10 @@ def test_budget_not_exhausted_with_headroom(monkeypatch):
     assert _options_budget_exhausted(ctx) is False
 
 
-def test_budget_helper_failopen(monkeypatch):
+def test_budget_helper_fails_closed(monkeypatch):
+    """2026-07-27 fail-closed sweep: the old contract ('never block
+    proposals on an error') approved NEW option risk against a book
+    it couldn't read. An unverifiable budget is an EXHAUSTED budget."""
     from options_strategy_advisor import _options_budget_exhausted
 
     def boom(ctx=None):
@@ -104,8 +107,7 @@ def test_budget_helper_failopen(monkeypatch):
 
     monkeypatch.setattr("client.get_account_info", boom)
     ctx = SimpleNamespace(max_options_risk_pct=0.20, db_path="x")
-    # fail-open: never block proposals on an error
-    assert _options_budget_exhausted(ctx) is False
+    assert _options_budget_exhausted(ctx) is True
 
 
 def test_budget_gate_off_when_pct_none(monkeypatch):

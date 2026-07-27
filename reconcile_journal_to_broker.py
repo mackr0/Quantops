@@ -182,15 +182,23 @@ def _to_utc_iso(value) -> Optional[datetime]:
     return None
 
 
-def _broker_qty_for(positions, symbol: str) -> float:
-    """Return the broker's current qty for a symbol. Negative = short."""
+def _broker_qty_for(positions, symbol: str):
+    """Return the broker's current qty for a symbol. Negative = short.
+    0 = the broker genuinely does not list the symbol. None = the
+    symbol IS listed but its qty is unreadable (2026-07-27 fail-closed
+    sweep: reading a malformed matched position as qty 0 told callers
+    'flat' — the write-off trigger — on a parse failure)."""
     sym_u = (symbol or "").upper()
     for p in positions:
         if (getattr(p, "symbol", "") or "").upper() == sym_u:
             try:
                 return float(getattr(p, "qty", 0) or 0)
-            except Exception:
-                return 0
+            except Exception as exc:
+                logger.warning(
+                    "_broker_qty_for: matched position %s has "
+                    "unreadable qty (%s) — UNVERIFIABLE, not flat.",
+                    sym_u, exc)
+                return None
     return 0
 
 
@@ -1074,6 +1082,57 @@ def _lookup_symbol_for_row(row) -> str:
     return (row["symbol"] or "").upper()
 
 
+# Activity types that constitute broker-verified evidence an option
+# position was closed by an external event: an assignment, an
+# exercise, or a fill (a close we didn't place still fills). OPEXP is
+# deliberately absent — expired legs belong to the expiry sweep, which
+# reconcile_option_orphans already defers to.
+_CLOSE_EVIDENCE_ACTIVITY_TYPES = ("OPASN", "OPEXC", "OPXRC", "FILL")
+
+# How far back to look for the closing activity. External closes are
+# discovered within a cycle or two of happening; 7 days covers a full
+# weekend + holiday span without scanning unbounded history.
+_CLOSE_EVIDENCE_LOOKBACK_DAYS = 7
+
+
+def _external_close_evidence(api, occ_symbol):
+    """Return {'activity_type', 'id'} for the most recent broker
+    activity that proves `occ_symbol` was actually closed by an
+    external event, or None when no such evidence exists (which
+    includes API failure — unverifiable is NOT evidence).
+
+    2026-07-27: absence from ONE positions snapshot used to be
+    treated as proof of an external close; the positions feed's
+    known visibility lag made that write off a LIVE position
+    (p211 XOM put, +$335 basis-less gap). Activities are ID'd
+    broker events — the same trust class as orders."""
+    from datetime import datetime, timedelta, timezone
+    after = (datetime.now(timezone.utc)
+             - timedelta(days=_CLOSE_EVIDENCE_LOOKBACK_DAYS)).isoformat()
+    occ_norm = (occ_symbol or "").replace(" ", "").upper()
+    if not occ_norm:
+        return None
+    for a_type in _CLOSE_EVIDENCE_ACTIVITY_TYPES:
+        try:
+            batch = api.get_activities(activity_types=a_type,
+                                       after=after)
+        except Exception as exc:
+            logger.warning(
+                "_external_close_evidence: get_activities(%s) failed "
+                "for %s: %s — treating as NO evidence (unverifiable "
+                "is not proof).", a_type, occ_symbol, exc,
+            )
+            continue
+        for act in (batch or []):
+            a_sym = (getattr(act, "symbol", "") or "").replace(" ", "").upper()
+            if a_sym == occ_norm:
+                return {
+                    "activity_type": getattr(act, "activity_type", a_type),
+                    "id": getattr(act, "id", None),
+                }
+    return None
+
+
 def reconcile_option_orphans(api, conn, positions, today,
                              apply_changes) -> list:
     """OPTION-ORPHAN BACKSTOP (2026-06-17). Per-cycle broker-truth pass
@@ -1155,7 +1214,12 @@ def reconcile_option_orphans(api, conn, positions, today,
             except (ValueError, TypeError):
                 pass  # unparseable expiry → treat as live, handle here
         # BROKER TRUTH — only act when the OCC is flat for EVERYONE.
-        if abs(_broker_qty_for(positions, occ)) >= 0.001:
+        _bq = _broker_qty_for(positions, occ)
+        if _bq is None:
+            # 2026-07-27 fail-closed sweep: qty unreadable — never
+            # treat as flat; skip this leg this pass.
+            continue
+        if abs(_bq) >= 0.001:
             # Broker still holds this OCC (ours or a sibling's on the
             # shared conduit) — not a confirmable orphan. Leave it for
             # fill-confirmation / the expiry sweep; never consume a
@@ -1210,6 +1274,38 @@ def reconcile_option_orphans(api, conn, positions, today,
                     kind = "canceled"
                     reason = ("reconcile: option entry order %s — "
                               "never filled; canceled." % est)
+        # 2026-07-27 (XOM260731P00155000 / p211 +$335 incident) —
+        # NO auto_closed_external WITHOUT CLOSING EVIDENCE. The
+        # positions snapshot transiently OMITS live option positions
+        # (the known visibility-lag class), and "account-flat in one
+        # snapshot + entry filled" used to be enough to write a live
+        # position off the books — its cash accountability handed to
+        # an activities pass that had nothing to book, because no
+        # close ever happened. The lot was later sold by our OWN
+        # exit and the sale proceeds landed basis-less (+$335
+        # decomposition gap → kill switch). An external close is a
+        # broker EVENT (assignment / exercise / a fill we didn't
+        # place) and always leaves an ID'd activity — so demand one.
+        # No corroborating activity, or an unverifiable lookup →
+        # REFUSE loudly and leave the leg open: a feed lag self-heals
+        # next cycle when the position reappears; a genuine external
+        # close produces its activity within a cycle and the leg
+        # closes then, with the activity id in the reason.
+        if kind == "auto_closed":
+            _ev = _external_close_evidence(api, occ)
+            if _ev is None:
+                logger.warning(
+                    "Reconcile: option leg #%s %s is account-flat in "
+                    "the positions snapshot but NO closing activity "
+                    "exists at the broker — refusing to write it off "
+                    "(positions-feed lag until proven otherwise). "
+                    "Leg stays open; re-checked next cycle.",
+                    _g(leg, "id"), occ,
+                )
+                continue
+            reason += (" | closing evidence: %s %s"
+                       % (_ev.get("activity_type", "?"),
+                          _ev.get("id", "?")))
         detail = {
             "trade_id": _g(leg, "id"), "occ_symbol": occ,
             "symbol": _g(leg, "symbol"), "side": (_g(leg, "side") or ""),
@@ -1271,6 +1367,10 @@ def _reconstruct_unjournaled_submits(ctx) -> int:
     if not db_path:
         return 0
     pending = journal.unjournaled_submitted_orders(db_path)
+    if pending is None:
+        # Unreadable recovery ledger (2026-07-27 fail-closed sweep) —
+        # skip THIS pass; the ledger persists and retries next cycle.
+        return 0
     if not pending:
         return 0
     api = (ctx.get_alpaca_api() if hasattr(ctx, "get_alpaca_api")
@@ -1462,7 +1562,9 @@ def ensure_symbol_fresh(ctx, symbol: str, epoch: Optional[int] = None) -> None:
     # cannot reach a broker.
     if not (hasattr(ctx, "get_alpaca_api") or hasattr(ctx, "api")):
         return
-    if journal.get_symbol_epoch(db_path, symbol) >= epoch:
+    # None (unreadable epoch) maps to stale → forces the reconcile
+    # (2026-07-27 fail-closed sweep).
+    if (journal.get_symbol_epoch(db_path, symbol) or 0) >= epoch:
         return  # already reconciled to broker truth this cycle
     # reconcile_and_stamp RAISES (ReconcileUnavailable) on broker-unreachable —
     # the door converts that to a refusal (fail-closed). A 'skipped' result
@@ -1661,6 +1763,11 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
                 continue
             is_short = (side == "short")
             broker_qty = _broker_qty_for(positions, broker_lookup_sym)
+            if broker_qty is None:
+                # 2026-07-27 fail-closed sweep: matched position has
+                # an unreadable qty — never treat as flat; skip this
+                # row this pass.
+                continue
 
             # PARTIAL ENTRY FILL — independent of current broker state.
             # If the entry order status is canceled/expired/rejected with

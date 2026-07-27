@@ -307,10 +307,13 @@ class TestErrorHandling:
         assert result["errored"] == [99]
         assert result["accounts"] == {}
 
-    def test_broker_list_positions_failure_returns_zero_value(self):
-        """If the broker call fails, broker_value treated as 0 (with a
-        WARN log). A journal showing > 0 would then surface as drift,
-        which is the desired loud-failure behavior."""
+    def test_broker_list_positions_failure_is_unverifiable(self):
+        """2026-07-27 fail-closed sweep: this test used to PIN the
+        incident behavior by name (…returns_zero_value) — a failed
+        broker read reported as $0 produced the live −$481,798 fake
+        journal_value_phantom while the books were penny-clean.
+        A failed read is now UNVERIFIABLE: no drift row, an explicit
+        unverifiable row instead."""
         from aggregate_audit import audit_account_value_parity
         api = MagicMock()
         api.list_positions.side_effect = OSError("network")
@@ -321,9 +324,11 @@ class TestErrorHandling:
             "aggregate_audit._journal_positions_value", return_value=10_000.0,
         ), patch("client._make_price_fetcher", return_value=lambda s: 100.0):
             result = audit_account_value_parity([1])
-        # Broker showed 0, journal showed 10k → drift = -10k (phantom)
-        assert len(result["drift"]) == 1
-        assert result["drift"][0]["kind"] == "journal_value_phantom"
+        assert result["drift"] == [], (
+            "a failed broker read fabricated a drift finding again"
+        )
+        assert len(result["unverifiable"]) == 1
+        assert result["unverifiable"][0]["kind"] == "unverifiable"
 
 
 # ─────────────────────────────────────────────────────────────────────

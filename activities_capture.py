@@ -149,8 +149,15 @@ def _own_occ_net(db_path: str, occ_symbol: str) -> float:
                 (occ_symbol,),
             ).fetchone()
             return float(row[0] or 0)
-    except sqlite3.OperationalError:
-        return 0.0
+    except sqlite3.OperationalError as exc:
+        # 2026-07-27 fail-closed sweep: 0.0 said "not this profile's
+        # OCC" on a failed read — the settlement writer would then
+        # book the event against the wrong basis or skip ownership.
+        # None = unverifiable; the writer defers this activity to the
+        # next idempotent pass.
+        logger.warning("_own_occ_net UNVERIFIABLE for %s/%s: %s",
+                        db_path, occ_symbol, exc)
+        return None
 
 
 def _own_occ_avg_premium(db_path: str, occ_symbol: str,
@@ -169,8 +176,13 @@ def _own_occ_avg_premium(db_path: str, occ_symbol: str,
             ).fetchone()
             notional, qty = float(row[0] or 0), float(row[1] or 0)
             return (notional / qty) if qty > 0 else 0.0
-    except sqlite3.OperationalError:
-        return 0.0
+    except sqlite3.OperationalError as exc:
+        # 2026-07-27 fail-closed sweep: a fabricated $0 basis books a
+        # wrong realized pnl on the settlement leg. None = defer to
+        # the next idempotent activities pass.
+        logger.warning("_own_occ_avg_premium UNVERIFIABLE for %s/%s: %s",
+                        db_path, occ_symbol, exc)
+        return None
 
 
 def _write_option_expiry_or_exercise(ctx, activity: Any) -> bool:
@@ -236,6 +248,13 @@ def _write_option_expiry_or_exercise(ctx, activity: Any) -> bool:
     # OWNERSHIP GATE — own-book rule. Not this profile's OCC → not
     # this profile's event. (PROFILE_ORDER_ISOLATION.md.)
     net = _own_occ_net(ctx.db_path, occ_symbol)
+    if net is None:
+        # 2026-07-27 fail-closed sweep: ownership unverifiable —
+        # defer; the activities pass is idempotent and retries.
+        logger.warning(
+            "activities_capture: ownership UNVERIFIABLE for %s — "
+            "activity deferred to next pass.", occ_symbol)
+        return False
     if abs(net) < 0.5:
         return False
     qty = min(qty, abs(net))
@@ -243,11 +262,20 @@ def _write_option_expiry_or_exercise(ctx, activity: Any) -> bool:
         # Closing a LONG leg: sell-to-close @0; premium paid is lost.
         side = "sell"
         premium = _own_occ_avg_premium(ctx.db_path, occ_symbol, "buy")
-        pnl = round(-premium * qty * 100.0, 2)
     else:
         # Closing a SHORT leg: BUY-to-close @0; premium received kept.
         side = "buy"
         premium = _own_occ_avg_premium(ctx.db_path, occ_symbol, "sell")
+    if premium is None:
+        # 2026-07-27 fail-closed sweep: basis unverifiable — a
+        # fabricated $0 premium books a wrong realized pnl. Defer.
+        logger.warning(
+            "activities_capture: basis UNVERIFIABLE for %s — "
+            "activity deferred to next pass.", occ_symbol)
+        return False
+    if net > 0:
+        pnl = round(-premium * qty * 100.0, 2)
+    else:
         pnl = round(premium * qty * 100.0, 2)
     import re
     m = re.search(r"(\d{6}[CP]\d{8})$", occ_symbol)

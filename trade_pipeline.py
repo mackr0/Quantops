@@ -1590,20 +1590,38 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
         # stop. Broker-driven and class-wide — not a hardcoded per-name list.
         try:
             from journal import get_htb_cooldown_symbols
-            if ctx is not None and symbol.upper() in get_htb_cooldown_symbols(
-                    getattr(ctx, "db_path", None)):
-                result["action"] = "SKIP"
-                result["reason"] = (
-                    f"{symbol} learned hard-to-borrow from a broker order "
-                    f"rejection (only day orders allowed) — excluded so we "
-                    f"don't hold a name we can't protect with a standing stop"
-                )
-                return result
+            if ctx is not None:
+                _htb = get_htb_cooldown_symbols(
+                    getattr(ctx, "db_path", None))
+                # 2026-07-27 fail-closed sweep: unverifiable HTB list →
+                # refuse the entry (we may be unable to protect it).
+                if _htb is None:
+                    result["action"] = "SKIP"
+                    result["reason"] = (
+                        f"{symbol}: HTB cooldown state UNVERIFIABLE "
+                        "(journal read failed) — refusing entry rather "
+                        "than risk a name we can't protect")
+                    return result
+                if symbol.upper() in _htb:
+                    result["action"] = "SKIP"
+                    result["reason"] = (
+                        f"{symbol} learned hard-to-borrow from a broker order "
+                        f"rejection (only day orders allowed) — excluded so we "
+                        f"don't hold a name we can't protect with a standing stop"
+                    )
+                    return result
         except Exception as _htb_gate_exc:
-            logger.debug(
-                "learned-HTB gate failed for %s: %s: %s",
+            # 2026-07-27 fail-closed sweep: a failed gate refuses.
+            logger.error(
+                "learned-HTB gate failed for %s (%s: %s) — refusing "
+                "entry (fail closed).",
                 symbol, type(_htb_gate_exc).__name__, _htb_gate_exc,
             )
+            result["action"] = "SKIP"
+            result["reason"] = (
+                f"{symbol}: HTB gate errored — refusing entry "
+                "(fail closed)")
+            return result
         if action == "STRONG_BUY":
             alloc_pct = max_position_pct
         else:
@@ -2198,20 +2216,37 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
         # same way. Refuse new shorts on a learned-HTB name.
         try:
             from journal import get_htb_cooldown_symbols
-            if ctx is not None and symbol.upper() in get_htb_cooldown_symbols(
-                    getattr(ctx, "db_path", None)):
-                result["action"] = "SKIP"
-                result["reason"] = (
-                    f"{symbol} learned hard-to-borrow from a broker order "
-                    f"rejection — excluded so we don't hold a name we can't "
-                    f"protect with a standing stop"
-                )
-                return result
+            if ctx is not None:
+                _htb = get_htb_cooldown_symbols(
+                    getattr(ctx, "db_path", None))
+                # 2026-07-27 fail-closed sweep: unverifiable → refuse.
+                if _htb is None:
+                    result["action"] = "SKIP"
+                    result["reason"] = (
+                        f"{symbol}: HTB cooldown state UNVERIFIABLE "
+                        "(journal read failed) — refusing short rather "
+                        "than ride naked on a name we can't protect")
+                    return result
+                if symbol.upper() in _htb:
+                    result["action"] = "SKIP"
+                    result["reason"] = (
+                        f"{symbol} learned hard-to-borrow from a broker order "
+                        f"rejection — excluded so we don't hold a name we can't "
+                        f"protect with a standing stop"
+                    )
+                    return result
         except Exception as _htb_gate_exc:
-            logger.debug(
-                "learned-HTB short gate failed for %s: %s: %s",
+            # 2026-07-27 fail-closed sweep: a failed gate refuses.
+            logger.error(
+                "learned-HTB short gate failed for %s (%s: %s) — "
+                "refusing short (fail closed).",
                 symbol, type(_htb_gate_exc).__name__, _htb_gate_exc,
             )
+            result["action"] = "SKIP"
+            result["reason"] = (
+                f"{symbol}: HTB short gate errored — refusing short "
+                "(fail closed)")
+            return result
         # Only if short selling is enabled for this profile
         enable_shorts = ctx.enable_short_selling if ctx is not None else False
         if not enable_shorts:
@@ -2611,26 +2646,50 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     recently_exited: set = set()
     htb_learned: set = set()
     if ctx is not None:
+        # 2026-07-27 fail-closed sweep: the old wrapper swallowed any
+        # failure into EMPTY sets — an unreadable cooldown table
+        # silently removed the wash-trade, re-entry, and learned-HTB
+        # protections. Unverifiable now refuses fresh entries this
+        # cycle (held positions stay managed; self-heals next cycle).
+        cooldowns_unverifiable = False
         try:
             from journal import (get_recently_exited,
                                   get_wash_cooldown_symbols,
                                   get_htb_cooldown_symbols)
             cooldown_min = int(getattr(ctx, "reentry_cooldown_minutes", 60))
             recently_exited = get_recently_exited(ctx.db_path, cooldown_min)
-            # Union with the longer (30-day) wash-trade cooldown so we
-            # don't re-attempt buys Alpaca already rejected as wash.
-            recently_exited |= get_wash_cooldown_symbols(ctx.db_path, 30)
-            # Names the broker's order engine confirmed hard-to-borrow
-            # (rejects standing GTC protective stops) — drop them early
-            # with an accurate reason. The per-symbol entry gate is the
-            # authoritative backstop (also catches AI picks that bypass
-            # this screen); this is the efficiency early-drop.
+            wash = get_wash_cooldown_symbols(ctx.db_path, 30)
             htb_learned = get_htb_cooldown_symbols(ctx.db_path, 30)
-        except Exception:
+            if recently_exited is None or wash is None or htb_learned is None:
+                cooldowns_unverifiable = True
+                recently_exited = set()
+                htb_learned = set()
+            else:
+                # Union with the longer (30-day) wash-trade cooldown so
+                # we don't re-attempt buys Alpaca already rejected as
+                # wash.
+                recently_exited |= wash
+        except Exception as _cd_exc:
+            logger.error(
+                "cooldown reads failed (%s: %s) — refusing fresh "
+                "entries this cycle (fail closed).",
+                type(_cd_exc).__name__, _cd_exc)
+            cooldowns_unverifiable = True
             recently_exited = set()
             htb_learned = set()
 
     for symbol in candidates:
+        # 2026-07-27 fail-closed sweep: cooldown state unverifiable →
+        # no FRESH entries at all this cycle (helds still managed).
+        if cooldowns_unverifiable and symbol not in held_symbols:
+            pre_filter_skips.append({
+                "symbol": symbol, "action": "SKIP",
+                "reason": ("Cooldown state UNVERIFIABLE (journal read "
+                           "failed) — refusing fresh entries this "
+                           "cycle; self-heals next cycle"),
+            })
+            continue
+
         # Recent-exit cooldown (only applies to non-held positions — we
         # can still manage a position we already hold, but we won't
         # open a fresh one on a symbol we just exited.)

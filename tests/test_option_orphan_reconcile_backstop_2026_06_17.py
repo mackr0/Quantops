@@ -73,11 +73,32 @@ def _virtual_occ_qty(db, occ):
     return 0
 
 
-def _run(db, positions, get_order=None, apply_changes=True):
+def _close_activity(occ, a_type="OPASN", act_id="act-ev-1"):
+    a = MagicMock()
+    a.activity_type = a_type
+    a.symbol = occ
+    a.id = act_id
+    return a
+
+
+def _run(db, positions, get_order=None, apply_changes=True,
+          activities=()):
+    """2026-07-27: reconcile_option_orphans now REQUIRES broker-
+    verified closing evidence (an OPASN/OPEXC/OPXRC/FILL activity)
+    before writing a filled leg off as auto_closed_external — the
+    positions-snapshot visibility lag wrote a LIVE p211 put off the
+    books (+$335 basis-less gap). Tests that expect an auto-close
+    pass the closing activity via `activities`; the no-evidence
+    refusal shape is pinned in
+    test_orphan_close_needs_evidence_2026_07_27.py."""
     from reconcile_journal_to_broker import reconcile_option_orphans
     api = MagicMock()
     api.get_order.side_effect = (
         get_order or (lambda oid: _order(oid, "filled", 1)))
+    acts = list(activities)
+    api.get_activities.side_effect = (
+        lambda activity_types=None, after=None:
+        [a for a in acts if a.activity_type == activity_types])
     with closing(sqlite3.connect(db)) as conn:
         conn.row_factory = sqlite3.Row
         return reconcile_option_orphans(
@@ -95,7 +116,8 @@ class TestBackstop:
               order_id="short-1", signal_type="MULTILEG",
               occ_symbol=occ, expiry=_FUTURE, strike=12.0,
               option_strategy="bull_call_spread")
-        closed = _run(db, positions=[])  # broker flat
+        closed = _run(db, positions=[],  # broker flat, assignment evidence
+                      activities=[_close_activity(occ)])
         assert len(closed) == 1 and closed[0]["kind"] == "auto_closed"
         assert _virtual_occ_qty(db, occ) == 0, (
             "a broker-flat short option leg must leave the book "
@@ -108,7 +130,8 @@ class TestBackstop:
               order_id="long-1", signal_type="OPTIONS",
               occ_symbol=occ, expiry=_FUTURE, strike=11.5,
               option_strategy="long_call")
-        closed = _run(db, positions=[])
+        closed = _run(db, positions=[],
+                      activities=[_close_activity(occ, a_type="FILL")])
         assert len(closed) == 1 and closed[0]["kind"] == "auto_closed"
         assert _virtual_occ_qty(db, occ) == 0
 
@@ -157,7 +180,8 @@ class TestBackstop:
               order_id="dry-1", signal_type="MULTILEG",
               occ_symbol=occ, expiry=_FUTURE, strike=12.0,
               option_strategy="bull_call_spread")
-        closed = _run(db, positions=[], apply_changes=False)
+        closed = _run(db, positions=[], apply_changes=False,
+                      activities=[_close_activity(occ)])
         assert len(closed) == 1  # reported
         with closing(sqlite3.connect(db)) as c:
             st = c.execute("SELECT status FROM trades WHERE order_id='dry-1'"
@@ -179,6 +203,11 @@ class TestBackstopIntegrationNoHalt:
         api = MagicMock()
         api.list_positions.return_value = []      # broker flat
         api.get_order.side_effect = lambda oid: _order(oid, "filled", 2)
+        # 2026-07-27 evidence invariant: the auto-close needs a
+        # broker-verified closing activity.
+        api.get_activities.side_effect = (
+            lambda activity_types=None, after=None:
+            [_close_activity(occ)] if activity_types == "OPASN" else [])
         halted = {}
         import halt_helpers
         monkeypatch.setattr(halt_helpers, "halt_and_alert",

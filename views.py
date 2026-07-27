@@ -6638,7 +6638,7 @@ def api_cycle_data(profile_id):
     try:
         from journal import get_recent_broker_rejections, get_recent_trade_drops
         db_path = f"quantopsai_profile_{profile_id}.db"
-        rejections = get_recent_broker_rejections(db_path, hours=2)
+        rejections = get_recent_broker_rejections(db_path, hours=2) or []
         # Index by symbol for O(1) lookup. Within the 2h window, the
         # most recent rejection per symbol is the relevant one.
         rej_by_symbol = {}
@@ -6723,7 +6723,7 @@ def api_cycle_data(profile_id):
             except _sql_d.Error as _de:
                 logger.debug("cycle-id drop fetch failed (%s) — "
                              "falling back to window", _de)
-                drops = get_recent_trade_drops(db_path, hours=2)
+                drops = get_recent_trade_drops(db_path, hours=2) or []
         else:
             cycle_ts_epoch = data.get("timestamp")
             if isinstance(cycle_ts_epoch, (int, float)) and cycle_ts_epoch > 0:
@@ -6732,7 +6732,7 @@ def api_cycle_data(profile_id):
                     _dt.fromtimestamp(cycle_ts_epoch, tz=_tz.utc)
                     - _td(seconds=60)
                 ).strftime("%Y-%m-%d %H:%M:%S")
-            drops = get_recent_trade_drops(db_path, hours=2)
+            drops = get_recent_trade_drops(db_path, hours=2) or []
         # 2026-06-09 (post-reset) — key drops by (symbol, action_class)
         # instead of symbol alone. Pre-fix: one drop on NU contaminated
         # ALL trades_selected entries on NU — BUY, MULTILEG_OPEN,

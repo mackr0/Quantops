@@ -360,6 +360,23 @@ def _collect_aggregate_drift(
                 "timestamp": "",
                 "is_live_snapshot": True,
             })
+        # 2026-07-27 fail-closed sweep — a failed broker/journal read
+        # used to fan out as one fake journal_phantom ERROR per symbol
+        # (the 48-error incident: broker=+0.00 on every account-56
+        # name). Unverifiable accounts now surface as ONE honest
+        # WARNING: "couldn't check", never "flat".
+        for acct in audit.get("unverifiable_accounts", []):
+            rows.append({
+                "source": f"aggregate_audit.{acct}",
+                "level": "WARNING",
+                "message": (
+                    "qty parity UNVERIFIABLE this pass — broker or "
+                    "journal read failed (never compared against an "
+                    "empty side)"
+                ),
+                "timestamp": "",
+                "is_live_snapshot": True,
+            })
     except ImportError as exc:
         err = f"aggregate_audit unavailable: {exc}"
     except Exception as exc:
@@ -383,6 +400,23 @@ def _collect_aggregate_drift(
                     f"drift=${d.get('drift', 0):+,.2f} "
                     f"(tol=${d.get('tolerance', 0):,.2f}, profiles="
                     f"{d.get('profile_ids', [])})"
+                ),
+                "timestamp": "",
+                "is_live_snapshot": True,
+            })
+        # 2026-07-27 — a failed broker read used to be reported as
+        # broker=$0.00 and produced a fake half-million-dollar ERROR
+        # (the −$481,798 incident). Unverifiable accounts now surface
+        # honestly at WARNING: "couldn't check", never "$0 held".
+        for u in v_audit.get("unverifiable", []):
+            rows.append({
+                "source": f"value_parity.{u.get('account', '?')}",
+                "level": "WARNING",
+                "message": (
+                    "value parity UNVERIFIABLE this pass — broker "
+                    "positions read failed (never reported as $0); "
+                    f"journal=${u.get('journal_value', 0):,.2f} "
+                    f"profiles={u.get('profile_ids', [])}"
                 ),
                 "timestamp": "",
                 "is_live_snapshot": True,
@@ -697,7 +731,7 @@ def collect_issues(
         return (
             level_rank.get(g["level"], 9),
             # newer last_seen first → invert
-            -1 * _ts_int(g["last_seen"]),
+            -1 * (_ts_int(g["last_seen"]) or 0),
         )
 
     groups = sorted(grouped.values(), key=_sort_key)
@@ -718,14 +752,16 @@ def collect_issues(
     }
 
 
-def _ts_int(ts_iso: str) -> int:
-    """Sort helper: convert ISO timestamp to int seconds (0 if blank)."""
+def _ts_int(ts_iso: str):
+    """Sort helper: ISO timestamp → int seconds; None when blank or
+    unparseable (2026-07-27 fail-closed sweep — even a sort key must
+    not fabricate a value; the sort maps None → oldest explicitly)."""
     if not ts_iso:
-        return 0
+        return None
     try:
         return int(datetime.fromisoformat(ts_iso).timestamp())
     except (TypeError, ValueError):
-        return 0
+        return None
 
 
 def issues_count(since_hours: int = DEFAULT_WINDOW_HOURS) -> Dict[str, int]:
