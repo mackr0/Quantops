@@ -616,8 +616,16 @@ def get_nbbo_spread_bps(symbol):
         return None
     try:
         q = client.get_latest_quote(symbol)
-        bid = float(getattr(q, "bidprice", 0) or 0)
-        ask = float(getattr(q, "askprice", 0) or 0)
+        # alpaca_trade_api QuoteV2 exposes bid_price/ask_price mapped
+        # from the raw 'bp'/'ap' keys; older client versions used
+        # bidprice/askprice. Try the raw dict first — it's stable.
+        raw = getattr(q, "_raw", None) or {}
+        bid = float(raw.get("bp")
+                    or getattr(q, "bid_price", 0)
+                    or getattr(q, "bidprice", 0) or 0)
+        ask = float(raw.get("ap")
+                    or getattr(q, "ask_price", 0)
+                    or getattr(q, "askprice", 0) or 0)
     except (AttributeError, ValueError, TypeError, OSError,
             ConnectionError, TimeoutError) as _qe:
         logger.debug("NBBO fetch failed for %s: %s: %s",

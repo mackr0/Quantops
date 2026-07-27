@@ -24,12 +24,20 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 import market_data as md  # noqa: E402
 
 
+class _Quote:
+    """Shape of alpaca_trade_api QuoteV2: raw 'bp'/'ap' keys plus the
+    mapped attribute names (which have varied across client versions
+    — the live incident: bidprice vs bid_price)."""
+
+    def __init__(self, bid, ask):
+        self._raw = {"bp": bid, "ap": ask}
+        self.bid_price = bid
+        self.ask_price = ask
+
+
 def _client(bid, ask):
     c = MagicMock()
-    q = MagicMock()
-    q.bidprice = bid
-    q.askprice = ask
-    c.get_latest_quote.return_value = q
+    c.get_latest_quote.return_value = _Quote(bid, ask)
     return c
 
 
