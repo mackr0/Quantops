@@ -5,6 +5,10 @@ at the top.
 
 ---
 
+## 2026-07-27 — StockTwits 404s are facts, not failures: dead universe tickers stop spraying the errors page. Severity: LOW (issues-page signal/noise).
+
+The first full-universe StockTwits run (P1.1's 37→523-ticker watchlist; completed today 06:46–09:44, 501 tickers covered, 13,376 rows — the scraper itself is healthy) surfaced **23 symbols StockTwits doesn't recognize**, each logged at WARNING and each becoming an errors-page group: genuinely delisted names (FSR, WISH, PTRA, APPH, LILM, SAVE, ME…), renamed tickers the universe never updated (SQ, GPS, PARA, ZI…), and at least one wrong symbol outright (`DLOCAL` — the listing is `DLO`). A 404 means "symbol unknown here" — an expected fact about a dead ticker, re-confirmed every daily run — so it now logs at INFO ("likely delisted/renamed; skipped") while genuine failures (5xx, network, auth) stay WARNING. The dead-ticker list is reported to the operator for a `STOCK_UNIVERSE` cleanup decision (that changes trading scope, so it is not made unilaterally); a few actives that 404'd (AXOS, NYMT, VSCO) merit a second look there too. Pinned in `test_altdata_reconnect_2026_07_26.py` §7 (404→INFO, 5xx→WARNING).
+
 ## 2026-07-27 — /trades excludes the benchmark controls, like every other page. Severity: LOW (UI consistency; operator request).
 
 The /trades page (trade list AND its profile dropdown) still included the three baseline control profiles (EXP-A1-BuyHoldSPY / RandomA / RandomB) while the dashboard, /performance, /ai-performance, and the dropdowns elsewhere scope them out — controls are the benchmark, not the book. The route now filters through the same canonical `profile_classification.is_baseline_profile` predicate the dashboard aggregate uses (structural: anything whose strategy_type isn't 'ai' is a baseline, so future control types are excluded automatically). A baseline profile_id passed via URL now shows an empty list rather than resurrecting the control. Pinned in `test_trades_page_excludes_baselines_2026_07_27.py` (route filter + predicate semantics incl. the blank-defaults-to-AI rule).

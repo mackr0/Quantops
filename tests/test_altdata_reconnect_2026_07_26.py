@@ -458,3 +458,41 @@ class TestUniverseWatchlist:
         f.write_text("# comment\naapl\nMSFT\n")
         with patch.object(st_cli, "WATCHLIST_FILE", f):
             assert st_cli._load_watchlist() == ["AAPL", "MSFT"]
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 7. 404 = "symbol not on StockTwits", not a failure (2026-07-27)
+# ─────────────────────────────────────────────────────────────────────
+
+class TestStocktwits404IsInfoNotWarning:
+    def test_404_logs_info_and_other_errors_warn(self, caplog):
+        """The P1.1 full-universe watchlist surfaced ~23 delisted/
+        renamed tickers (PTRA, APPH, SQ, DLOCAL, ...). StockTwits
+        404s on them every daily run; each 404 logged at WARNING
+        sprayed the errors page with non-errors. A 404 is a fact
+        (symbol unknown there) → INFO; genuine failures (5xx,
+        network) stay WARNING."""
+        import logging
+        from unittest.mock import patch
+        from stocktwits import scrape as st_scrape
+
+        with patch.object(st_scrape, "_get",
+                          side_effect=Exception("404 Client Error: Not Found")):
+            with caplog.at_level(logging.INFO, logger=st_scrape.logger.name):
+                st_scrape.fetch_messages_for_ticker(None, "PTRA")
+        recs_404 = [r for r in caplog.records if "PTRA" in r.getMessage()]
+        assert recs_404 and all(r.levelno == logging.INFO for r in recs_404), (
+            "a StockTwits 404 logged above INFO again — dead tickers "
+            "spray the errors page every daily run."
+        )
+
+        caplog.clear()
+        with patch.object(st_scrape, "_get",
+                          side_effect=Exception("503 Server Error")):
+            with caplog.at_level(logging.INFO, logger=st_scrape.logger.name):
+                st_scrape.fetch_messages_for_ticker(None, "AAPL")
+        recs_503 = [r for r in caplog.records if "AAPL" in r.getMessage()]
+        assert recs_503 and all(r.levelno == logging.WARNING
+                                for r in recs_503), (
+            "a genuine StockTwits failure must stay WARNING."
+        )

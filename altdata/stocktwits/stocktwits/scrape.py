@@ -127,7 +127,19 @@ def fetch_messages_for_ticker(
     except RateLimitedError:
         raise
     except Exception as exc:
-        logger.warning("StockTwits fetch failed for %s: %s", ticker, exc)
+        # 2026-07-27 — a 404 means StockTwits doesn't know the symbol
+        # (delisted/renamed universe names: PTRA, APPH, LILM, ME, ...
+        # surfaced by the P1.1 full-universe watchlist). That is an
+        # expected FACT, not a failure: log at INFO so ~20 dead
+        # tickers stop spraying the errors page every daily run.
+        # Genuine failures (5xx, network, auth) stay WARNING.
+        if "404" in str(exc):
+            logger.info(
+                "StockTwits has no symbol %s (404 — likely delisted/"
+                "renamed); skipped.", ticker)
+        else:
+            logger.warning("StockTwits fetch failed for %s: %s",
+                            ticker, exc)
         return stats
 
     insert_raw_response(
