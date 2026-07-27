@@ -3094,6 +3094,22 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     try:
         from ai_tracker import record_prediction, classify_prediction_type
         current_regime = (regime_info or {}).get("regime")
+        # P4.2 telemetry (2026-07-27, operator decision: telemetry-
+        # first). Kelly recommendations computed ONCE per cycle (same
+        # numbers the prompt renders) so each SELECTED trade's row can
+        # record AI-proposed size vs the Kelly reference — no sizing
+        # behavior changes; the ~08-14 post-fix review judges the
+        # divergence before anything binds.
+        _kelly_by_dir = {}
+        try:
+            from kelly_sizing import compute_kelly_recommendation
+            for _dir in ("long", "short"):
+                _kr = compute_kelly_recommendation(
+                    ctx.db_path if ctx else None, _dir)
+                _kelly_by_dir[_dir] = (
+                    float(_kr["fractional_kelly"]) if _kr else None)
+        except Exception as _kx:
+            logger.debug("P4.2 kelly telemetry unavailable: %s", _kx)
         for c in candidates_data:
             # Per-candidate isolation (review 2026-07-17 L5):
             # one candidate's recording failure must not
@@ -3175,6 +3191,29 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                                 "_ledger_best_expr", "_ledger_is_override"):
                         if _lk in selected:
                             features_payload[_lk] = selected[_lk]
+                    # P4.2 sizing telemetry — record the raw inputs
+                    # (AI-proposed size, direction Kelly, ATR% of
+                    # price) so AI-vs-Kelly-vs-vol-normalized sizing
+                    # divergence is computable at review time. Keys
+                    # are underscore-prefixed: stored + queryable,
+                    # never in the meta-model extractor whitelist.
+                    try:
+                        features_payload["_size_pct_ai"] = float(
+                            selected.get("size_pct") or 0)
+                        _sig_u = (c.get("signal") or "").upper()
+                        _dir = ("short" if _sig_u in
+                                ("SHORT", "STRONG_SHORT", "SELL",
+                                 "STRONG_SELL") else "long")
+                        features_payload["_size_kelly_frac"] = (
+                            _kelly_by_dir.get(_dir))
+                        _p = float(c.get("price") or 0)
+                        _a = float(c.get("atr") or 0)
+                        features_payload["_atr_pct_at_decision"] = (
+                            round(_a / _p * 100, 3) if _p > 0 else None)
+                    except (TypeError, ValueError) as _st_exc:
+                        logger.debug(
+                            "P4.2 sizing telemetry stamp failed for "
+                            "%s: %s", sym, _st_exc)
                 # Include meta-signals separately (flattened)
                 votes = c.get("votes", {})
                 for strat_name, vote in votes.items():

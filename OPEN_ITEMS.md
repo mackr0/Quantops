@@ -218,15 +218,30 @@ DESIGNED AI inputs; [exec] = execution change, operator times it.
       σ 0.45%/d, VaR95 $7,296, ES $9,150, MC VaR, exposures, covid
       scenario −24%). Pinned:
       test_risk_snapshots_produce_2026_07_27.py (6).
-- [ ] P4.2 [design decision] Binding vol-aware sizing (Kelly/parity are
-      computed, rendered as prompt English, and ignored by the
-      fixed-fraction formula).
+- [x] P4.2 [design decision] Vol-aware sizing — DECIDED + TELEMETRY
+      SHIPPED 2026-07-27. Operator decision: telemetry-first, no
+      sizing behavior change (same epistemics as P3.1 — the AI has
+      had honest inputs for ~a day; measure before binding).
+      Every SELECTED trade's prediction row now records
+      _size_pct_ai (the AI's proposal), _size_kelly_frac (the
+      direction's fractional-Kelly at decision; honestly None while
+      blind-era history shows no positive edge), and
+      _atr_pct_at_decision (vol input — any normalization is
+      computable at analysis time; no invented formula in prod).
+      Keys are stored+queryable, pinned OUT of the meta extractor.
+      Divergence analysis joins the ~2026-08-14 post-fix review.
+      Pinned: test_sizing_telemetry_2026_07_27.py (3).
 - [ ] P4.3 [gated on corpus ~2 months at current 21k/2.5wk cadence]
       Fine-tune training_runner (archive empty, no trainer, registry
       tables never created, use_finetuned_ai column doesn't exist).
-- [ ] P4.4 [docs] Truth pass: "$0.27/day" → real spend (~$2.6
-      operational + shadow, <$10/day); "50K rows after 12 months" →
-      ~2 months at current cadence; stale reset framing.
+- [x] P4.4 [docs] Truth pass — RESOLVED 2026-07-27. "$0.27/day"
+      (a single quiet day, 2026-06-04) replaced with measured
+      operational spend ~$1-3/day (trailing-7d $1.29/day at fix
+      time) + shadow-cap note in README, docs/01/02/11/24, and
+      docs/20's monthly comparison; "50K rows after 12 months" →
+      ~2 months at the measured ~21k/2.5wk cadence (docs/01).
+      docs/20's corpus-clock-reset framing checked: accurate as
+      written (reset 2026-06-04, training gated ~Aug), left alone.
 
 ---
 
