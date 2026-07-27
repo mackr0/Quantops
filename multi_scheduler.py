@@ -4367,10 +4367,20 @@ def _task_portfolio_risk_snapshot(ctx):
         api = get_api(ctx)
         positions = []
         try:
+            # P4.1 (2026-07-27): the effective-positions converter
+            # (pipelines.risk.exposure) SKIPS any position with qty=0
+            # and prices legs from qty x spot. This dict used to carry
+            # only {symbol, market_value} — every position was skipped,
+            # exposures came back empty, and the task logged
+            # "insufficient factor data" on EVERY run since the Phase
+            # 6b rewiring: portfolio_risk_snapshots never wrote a row.
             for p in api.list_positions():
                 positions.append({
                     "symbol": p.symbol,
                     "market_value": float(p.market_value),
+                    "qty": float(getattr(p, "qty", 0) or 0),
+                    "current_price": float(
+                        getattr(p, "current_price", 0) or 0) or None,
                 })
         except Exception as exc:
             logging.debug(f"[{seg_label}] Risk snapshot — list_positions failed: {exc}")

@@ -106,6 +106,11 @@ FRENCH_FACTORS = ["Mkt-RF", "SMB", "HML", "RMW", "CMA", "Mom"]
 
 DEFAULT_LOOKBACK_DAYS = 252            # ~1 trading year
 MIN_OBS_FOR_REGRESSION = 60            # below this, skip a symbol
+
+# P4.1 — max calendar days Ken French may lag the ETF factor data
+# before the inner join is refused (it would truncate every fresh ETF
+# row down to FF's last publication).
+_FRENCH_MAX_LAG_DAYS = 21
 RIDGE_ALPHA = 1.0                      # mild regularization vs OLS
 
 # Normal-quantile VaR multipliers
@@ -291,7 +296,26 @@ def compute_factor_returns(
         french = fetch_french_factors(lookback_days)
         if french is not None and not french.empty:
             french.index = french.index.normalize()
-            joined = etf_df.join(french, how="inner")
+            # P4.1 (2026-07-27): Ken French publishes with a lag that
+            # can reach months. The inner join truncates the WHOLE
+            # factor matrix to FF's last date — observed live: fresh
+            # ETF factors through last week cut back to 2026-05-29,
+            # leaving stale covariance and (at short lookbacks) too
+            # few rows to regress. When FF lags the ETF data by more
+            # than _FRENCH_MAX_LAG_DAYS, prefer the FRESH ETF-only
+            # set over a stale complete one.
+            _lag = (etf_df.index.max() - french.index.max()).days
+            if _lag > _FRENCH_MAX_LAG_DAYS:
+                logger.info(
+                    "portfolio_risk_model: Ken French factors lag ETF "
+                    "data by %d days (> %d) — using fresh ETF-only "
+                    "factor set (%d factors) instead of truncating "
+                    "to the stale window",
+                    _lag, _FRENCH_MAX_LAG_DAYS, len(etf_df.columns),
+                )
+                joined = etf_df
+            else:
+                joined = etf_df.join(french, how="inner")
         else:
             logger.info(
                 "portfolio_risk_model: Ken French unavailable; using "

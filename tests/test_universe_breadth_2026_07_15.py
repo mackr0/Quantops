@@ -35,8 +35,19 @@ _ET = ZoneInfo("America/New_York")
 
 class TestUniverseCacheDayAnchor:
     def test_same_day_cache_is_fresh(self):
+        """A within-TTL cache built earlier the SAME ET day is fresh.
+        (2026-07-27: 'one hour ago' is NOT same-day during the first
+        ET hour after midnight — the suite finally ran in that window
+        and this test's assumption broke, not the production code.
+        Build an age that provably stays inside today.)"""
         from screener import _universe_cache_fresh
-        assert _universe_cache_fresh((time.time() - 3600, ["AAPL"]))
+        now_et = datetime.now(_ET)
+        secs_into_today = (
+            now_et - now_et.replace(hour=0, minute=0, second=0,
+                                     microsecond=0)
+        ).total_seconds()
+        age = min(3600, max(1, secs_into_today - 10))
+        assert _universe_cache_fresh((time.time() - age, ["AAPL"]))
 
     def test_yesterdays_cache_is_stale_even_inside_24h(self):
         """09:30 ET must not trade on a list built 14:00 ET yesterday —

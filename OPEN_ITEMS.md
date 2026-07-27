@@ -204,9 +204,20 @@ DESIGNED AI inputs; [exec] = execution change, operator times it.
       p31-remeasure-post-fix-cohort carries the recipe).
 
 **Phase 4 — structural:**
-- [ ] P4.1 [none] portfolio_risk_snapshots has NEVER written a row
-      (713-line factor model, flag on for all 13) — fix "insufficient
-      factor data" so it at least reports.
+- [x] P4.1 [none] Risk snapshots — RESOLVED 2026-07-27. Two stacked
+      causes: (1) the task fed the effective-positions converter
+      {symbol, market_value}-only dicts and the converter skips
+      qty==0 — EVERY position dropped → empty exposures → None →
+      "insufficient factor data" on every run since Phase 6b.
+      Task now passes qty + current_price; converter also accepts
+      qty-less STOCK positions as signed market_value (options
+      still require qty for delta math). (2) Ken French lag (56d
+      observed) + inner join truncated the whole factor matrix to
+      FF's last date; new guard: FF lagging ETF data > 21d → fresh
+      ETF-only factor set. First snapshot EVER written live (p213:
+      σ 0.45%/d, VaR95 $7,296, ES $9,150, MC VaR, exposures, covid
+      scenario −24%). Pinned:
+      test_risk_snapshots_produce_2026_07_27.py (6).
 - [ ] P4.2 [design decision] Binding vol-aware sizing (Kelly/parity are
       computed, rendered as prompt English, and ignored by the
       fixed-fraction formula).

@@ -169,6 +169,22 @@ def signed_portfolio_delta_exposure(
     for pos in positions or []:
         qty = float(pos.get("qty") or 0)
         if qty == 0:
+            # P4.1 (2026-07-27): a STOCK position without qty but with
+            # a signed market_value is a complete exposure statement —
+            # the delta-equivalent dollars ARE the market value. The
+            # old unconditional skip made the risk-snapshot task (which
+            # fed {symbol, market_value} dicts) drop EVERY position:
+            # portfolio_risk_snapshots never wrote a row. Options still
+            # need qty (delta math prices per-contract), so they keep
+            # the skip.
+            if not _is_option_position(pos):
+                underlying = pos.get("symbol", "")
+                try:
+                    mv = float(pos.get("market_value") or 0)
+                except (TypeError, ValueError):
+                    mv = 0.0
+                if underlying and mv != 0:
+                    out[underlying] = out.get(underlying, 0.0) + mv
             continue
 
         if _is_option_position(pos):
