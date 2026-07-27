@@ -1436,7 +1436,7 @@
                     <strong>Risk VETOs:</strong>
                     {% for v in prof.vetoed %}
                     <span style="color:#b00;font-family:monospace;">{{ v.symbol }}</span>
-                    <span class="muted" style="font-size:0.8rem;">({{ v.reason[:70] | humanize }})</span>{% if not loop.last %} · {% endif %}
+                    <span class="muted" style="font-size:0.8rem;" title="{{ v.reason | humanize }}">({{ v.reason[:70] | humanize }}{% if v.reason|length > 70 %}…{% endif %})</span>{% if not loop.last %} · {% endif %}
                     {% endfor %}
                 </p>
                 {% endif %}
@@ -2807,7 +2807,7 @@
                         var oldV = r.old_value_label != null ? r.old_value_label : (r.old_value||'');
                         var newV = r.new_value_label != null ? r.new_value_label : (r.new_value||'');
                         h += '<td><strong>' + esc(r.parameter_label || r.parameter_name || '') + '</strong><br><small>' + esc(oldV) + ' &rarr; ' + esc(newV) + '</small></td>';
-                        h += '<td style="font-size:0.85rem;">' + esc((r.reason||'').substring(0,80)) + '</td>';
+                        h += '<td style="font-size:0.85rem;min-width:18rem;max-width:32rem;white-space:normal;overflow-wrap:anywhere;">' + esc(r.reason||'') + '</td>';
                     }
                     var wr = (r.win_rate_at_change != null) ? r.win_rate_at_change.toFixed(1) + '%' : '';
                     h += '<td>' + wr + '</td>';
