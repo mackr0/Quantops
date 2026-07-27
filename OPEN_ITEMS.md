@@ -185,10 +185,23 @@ DESIGNED AI inputs; [exec] = execution change, operator times it.
       constant 12.67bps.
 
 **Phase 3 — breadth:**
-- [ ] P3.1 [proposal → operator decision] The 93% HOLD wall: funnel
-      telemetry → evidence-driven threshold proposal. IR = skill ×
-      √breadth; calibration proves the skill, the funnel starves the
-      breadth (1-2 candidates from ~8,000).
+- [x] P3.1 [proposal → operator decision] HOLD wall — PROPOSAL
+      DELIVERED + DECIDED 2026-07-27. Measured funnel (fleet 14d):
+      523-symbol universe/cycle → 3.4 shortlisted → 0.36 selected;
+      77% zero-trade cycles; 82.5% HOLD. Fixed-horizon evidence
+      (5d, ai_prediction_outcomes): the LONG wall is justified —
+      taken BUYs −0.74% vs passed candidates −3.48% (passed
+      bullish-scored: −4.6%); lowering the confidence bar pulls
+      from negative-expectancy pool. Real finding: SHORT-side
+      inversion — taken shorts ~flat (59.5% WR, small wins/bigger
+      losses) while passed bearish-scored names fell −2.4..−5.5%.
+      Caveat pinned: WR and net diverge (80-89 conf bucket: 62% WR,
+      −2.81% net) — judge everything on net. OPERATOR DECISION: no
+      threshold/lane changes — ALL this evidence comes from the
+      blind era (pre-P1.x-fix inputs); rely on the AI deciding with
+      corrected data and RE-MEASURE on the post-2026-07-26 cohort
+      once resolved (~2026-08-14; Claude droplet memory
+      p31-remeasure-post-fix-cohort carries the recipe).
 
 **Phase 4 — structural:**
 - [ ] P4.1 [none] portfolio_risk_snapshots has NEVER written a row
