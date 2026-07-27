@@ -12,7 +12,7 @@ The system's value-prop story is encoded here. The platform achieves high accura
 
 - **179 deterministic rules** (the catalog in §2) cost nothing per cycle — they're pure-Python pattern matchers. Most decisions short-circuit cleanly through this layer.
 - **8 LLM-narrative specialists** (the catalog in §1) spend the per-call AI tokens, but six of the eight were re-scoped 2026-05-18 (Phase 3 of `docs/17`) to *synthesize* from the deterministic panel rather than re-derive facts. Each LLM specialist now reads `RULES: [V]name [C]name ...` in each candidate's render and writes the narrative thesis on top.
-- **Result:** observed steady-state AI spend on the 13-profile experiment fleet is ~$0.27/day at the `gemini-2.5-flash-lite` rate. Adding the 100th deterministic specialist costs $0; adding the 9th LLM specialist would meaningfully bump per-cycle cost.
+- **Result:** observed operational AI spend on the 13-profile experiment fleet is ~$1–3/day (trailing-7d avg $1.29/day at the 2026-07-27 measurement) at the `gemini-2.5-flash-lite` rate, plus shadow-evaluation spend up to the operator-set cap. Adding the 100th deterministic specialist costs $0; adding the 9th LLM specialist would meaningfully bump per-cycle cost.
 
 Each deterministic rule carries a severity:
 - **VETO** — high-confidence block. The candidate is structurally unsafe; ensemble drops it regardless of other verdicts. **10 VETO rules** in production.

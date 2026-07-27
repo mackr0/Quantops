@@ -184,7 +184,7 @@ A new LLM specialist is a significant change — adds API cost on every cycle. J
 
 ### 5b. Cost considerations
 
-Every additional LLM-narrative specialist multiplies the per-cycle AI cost. The current LLM-narrative ensemble has **8 specialists** (per `docs/17` Phase 3) and the platform's observed steady-state spend across the 13-profile fleet is **~$0.27/day** at the `gemini-2.5-flash-lite` rate. The operator-settable cost ceiling (`max($5, trailing_7d_avg × 1.5)` per `cost_guard.py`, overridable in Settings) hard-blocks new AI calls when daily spend exceeds the ceiling. Adding a 9th LLM specialist should be a deliberate choice; budget for it. (Deterministic rules — 179 and growing — cost zero per cycle and are the right home for any fact-check that doesn't require synthesis.)
+Every additional LLM-narrative specialist multiplies the per-cycle AI cost. The current LLM-narrative ensemble has **8 specialists** (per `docs/17` Phase 3) and the platform's observed operational spend across the 13-profile fleet is **~$1–3/day** (trailing-7d avg $1.29/day at the 2026-07-27 measurement) at the `gemini-2.5-flash-lite` rate, plus shadow-evaluation spend up to the operator-set shadow cap. The operator-settable cost ceiling (`max($5, trailing_7d_avg × 1.5)` per `cost_guard.py`, overridable in Settings) hard-blocks new AI calls when daily spend exceeds the ceiling. Adding a 9th LLM specialist should be a deliberate choice; budget for it. (Deterministic rules — 179 and growing — cost zero per cycle and are the right home for any fact-check that doesn't require synthesis.)
 
 ## 6. Adding a new option strategy
 
