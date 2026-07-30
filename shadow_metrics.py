@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import random
 import sqlite3
 from bisect import bisect_left
 from collections import defaultdict
@@ -127,6 +129,103 @@ def grade_gate(gate_val: Optional[str],
     if gate_val == "block":
         return pnl_pct < 0
     return pnl_pct > 0
+
+
+# ---------------------------------------------------------------------------
+# The bottom line: would following this arm have made more money?
+# ---------------------------------------------------------------------------
+#
+# Counting who was "right" answers a different question than the one the
+# operator asks, because being right on a 0.2% drift and being right on
+# an 8% collapse count the same. These functions score each side by the
+# RETURN POINTS you'd have banked by acting on its call, so the summary
+# can state an edge in P&L rather than in debating points.
+#
+# Deliberately NOT converted to dollars: position sizing isn't recorded
+# on the shadow row, so any dollar figure would be an invented constant
+# multiplied by a real number — the exact species of fake precision this
+# module spent 2026-07-30 removing.
+
+# Below this many scored decisions no verdict is issued, regardless of
+# how lopsided the split looks. At a few dozen units a "clear winner" is
+# routinely a handful of repeated names.
+MIN_DECISIONS_FOR_VERDICT = 30
+VERDICT_ALPHA = 0.05
+
+
+def decision_value(stance_val: Optional[str],
+                   return_pct: Optional[float]) -> Optional[float]:
+    """Return points banked by ACTING on a forecaster's stance: long
+    earns the move, short earns its inverse, neutral takes no position
+    and earns nothing."""
+    if stance_val is None or return_pct is None:
+        return None
+    if stance_val == "bullish":
+        return float(return_pct)
+    if stance_val == "bearish":
+        return -float(return_pct)
+    return 0.0
+
+
+def gate_value(gate_val: Optional[str],
+               pnl_pct: Optional[float]) -> Optional[float]:
+    """Return points banked by FOLLOWING a gate verdict on a trade that
+    was taken: blocking it banks nothing (and risks nothing), allowing
+    it banks the position's P&L."""
+    if gate_val is None or pnl_pct is None:
+        return None
+    return 0.0 if gate_val == "block" else float(pnl_pct)
+
+
+def _sign_test_p(wins: int, losses: int) -> Optional[float]:
+    """Two-sided exact binomial p-value for `wins` vs `losses` under a
+    fair coin. Answers "could a split this lopsided be luck?" without
+    assuming the per-decision returns are normally distributed — they
+    are visibly not. Falls back to a normal approximation above 2000
+    trials, where the exact computation stops being worth its cost."""
+    n = wins + losses
+    if n == 0:
+        return None
+    k = min(wins, losses)
+    if n > 2000:
+        z = abs(wins - losses) / math.sqrt(n)
+        return max(0.0, min(1.0, math.erfc(z / math.sqrt(2))))
+    tail = sum(math.comb(n, i) for i in range(k + 1))
+    return min(1.0, 2.0 * (tail / (2 ** n)))
+
+
+_BOOTSTRAP_RESAMPLES = 2000
+_BOOTSTRAP_SEED = 20260730   # fixed: the page must not shuffle its own
+                             # verdict between two refreshes
+
+
+def _bootstrap_p(deltas: List[float]) -> Optional[float]:
+    """Two-sided bootstrap p-value for "is the mean edge zero?".
+
+    Per-decision returns are heavy-tailed — a handful of 8% moves
+    dominate a pile of 0.3% ones — so a t-test's normality assumption
+    is not met at these sample sizes. Resampling makes no such
+    assumption. Seeded, so the same data always yields the same
+    verdict.
+    """
+    n = len(deltas)
+    # Only run it where it can change the answer. Below the verdict
+    # threshold the result is "insufficient" whatever the p-value says,
+    # and this runs for every bucket on every page load.
+    if n < MIN_DECISIONS_FOR_VERDICT:
+        return None
+    rng = random.Random(_BOOTSTRAP_SEED)
+    observed = sum(deltas) / n
+    # Centre the sample so the resampling distribution is the null
+    # ("true mean is zero"), then ask how often it reaches the
+    # observed effect.
+    centred = [d - observed for d in deltas]
+    at_least = 0
+    for _ in range(_BOOTSTRAP_RESAMPLES):
+        m = sum(rng.choice(centred) for _ in range(n)) / n
+        if abs(m) >= abs(observed):
+            at_least += 1
+    return (at_least + 1) / (_BOOTSTRAP_RESAMPLES + 1)
 
 
 def stance(signal: Optional[str]) -> Optional[str]:
@@ -300,7 +399,82 @@ def _model_bucket() -> Dict[str, Any]:
         # CVX and TSLA appearing 9 times each). Finalized to the
         # integer `dis_units`.
         "_unit_keys": set(),
+        # (profile, symbol) -> [return-point deltas of following the
+        # shadow instead of the primary]. Collapsed to ONE figure per
+        # unit at finalize, so nine reviews of CVX can't count as nine
+        # independent bets on CVX.
+        "_edge_by_unit": {},
     }
+
+
+def _finalize_edge(edge_by_unit: Dict[tuple, List[float]]) -> Dict[str, Any]:
+    """Turn per-unit return-point deltas into the plain-English verdict
+    the /shadow page leads with.
+
+    One figure per (profile, symbol) unit — the mean of that unit's
+    deltas — so a name reviewed nine times contributes one bet, not
+    nine. `verdict` is 'insufficient' unless the split is both large
+    enough (MIN_DECISIONS_FOR_VERDICT) and unlikely enough under a fair
+    coin (VERDICT_ALPHA). Refusing to call it is the DEFAULT, not an
+    error state: this page previously reported a 27-5 rout that was
+    entirely measurement artifact.
+    """
+    unit_deltas = [sum(v) / len(v) for v in edge_by_unit.values() if v]
+    n = len(unit_deltas)
+    empty = {"edge_points": None, "edge_per_decision": None,
+             "edge_n": 0, "edge_wins": 0, "edge_losses": 0,
+             "edge_ties": 0, "edge_p": None, "edge_p_sign": None,
+             "verdict": "insufficient", "verdict_leader": None,
+             "verdict_line": "No scored decisions yet"}
+    if not n:
+        return empty
+    # A delta under 0.05 points is a rounding artefact, not a decision
+    # that went either way.
+    wins = sum(1 for d in unit_deltas if d > 0.05)
+    losses = sum(1 for d in unit_deltas if d < -0.05)
+    ties = n - wins - losses
+    total = sum(unit_deltas)
+    mean = total / n
+    # TWO different questions, and they can disagree:
+    #   p_sign  — does this arm win more OFTEN? (fair-coin test)
+    #   p_money — does it win more MONEY? (is mean edge != 0?)
+    # An arm can lose most decisions and still be ahead on points by
+    # catching the few large moves, which is what the operator actually
+    # cares about — so the VERDICT is gated on p_money, and p_sign is
+    # reported beside it so a lopsided-but-lucky split stays visible.
+    p_sign = _sign_test_p(wins, losses)
+    p_money = _bootstrap_p(unit_deltas)
+    decisive = (n >= MIN_DECISIONS_FOR_VERDICT
+                and p_money is not None and p_money < VERDICT_ALPHA)
+    if not decisive:
+        leader, verdict = None, "insufficient"
+        if n < MIN_DECISIONS_FOR_VERDICT or p_money is None:
+            line = (f"Not enough evidence — {n} scored decision"
+                    f"{'' if n == 1 else 's'}, need at least "
+                    f"{MIN_DECISIONS_FOR_VERDICT}")
+        else:
+            line = (f"Not enough evidence — {mean:+.2f} pts/decision "
+                    f"over {n} is within chance "
+                    f"(p={p_money:.2f})")
+    elif total > 0:
+        leader, verdict = "shadow", "shadow_better"
+        line = (f"Shadow arm is ahead: {mean:+.2f} return points per "
+                f"decision, {total:+.0f} total over {n} decisions "
+                f"({wins}W/{losses}L, p={p_money:.3f})")
+    else:
+        leader, verdict = "primary", "primary_better"
+        line = (f"Primary is ahead: {-mean:+.2f} return points per "
+                f"decision, {-total:+.0f} total over {n} decisions "
+                f"({losses}W/{wins}L, p={p_money:.3f})")
+    return {"edge_points": round(total, 2),
+            "edge_per_decision": round(mean, 3),
+            "edge_n": n, "edge_wins": wins, "edge_losses": losses,
+            "edge_ties": ties,
+            "edge_p": (round(p_money, 4) if p_money is not None else None),
+            "edge_p_sign": (round(p_sign, 4)
+                            if p_sign is not None else None),
+            "verdict": verdict, "verdict_leader": leader,
+            "verdict_line": line}
 
 
 def collect_fleet_metrics(profile_dbs: List[str],
@@ -471,6 +645,26 @@ def collect_fleet_metrics(profile_dbs: List[str],
                         for b in (m, pk, ak):
                             b["neither_right"] += 1
                         dis_row["who_right"] = "neither"
+                # P&L edge: what following the shadow instead of the
+                # primary would have banked on THIS decision. Computed
+                # for every scored row (including both-right and
+                # neither-right, where the size of the move is exactly
+                # what the win/loss counters throw away) but never for
+                # moot rows — no position, no P&L.
+                if not moot:
+                    if is_gate:
+                        pnl = trade_pnl(predicted_signal, outcome)
+                        p_val = gate_value(gate_call(primary_signal), pnl)
+                        s_val = gate_value(gate_call(parsed_signal), pnl)
+                    else:
+                        p_val = decision_value(p_st, outcome)
+                        s_val = decision_value(s_st, outcome)
+                    if p_val is not None and s_val is not None:
+                        key = (prof_label, (symbol or "").upper())
+                        for b in (m, pk, ak):
+                            b["_edge_by_unit"].setdefault(
+                                key, []).append(s_val - p_val)
+                        dis_row["edge_pts"] = round(s_val - p_val, 2)
             recent_dis.append(dis_row)
 
     def _finalize(b: Dict) -> Dict:
@@ -487,6 +681,7 @@ def collect_fleet_metrics(profile_dbs: List[str],
         b["h2h_n"] = h2h
         b["shadow_win_pct"] = (round(b["shadow_only"] / h2h * 100, 1)
                                if h2h else None)
+        b.update(_finalize_edge(b.pop("_edge_by_unit", {}) or {}))
         return b
 
     per_model_out = {k: _finalize(dict(v))
@@ -506,6 +701,7 @@ def collect_fleet_metrics(profile_dbs: List[str],
     recent_dis.sort(key=lambda r: r["ts"], reverse=True)
     overview["cost"] = round(overview["cost"], 4)
     return {
+        "verdict_min_decisions": MIN_DECISIONS_FOR_VERDICT,
         "overview": overview,
         "per_model": per_model_out,
         "by_purpose": dict(by_purpose_out),

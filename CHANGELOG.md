@@ -5,6 +5,22 @@ at the top.
 
 ---
 
+## 2026-07-30 (same session, follow-on) — /shadow leads with a bottom line: would following this arm have made more money? Built to REFUSE rather than to always name a winner. Severity: MEDIUM (decision surface for model/prompt promotion).
+
+Operator asked for an indicator showing "clearly and simply which is objectively better — more wins, more profit, less loss". The trap in that request is that a page which always names a winner will name one from noise; that is precisely what /shadow did this morning with a "27-5 rout" that was pure measurement artifact. So the new **Bottom line** card is built to withhold judgement.
+
+**It scores money, not debating points.** Every scored disagreement now carries the return points you would have banked by acting on the shadow's call instead of the primary's — long earns the move, short earns its inverse, sitting out earns nothing; for a VETO-authority gate, blocking banks nothing and allowing banks the position's P&L. Being right about a 0.2% drift and about an 8% collapse are not the same result, and the old right/wrong counters treated them identically. Deltas are collapsed to one figure per (profile, symbol), so nine reviews of CVX are one bet, not nine.
+
+**It refuses by default.** A verdict is issued only at ≥30 scored decisions AND a two-sided bootstrap p < 0.05 on the mean edge. Below that the card says "Not enough evidence" and shows how far off the threshold it is. Resampling rather than a t-test because per-decision returns are visibly heavy-tailed at these sample sizes; seeded (`_BOOTSTRAP_SEED`) so the page cannot shuffle its own conclusion between two refreshes, and skipped entirely below the verdict threshold where it could not change the answer anyway. Pinned: ten straight wins produces NO verdict, and 39 flat decisions plus one +200-point moonshot produces no verdict either.
+
+**Win rate and money are reported separately because they disagree.** An arm that loses most of its disagreements can still be ahead on points by catching the few large moves — so the verdict follows the P&L test (what the operator asked about) while the sign test on win COUNT is displayed beside it, so a lopsided-but-lucky split stays visible. Live at time of writing, haiku shows +1.89 pts/decision over 36 decisions on an 18W/15L split: a positive-looking total driven by a handful of large moves, with both tests saying "not yet" (p=0.32 money, p=0.73 sign). The card says so instead of crowning it.
+
+Deliberately NOT expressed in dollars: position sizing is not recorded on a shadow row, so any dollar figure would be an assumed constant multiplied by a real number — the same fake precision removed earlier today. Cost sits in the same table so an edge can be weighed against what it costs to buy.
+
+Also live: the `adversarial_v2` prompt-variant arm began writing rows at 19:21:55Z and now fires in lockstep with the other two. First 13 paired reviewer calls show the rewrite is biting — **0% advocacy language (primary: 23%), 23% citing a concrete value (primary: 0%), evidence/trigger fields populated on 46%, veto rate 46% vs the primary's 69%.** Outcome evidence for that arm still requires reviewed-AND-traded candidates, so its verdict will lag the process signal.
+
+Pinned in `test_shadow_verdict_2026_07_30.py` (19 tests: decision/gate valuation, four refusal shapes incl. lopsided-small and single-outlier, two clear-winner shapes, money-beats-win-count with both p-values surviving, determinism across repeated calls, sign-test edges incl. the large-n approximation, and page wiring incl. the bottom-line-before-detail ordering).
+
 ## 2026-07-30 — /shadow was measuring the wrong thing three ways: the "Haiku beats the primary 27-5" result was an artifact and does not exist. Plus the first PROMPT-variant shadow arm. Severity: HIGH (the page is the evidence base for model/prompt decisions; it was manufacturing results).
 
 The operator asked which shadow model was making better decisions. The page said claude-haiku-4-5 beat the `gemini-3.1-flash-lite` primary **27-5** on `ensemble:adversarial_reviewer`. That number was wrong, and so was the 51-40 fleet-wide figure beside it. Three independent defects, each of which alone would have produced a false winner:
