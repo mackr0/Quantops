@@ -22,7 +22,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import config
 
@@ -557,9 +557,16 @@ def _run_one_shadow(
     primary_model: str,
     primary_response: str,
     primary_parsed: Any,
+    model_label: Optional[str] = None,
 ) -> None:
     """Execute one shadow call and persist its row. Catches every
-    exception — never propagates."""
+    exception — never propagates.
+
+    `model` is the bare name sent to the provider API; `model_label` is
+    what gets RECORDED (it carries any `@variant` tag). They differ only
+    for prompt-variant arms, where the same model runs twice with
+    different instructions and the ledger must keep the two apart.
+    """
     from ai_pricing import estimate_cost_usd
 
     started = time.time()
@@ -567,7 +574,7 @@ def _run_one_shadow(
         "call_id": call_id,
         "purpose": purpose,
         "provider": provider,
-        "model": model,
+        "model": model_label or model,
         "prompt_hash": prompt_hash,
         "prompt_text": prompt,
         "primary_provider": primary_provider,
@@ -703,14 +710,40 @@ def dispatch_shadow_calls(
     if not cfg:
         return None
 
+    from prompt_variants import apply_variant, split_variant_tag
+
     call_id = uuid.uuid4().hex
-    prompt_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
     primary_parsed = _try_parse_json(primary_response)
 
     for entry in cfg["models"]:
         provider = entry["provider"]
-        model = entry["model"]
+        # May carry a "@variant" suffix — the bare name goes to the API,
+        # the full label goes in the ledger.
+        model_label = entry["model"]
+        model, variant_tag = split_variant_tag(model_label)
+
+        shadow_prompt = prompt
+        if variant_tag:
+            shadow_prompt = apply_variant(variant_tag, purpose, prompt)
+            if shadow_prompt is None:
+                # Variant doesn't cover this purpose, or its transform
+                # failed (already logged). No call, no cost, no row —
+                # deliberately silent so a purpose-scoped variant
+                # doesn't write thousands of "skipped" rows.
+                continue
+
+        prompt_hash = hashlib.sha256(
+            shadow_prompt.encode("utf-8")).hexdigest()
+
         api_key = cfg["api_keys"].get(provider, "")
+        if not api_key and provider == primary_provider:
+            # Prompt-variant arms run the PRIMARY's provider, whose key
+            # lives in config/profile rather than the user's shadow key
+            # map. Reuse the operational credential the primary call
+            # just used instead of making the operator duplicate and
+            # re-encrypt it across every profile.
+            from ai_providers import _working_key_for_provider
+            api_key = _working_key_for_provider(provider)
         if not api_key:
             # No key configured for this provider — record the gap so
             # the daily email can surface "configure your key" hints.
@@ -718,9 +751,9 @@ def dispatch_shadow_calls(
                 "call_id": call_id,
                 "purpose": purpose,
                 "provider": provider,
-                "model": model,
+                "model": model_label,
                 "prompt_hash": prompt_hash,
-                "prompt_text": prompt,
+                "prompt_text": shadow_prompt,
                 "primary_provider": primary_provider,
                 "primary_model": primary_model,
                 "primary_response": primary_response,
@@ -737,11 +770,12 @@ def dispatch_shadow_calls(
                 call_id=call_id,
                 db_path=db_path,
                 purpose=purpose,
-                prompt=prompt,
+                prompt=shadow_prompt,
                 prompt_hash=prompt_hash,
                 max_tokens=max_tokens,
                 provider=provider,
                 model=model,
+                model_label=model_label,
                 api_key=api_key,
                 primary_provider=primary_provider,
                 primary_model=primary_model,
@@ -753,7 +787,7 @@ def dispatch_shadow_calls(
             # (pool shut down). Process exit window; nothing to do.
             logger.debug(
                 "shadow eval: pool submit rejected for %s/%s: %s: %s",
-                provider, model, type(exc).__name__, exc,
+                provider, model_label, type(exc).__name__, exc,
             )
 
     return call_id
@@ -808,8 +842,11 @@ def fetch_recently_resolved_disagreements(
     decisions made yesterday or earlier whose outcomes are now known.
 
     Match logic: for each disagreement row, look up the ai_predictions
-    row by (symbol-from-primary-response, timestamp within ±5 minutes)
-    where status='resolved' AND actual_return_pct IS NOT NULL.
+    row by (symbol-from-primary-response, timestamp within
+    shadow_metrics.MATCH_WINDOW_SEC) where status='resolved' AND
+    actual_return_pct IS NOT NULL. The window is imported rather than
+    hardcoded so this email and the /shadow page can never disagree
+    about which outcomes exist.
 
     Returns enriched dicts with `outcome_return_pct`, `outcome_days`,
     `outcome_status` added.
@@ -825,6 +862,12 @@ def fetch_recently_resolved_disagreements(
             db_path, type(exc).__name__, exc,
         )
         return []
+    # Lazy import: shadow_metrics has no heavy module-level deps, and
+    # importing it here (not at module scope) keeps the two modules
+    # free of an import cycle — shadow_metrics pulls _extract_signal
+    # back out of this module.
+    from shadow_metrics import MATCH_WINDOW_SEC
+
     try:
         conn.row_factory = sqlite3.Row
         try:
@@ -864,10 +907,11 @@ def fetch_recently_resolved_disagreements(
                     "WHERE symbol = ? "
                     "AND status = 'resolved' "
                     "AND actual_return_pct IS NOT NULL "
-                    "AND ABS(strftime('%s', timestamp) - strftime('%s', ?)) <= 300 "
+                    "AND ABS(strftime('%s', timestamp) - strftime('%s', ?)) <= ? "
                     "ORDER BY ABS(strftime('%s', timestamp) - strftime('%s', ?)) "
                     "LIMIT 1",
-                    (symbol, d.get("timestamp"), d.get("timestamp")),
+                    (symbol, d.get("timestamp"), int(MATCH_WINDOW_SEC),
+                     d.get("timestamp")),
                 ).fetchone()
             except sqlite3.OperationalError as exc:
                 logger.debug(

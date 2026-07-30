@@ -11,8 +11,14 @@ Pins the grading semantics that make the numbers honest:
     SHORT predictions show positive pct on a rising price), so a
     bullish stance is right iff return > 0, bearish iff < 0.
   - Disagreement outcomes only count when a resolved prediction for
-    the SAME symbol exists within ±5 minutes of the shadow call.
+    the SAME symbol exists within shadow_metrics.MATCH_WINDOW_SEC of
+    the shadow call (300s until 2026-07-30, 1800s after).
   - Cost-cap throttles and billing-quota deaths are never "errors".
+
+2026-07-30: the neutral-stance and flat-outcome cases moved from
+"ungradable" to graded — see test_shadow_grading_fairness_2026_07_30
+for why. The assertions here were updated to the new semantics rather
+than pinned to the old ones.
 """
 from __future__ import annotations
 
@@ -45,11 +51,16 @@ class TestGrade:
         assert grade("bearish", -2.0) is True
         assert grade("bearish", 3.2) is False
 
-    def test_ungradable(self):
-        assert grade("neutral", 5.0) is None
-        assert grade(None, 5.0) is None
-        assert grade("bullish", None) is None
-        assert grade("bullish", 0.01) is None   # flat
+    def test_ungradable_only_for_unmappable_signals(self):
+        # None means "there is no stance to grade" — nothing else.
+        assert grade(None, 5.0) is None          # apex set string
+        assert grade("bullish", None) is None    # no outcome yet
+
+    def test_neutral_and_flat_are_graded(self):
+        # A HOLD is a real call and is scored like one.
+        assert grade("neutral", 0.4) is True     # correctly sat out
+        assert grade("neutral", 5.0) is False    # missed a real move
+        assert grade("bullish", 0.4) is False    # bet on a non-move
 
 
 def _mk_profile(tmp_path, name, shadow_rows, predictions=()):
@@ -65,7 +76,7 @@ def _mk_profile(tmp_path, name, shadow_rows, predictions=()):
     conn.execute("""
         CREATE TABLE ai_predictions (
             id INTEGER PRIMARY KEY, symbol TEXT, timestamp TEXT,
-            status TEXT, actual_return_pct REAL
+            status TEXT, actual_return_pct REAL, predicted_signal TEXT
         )""")
     for r in shadow_rows:
         conn.execute(
@@ -90,11 +101,17 @@ PP_SELL = '{"symbol": "NVDA", "verdict": "SELL"}'
 class TestCollect:
     def test_disagreement_outcome_grading(self, tmp_path):
         """Primary said SELL, shadow said BUY, price ROSE +4% →
-        shadow right, primary wrong — the page's money metric."""
+        shadow right, primary wrong — the page's money metric.
+
+        Uses a FORECAST specialist: since 2026-07-30 the VETO-authority
+        specialists (risk_assessor, adversarial_reviewer) are graded as
+        trade gates against a taken position's P&L, not as directional
+        calls against raw price.
+        """
         db = _mk_profile(
             tmp_path, "301",
             shadow_rows=[
-                (NOW, "ensemble:risk_assessor", "anthropic", "haiku",
+                (NOW, "ensemble:pattern_recognizer", "anthropic", "haiku",
                  "BUY", 0, None, 0.001, 900, PP_SELL),
             ],
             predictions=[("NVDA", "2026-07-25T13:58:30", 4.0)],
@@ -178,5 +195,5 @@ class TestRouteWiring:
             "templates", "shadow.html")).read()
         for needle in ("Per-model summary", "By decision category",
                        "By primary action", "Recent disagreements",
-                       "Shadow right", "Daily agreement trend"):
+                       "Shadow won", "Units", "Daily agreement trend"):
             assert needle in tpl, f"template lost section: {needle}"

@@ -537,6 +537,28 @@
                 </div>
             </div>
 
+            {% set _prim_entry = (prof.get('ai_provider') or '') ~ ':' ~ (prof.get('ai_model') or '') %}
+            {% if shadow_variants and prof.get('ai_provider') and prof.get('ai_model') %}
+            <div style="margin-top:0.75rem;">
+                <strong>Prompt variants</strong>
+                <small style="color:#888;display:block;margin-bottom:0.4rem;">Runs this profile's OWN primary model (<code>{{ _prim_entry }}</code>) a second time with revised instructions. Holds the model constant so the comparison isolates the prompt rather than the model. Needs no extra API key &mdash; it reuses the primary's.</small>
+                <fieldset style="border:1px solid #ddd;border-radius:6px;padding:0.5rem 0.75rem;margin:0;">
+                    {% for _var in shadow_variants %}
+                    {% set _ventry = _prim_entry ~ '@' ~ _var.tag %}
+                    <label style="display:flex;align-items:flex-start;gap:0.5rem;padding:0.2rem 0;font-weight:normal;">
+                        <input type="checkbox" name="shadow_models" value="{{ _ventry }}"
+                               style="flex-shrink:0;margin-top:0.25rem;"
+                               {{ 'checked' if _ventry in _shadow_selected else '' }}>
+                        <span style="font-size:0.9rem;">{{ _var.label }}
+                            <br><small style="color:#888;">{{ _var.description | humanize }}</small>
+                            <br><small style="color:#aaa;">Applies to: {{ _var.purposes | join(', ') }}</small>
+                        </span>
+                    </label>
+                    {% endfor %}
+                </fieldset>
+            </div>
+            {% endif %}
+
             {% set _shadow_keys = (prof.get('shadow_api_keys_enc') or '{}') | from_json or {} %}
             <div style="margin-top:0.75rem;">
                 <strong>Provider API keys for shadow eval</strong>

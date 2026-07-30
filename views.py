@@ -1484,6 +1484,12 @@ def settings():
     excluded_str = ", ".join(excluded)
 
     ai_providers = get_providers()
+    # Prompt-variant shadow arms aren't models in the provider
+    # catalogue, so they need their own checkboxes — otherwise they are
+    # invisible here AND wiped on the next save, since the handler
+    # rebuilds shadow_models from the posted checkboxes.
+    from prompt_variants import describe_variants
+    shadow_variants = describe_variants()
 
     from models import get_alpaca_accounts
     alpaca_accounts = get_alpaca_accounts(current_user.effective_user_id)
@@ -1561,6 +1567,7 @@ def settings():
                            excluded_symbols=excluded_str,
                            ai_providers=ai_providers,
                            ai_providers_json=json.dumps(ai_providers),
+                           shadow_variants=shadow_variants,
                            alpaca_accounts=alpaca_accounts,
                            autonomy=autonomy)
 

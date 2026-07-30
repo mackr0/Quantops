@@ -9,6 +9,32 @@
     The decision-quality judge is <strong>resolved disagreements</strong>:
     when a shadow model disagreed and the underlying prediction has
     since resolved, whose stance matched the realized price move.
+    A <code>@variant</code> suffix on a model name marks a
+    <strong>prompt-variant arm</strong> &mdash; the same model as the
+    primary running revised instructions, so the comparison isolates
+    the prompt rather than the model.
+</p>
+<p class="muted" style="font-size:0.85em;">
+    Read <strong>Shadow won / Primary won</strong> (rows where exactly
+    one side matched), not a single side's total &mdash; and weigh them
+    against <strong>Units</strong>, the distinct profile+symbol pairs
+    behind those rows. The same name is re-reviewed every cycle and
+    resolves against one price move, so row counts overstate how much
+    independent evidence exists. A forecaster's HOLD is graded, not
+    skipped: it wins when the move stayed inside &plusmn;1.5% and loses
+    when it missed a real move, so a more decisive model can no longer
+    score against an opponent that was unable to answer.
+</p>
+<p class="muted" style="font-size:0.85em;">
+    <strong>Moot</strong> is its own answer. The VETO-authority
+    specialists (<code>adversarial_reviewer</code>,
+    <code>risk_assessor</code>) decide whether a trade HAPPENS &mdash;
+    they don't forecast direction, so they are scored against the
+    P&amp;L of the position that was actually opened. When the system
+    passed on the candidate, no position existed and neither verdict
+    could be right or wrong. A category sitting at 100% moot is not
+    evidence of a tie; it is <em>no evidence at all</em>, and needs
+    reviewed-and-traded candidates before it can say anything.
 </p>
 
 <article>
@@ -29,8 +55,12 @@
             <th>Model</th><th>Calls</th><th>Graded</th>
             <th>Agreement</th><th>Disagree</th>
             <th title="disagreements whose prediction has resolved">Resolved</th>
-            <th title="shadow's stance matched the realized move">Shadow right</th>
-            <th title="primary's stance matched the realized move">Primary right</th>
+            <th title="distinct profile+symbol pairs behind the resolved rows — the effective sample size">Units</th>
+            <th title="resolved disagreements where the SHADOW matched and the primary did not">Shadow won</th>
+            <th title="resolved disagreements where the PRIMARY matched and the shadow did not">Primary won</th>
+            <th title="both stances matched the move">Both</th>
+            <th title="neither stance matched the move">Neither</th>
+            <th title="VETO-authority verdicts on a trade that was never opened — no position existed, so neither side can be right">Moot</th>
             <th>Pending</th><th>Errors</th><th>Quota</th>
             <th>Throttled</th><th>Cost</th><th>Latency</th>
         </tr></thead>
@@ -43,8 +73,12 @@
             <td><strong>{{ v.agreement_pct if v.agreement_pct is not none else "—" }}{% if v.agreement_pct is not none %}%{% endif %}</strong></td>
             <td>{{ v.disagree }}</td>
             <td>{{ v.dis_resolved }}</td>
-            <td class="pnl-pos"><strong>{{ v.shadow_right }}</strong></td>
-            <td><strong>{{ v.primary_right }}</strong></td>
+            <td><strong>{{ v.dis_units }}</strong></td>
+            <td class="pnl-pos"><strong>{{ v.shadow_only }}</strong></td>
+            <td><strong>{{ v.primary_only }}</strong></td>
+            <td class="muted">{{ v.both_right }}</td>
+            <td class="muted">{{ v.neither_right }}</td>
+            <td class="muted">{{ v.moot }}</td>
             <td class="muted">{{ v.dis_pending }}</td>
             <td>{{ v.errors }}</td>
             <td>{{ v.quota }}</td>
@@ -58,9 +92,12 @@
     </div>
     <p class="muted" style="font-size:0.85em;">
         Low agreement is not bad by itself &mdash; a contrarian model is
-        only valuable if it's RIGHT when it disagrees. Watch
-        Shadow-right vs Primary-right as resolutions accrue
-        (predictions resolve in ~1&ndash;6 days).
+        only valuable if it's RIGHT when it disagrees. Watch Shadow-won
+        vs Primary-won as resolutions accrue (predictions resolve in
+        ~5 days, 7 at the 95th percentile). Treat any split as noise
+        until <strong>Units</strong> reaches the low hundreds; at a few
+        dozen units a lopsided-looking result is routinely a handful of
+        repeated names.
     </p>
 </article>
 
@@ -73,8 +110,10 @@
     <table class="striped">
         <thead><tr>
             <th>Purpose</th><th>Model</th><th>Graded</th>
-            <th>Agreement</th><th>Resolved</th>
-            <th>Shadow right</th><th>Primary right</th><th>Pending</th>
+            <th>Agreement</th><th>Resolved</th><th>Units</th>
+            <th>Shadow won</th><th>Primary won</th>
+            <th title="gate verdicts on trades never opened">Moot</th>
+            <th>Pending</th>
         </tr></thead>
         <tbody>
         {% for purpose, models in m.by_purpose.items() %}
@@ -85,8 +124,10 @@
                 <td>{{ v.graded }}</td>
                 <td>{{ v.agreement_pct if v.agreement_pct is not none else "—" }}{% if v.agreement_pct is not none %}%{% endif %}</td>
                 <td>{{ v.dis_resolved }}</td>
-                <td class="pnl-pos">{{ v.shadow_right }}</td>
-                <td>{{ v.primary_right }}</td>
+                <td><strong>{{ v.dis_units }}</strong></td>
+                <td class="pnl-pos">{{ v.shadow_only }}</td>
+                <td>{{ v.primary_only }}</td>
+                <td class="muted">{{ v.moot }}</td>
                 <td class="muted">{{ v.dis_pending }}</td>
             </tr>
             {% endfor %}
@@ -105,8 +146,8 @@
     <table class="striped">
         <thead><tr>
             <th>Primary said</th><th>Model</th><th>Graded</th>
-            <th>Agreement</th><th>Resolved</th>
-            <th>Shadow right</th><th>Primary right</th>
+            <th>Agreement</th><th>Resolved</th><th>Units</th>
+            <th>Shadow won</th><th>Primary won</th>
         </tr></thead>
         <tbody>
         {% for act, models in m.by_primary_action.items() %}
@@ -117,8 +158,9 @@
                 <td>{{ v.graded }}</td>
                 <td>{{ v.agreement_pct if v.agreement_pct is not none else "—" }}{% if v.agreement_pct is not none %}%{% endif %}</td>
                 <td>{{ v.dis_resolved }}</td>
-                <td class="pnl-pos">{{ v.shadow_right }}</td>
-                <td>{{ v.primary_right }}</td>
+                <td><strong>{{ v.dis_units }}</strong></td>
+                <td class="pnl-pos">{{ v.shadow_only }}</td>
+                <td>{{ v.primary_only }}</td>
             </tr>
             {% endfor %}
         {% endfor %}
