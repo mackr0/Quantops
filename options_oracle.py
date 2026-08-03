@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 import math
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional
 
 import numpy as np
 
@@ -110,7 +110,6 @@ def compute_iv_skew(chain_data: Dict[str, Any]) -> Dict[str, Any]:
         signal: 'fear' | 'greed' | 'neutral'
     """
     try:
-        import pandas as pd
         current = chain_data["current_price"]
         near = chain_data["near_term"]
         calls = near["calls"]
@@ -225,7 +224,6 @@ def compute_implied_move(chain_data: Dict[str, Any]) -> Dict[str, Any]:
         days_to_expiration: int
     """
     try:
-        import pandas as pd
         from datetime import datetime
         current = chain_data["current_price"]
         near = chain_data["near_term"]

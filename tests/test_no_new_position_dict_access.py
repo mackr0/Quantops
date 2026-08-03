@@ -142,7 +142,7 @@ class TestPositionConstructionInvariants:
         + assertion behavior."""
         import inspect
         from position import Position
-        members = inspect.getmembers(Position, predicate=inspect.ismethod)
+        inspect.getmembers(Position, predicate=inspect.ismethod)
         classmethod_names = [
             name for name, obj in inspect.getmembers(Position)
             if isinstance(inspect.getattr_static(Position, name, None),

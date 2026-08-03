@@ -17,7 +17,6 @@ could discover dynamically from EDGAR's full-text search.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import sqlite3
@@ -268,7 +267,7 @@ def parse_information_table(xml_text: str) -> List[Dict[str, Any]]:
     root = ET.fromstring(xml_no_ns)
     out = []
     for entry in root.findall(".//infoTable"):
-        def t(path: str, default: str = "") -> str:
+        def t(path: str, default: str = "", entry=entry) -> str:
             node = entry.find(path)
             return (node.text or default).strip() if node is not None else default
 

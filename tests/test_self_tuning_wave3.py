@@ -780,7 +780,8 @@ class TestShortSellingAndSkipMigrations:
         conn.close()
 
     def test_short_selling_migration_flips_non_crypto(self, tmp_path, monkeypatch):
-        import config, models
+        import config
+        import models
         db = str(tmp_path / "users.db")
         self._seed_user_db(db, [
             (1, "Stocks Profile", "stocks", 0, 0),
@@ -812,7 +813,8 @@ class TestShortSellingAndSkipMigrations:
 
     def test_skip_first_minutes_migration_bumps_zero_only(
             self, tmp_path, monkeypatch):
-        import config, models
+        import config
+        import models
         db = str(tmp_path / "users.db")
         self._seed_user_db(db, [
             (1, "A", "stocks", 0, 0),    # bump 0→5

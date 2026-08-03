@@ -4,11 +4,10 @@ import math
 import random
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Callable, Dict, List, Optional
 
-import numpy as np
 import pandas as pd
 
 from market_data import get_bars_daterange, add_indicators
@@ -741,7 +740,7 @@ def backtest_strategy(
 
     num_trades = len(all_trades)
     wins = [t for t in all_trades if t["pnl"] > 0]
-    losses = [t for t in all_trades if t["pnl"] <= 0]
+    [t for t in all_trades if t["pnl"] <= 0]
     win_rate = (len(wins) / num_trades * 100) if num_trades > 0 else 0.0
 
     # Max drawdown from equity curve
@@ -832,7 +831,7 @@ def print_strategy_backtest_report(results: Dict) -> None:
         sl_count = sum(1 for t in trades if t.get("exit_reason") == "stop_loss")
         tp_count = sum(1 for t in trades if t.get("exit_reason") == "take_profit")
         eob_count = sum(1 for t in trades if t.get("exit_reason") == "end_of_backtest")
-        print(f"\n  Exit Breakdown:")
+        print("\n  Exit Breakdown:")
         print(f"    Stop-Loss:        {sl_count}")
         print(f"    Take-Profit:      {tp_count}")
         print(f"    End of Backtest:  {eob_count}")

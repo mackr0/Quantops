@@ -269,13 +269,13 @@ def test_empty_applies_to_signals_means_fire_always():
     """A rule with no APPLIES_TO_SIGNALS gate fires on every
     candidate (current behavior — pin it.)"""
     universal = _StubRule("universal", ())  # empty tuple = no gate
-    fired_buy = _run_with_rules(
+    _run_with_rules(
         [universal],
         {"signal": "BUY"},
     )
     assert universal.called
     universal.called = False
-    fired_opt = _run_with_rules(
+    _run_with_rules(
         [universal],
         {"signal": "OPTIONS", "option_strategy": "iron_condor"},
     )

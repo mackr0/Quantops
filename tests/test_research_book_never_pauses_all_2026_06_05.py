@@ -61,7 +61,7 @@ class TestDrawdownAccelNeverPausesAll:
     def test_warning_drawdown_yields_block_new_entries(self):
         """Warning severity already used block_new_entries; pin that
         it doesn't accidentally flip too."""
-        alert = check_drawdown_acceleration(
+        check_drawdown_acceleration(
             today_intraday_pct=0.03,
             avg_7d_intraday_pct=0.01,  # 3x is right at the boundary
         )

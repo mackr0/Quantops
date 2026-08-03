@@ -176,7 +176,7 @@ class TestApiPayloadsAreHumanized:
         # No display-field strings carry snake_case.
         leaks = _scan_for_snake_case(sample_payload)
         assert not leaks, (
-            f"Snake-case leak(s) in API payload:\n"
+            "Snake-case leak(s) in API payload:\n"
             + "\n".join(f"  {p} = {v!r}" for p, v in leaks)
         )
 
@@ -214,7 +214,7 @@ class TestApiPayloadsAreHumanized:
         # category; the raw value is allowed in the JSON.
         leaks = _scan_for_snake_case(sample_item)
         assert not leaks, (
-            f"Snake-case leak(s) in tuning-history item:\n"
+            "Snake-case leak(s) in tuning-history item:\n"
             + "\n".join(f"  {p} = {v!r}" for p, v in leaks)
         )
 
@@ -346,7 +346,7 @@ class TestApiPayloadsAreHumanized:
         )
         leaks = _scan_for_snake_case(sample_payload)
         assert not leaks, (
-            f"Snake-case leak(s) in options-backtest payload:\n"
+            "Snake-case leak(s) in options-backtest payload:\n"
             + "\n".join(f"  {p} = {v!r}" for p, v in leaks)
         )
 
@@ -390,7 +390,7 @@ class TestApiPayloadsAreHumanized:
             )
         leaks = _scan_for_snake_case(sample_payload)
         assert not leaks, (
-            f"Snake-case leak(s) in resolver payload:\n"
+            "Snake-case leak(s) in resolver payload:\n"
             + "\n".join(f"  {p} = {v!r}" for p, v in leaks)
         )
 
@@ -448,7 +448,7 @@ class TestApiPayloadsAreHumanized:
             )
         leaks = _scan_for_snake_case(sample_payload)
         assert not leaks, (
-            f"Snake-case leak(s) in weightable-signals payload:\n"
+            "Snake-case leak(s) in weightable-signals payload:\n"
             + "\n".join(f"  {p} = {v!r}" for p, v in leaks)
         )
 
@@ -474,7 +474,7 @@ class TestApiPayloadsAreHumanized:
             # autonomy timeline events
             "kind", "purpose",
             # safety status
-            "provider", "model", "status", "source",
+            "provider", "model", "status",
             # generic
             "id", "symbol", "type",
         }

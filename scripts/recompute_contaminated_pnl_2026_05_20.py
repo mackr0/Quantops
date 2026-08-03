@@ -44,12 +44,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sqlite3
-import sys
 from contextlib import closing
 from datetime import datetime
-from typing import Dict, List, Tuple, Optional
+from typing import List, Tuple, Optional
 
 REPO = "/opt/quantopsai" if os.path.isdir("/opt/quantopsai") else os.getcwd()
 AUDIT_LOG = os.path.join(

@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import logging
 import random
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)

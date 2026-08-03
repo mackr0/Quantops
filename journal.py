@@ -4,7 +4,7 @@ import logging
 import sqlite3
 import json
 from contextlib import closing
-from datetime import datetime, date, timedelta
+from datetime import datetime, timedelta
 from typing import Any, Dict
 
 import config

@@ -56,7 +56,7 @@ for sym, virt, alp in sym_drifts:
           f"avg=${bp.get('avg', 0):.2f}")
     print(f"  Audit says: virtual={virt:.0f}  alpaca={alp:.0f}  "
           f"diff={abs(virt-alp):.0f}")
-    print(f"  Journal rows per profile:")
+    print("  Journal rows per profile:")
     total_open_buy = 0.0
     total_open_sell = 0.0
     for pid in sorted(pids):

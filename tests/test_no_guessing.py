@@ -203,7 +203,7 @@ class TestAPIContracts:
         """The /api/macro-data endpoint must return yield_curve, etf_flows, cboe_skew, fred_macro."""
         from macro_data import get_all_macro_data
         # Verify the function exists and returns the right keys
-        sig = inspect.signature(get_all_macro_data)
+        inspect.signature(get_all_macro_data)
         # Check the source for the return dict keys
         src = inspect.getsource(get_all_macro_data)
         for key in ["yield_curve", "etf_flows", "cboe_skew", "fred_macro"]:
@@ -238,7 +238,8 @@ class TestAPIContracts:
 
 class TestNoYFinanceInEquityPaths:
     def test_screener_equity_functions_use_alpaca(self):
-        import inspect, screener
+        import inspect
+        import screener
         for fn_name in ("screen_by_price_range", "find_volume_surges",
                         "find_momentum_stocks", "find_breakouts"):
             fn = getattr(screener, fn_name)
@@ -248,7 +249,8 @@ class TestNoYFinanceInEquityPaths:
             )
 
     def test_ai_tracker_uses_alpaca(self):
-        import inspect, ai_tracker
+        import inspect
+        import ai_tracker
         src = inspect.getsource(ai_tracker._get_current_price)
         assert "get_latest_trade" in src, (
             "_get_current_price must use api.get_latest_trade as primary"
@@ -384,7 +386,7 @@ class TestPromptBuildDoesNotCrash:
                     f"_build_batch_prompt crashed with KeyError: {e}. "
                     f"Every alt_data field access must use .get() with defaults, "
                     f"not direct dict indexing."
-                )
+                ) from e
 
 
 class TestActivityLogDisplayNames:
@@ -392,7 +394,8 @@ class TestActivityLogDisplayNames:
 
     def test_exit_trigger_uses_display_name(self):
         """Exit activity must format trigger through display_name, not capitalize()."""
-        import inspect, multi_scheduler
+        import inspect
+        import multi_scheduler
         src = inspect.getsource(multi_scheduler._task_check_exits)
         assert "display_name" in src or "_dn" in src, (
             "_task_check_exits must use display_name() for trigger types, "
@@ -416,7 +419,8 @@ class TestActivityLogDisplayNames:
 
 class TestDotenvLoading:
     def test_scheduler_loads_dotenv_before_imports(self):
-        import inspect, multi_scheduler
+        import inspect
+        import multi_scheduler
         src = inspect.getsource(multi_scheduler)
         dotenv_pos = src.find("load_dotenv()")
         import_pos = src.find("\nfrom segments import")
@@ -425,7 +429,8 @@ class TestDotenvLoading:
         )
 
     def test_app_loads_dotenv(self):
-        import inspect, app
+        import inspect
+        import app
         src = inspect.getsource(app)
         assert "load_dotenv()" in src, "app.py must call load_dotenv()"
 

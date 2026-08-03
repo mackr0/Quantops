@@ -21,13 +21,12 @@ Design principles lifted verbatim from congresstrades:
 
 from __future__ import annotations
 
-import json
 import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 DEFAULT_DB_PATH = str(

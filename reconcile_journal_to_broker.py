@@ -41,7 +41,7 @@ import sqlite3
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -264,10 +264,10 @@ def _classify_long_phantom(api, row, broker_qty, used_sell_ids):
     For options, broker-side lookups use the OCC symbol (the journal
     row's `symbol` is the underlying).
     """
-    sym = _lookup_symbol_for_row(row)
-    qty = float(row["qty"] or 0)
+    _lookup_symbol_for_row(row)
+    float(row["qty"] or 0)
     order_id = row["order_id"]
-    ts = _to_utc_iso(row["timestamp"])
+    _to_utc_iso(row["timestamp"])
     if not order_id:
         return "ambiguous", {"reason": "no order_id in journal"}
     entry_order, exc = _retrying_call(api.get_order, order_id)
@@ -319,10 +319,10 @@ def _classify_short_phantom(api, row, broker_qty, used_cover_ids):
     buy-to-cover stop, the journal needs a 'cover' row. Otherwise
     the short stays "open" forever in get_virtual_positions.
     """
-    sym = _lookup_symbol_for_row(row)
-    qty = float(row["qty"] or 0)
+    _lookup_symbol_for_row(row)
+    float(row["qty"] or 0)
     order_id = row["order_id"]
-    ts = _to_utc_iso(row["timestamp"])
+    _to_utc_iso(row["timestamp"])
     if not order_id:
         return "ambiguous", {"reason": "no order_id in journal"}
     entry_order, exc = _retrying_call(api.get_order, order_id)
@@ -2433,7 +2433,7 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
                         continue
                     fill_price = (a.get("sell_price")
                                    or a.get("cover_price"))
-                    filled_at = (a.get("sell_filled_at")
+                    (a.get("sell_filled_at")
                                   or a.get("cover_filled_at"))
                     filled_qty = (a.get("sell_qty")
                                    or a.get("cover_qty"))
@@ -2760,11 +2760,11 @@ def main():
         grand["option_orphan_close"] += n_ooc
         grand["real_held"] += n_r
 
-    print(f"\n=== TOTALS ===")
+    print("\n=== TOTALS ===")
     for k, v in grand.items():
         print(f"  {k:<24s}: {v:>3}")
     if not args.apply:
-        print(f"\nDry-run only. Re-run with --apply to write changes.")
+        print("\nDry-run only. Re-run with --apply to write changes.")
     if grand["ambiguous"] > 0 or grand["orphan_close"] > 0 or grand["errored"] > 0:
         return 1
     return 0

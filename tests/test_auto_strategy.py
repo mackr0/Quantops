@@ -280,7 +280,7 @@ class TestRegistryShadowWiring:
         # Point the real strategies package at our temp dir so the auto
         # modules land in a location the registry scans.
         import strategies
-        real_dir = os.path.dirname(strategies.__file__)
+        os.path.dirname(strategies.__file__)
 
         # Instead of messing with the real package, test the registry
         # helper functions directly. We create a fake module and check

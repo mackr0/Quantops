@@ -89,9 +89,9 @@ class TestAllActionTypesLoggedToTicker:
         ]
         for pat in bug_patterns:
             assert not re.search(pat, src), (
-                f"multi_scheduler.py contains a hardcoded "
-                f"`action in ('BUY','SELL','SHORT')` filter — this "
-                f"is the exact pattern that silently dropped "
-                f"MULTILEG_OPEN trades from the ticker. Use the "
-                f"canonical EXECUTED_ACTIONS set instead."
+                "multi_scheduler.py contains a hardcoded "
+                "`action in ('BUY','SELL','SHORT')` filter — this "
+                "is the exact pattern that silently dropped "
+                "MULTILEG_OPEN trades from the ticker. Use the "
+                "canonical EXECUTED_ACTIONS set instead."
             )

@@ -332,7 +332,7 @@ def test_short_direction_production_buy_shape(db):
     api2 = FakeApi(positions={"ORCL": -115},
                    orders_by_id={"entryORCL": _filled_entry("sell", 115),
                                  "stopORCL1": FakeOrder("buy", 115)})
-    out2 = revoke_unbacked_protective_orders(api2, db)
+    revoke_unbacked_protective_orders(api2, db)
     assert "stopORCL1" not in api2.canceled
 
 

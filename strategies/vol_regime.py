@@ -36,7 +36,6 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
 
             gex = oracle.get("gex", {})
             regime = gex.get("regime", "")
-            term = oracle.get("term_structure", {})
             skew = oracle.get("skew", {})
 
             if regime != "volatility_expansion":

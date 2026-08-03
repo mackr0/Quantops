@@ -102,7 +102,7 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
                 # filed_date but surface for follow-up.
                 logger.debug(
                     "%s filed_date parse failed for %s: %s: %s",
-                    NAME, symbol, type(_fd_exc).__name__, _fd_exc,
+                    NAME, sym, type(_fd_exc).__name__, _fd_exc,
                 )
                 continue
 
@@ -126,7 +126,7 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
                 # 5-bar proxy. Surface for follow-up.
                 logger.debug(
                     "%s reference-bar lookup failed for %s: %s: %s",
-                    NAME, symbol, type(_rb_exc).__name__, _rb_exc,
+                    NAME, sym, type(_rb_exc).__name__, _rb_exc,
                 )
             if ref_close is None:
                 # Fall back to "5 bars ago" as a rough proxy

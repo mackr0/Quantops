@@ -34,7 +34,7 @@ import os
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 

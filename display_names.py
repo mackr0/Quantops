@@ -151,7 +151,6 @@ _DISPLAY_NAMES = {
     # New alternative data features
     "congress_direction":       "Congressional Trading",
     "finra_short_vol_ratio":    "FINRA Short Volume Ratio",
-    "insider_cluster":          "Insider Buying Cluster",
     "eps_revision_direction":   "EPS Revision Direction",
     "eps_revision_magnitude":   "EPS Revision %",
 
@@ -395,7 +394,6 @@ def format_param_value(name: str, value) -> str:
     if value is None or value == "":
         return ""
     # Coerce string-stored numeric values
-    raw = value
     try:
         v = float(value)
     except (TypeError, ValueError):

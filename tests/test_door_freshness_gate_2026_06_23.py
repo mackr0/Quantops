@@ -43,7 +43,9 @@ def test_p166_oracle_door_refuses_stale_long_broker_already_closed(tmp_path):
     that books the position flat, so the door refuses the naked sell.
 
     FAILS on the pre-gate door (journal-only, sees 8421, allows the sell)."""
-    import journal, cycle_epoch, order_guard
+    import journal
+    import cycle_epoch
+    import order_guard
     import reconcile_journal_to_broker as R
     db = _db_with_open_buy(tmp_path, "PLUG", 8421)
     cycle_epoch.bump()  # symbol now stale this cycle
@@ -70,7 +72,8 @@ def test_door_fails_closed_when_freshen_raises(tmp_path):
     """If the symbol is stale and the just-in-time reconcile cannot complete
     (broker unreachable), the door REFUSES rather than act on a maybe-stale
     journal. FAILS on the pre-gate door (which never freshens)."""
-    import cycle_epoch, order_guard
+    import cycle_epoch
+    import order_guard
     import reconcile_journal_to_broker as R
     db = _db_with_open_buy(tmp_path, "GME", 100, price=20.0)
     cycle_epoch.bump()  # stale
@@ -88,7 +91,9 @@ def test_door_allows_fresh_owned_sell(tmp_path):
     """The normal path: symbol is fresh this cycle and the profile owns the
     qty -> the door allows the sell and forwards it to the broker (no
     needless reconcile)."""
-    import journal, cycle_epoch, order_guard
+    import journal
+    import cycle_epoch
+    import order_guard
     import reconcile_journal_to_broker as R
     db = _db_with_open_buy(tmp_path, "AAPL", 100, price=150.0)
     journal.stamp_symbols_fresh(db, ["AAPL"], cycle_epoch.current())
@@ -110,7 +115,9 @@ def test_door_refuses_when_reconcile_returns_error_dict(tmp_path):
     must treat that as a FAILED reconcile: do not stamp the symbol fresh, and
     REFUSE the sell. The original code stamped fresh and forwarded the naked
     sell (fail-OPEN) — the exact vector the invariant exists to kill."""
-    import journal, cycle_epoch, order_guard
+    import journal
+    import cycle_epoch
+    import order_guard
     import reconcile_journal_to_broker as R
     db = _db_with_open_buy(tmp_path, "PLUG", 8421)
     cycle_epoch.bump()
@@ -134,7 +141,9 @@ def test_door_allows_first_time_short_entry(tmp_path):
     then stamps the brand-new symbol fresh, so the open_short qty-exemption
     permits it. The buggy version refused EVERY first-time short (the symbol
     stayed stale → the defense-in-depth re-check raised)."""
-    import journal, cycle_epoch, order_guard
+    import journal
+    import cycle_epoch
+    import order_guard
     import reconcile_journal_to_broker as R
     db = str(tmp_path / "p.db")
     journal.init_db(db)

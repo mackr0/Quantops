@@ -11,7 +11,6 @@ Default parameters:
   - volume_surge_threshold: 3x
 """
 
-import pandas as pd
 from market_data import get_bars, add_indicators
 
 
@@ -147,7 +146,7 @@ def volume_spike_entry_strategy(symbol, ctx=None, df=None,
             "symbol": symbol,
             "signal": "SELL",
             "reason": (
-                f"2 consecutive red days with declining volume -- momentum stalled"
+                "2 consecutive red days with declining volume -- momentum stalled"
             ),
             "price": price,
             "rsi": rsi,

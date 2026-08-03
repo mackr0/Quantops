@@ -7,8 +7,6 @@ DataFrames. This mirrors how pnl.py tests inject price lookups.
 
 from __future__ import annotations
 
-import sqlite3
-from pathlib import Path
 
 import pandas as pd
 import pytest

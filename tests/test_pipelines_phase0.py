@@ -157,7 +157,7 @@ class TestPhase0PlaceholdersAllWired:
                 raise AssertionError(
                     f"{cls.__name__}.{method}() still raises "
                     f"NotImplementedError after scope-B build-out: {exc}"
-                )
+                ) from exc
             except Exception:
                 # Other exceptions (missing infrastructure in a bare
                 # SimpleNamespace ctx) are fine — we only forbid

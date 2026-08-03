@@ -42,7 +42,6 @@ import logging
 import sqlite3
 from typing import Dict
 
-from .store import finish_run, start_run
 
 logger = logging.getLogger(__name__)
 

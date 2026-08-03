@@ -1,0 +1,57 @@
+# Ruff configuration — the repo's single lint policy (2026-08-03).
+#
+# Scope: high-signal correctness rules only. This is a 100+-file
+# codebase that predates any linter; style-war rules (import sorting,
+# annotation modernization, quote style) would bury real defects under
+# thousands of mechanical diffs and are deliberately excluded. Extend
+# the select list only with rules that catch BUGS.
+#
+# Enforcement: tests/test_lint_gate_2026_08_03.py runs `ruff check .`
+# as part of the pytest suite, so lint failures fail the gate — the
+# suite is this project's pre-deploy gate (no CI exists). sync.sh
+# deliberately does NOT lint: deploys stay dumb; quality gates run
+# before the push.
+#
+# An explicit repo config also shields us from any user-level
+# ~/.config/ruff settings silently changing what "clean" means.
+
+# Prod runs Python 3.12, the dev laptop 3.9 — lint for the lowest.
+target-version = "py39"
+
+# One-off incident/repair scripts are frozen history, not live code.
+extend-exclude = [
+    "repair_*.py",
+    "recover_*.py",
+    "cleanup_*.py",
+    "full_fresh_*.py",
+    "reset_*.py",
+]
+
+[lint]
+select = [
+    "F",      # pyflakes: undefined names, unused imports/variables — real bugs
+    "E4",     # import placement errors
+    "E7",     # comparison/statement errors (== True, is-literal, …)
+    "E9",     # syntax/indentation errors
+    "B",      # bugbear: mutable defaults, loop-var capture, useless-expression
+    "PLE",    # pylint errors: format-string mismatches, invalid all, …
+]
+ignore = [
+    # B905 (zip without strict=) needs py310+; target is py39.
+    "B905",
+    # Style-only rules deliberately excluded from the gate — they flag
+    # existing repo idioms, not bugs. Do not re-enable without fixing
+    # the whole class in the same commit:
+    "E402",  # sys.path-bootstrap-then-import is the repo's script/test idiom
+    "E701",  # one-line `if x: y` compounds — style
+    "E702",  # semicolon-joined statements — style
+    "E731",  # lambda assignment — style
+    "E741",  # ambiguous single-letter names — renames risk typos for zero bug value
+    "B007",  # unused loop control variable — cosmetic
+]
+
+[lint.per-file-ignores]
+# Tests intentionally shadow fixtures and use assert-adjacent patterns;
+# keep the bug-catchers (F821 undefined names, E9) active there too —
+# only the import-hygiene noise is relaxed.
+"tests/*" = ["F401", "F811"]

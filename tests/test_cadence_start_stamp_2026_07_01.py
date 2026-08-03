@@ -47,5 +47,9 @@ def test_failed_cycle_rolls_the_clock_back():
     assert "_prior" in src
     # the restore happens in an except path and re-raises
     assert "pr[_k] = _v" in src
-    body = src.split("def _run_one_profile", 1)[1][:2500]
+    # Slice to the next nested def (the thread-pool runner) rather
+    # than a fixed char window — comments added inside the function
+    # must not push the except/raise out of view. 2026-08-03.
+    body = src.split("def _run_one_profile", 1)[1]
+    body = body.split("def _run_pool", 1)[0]
     assert "except Exception:" in body and "raise" in body

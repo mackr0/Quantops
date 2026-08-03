@@ -12,13 +12,11 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from crisis_detector import (
-    LEVELS,
     LEVEL_RANK,
     NORMAL,
-    SIZE_MULTIPLIERS,
     detect_crisis_state,
 )
 

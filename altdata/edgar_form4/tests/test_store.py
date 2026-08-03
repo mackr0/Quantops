@@ -1,16 +1,13 @@
 """Tests for edgar_form4.store — schema + CRUD + aggregate reader."""
 from __future__ import annotations
 
-import os
 import sqlite3
-import tempfile
 from contextlib import closing
 
 import pytest
 
 from edgar_form4.store import (
     connect,
-    counts_by_date,
     get_recent_insider_activity,
     init_db,
     insert_filing,
@@ -193,7 +190,7 @@ class TestAggregateReader:
         assert data["net_direction"] == "neutral"
 
     def test_buys_outweighing_sells_marks_buying(self, tmp_db):
-        from datetime import date, timedelta
+        from datetime import date
         today = date.today().isoformat()
         self._seed_transactions(tmp_db, "AAPL", "0000320193", [
             {"date": today, "code": "P", "shares": 5000, "price": 100},

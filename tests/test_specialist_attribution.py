@@ -79,7 +79,6 @@ class TestSynthesizeCapturesVetoedBy:
 
 class TestRouteToSpecialistsThreadsVetoedBy:
     def test_veto_log_entry_includes_specialist_name(self):
-        captured = {}
 
         def fake_run_ensemble(**kwargs):
             return {"per_symbol": {

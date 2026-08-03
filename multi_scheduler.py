@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 from dotenv import load_dotenv
 load_dotenv()
 
-from segments import list_segments, get_segment, SEGMENTS
+from segments import list_segments, get_segment
 
 # ── Timezone ─────────────────────────────────────────────────────────
 
@@ -744,7 +744,6 @@ def _build_scan_summary(ctx, candidates, summary):
     buys = summary.get("buys", 0)
     sells = summary.get("sells", 0)
     shorts = summary.get("shorts", 0)
-    holds = summary.get("holds", 0)
     ai_vetoed = summary.get("ai_vetoed", 0)
 
     # Determine market mood
@@ -1393,7 +1392,7 @@ def _task_cancel_stale_orders(ctx):
                 getattr(ctx, "profile_id", 0), ctx.user_id,
                 "stale_order_cancel",
                 f"Cancelled {cancelled} stale limit order(s)",
-                f"Orders older than 5 minutes were cancelled",
+                "Orders older than 5 minutes were cancelled",
             )
     except Exception:
         logging.exception(f"[{seg_label}] Failed to cancel stale orders")
@@ -2150,7 +2149,6 @@ def _rollback_orphaned_multileg_partners(conn, api, expired_leg,
     expired) becomes a permanent naked single-leg position the AI
     didn't intend.
     """
-    import sqlite3
     from journal import log_trade
 
     siblings = conn.execute(
@@ -2384,7 +2382,7 @@ def _task_cost_check(ctx):
         # Cheap pre-filter so we don't sum across every profile DB on
         # every scheduler iteration when nothing's close to the cap.
         if today_cost > alert_at / 10:
-            import os, glob
+            import glob
             total = 0
             for f in glob.glob("quantopsai_profile_*.db"):
                 s = spend_summary(f)
@@ -2788,7 +2786,7 @@ def _task_intraday_risk_check(ctx):
     seg_label = ctx.display_name or ctx.segment
     try:
         from intraday_risk_monitor import (
-            collect_intraday_alerts, compute_halt_decision,
+            compute_halt_decision,
             check_drawdown_acceleration, check_vol_spike,
             check_held_position_halts,
             write_risk_halt_state, clear_risk_halt,
@@ -2970,14 +2968,13 @@ def _task_manage_long_vol_hedge(ctx):
     """
     seg_label = ctx.display_name or ctx.segment
     try:
-        from datetime import date, datetime
-        import json as _json
+        from datetime import date
         import long_vol_hedge as lvh
         from client import get_api, get_account_info
         from crisis_state import get_current_level
         from options_chain_alpaca import fetch_chain_alpaca
         from options_trader import (
-            build_long_put, format_occ_symbol, submit_option_order,
+            format_occ_symbol, submit_option_order,
         )
 
         account = get_account_info(ctx=ctx) or {}
@@ -4911,8 +4908,8 @@ def _task_alpha_decay(ctx):
                 getattr(ctx, "profile_id", 0), ctx.user_id,
                 "alpha_decay",
                 f"Strategy deprecated: {display_name(stype)}",
-                f"Alpha decay threshold crossed — strategy auto-retired. "
-                f"The trade pipeline will now skip signals from this strategy."
+                "Alpha decay threshold crossed — strategy auto-retired. "
+                "The trade pipeline will now skip signals from this strategy."
             )
         for stype in summary["restored"]:
             _safe_log_activity(
@@ -6348,6 +6345,12 @@ def main_loop(active_segments=None, legacy_mode=False):
                     "prof": prof, "ctx": ctx, "pr": pr,
                     "do_scan": prof_do_scan, "do_exits": prof_do_exits,
                     "do_predictions": prof_do_predictions,
+                    # Carried in the item (not closed over): the worker
+                    # runs on a thread pool, and a closure over the
+                    # orchestrator loop's variable would silently read
+                    # a LATER iteration's value if pooling ever spans
+                    # iterations.
+                    "do_snapshot": do_snapshot,
                 })
 
             def _run_one_profile(item):
@@ -6378,7 +6381,8 @@ def main_loop(active_segments=None, legacy_mode=False):
                     f"(#{prof['id']}, {prof['market_type']}, "
                     f"schedule={ctx.schedule_type}) — "
                     f"scan={item['do_scan']} exits={item['do_exits']} "
-                    f"preds={item['do_predictions']} snap={do_snapshot} ==="
+                    f"preds={item['do_predictions']} "
+                    f"snap={item['do_snapshot']} ==="
                 )
                 # Each profile is an independent entity reconciled to its OWN
                 # order_id fills; it only ever sells what its own fresh book
@@ -6389,7 +6393,8 @@ def main_loop(active_segments=None, legacy_mode=False):
                         ctx,
                         run_scan=item["do_scan"], run_exits=item["do_exits"],
                         run_predictions=item["do_predictions"],
-                        run_snapshot=do_snapshot, run_summary=do_snapshot,
+                        run_snapshot=item["do_snapshot"],
+                        run_summary=item["do_snapshot"],
                     )
                 except Exception:
                     # Roll the clock back so the failed cycle retries next

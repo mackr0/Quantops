@@ -20,7 +20,6 @@ import json
 import logging
 import time
 
-from client import get_api
 
 logger = logging.getLogger(__name__)
 

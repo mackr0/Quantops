@@ -1,6 +1,5 @@
 """Trading strategies for paper trading."""
 
-import pandas as pd
 from market_data import get_bars, add_indicators
 
 

@@ -10,7 +10,7 @@ import sqlite3
 import time
 from contextlib import closing
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import config
 
@@ -466,7 +466,7 @@ def _build_cross_profile_insights(user_id, current_profile_id, current_db_path):
     Returns insight string or empty string.
     """
     try:
-        from models import get_user_profiles, get_trading_profile
+        from models import get_user_profiles
     except ImportError:
         return ""
 
@@ -2303,7 +2303,6 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
     The orchestrator stops after the first change so auto-reversal can
     attribute any win-rate shift to that specific adjustment.
     """
-    from models import update_trading_profile, log_tuning_change
 
     # All registered optimizers, in any source order. The actual
     # running sequence is determined by _OPTIMIZER_DIRECTION below
@@ -4779,7 +4778,7 @@ def _optimize_stop_out_blacklist(conn, ctx, profile_id, user_id,
     # isn't).
     try:
         from entry_blacklist import (
-            parse_blacklist, add_to_blacklist,
+            parse_blacklist,
         )
     except Exception:
         return None
@@ -5119,10 +5118,8 @@ def _optimize_regime_overrides(conn, ctx, profile_id, user_id,
         return None
 
     from regime_overrides import (
-        RECOGNISED_REGIMES, set_override, parse_overrides, resolve_param
+        RECOGNISED_REGIMES, set_override, resolve_param
     )
-    raw = getattr(ctx, "regime_overrides", None)
-    overrides = parse_overrides(raw if isinstance(raw, str) else None)
 
     # Sort rows by regime name for deterministic iteration — RECOGNISED_REGIMES
     # is a set in regime_overrides, so without this the "first regime with
@@ -5236,7 +5233,7 @@ def _optimize_tod_overrides(conn, ctx, profile_id, user_id,
         return None
 
     from tod_overrides import (
-        _bucket_for_minute, RECOGNISED_TODS, set_override, resolve_param
+        _bucket_for_minute, set_override, resolve_param
     )
     try:
         from zoneinfo import ZoneInfo
@@ -6221,7 +6218,7 @@ def _optimize_signal_weights(conn, ctx, profile_id, user_id,
     import json as _j
     from signal_weights import (
         WEIGHTABLE_SIGNALS, get_weight, nudge_down, nudge_up,
-        display_label, WEIGHT_LADDER,
+        display_label,
     )
 
     # Pre-decode all features once.
@@ -6283,7 +6280,6 @@ def _optimize_signal_weights(conn, ctx, profile_id, user_id,
             if new_weight is None:
                 continue
             from models import log_tuning_change
-            from display_names import display_name as _dn
             reason = (
                 f"{display_label(sig_name)} won {present_wr:.0f}% on "
                 f"{present} samples vs {absent_wr:.0f}% without ("

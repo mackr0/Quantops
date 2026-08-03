@@ -364,7 +364,7 @@ def render_html(summary: Dict[str, Any]) -> tuple:
     """Render the digest as (subject, html_body)."""
     from notifications import (
         _wrap_html, _section, _table, _kv_row,
-        _color_pnl, _color_pct,
+        _color_pnl,
     )
 
     subject = (

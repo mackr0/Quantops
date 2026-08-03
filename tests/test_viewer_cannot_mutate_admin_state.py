@@ -52,7 +52,6 @@ def _scan_views_for_mutating_endpoints():
     # the route() call.
     in_route = False
     route_buf = []
-    route_start = None
     pending_decorators = []
     pending_route = None
     pending_route_line = None
@@ -71,7 +70,6 @@ def _scan_views_for_mutating_endpoints():
             continue
 
         if stripped.startswith("@views_bp.route("):
-            route_start = i
             route_buf = [stripped]
             pending_route_line = i
             joined = stripped

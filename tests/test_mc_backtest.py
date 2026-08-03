@@ -138,7 +138,6 @@ class TestByDayBootstrap:
         ]
         # Bootstrap with synthetic non-zero residuals so slippage
         # actually fires
-        bootstrap = {"0.0010_0.0050": [40.0, -40.0, 30.0, -30.0, 20.0]}
         # Inject by patching calibrate_from_history return shape
         from unittest.mock import patch
         with patch("mc_backtest.calibrate_from_history", create=True):

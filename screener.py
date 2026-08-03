@@ -6,12 +6,10 @@ equity endpoint) and as a last-resort fallback in the dynamic screener.
 """
 
 import logging
-import sys
 import threading
 from datetime import datetime
 
 import pandas as pd
-import yfinance as yf
 import yf_lock
 
 from market_data import get_bars
@@ -603,13 +601,13 @@ def run_full_screen(universe=None, min_price=None, max_price=None, min_volume=No
     symbols = [c["symbol"] for c in candidates]
 
     # Steps 2-4: Detailed analysis on candidates only
-    print(f"\n[2/4] Volume Surge Detection")
+    print("\n[2/4] Volume Surge Detection")
     volume_surges = find_volume_surges(symbols)
 
-    print(f"\n[3/4] Momentum Screen")
+    print("\n[3/4] Momentum Screen")
     momentum = find_momentum_stocks(symbols)
 
-    print(f"\n[4/4] Breakout Detection")
+    print("\n[4/4] Breakout Detection")
     breakouts = find_breakouts(symbols)
 
     print(f"\n{'='*60}")
@@ -739,7 +737,7 @@ def run_crypto_screen(universe=None):
             continue
     print(f"  Found {len(candidates)} active crypto pairs")
 
-    print(f"\n[2/3] Momentum Screen")
+    print("\n[2/3] Momentum Screen")
     momentum = []
     for cand in candidates:
         sym = cand["symbol"]
@@ -762,7 +760,7 @@ def run_crypto_screen(universe=None):
     momentum.sort(key=lambda x: x.get("gain_5d", 0), reverse=True)
     print(f"  Found {len(momentum)} momentum cryptos")
 
-    print(f"\n[3/3] Volume Surge Detection")
+    print("\n[3/3] Volume Surge Detection")
     surges = []
     for cand in candidates:
         sym = cand["symbol"]
@@ -1186,7 +1184,7 @@ def _screen_dynamic_universe_locked(cache_key, market_type, min_price,
             "LQD", "XLF", "XLE", "XLK", "XLV", "XLI", "XLP", "XLY",
             "XLU", "XLB", "XLRE", "XLC", "VTI", "VOO", "IVV",
             "USFR", "SHY", "BIL", "UNG", "USO",
-            "JPST", "RSP", "SRTY", "SOXS", "LABU", "LABD",
+            "JPST", "RSP", "LABU", "LABD",
         }
         equity_symbols = []
         excluded_funds = 0

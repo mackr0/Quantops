@@ -11,7 +11,7 @@ import logging
 import sqlite3
 import time
 from contextlib import closing
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 from typing import Optional, Dict
 
 logger = logging.getLogger(__name__)

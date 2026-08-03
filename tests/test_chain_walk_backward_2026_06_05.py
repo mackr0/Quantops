@@ -192,7 +192,6 @@ def test_detect_protective_fill_uses_backward_walk_on_dead_end():
     full' if a matching candidate is found."""
     from reconcile_journal_to_broker import _detect_protective_fill
 
-    journaled_oid = "original-2"
     # Forward walk dead-ends: original-2 is `replaced` with
     # replaced_by=GC'd-id, and get_order(GC'd-id) returns None.
     # Backward walk: terminal-fill's replaces chain leads to

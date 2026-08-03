@@ -129,5 +129,5 @@ class TestStaticGuardNoBareExceptPassInTradeExecutionPaths:
         src = inspect.getsource(options_multileg._log_strategy_legs)
         assert "no immediate fill" in src, (
             "Silent swallow returned at _log_strategy_legs get_order; "
-            f"expected at least a debug log."
+            "expected at least a debug log."
         )

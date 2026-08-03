@@ -89,7 +89,7 @@ _FALSE_TICKERS = {
     "SEC", "THE", "TOP", "USD", "VIX", "WSB", "YOY", "ATH", "ATL", "FD",
     "OTM", "ITM", "DTE", "IV", "RSI", "SMA", "EMA", "MACD", "PUT", "CALL",
     "YOLO", "FOMO", "HODL", "MOON", "BEAR", "BULL", "PUMP", "DUMP",
-    "RIP", "LOL", "WTF", "SMH", "TBH", "IMO", "FYI", "TLDR", "EDIT",
+    "RIP", "LOL", "WTF", "SMH", "TBH", "FYI", "TLDR", "EDIT",
     "LMAO", "ROFL",
 }
 

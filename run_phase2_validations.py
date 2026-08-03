@@ -7,7 +7,6 @@ Usage:
     python run_phase2_validations.py
 """
 
-import json
 import sys
 
 from rigorous_backtest import validate_strategy, save_validation

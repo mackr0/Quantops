@@ -31,7 +31,7 @@ import os
 import re
 import sqlite3
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +404,6 @@ def update_status(db_path: str, spec_id: int, status: str,
 
     conn = sqlite3.connect(db_path)
     try:
-        now = "datetime('now')"
         if status == "validated":
             sql = ("UPDATE auto_generated_strategies SET status = ?, "
                    "validated_at = datetime('now'), "

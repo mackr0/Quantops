@@ -75,7 +75,8 @@ def test_is_htb_rejection_matches_real_message():
 
 
 def test_submit_protective_gtc_success_no_retry_no_learn(tmp_path):
-    import journal, bracket_orders
+    import journal
+    import bracket_orders
     db = str(tmp_path / "p.db")
     journal.init_db(db)
     api = MagicMock()
@@ -89,7 +90,8 @@ def test_submit_protective_gtc_success_no_retry_no_learn(tmp_path):
 
 
 def test_submit_protective_retries_as_day_on_htb_and_learns(tmp_path):
-    import journal, bracket_orders
+    import journal
+    import bracket_orders
     db = str(tmp_path / "p.db")
     journal.init_db(db)
     api = _gtc_rejects_day_ok_api()
@@ -101,7 +103,8 @@ def test_submit_protective_retries_as_day_on_htb_and_learns(tmp_path):
 
 
 def test_submit_protective_non_htb_does_not_retry_or_learn(tmp_path):
-    import journal, bracket_orders
+    import journal
+    import bracket_orders
     db = str(tmp_path / "p.db")
     journal.init_db(db)
     api = MagicMock()
@@ -120,7 +123,8 @@ def test_submit_protective_non_htb_does_not_retry_or_learn(tmp_path):
 def test_submit_protective_learns_even_when_day_also_fails(tmp_path):
     """If even the DAY order is refused, we still LEARN the symbol — the
     whole point is to stop opening fresh positions we cannot protect."""
-    import journal, bracket_orders
+    import journal
+    import bracket_orders
     db = str(tmp_path / "p.db")
     journal.init_db(db)
     api = MagicMock()
@@ -138,7 +142,8 @@ def test_submit_protective_learns_even_when_day_also_fails(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_trailing_stop_places_day_order_for_htb(tmp_path):
-    import journal, bracket_orders
+    import journal
+    import bracket_orders
     db = str(tmp_path / "p.db")
     journal.init_db(db)
     api = _gtc_rejects_day_ok_api()
@@ -150,7 +155,8 @@ def test_trailing_stop_places_day_order_for_htb(tmp_path):
 
 
 def test_take_profit_places_day_order_for_htb(tmp_path):
-    import journal, bracket_orders
+    import journal
+    import bracket_orders
     db = str(tmp_path / "p.db")
     journal.init_db(db)
     api = _gtc_rejects_day_ok_api()
@@ -162,7 +168,8 @@ def test_take_profit_places_day_order_for_htb(tmp_path):
 
 
 def test_static_stop_places_day_order_for_htb(tmp_path):
-    import journal, bracket_orders
+    import journal
+    import bracket_orders
     db = str(tmp_path / "p.db")
     journal.init_db(db)
     api = _gtc_rejects_day_ok_api()

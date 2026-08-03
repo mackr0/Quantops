@@ -435,8 +435,8 @@ def execute_option_strategy(
         return result
     if not underlying or not strike or not expiry_str or contracts <= 0:
         result["reason"] = (
-            f"Missing required option proposal fields "
-            f"(symbol/strike/expiry/contracts)"
+            "Missing required option proposal fields "
+            "(symbol/strike/expiry/contracts)"
         )
         return result
     try:

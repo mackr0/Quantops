@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +103,7 @@ def _write_dividend(ctx, activity: Any) -> bool:
         return False
     if amount == 0:
         return False
-    ts = getattr(activity, "date", None) or _utcnow_iso()
+    getattr(activity, "date", None) or _utcnow_iso()
     try:
         log_trade(
             symbol=symbol or "CASH",

@@ -36,7 +36,7 @@ import sqlite3
 import sys
 from contextlib import closing
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 

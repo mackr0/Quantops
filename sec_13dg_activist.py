@@ -31,7 +31,7 @@ import logging
 import re
 import sqlite3
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 

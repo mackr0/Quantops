@@ -218,7 +218,7 @@ class TestPropagateInsight:
         os.chdir(tmp_path)
         try:
             with patch("insight_propagation._peer_profiles", return_value=[peer]):
-                with patch("models.update_trading_profile") as mock_up:
+                with patch("models.update_trading_profile"):
                     with patch("models.log_tuning_change"):
                         with patch("self_tuning._get_recent_adjustment", return_value=None):
                             with patch("self_tuning._was_adjustment_effective", return_value=None):

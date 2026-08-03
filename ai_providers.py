@@ -169,7 +169,7 @@ def _http_get_json(url, headers=None, timeout=12):
         # A non-JSON provider response → surface as an error the caller
         # (available_model_ids) turns into "availability unknown".
         raise ValueError("non-JSON response from list-models endpoint: %s"
-                         % exc)
+                         % exc) from exc
 
 
 def _live_model_ids(provider, key):
@@ -955,10 +955,10 @@ def call_ai_structured(prompt, schema, tool_name="emit",
 
     try:
         import anthropic
-    except ImportError:
+    except ImportError as exc:
         raise ImportError(
             "The 'anthropic' package is required. pip install anthropic"
-        )
+        ) from exc
 
     client = anthropic.Anthropic(api_key=api_key)
     tool_spec = {
@@ -1003,11 +1003,11 @@ def _call_anthropic(prompt, model, api_key, max_tokens):
     """Call Anthropic Claude API. Returns (text, input_tokens, output_tokens)."""
     try:
         import anthropic
-    except ImportError:
+    except ImportError as exc:
         raise ImportError(
             "The 'anthropic' package is required for the Anthropic provider. "
             "Install it with: pip install anthropic"
-        )
+        ) from exc
 
     client = anthropic.Anthropic(api_key=api_key)
     message = client.messages.create(
@@ -1025,11 +1025,11 @@ def _call_openai(prompt, model, api_key, max_tokens):
     """Call OpenAI API. Returns (text, input_tokens, output_tokens)."""
     try:
         from openai import OpenAI
-    except ImportError:
+    except ImportError as exc:
         raise ImportError(
             "The 'openai' package is required for the OpenAI provider. "
             "Install it with: pip install openai"
-        )
+        ) from exc
 
     client = OpenAI(api_key=api_key)
     response = client.chat.completions.create(
@@ -1056,12 +1056,12 @@ def _call_deepseek(prompt, model, api_key, max_tokens):
     """
     try:
         from openai import OpenAI
-    except ImportError:
+    except ImportError as exc:
         raise ImportError(
             "The 'openai' package is required for the DeepSeek provider "
             "(DeepSeek uses an OpenAI-compatible endpoint). "
             "Install it with: pip install openai"
-        )
+        ) from exc
 
     client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
     response = client.chat.completions.create(
@@ -1090,11 +1090,11 @@ def _call_google(prompt, model, api_key, max_tokens):
     """
     try:
         from google import genai
-    except ImportError:
+    except ImportError as exc:
         raise ImportError(
             "The 'google-genai' package is required for the Google provider. "
             "Install it with: pip install google-genai"
-        )
+        ) from exc
 
     client = genai.Client(api_key=api_key)
     # response_mime_type forces strict JSON. Without it, gemini-2.5-flash-lite

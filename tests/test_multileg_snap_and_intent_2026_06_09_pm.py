@@ -57,8 +57,10 @@ EXPIRY = date(2099, 1, 16)
 
 class TestSnapGridAwareTolerance:
 
-    def _chain(self, strikes, expiry_iso=EXPIRY.isoformat()):
+    def _chain(self, strikes, expiry_iso=None):
         """Build a fake Alpaca contracts list at one expiry."""
+        if expiry_iso is None:
+            expiry_iso = EXPIRY.isoformat()
         return [
             {
                 "symbol": f"FAKE{i}",
@@ -95,7 +97,7 @@ class TestSnapGridAwareTolerance:
         # halfway between, distance $25 = 50% of strike, much
         # bigger than median_spacing/2 = $25.
         chain = self._chain([50.0, 100.0])
-        result = snap_to_listed_contract(
+        snap_to_listed_contract(
             "FAR", EXPIRY.isoformat(), 75.0, "P", contracts=chain,
         )
         # $25 difference vs median_spacing $50 → tol = max($3.75,

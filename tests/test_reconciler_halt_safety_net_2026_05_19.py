@@ -126,7 +126,7 @@ def test_halt_helpers_never_raise_on_db_error(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_halt_and_alert_writes_audit_row_and_halts(tmp_path, monkeypatch):
-    master = _make_master_db(tmp_path, monkeypatch)
+    _make_master_db(tmp_path, monkeypatch)
     # Per-profile journal DB (audit_alerts lives here)
     pdb = str(tmp_path / "profile_12.db")
     with closing(sqlite3.connect(pdb)) as conn:
@@ -169,7 +169,7 @@ def test_halt_and_alert_writes_audit_row_and_halts(tmp_path, monkeypatch):
 def test_halt_and_alert_no_duplicate_notify_on_second_call(
     tmp_path, monkeypatch,
 ):
-    master = _make_master_db(tmp_path, monkeypatch)
+    _make_master_db(tmp_path, monkeypatch)
     pdb = str(tmp_path / "profile_12.db")
     with closing(sqlite3.connect(pdb)) as conn:
         conn.commit()
@@ -198,7 +198,8 @@ def test_scheduler_skips_trade_pipeline_when_halted(tmp_path, monkeypatch):
     is too tangled with profile / segment infra to call directly;
     we exercise the gate by inspecting source and constructing a
     parallel driver that mirrors the branch."""
-    import inspect, multi_scheduler
+    import inspect
+    import multi_scheduler
     # Find the function where the gate lives
     src = inspect.getsource(multi_scheduler)
     assert "from halt_helpers import is_halted" in src, (
@@ -251,7 +252,8 @@ def test_reconciler_source_no_longer_contains_synthesis_inserts():
        INSERT INTO trades ... 'reconcile_backfill_partial'
     If those are back, the safety net has been undone.
     """
-    import inspect, reconcile_journal_to_broker
+    import inspect
+    import reconcile_journal_to_broker
     src = inspect.getsource(reconcile_journal_to_broker)
     forbidden = [
         "'reconcile_backfill',",
@@ -266,7 +268,8 @@ def test_reconciler_source_no_longer_contains_synthesis_inserts():
 
 def test_reconciler_source_calls_halt_and_alert():
     """And confirm the replacement IS the halt path."""
-    import inspect, reconcile_journal_to_broker
+    import inspect
+    import reconcile_journal_to_broker
     src = inspect.getsource(reconcile_journal_to_broker)
     assert "from halt_helpers import halt_and_alert" in src
     assert "halt_and_alert(" in src
@@ -277,7 +280,8 @@ def test_reconciler_source_auto_clears_when_no_synthesis():
     """The other half: when synthesis_actions == 0, the reconciler
     must call clear_halt on any halt it previously set, so the halt
     doesn't persist forever once the upstream bug is fixed."""
-    import inspect, reconcile_journal_to_broker
+    import inspect
+    import reconcile_journal_to_broker
     src = inspect.getsource(reconcile_journal_to_broker)
     assert "from halt_helpers import is_halted, clear_halt" in src
     assert "reconciler_auto_clear" in src

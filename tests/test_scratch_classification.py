@@ -135,7 +135,6 @@ def test_scratch_pnl_excluded_from_total_gains(tmp_path):
     _seed_trades(db, rows)
     m = calculate_all_metrics([db])
     # winning_trades is now derived from real wins only
-    win_pnl_sum = m.get("winning_trades", 0) and 1000.0  # 2 × $500
     # The real-wins basis: 2 trades worth $1000 total. Scratches' $300
     # is no longer in total_gains.
     assert m["winning_trades"] == 2

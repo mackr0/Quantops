@@ -435,10 +435,10 @@ class TestPerformancePageZeroPositionProfile:
                     return_value=patched_user_with_profiles):
             resp = client.get("/performance?profile_id=5")
         assert resp.status_code != 500, (
-            f"/performance?profile_id=5 returned 500. The May 13 "
-            f"incident: empty-positions early-exit in "
-            f"compute_exposure returned a truncated dict missing "
-            f"`book_beta`, which Jinja's `is not none` guard "
-            f"wrongly passed (Undefined is not None), then "
-            f"format() crashed."
+            "/performance?profile_id=5 returned 500. The May 13 "
+            "incident: empty-positions early-exit in "
+            "compute_exposure returned a truncated dict missing "
+            "`book_beta`, which Jinja's `is not none` guard "
+            "wrongly passed (Undefined is not None), then "
+            "format() crashed."
         )

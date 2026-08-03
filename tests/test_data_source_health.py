@@ -117,7 +117,6 @@ class TestRunAllProbes:
 class TestAlertOnCriticalFailure:
     def test_does_nothing_when_all_critical_ok(self):
         from data_source_health import alert_on_critical_failure
-        called = {"notify": 0, "log": 0}
 
         # Just verify no exception when health is healthy.
         h = {

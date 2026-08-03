@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from contextlib import closing
-from typing import Any, Dict, List, Optional
+from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 

@@ -1080,7 +1080,7 @@ class OptionPipeline(Pipeline):
             direction = "tightened"
         else:
             rationale_parts.append(
-                f"win rate in neutral band 40-60%; no adjustments"
+                "win rate in neutral band 40-60%; no adjustments"
             )
             return ParameterAdjustments(
                 pipeline_name=self.name, changes=changes,

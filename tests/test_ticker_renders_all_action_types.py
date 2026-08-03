@@ -91,7 +91,7 @@ def _has_null_safety_above(lines, idx, field, lookback=20):
     test, OR the surrounding action-branch pattern that gates which
     fields exist (e.g. `if (actionUpper === 'BUY')`)."""
     above = "\n".join(lines[max(0, idx - lookback):idx])
-    bare_field = field.split(".", 1)[1] if "." in field else field
+    field.split(".", 1)[1] if "." in field else field
     safety_patterns = [
         # `field != null` / `field !== null` / `field !== undefined`
         rf"{re.escape(field)}\s*!==?\s*(null|undefined)",
@@ -105,8 +105,8 @@ def _has_null_safety_above(lines, idx, field, lookback=20):
         rf"\({re.escape(field)}\s*\|\|\s*\d+\)",
         # action-branched rendering — once we're inside a switch/if
         # on action type, fields specific to that action are present
-        rf"if\s*\(\s*\w+\s*===\s*['\"](BUY|SELL|SHORT|MULTILEG|OPTIONS|PAIR)",
-        rf"actionUpper\s*===",
+        r"if\s*\(\s*\w+\s*===\s*['\"](BUY|SELL|SHORT|MULTILEG|OPTIONS|PAIR)",
+        r"actionUpper\s*===",
         # explicit comment annotation
         r"#\s*NULL_OK:|//\s*NULL_OK:",
     ]

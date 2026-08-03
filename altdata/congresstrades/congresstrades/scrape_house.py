@@ -24,16 +24,13 @@ Known pitfalls:
 
 from __future__ import annotations
 
-import io
 import logging
-import os
-import re
 import sqlite3
 import time
 import zipfile
-from datetime import datetime, date
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 from xml.etree import ElementTree as ET
 
 import requests
@@ -265,7 +262,7 @@ def _parse_table(table: List[List[Optional[str]]]) -> List[Dict[str, Any]]:
             continue
         cells = [(c or "").strip() for c in row]
 
-        def pick(key: str) -> Optional[str]:
+        def pick(key: str, cells=cells) -> Optional[str]:
             idx = col_map.get(key)
             if idx is None or idx >= len(cells):
                 return None

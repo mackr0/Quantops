@@ -17,7 +17,6 @@ Default parameters:
 """
 
 import time
-import pandas as pd
 from market_data import get_bars, add_indicators
 
 

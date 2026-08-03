@@ -10,14 +10,14 @@ import json
 import logging
 import re
 from contextlib import closing
-from datetime import datetime, date
+from datetime import datetime
 from typing import Optional, Dict, List, Any
 
 import bcrypt
 
 import config
 from crypto import encrypt, decrypt
-from segments import get_segment, list_segments
+from segments import get_segment
 from user_context import UserContext
 
 logger = logging.getLogger(__name__)

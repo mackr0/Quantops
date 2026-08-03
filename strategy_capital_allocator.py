@@ -27,8 +27,6 @@ trade according to the strategy that generated the candidate signal.
 from __future__ import annotations
 
 import logging
-import math
-import sqlite3
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)

@@ -27,12 +27,10 @@ ceiling auto-computes as `max($5, trailing_7d_avg × 1.5)`.
 
 from __future__ import annotations
 
-import glob
 import logging
 import os
 import sqlite3
 from contextlib import closing
-from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)

@@ -145,11 +145,11 @@ def render_for_prompt(capture: Optional[Dict[str, Any]]) -> str:
     )
     if avg < LOW_CAPTURE_THRESHOLD:
         block += (
-            f"  → Exit logic is leaving substantial money on the table. "
-            f"Trades that ran favorably are giving back most of the "
-            f"unrealized gain before exit fires. Consider: tighter "
-            f"trailing stops, scale-out at intermediate targets, or "
-            f"earlier take-profits.\n"
+            "  → Exit logic is leaving substantial money on the table. "
+            "Trades that ran favorably are giving back most of the "
+            "unrealized gain before exit fires. Consider: tighter "
+            "trailing stops, scale-out at intermediate targets, or "
+            "earlier take-profits.\n"
         )
     if n_neg > 0:
         block += (

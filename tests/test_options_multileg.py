@@ -522,7 +522,7 @@ class TestExecuteMultilegStrategy:
             assert "422" in str(exc)
             assert "insufficient buying power" in str(exc)
         else:
-            assert False, "Expected RuntimeError on 422 response"
+            raise AssertionError("Expected RuntimeError on 422 response")
 
     def test_ai_confidence_and_reasoning_propagate_to_leg_logs(self, monkeypatch, tmp_path):
         """Multileg leg rows must carry ai_confidence and ai_reasoning

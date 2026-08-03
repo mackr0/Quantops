@@ -583,7 +583,10 @@ class TestRegressionDetection:
         # Deliberately omit the filter — equivalent to the bug.
         tmpl = env.from_string("<p>{{ t.ai_reasoning }}</p>")
         rendered = tmpl.render(t={"ai_reasoning": SYNTHETIC_LEAKY_TEXT})
-        with pytest.raises(BaseException):
+        # _assert_no_leaks reports via pytest.fail, which raises
+        # pytest's Failed (a BaseException subclass, NOT AssertionError)
+        # — pytest.raises must name that exact type.
+        with pytest.raises(pytest.fail.Exception):
             _assert_no_leaks(rendered, "unfiltered test render")
 
     def test_filtered_render_passes(self):

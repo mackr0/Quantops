@@ -40,7 +40,7 @@ from __future__ import annotations
 import logging
 import re
 from collections import defaultdict
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List
 
 # OCC option symbol tail: <YYMMDD><C|P><strike*1000, 8 digits>, e.g.
 # T260807P00020000. Used to keep option legs out of the STOCK-only

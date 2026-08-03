@@ -1,14 +1,12 @@
 """Storage layer tests — schema, CRUD, idempotency."""
 
 import sqlite3
-from pathlib import Path
 
 import pytest
 
 from edgar13f.store import (
     _apply_migrations,
     connect,
-    counts_by_period,
     init_db,
     insert_filing,
     insert_holding,

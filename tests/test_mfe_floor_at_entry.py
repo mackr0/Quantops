@@ -108,7 +108,8 @@ def _run_mfe_update(db, positions):
     testing the SQL, not the surrounding plumbing."""
     # Use the actual SQL from trader.py so the test is testing the
     # real code path. Read it via the function source:
-    import trader, re
+    import trader
+    import re
     src = inspect.getsource(trader.check_exits)
     # Quick smoke test that the SQL has the price-column floor:
     assert "COALESCE(max_favorable_excursion, price)" in src, (

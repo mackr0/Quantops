@@ -155,7 +155,7 @@ class TestTradePipelineInstrumentation:
         # lines). Catches refactors that move the call somewhere
         # disconnected from the gate disposition.
         log_idx = src.index("Trade NOT submitted for")
-        rec_idx = src.index("record_trade_drop(")
+        src.index("record_trade_drop(")
         # The function definition occurs ABOVE the call site (as an
         # import). The actual call site we care about is AFTER the
         # log line. Search forward from log_idx.

@@ -15,11 +15,8 @@ from flask import (
 from flask_login import login_required, current_user
 
 from models import (
-    build_user_context, get_user_segment_config, update_user_segment_config,
-    get_user_by_id, get_user_by_email, get_active_users,
-    update_user_credentials, get_api_usage,
-    # Trading profiles
-    create_trading_profile, get_trading_profile, get_user_profiles,
+    update_user_segment_config,
+    get_user_by_id, update_user_credentials, create_trading_profile, get_trading_profile, get_user_profiles,
     get_active_profiles, update_trading_profile, delete_trading_profile,
     build_user_context_from_profile, MARKET_TYPE_NAMES,
     # Activity log
@@ -32,7 +29,7 @@ from models import (
     # the master-DB equivalent (also WAL + busy_timeout + FK on).
     open_profile_db, _get_conn as _get_main_db_conn,
 )
-from segments import SEGMENTS, get_segment
+from segments import SEGMENTS
 from crypto import decrypt, encrypt
 from ai_providers import get_providers
 
@@ -458,7 +455,7 @@ def _safe_pending_orders(ctx):
             # column — the user's complaint: a trailing-stop row
             # showing "—" is unhelpful when the broker has a
             # current stop price + trail distance available.
-            def _f(attr):
+            def _f(attr, o=o):
                 v = getattr(o, attr, None)
                 if v is None:
                     return None
@@ -2607,7 +2604,6 @@ def _calculate_risk_metrics(db_paths):
 
     Returns a dict with max drawdown, tail risk, streak, and monthly return data.
     """
-    import sqlite3
     from collections import defaultdict
     from datetime import datetime as _dt
 
@@ -2894,7 +2890,6 @@ def ai_performance():
 def ai_performance_legacy():
     """AI prediction accuracy dashboard — aggregated across all user's profiles."""
     from ai_tracker import get_ai_performance
-    from journal import get_performance_summary
     import os
 
     # Aggregate AI performance across all profile databases + legacy segment DBs
@@ -2944,7 +2939,6 @@ def ai_performance_legacy():
 
 
     # Aggregate raw data across all DBs for accurate metric calculation
-    import sqlite3
     all_wins = 0
     all_losses = 0
     all_return_buys = []
@@ -3250,9 +3244,8 @@ def performance_dashboard():
     scaling_capacity = []
     try:
         from scaling_projection import (
-            per_profile_breakdown, capacity_analysis, _recommended_tier,
+            per_profile_breakdown, capacity_analysis,
         )
-        import sqlite3 as _sqlite3
 
         # Filter to profiles we're actually showing (matches db_paths).
         if selected_profile_int:
@@ -3395,7 +3388,6 @@ def performance_dashboard():
             mfe_capture = compute_capture_ratio(prof_db)
 
     # AI prediction accuracy (for AI Intelligence tab)
-    import sqlite3 as _sqlite3
 
     ai_perf = {
         "total_predictions": 0, "resolved": 0, "pending": 0,
@@ -4201,9 +4193,6 @@ def ai_dashboard():
     """
     import os
     from ai_tracker import get_ai_performance
-    from journal import get_performance_summary
-    from models import get_tuning_history
-    import sqlite3 as _sqlite3
 
     ctx = _ai_common("ai")
     db_paths = ctx["db_paths"]
@@ -4669,7 +4658,7 @@ def ai_dashboard():
         # underlyings. Per-request cache keeps cost bounded.
         summary = compute_book_greeks(
             positions,
-            price_lookup=lambda s: price_by.get(s),
+            price_lookup=lambda s, _pb=price_by: _pb.get(s),
         )
         if summary["n_options_legs"] == 0 and summary["n_stock_positions"] == 0:
             continue
@@ -4943,7 +4932,6 @@ def api_backtest_vs_reality(profile_id):
     then compares with actual trades from the same period.
     Returns JSON comparison data.
     """
-    import sqlite3
     import os
     from datetime import datetime, timedelta
 
@@ -5186,7 +5174,6 @@ def api_mc_backtest(profile_id):
     POST body (optional JSON): {n_sims: int, lookback_days: int}
     """
     import os
-    import sqlite3
     profile = get_trading_profile(profile_id)
     if not profile or profile["user_id"] != current_user.effective_user_id:
         return jsonify({"error": "Profile not found"}), 404
@@ -5466,7 +5453,7 @@ def api_mc_backtest_by_strategy(profile_id):
     weak strategies stand out (high P(loss) under realistic
     slippage variance) vs robust ones (narrow band, low P(loss)).
     """
-    import os, sqlite3
+    import os
     profile = get_trading_profile(profile_id)
     if not profile or profile["user_id"] != current_user.effective_user_id:
         return jsonify({"error": "Profile not found"}), 404
@@ -5553,7 +5540,7 @@ def api_slippage_history(profile_id):
     for the last N filled trades, plus aggregate metrics: mean / std
     of (realized - predicted), correlation, n_samples.
     """
-    import os, sqlite3
+    import os
     profile = get_trading_profile(profile_id)
     if not profile or profile["user_id"] != current_user.effective_user_id:
         return jsonify({"error": "Profile not found"}), 404
@@ -5706,7 +5693,6 @@ def api_weightable_signals(profile_id):
     only returns non-default (≠1.0) entries, so users couldn't see the
     full list of tunable signals without reading the code.
     """
-    import os
     profile = get_trading_profile(profile_id)
     if not profile or profile["user_id"] != current_user.effective_user_id:
         return jsonify({"error": "Profile not found"}), 404
@@ -5746,7 +5732,6 @@ def api_weightable_signals(profile_id):
 def api_attention_signals(profile_id):
     """Item 3a — recent attention-signal snapshot for held + watched
     symbols on this profile (Google Trends + Wikipedia + App Store)."""
-    import os
     profile = get_trading_profile(profile_id)
     if not profile or profile["user_id"] != current_user.effective_user_id:
         return jsonify({"error": "Profile not found"}), 404
@@ -7044,8 +7029,6 @@ def api_tuning_status():
     per_page = request.args.get("per_page", 5, type=int)
     profile_id = request.args.get("profile_id", type=int)
 
-    from self_tuning import describe_tuning_state
-    import sqlite3 as _sq
 
     profiles = [p for p in get_user_profiles(current_user.effective_user_id) if p.get("enabled")]
     if profile_id:
@@ -7461,7 +7444,6 @@ def api_tuning_history():
     per_page = request.args.get("per_page", 5, type=int)
     profile_id = request.args.get("profile_id", type=int)
 
-    from models import get_tuning_history
 
     profiles = [p for p in get_user_profiles(current_user.effective_user_id) if p.get("enabled")]
     if profile_id:

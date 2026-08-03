@@ -94,7 +94,7 @@ def cmd_ai_analyze(symbol):
 
 
 def cmd_sentiment(symbol):
-    from news_sentiment import get_sentiment_signal, fetch_news, analyze_sentiment
+    from news_sentiment import fetch_news, analyze_sentiment
     from client import get_api
     print(f"=== Sentiment Analysis: {symbol} ===")
     api = get_api()
@@ -354,7 +354,7 @@ def cmd_aggro_trade():
     # Show executed trades
     executed = [d for d in summary.get("details", []) if d.get("action") in ("BUY", "SELL")]
     if executed:
-        print(f"\n--- Executed Trades ---")
+        print("\n--- Executed Trades ---")
         for d in executed:
             ai_info = f"AI: {d.get('ai_signal', '?')} ({d.get('ai_confidence', '?')}%)" if d.get('ai_signal') else ""
             print(f"  {d['action']:4s} {d['symbol']:6s} | qty: {d.get('qty', 'N/A'):>6} | ~${d.get('estimated_cost', 0):>10,.2f} | {ai_info}")
@@ -362,14 +362,13 @@ def cmd_aggro_trade():
     # Show AI vetoes
     vetoed = [d for d in summary.get("details", []) if d.get("action") == "AI_VETOED"]
     if vetoed:
-        print(f"\n--- AI Vetoed (saved you from these) ---")
+        print("\n--- AI Vetoed (saved you from these) ---")
         for d in vetoed:
             print(f"  {d['symbol']:6s} | Technical: {d.get('signal', '?')} | AI: {d.get('ai_signal', '?')} ({d.get('ai_confidence', '?')}%) | {d.get('reason', '')[:80]}")
 
 
 def cmd_aggro_analyze(symbol):
     from fallback_strategy import fallback_combined_strategy
-    from dashboard import show_ai_analysis
     print(f"=== Aggressive Analysis: {symbol} ===\n")
     result = fallback_combined_strategy(symbol)
     print_json(result)

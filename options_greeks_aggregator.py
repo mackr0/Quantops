@@ -215,7 +215,6 @@ def compute_book_greeks(
     }
 
     for pos in positions or []:
-        sym = pos.get("symbol", "")
         qty = float(pos.get("qty") or 0)
         if qty == 0:
             continue

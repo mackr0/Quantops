@@ -25,10 +25,8 @@ import os
 import re
 import sqlite3
 import subprocess
-from collections import defaultdict
 from datetime import datetime
 from glob import glob
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)

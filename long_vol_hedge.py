@@ -61,7 +61,7 @@ import json
 import logging
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)

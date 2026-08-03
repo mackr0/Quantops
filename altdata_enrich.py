@@ -176,7 +176,7 @@ def enrich_13f_periods(conn: Optional[sqlite3.Connection] = None) -> int:
             filings_blk = data.get("filings", {})
             acc_to_period: Dict[str, str] = {}
 
-            def _absorb(block: dict) -> None:
+            def _absorb(block: dict, acc_to_period=acc_to_period) -> None:
                 # zip() stops at the shorter array, so a drifted/short
                 # reportDate array can never misalign accessions.
                 for a, p in zip(block.get("accessionNumber") or [],

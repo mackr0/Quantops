@@ -30,10 +30,9 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-import time
 from contextlib import closing
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 

@@ -52,7 +52,7 @@ class TestGetClaudeClientNoSilentFallback:
         from ai_analyst import get_claude_client
         # Patch the anthropic SDK so we don't actually connect
         with patch("anthropic.Anthropic") as mock_anthropic:
-            client = get_claude_client(api_key="sk-ant-real")
+            get_claude_client(api_key="sk-ant-real")
             mock_anthropic.assert_called_once_with(api_key="sk-ant-real")
 
 

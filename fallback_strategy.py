@@ -6,7 +6,6 @@ strategy_router.py to market-specific engines; this module is only used
 as a safety fallback.
 """
 
-import pandas as pd
 from market_data import get_bars, add_indicators
 
 
@@ -142,7 +141,7 @@ def volume_spike_strategy(symbol, df=None,
 
     latest = df.iloc[-1]
     prev = df.iloc[-2]
-    prev2 = df.iloc[-3] if len(df) >= 3 else None
+    df.iloc[-3] if len(df) >= 3 else None
 
     price = float(latest["close"])
     open_price = float(latest["open"])

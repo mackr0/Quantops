@@ -30,8 +30,7 @@ import re
 import sqlite3
 import time
 from datetime import date, datetime, timedelta
-from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from bs4 import BeautifulSoup

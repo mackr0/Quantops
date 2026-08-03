@@ -483,7 +483,7 @@ def backfill_from_resolved_predictions(db_path: str) -> int:
             for pred_id, fjson, outcome in rows:
                 try:
                     features = _json.loads(fjson)
-                except (json.JSONDecodeError, TypeError, ValueError) as _fp_exc:
+                except (_json.JSONDecodeError, TypeError, ValueError) as _fp_exc:
                     # Per-prediction features-json parse loop; skip
                     # malformed feature blobs. Surface for follow-up.
                     logger.debug(

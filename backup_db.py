@@ -18,7 +18,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-import shutil
 import sqlite3
 from datetime import datetime, timedelta
 from typing import Dict, List

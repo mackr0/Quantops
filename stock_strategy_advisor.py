@@ -24,7 +24,7 @@ of setup, not on which side has more pre-built work.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 def evaluate_candidate_for_stock_action(

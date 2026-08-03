@@ -116,7 +116,8 @@ class TestSchedulerHelperStructure:
 
         Reads the source to confirm the new per-profile structure is
         present. Fails loudly if someone flattens it back."""
-        import inspect, multi_scheduler
+        import inspect
+        import multi_scheduler
         src = inspect.getsource(multi_scheduler)
         assert "profile_runs" in src, (
             "per-profile last-run dict is gone — scheduler regressed to "

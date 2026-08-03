@@ -33,7 +33,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, List, Optional
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 

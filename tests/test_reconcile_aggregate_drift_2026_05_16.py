@@ -260,7 +260,7 @@ class TestTier1OrderHistoryEnrichment:
         }
         # Actual opening fill at $250 on 2026-04-01, not the current
         # mark of $291.
-        history = [
+        [
             self._mk_order(
                 "real-order-1", "sell_short", 114, 250.00,
                 "2026-04-01T15:30:00Z", symbol="NXPI",

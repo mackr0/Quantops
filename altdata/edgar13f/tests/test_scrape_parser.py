@@ -71,7 +71,8 @@ class TestParseInformationTable:
         """Malformed XML SHOULD raise — we rely on this so the scraper
         loop can catch, mark raw_filing as parse_error, and continue."""
         import pytest
-        with pytest.raises(Exception):
+        import xml.etree.ElementTree as ET
+        with pytest.raises(ET.ParseError):
             parse_information_table("<broken<<")
 
     def test_pre_2013_filings_filtered_at_list_time(self):

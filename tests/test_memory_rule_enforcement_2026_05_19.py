@@ -122,8 +122,8 @@ def test_working_tree_has_changelog_update_when_modifying_production_source():
         return  # parity satisfied
 
     pytest.fail(
-        f"Working tree modifies production source without "
-        f"updating CHANGELOG.md:\n  "
+        "Working tree modifies production source without "
+        "updating CHANGELOG.md:\n  "
         + "\n  ".join(sorted(prod_modified))
         + "\n\nMemory rule: 'every code change must include "
         "CHANGELOG.md and doc updates, no exceptions'. "

@@ -88,7 +88,8 @@ RUNTIME_FILES_TO_DELETE = [
 
 
 def step1_verify_keys() -> bool:
-    import urllib.request, json
+    import urllib.request
+    import json
     print("\n=== STEP 1: verify new Alpaca keys ===")
     ok = True
     for name, label, k, s in NEW_KEYS:
@@ -110,10 +111,10 @@ def step1_verify_keys() -> bool:
                 n_pos = len(json.loads(r2.read()))
             print(f"  {name} ({label:12}) equity=${eq:>12,.2f}  cash=${ca:>12,.2f}  positions={n_pos}")
             if abs(eq - 1_000_000) > 1:
-                print(f"    WARNING: equity != $1M")
+                print("    WARNING: equity != $1M")
                 ok = False
             if n_pos != 0:
-                print(f"    WARNING: positions != 0")
+                print("    WARNING: positions != 0")
                 ok = False
         except Exception as e:
             print(f"  {name} ({label}) FAILED: {type(e).__name__}: {e}")
@@ -363,7 +364,7 @@ def step5b_clear_altdata_logs(apply: bool):
                 bak = f"/tmp/{os.path.basename(path)}.pre-clear.bak"
                 import shutil
                 shutil.copy2(path, bak)
-                with open(path, "w") as f:
+                with open(path, "w"):
                     pass  # truncate
             except OSError as e:
                 print(f"    FAILED: {e}")

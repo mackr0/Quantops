@@ -24,23 +24,19 @@ from this file on first run + refresh weekly.
 """
 from __future__ import annotations
 
-import json
 import logging
 import time
-from typing import Any, Dict, Iterable, List, Optional
-from xml.etree import ElementTree as ET
+from typing import Any, Dict, Iterable, List
 
 import requests
 
 from .normalize import PARSER_VERSION, parse_form4_xml
 from .store import (
     cik_for_ticker,
-    finish_run,
     insert_filing,
     insert_raw_filing,
     insert_txn,
     mark_raw_parsed,
-    start_run,
     update_last_filings_check,
     upsert_company,
 )

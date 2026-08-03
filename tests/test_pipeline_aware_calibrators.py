@@ -265,7 +265,7 @@ class TestGetCalibratorFallback:
 class TestRecalibrateAllSpecialists:
     def test_runs_once_per_profile(self, db_path):
         # First call: fits whatever it can.
-        first = recalibrate.recalibrate_all_specialists(db_path)
+        recalibrate.recalibrate_all_specialists(db_path)
         # The marker is now set — second call short-circuits.
         second = recalibrate.recalibrate_all_specialists(db_path)
         assert second["skipped_already_done"] == 1

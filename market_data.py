@@ -486,8 +486,6 @@ def add_indicators(df):
 # Sector rotation tracking
 # ---------------------------------------------------------------------------
 
-import time as _time
-import logging as _md_logger
 
 _sector_cache = {}
 _SECTOR_TTL = 1800  # 30 minutes

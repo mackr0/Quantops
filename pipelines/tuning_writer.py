@@ -18,7 +18,6 @@ tasks. Per-profile. Failure non-fatal.
 from __future__ import annotations
 
 import logging
-import sqlite3
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)

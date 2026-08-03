@@ -75,7 +75,8 @@ def test_record_submitted_order_is_best_effort(tmp_path):
 
 
 def test_door_records_submitted_order(tmp_path):
-    import journal, order_guard
+    import journal
+    import order_guard
     db = _db(tmp_path)
     ctx = SimpleNamespace(db_path=db, get_alpaca_api=lambda: SimpleNamespace())
     api = MagicMock()

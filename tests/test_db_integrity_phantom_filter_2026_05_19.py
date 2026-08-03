@@ -177,7 +177,8 @@ class TestEndToEndPhantomDoesNotHaltScheduler:
 def _valid_sqlite() -> bytes:
     """Bytes of a minimal valid SQLite DB so the integrity check
     on the 'real' profile passes."""
-    import io, tempfile
+    import io
+    import tempfile
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as t:
         p = t.name
     conn = sqlite3.connect(p)

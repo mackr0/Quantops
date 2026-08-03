@@ -27,7 +27,6 @@ from client import get_api, get_account_info, get_positions
 logger = logging.getLogger(__name__)
 from portfolio_manager import check_portfolio_constraints, check_drawdown, calculate_atr_stops
 from journal import init_db, log_trade, log_signal
-from strategy_router import run_strategy
 
 
 # ---------------------------------------------------------------------------
@@ -639,7 +638,6 @@ def _meta_pregate_candidates(candidates: List[Dict[str, Any]],
     max_drops = len(candidates) // 2
     if len(below) > max_drops:
         below.sort(key=lambda pc: pc[0])  # lowest meta_prob first
-        spared = {id(c) for _, c in below[max_drops:]}
         logging.warning(
             "Meta-pregate wanted to drop %d/%d candidates but is a "
             "BACKSTOP, not the allocator — capped at %d (worst by "
@@ -648,8 +646,6 @@ def _meta_pregate_candidates(candidates: List[Dict[str, Any]],
             len(below), len(candidates), max_drops, len(below) - max_drops,
         )
         below = below[:max_drops]
-    else:
-        spared = set()
     dropped_ids = {id(c) for _, c in below}
     dropped_count = len(dropped_ids)
     # Rebuild in ORIGINAL order: every candidate not dropped survives
@@ -1514,7 +1510,6 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
         ai_reasoning = ai_result.get("reasoning", "")
         ai_confidence = ai_result.get("confidence")
         # If AI provided price targets, use them for stop/take-profit
-        targets = ai_result.get("price_targets", {})
 
     result = {
         "symbol": symbol,
@@ -2583,28 +2578,10 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
             }
 
     enable_shorts = ctx.enable_short_selling if ctx is not None else False
-    # Stock-position count for the stock pipeline's max_total_positions
-    # cap. Option positions are NOT counted here — they have their own
-    # gates via greek-budget params on the schema
-    # (max_net_options_delta_pct, max_theta_burn_dollars_per_day,
-    # max_short_vega_dollars). Without this filter, a multileg spread
-    # of N legs counted as N positions against a 10-position cap and
-    # produced spurious at_max_positions True states that blocked
-    # every new stock candidate (observed 2026-05-20: pid17 reporting
-    # 12/10, pid21 reporting 9/5). (#189, 2026-05-20.)
-    num_positions = sum(
-        1 for p in positions_list if not getattr(p, "is_option", False)
-    )
-    if ctx is not None:
-        try:
-            from regime_overrides import resolve_for_current_regime
-            max_positions = resolve_for_current_regime(
-                ctx, "max_total_positions", default=ctx.max_total_positions)
-        except Exception:
-            max_positions = ctx.max_total_positions
-    else:
-        max_positions = 10
-    at_max_positions = num_positions >= max_positions
+    # (The stock-only position count for the max_total_positions cap —
+    # the #189 option-leg-inflation fix — is computed where the cap is
+    # actually enforced, in the execute path's constraint check; a
+    # duplicate pre-computation here was dead and removed 2026-08-03.)
 
     update_status(_pid, "Pre-filtering", "%d candidates" % len(candidates))
     # ── STEP 1: Pre-filter (NO AI calls, NO strategy calls) ────────
@@ -2793,7 +2770,6 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     political_context = None
     maga_mode = ctx.maga_mode if ctx is not None else False
 
-    market_type = ctx.segment if ctx is not None else "small"
 
     # 2026-05-19 — was hard-coded "Running 16 strategies". The
     # actual count is dynamic (market_type / deprecation state /
@@ -2984,7 +2960,7 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     ensemble_result = None
     if getattr(ctx, "enable_specialist_ensemble", True):
         try:
-            from ensemble import run_ensemble, format_for_final_prompt
+            from ensemble import format_for_final_prompt
             # Share ensemble results across profiles with the same
             # market_type. The specialist verdicts depend on the
             # candidates (same for all profiles of the same type),

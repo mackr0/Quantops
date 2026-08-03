@@ -141,7 +141,6 @@ def test_get_momentum_12_1_skips_recent_month(tmp_factor_db):
     # Build 270 daily bars: linear ramp 50→100 (so 252-day ago = 50,
     # 21-day ago ≈ 96.something). Then a -50% crash in the last 21 days
     # which the 12-1m formula should IGNORE.
-    n = 270
     prices = [50 + (50 * i / 248) for i in range(249)]  # 0..248 → 50..100
     # Last 21 days drop to 50 (-50%)
     prices += [100 - (50 * i / 20) for i in range(21)]
@@ -237,10 +236,6 @@ def test_render_for_prompt_surfaces_real_factor_lines():
         {"symbol": "AAPL", "qty": 100, "market_value": 20_000},
         {"symbol": "TSLA", "qty": 50, "market_value": 10_000},
     ]
-    fake_factors = {
-        "AAPL": {"btm": "growth", "beta": "market", "momentum": "winner"},
-        "TSLA": {"btm": "growth", "beta": "levered", "momentum": "winner"},
-    }
     exp = compute_exposure(
         positions, equity=100_000,
         sector_lookup=lambda s: "Technology",

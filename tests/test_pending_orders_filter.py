@@ -123,7 +123,7 @@ def test_pending_orders_unions_all_id_columns(tmp_path):
     ctx.get_alpaca_api.return_value = api
 
     out = _safe_pending_orders(ctx)
-    ids = sorted([o["symbol"] for o in out])  # all AAPL by default
+    sorted([o["symbol"] for o in out])  # all AAPL by default
     assert len(out) == 4
     # The stranger is filtered out
     api_ids_returned = [o.id for o in api.list_orders.return_value]

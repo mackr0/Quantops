@@ -47,7 +47,7 @@ class TestNotifyErrorNeverRaises:
         with patch("notifications.send_email",
                    side_effect=ConnectionError("SMTP down")):
             try:
-                result = notify_error("body", context="test")
+                notify_error("body", context="test")
             except Exception as exc:
                 pytest.fail(
                     f"notify_error propagated {type(exc).__name__}: "
@@ -89,7 +89,7 @@ class TestNotifyErrorNeverRaises:
         """Pathological subject (very long, control chars, unicode
         edge cases) must not crash the function."""
         from notifications import notify_error
-        weird_subject = "\x00" * 100 + "​" * 100 + "test" * 1000
+        weird_subject = "\x00" * 100 + "\u200b" * 100 + "test" * 1000
         with patch("notifications.send_email", return_value=True):
             try:
                 notify_error("body", context=weird_subject)

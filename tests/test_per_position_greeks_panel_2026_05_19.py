@@ -35,14 +35,9 @@ def _render_ai_page_greeks_section(greeks_info):
     against the supplied greeks_info dict. Returns the rendered
     HTML so tests can grep for expected content."""
     from jinja2 import Environment, FileSystemLoader, select_autoescape
-    env = Environment(
+    Environment(
         loader=FileSystemLoader(os.path.join(REPO, "templates")),
         autoescape=select_autoescape(["html"]),
-    )
-    template_src = (
-        "{% if greeks_info and greeks_info.per_profile %}"
-        "{% include '_inline_greeks.html' %}"
-        "{% endif %}"
     )
     # Pull the Book-Greeks panel out of ai.html into a small
     # inline template so we don't have to mock the entire AI page

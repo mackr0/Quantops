@@ -311,7 +311,7 @@ class TestAlphaUsesGeometricBenchmarkAnnualization:
         equity = 10_000.0
         beta_lookup = lambda sym: {"AAPL": 1.0, "MSFT": 1.2}.get(sym)
 
-        before = compute_book_beta(positions, equity, beta_lookup)
+        compute_book_beta(positions, equity, beta_lookup)
         # Simulate adding $1K long MSFT (beta=1.2, size_pct=10).
         projected = simulate_book_beta_with_entry(
             positions, equity,

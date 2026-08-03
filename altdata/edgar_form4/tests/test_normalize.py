@@ -8,7 +8,6 @@ is stable but the parser needs to handle:
 """
 from __future__ import annotations
 
-import pytest
 
 from edgar_form4.normalize import parse_form4_xml
 

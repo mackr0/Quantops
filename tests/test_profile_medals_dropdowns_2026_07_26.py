@@ -65,7 +65,8 @@ class TestCrossProcessFallback:
         )
 
     def test_stale_file_ignored(self, monkeypatch, tmp_path):
-        import json, views
+        import json
+        import views
         f = tmp_path / "medals.json"
         monkeypatch.setattr(views, "_MEDALS_FILE", str(f))
         f.write_text(json.dumps(

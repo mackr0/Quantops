@@ -234,7 +234,7 @@ def pullback_support_strategy(symbol, ctx=None, df=None,
     price = float(latest["close"])
     rsi = float(latest["rsi"])
     sma_20 = float(latest["sma_20"])
-    sma_50 = float(latest["sma_50"]) if pd.notna(latest.get("sma_50")) else None
+    float(latest["sma_50"]) if pd.notna(latest.get("sma_50")) else None
 
     # Compute SMA20 slope (compare current vs 5 bars ago)
     if len(df) >= 6:
@@ -385,7 +385,7 @@ def mid_combined_strategy(symbol, ctx=None, df=None, params=None):
 
     # Extract user-configurable thresholds from params, falling back to defaults
     rsi_oversold = float(params.get("rsi_oversold", 50.0))
-    volume_surge_mult = float(params.get("volume_surge_multiplier", 2.0))
+    float(params.get("volume_surge_multiplier", 2.0))
     breakout_vol_threshold = float(params.get("breakout_volume_threshold", 2.0))
 
     # Strategy toggles

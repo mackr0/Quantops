@@ -192,11 +192,11 @@ class TestCalmarGuard:
             })
         # Trades spanning 30+ days gives a real days_active count
         trades = [{
-            "timestamp": f"2026-03-05T10:00:00",
+            "timestamp": "2026-03-05T10:00:00",
             "symbol": "A", "side": "sell", "qty": 10,
             "price": 100, "pnl": -50, "status": "closed",
         }, {
-            "timestamp": f"2026-04-10T10:00:00",
+            "timestamp": "2026-04-10T10:00:00",
             "symbol": "A", "side": "sell", "qty": 10,
             "price": 100, "pnl": -30, "status": "closed",
         }]

@@ -176,7 +176,7 @@ class TestOptimizePromptLayout:
                 with patch("prompt_layout.set_verbosity") as mock_set:
                     with patch("models.log_tuning_change"):
                         with patch("cost_guard.can_afford_action") as mock_caa:
-                            msg = _optimize_prompt_layout(
+                            _optimize_prompt_layout(
                                 None, ctx, 1, 1,
                                 overall_wr=50.0, resolved=100)
                             # Cost guard NOT consulted (saves money)

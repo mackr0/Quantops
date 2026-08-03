@@ -18,8 +18,6 @@ from __future__ import annotations
 
 import csv
 import logging
-import os
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -557,7 +555,7 @@ def daily_(year, skip_prices, force_prices):
 
     # Step 3: Prices (covers both chambers' tickers for the year)
     if skip_prices:
-        console.print(f"\n[dim][3/3] Prices skipped (--skip-prices)[/dim]")
+        console.print("\n[dim][3/3] Prices skipped (--skip-prices)[/dim]")
     else:
         with connect() as conn:
             tickers = tickers_from_db(conn, year=year)

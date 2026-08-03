@@ -111,10 +111,14 @@ class TestScoreAggregationManyVoters:
         from strategies import discover_strategies
         # Force every strategy to buy AAPL
         for mod in discover_strategies("stocks"):
-            monkeypatch.setattr(mod, "find_candidates", lambda ctx, uni: [{
-                "symbol": "AAPL", "signal": "BUY", "score": 1,
-                "votes": {mod.NAME: "BUY"}, "reason": "test", "price": 100,
-            }])
+            # mod bound as a default: an unbound closure made every
+            # stub report the LAST strategy's NAME in its votes.
+            monkeypatch.setattr(
+                mod, "find_candidates", lambda ctx, uni, mod=mod: [{
+                    "symbol": "AAPL", "signal": "BUY", "score": 1,
+                    "votes": {mod.NAME: "BUY"}, "reason": "test",
+                    "price": 100,
+                }])
 
         sample_ctx.segment = "stocks"
         from multi_strategy import aggregate_candidates
@@ -187,7 +191,8 @@ class TestCallAiLedgerThreading:
             def __init__(self, api_key=None):
                 self.messages = _Messages()
 
-        import sys, types
+        import sys
+        import types
         fake_anthropic = types.ModuleType("anthropic")
         fake_anthropic.Anthropic = _Client
         monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic)
@@ -242,7 +247,8 @@ class TestCallAiLedgerThreading:
             def __init__(self, api_key=None):
                 self.messages = _Messages()
 
-        import sys, types
+        import sys
+        import types
         fake_anthropic = types.ModuleType("anthropic")
         fake_anthropic.Anthropic = _Client
         monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic)

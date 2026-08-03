@@ -13,7 +13,7 @@ Used by `pipelines.stock.StockPipeline.tune()`.
 from __future__ import annotations
 
 import sqlite3
-from typing import Optional, Tuple
+from typing import Tuple
 
 # The full set of signal_type strings the stock pipeline emits.
 # MULTILEG_OPEN, OPTIONS, OPTION_EXERCISE, PAIR_OPEN, PAIR_CLOSE,

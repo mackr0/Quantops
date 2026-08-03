@@ -25,7 +25,7 @@ Phase 4 of the Position class refactor (2026-05-11).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 

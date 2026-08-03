@@ -54,7 +54,7 @@ import re
 import sqlite3
 import sys
 from contextlib import closing
-from typing import List, Optional
+from typing import List
 
 
 MASTER_DB = "/opt/quantopsai/quantopsai.db"

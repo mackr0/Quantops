@@ -374,7 +374,6 @@ class TestOrchestrator:
         _insert_predictions(db, preds)
 
         call_count = {"n": 0}
-        orig_update = None
         def counting_update(pid, **kw):
             call_count["n"] += 1
         monkeypatch.setattr("models.update_trading_profile", counting_update)

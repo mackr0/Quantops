@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import logging
 from contextlib import closing
-from datetime import date as _date
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)

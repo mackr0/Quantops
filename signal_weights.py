@@ -28,7 +28,7 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import closing
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 

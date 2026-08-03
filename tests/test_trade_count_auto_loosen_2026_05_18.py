@@ -294,7 +294,7 @@ class TestSelection:
         with patch("self_tuning._get_recent_adjustment", return_value=None), \
              patch("models.update_trading_profile") as utp, \
              patch("models.log_tuning_change"):
-            msg = _optimize_trade_count_auto_loosen(
+            _optimize_trade_count_auto_loosen(
                 conn, ctx, 1, 1, overall_wr=50.0, resolved=20)
         conn.close()
         # avoid_earnings_days < momentum_5d_gain alphabetically — wins tie

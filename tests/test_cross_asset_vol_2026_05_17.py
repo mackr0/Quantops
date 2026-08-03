@@ -99,7 +99,6 @@ class TestRobustness:
         """If yfinance fails for ^OVX, MOVE and GVZ still return data."""
         from macro_data import get_cross_asset_vol
         good = _fake_history(list(range(50, 80)))
-        call_count = {"n": 0}
 
         def fake_ticker(symbol):
             t = MagicMock()

@@ -7,7 +7,6 @@ import pytest
 from biotechevents.store import (
     _apply_migrations,
     connect,
-    counts_by_phase,
     init_db,
     insert_raw_filing,
     mark_raw_parsed,

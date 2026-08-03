@@ -55,7 +55,9 @@ def test_pending_fill_elif_has_occ_symbol_guard():
 def test_pending_fill_buy_transitions_to_open():
     """Direct: simulate the fill-confirm step for a pending_fill BUY
     of a stock (no occ_symbol). Expect status to become 'open'."""
-    import sqlite3, tempfile, os
+    import sqlite3
+    import tempfile
+    import os
     from contextlib import closing
     # Minimal stub of the trade dict that _task_update_fill_prices
     # iterates over, plus a small SQLite to act as the journal.

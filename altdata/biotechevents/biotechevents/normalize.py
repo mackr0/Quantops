@@ -177,7 +177,6 @@ _SPONSOR_TO_TICKER = {
     "neurocrine":                          "NBIX",
     "neurocrine biosciences":              "NBIX",
     "argenx":                              "ARGX",
-    "ionis pharmaceuticals":               "IONS",
     "summit therapeutics":                 "SMMT",
     "tg therapeutics":                     "TGTX",
     "rxrx":                                "RXRX",

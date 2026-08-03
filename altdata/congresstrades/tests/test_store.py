@@ -4,7 +4,6 @@ Uses a tmp_path DB so tests are hermetic.
 """
 
 import sqlite3
-from pathlib import Path
 
 import pytest
 
@@ -16,9 +15,6 @@ from congresstrades.store import (
     insert_trade,
     mark_raw_filing_parsed,
     query_trades,
-    recent_runs,
-    start_run,
-    finish_run,
     _apply_migrations,
 )
 

@@ -7,13 +7,12 @@ data gracefully (returning zeroes or empty lists).
 
 import math
 import sqlite3
-import os
 from contextlib import closing
 import time
 import logging
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 from collections import defaultdict
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List
 
 logger = logging.getLogger(__name__)
 
@@ -335,7 +334,6 @@ def render_drawdown_svg(drawdown_data: List[Dict], width: int = 700, height: int
     vals = [d.get("drawdown_pct", 0) for d in drawdown_data]
     dates = [d.get("date", "") for d in drawdown_data]
     min_val = min(vals) if vals else 0
-    max_val = 0  # drawdown is always <= 0
 
     val_range = abs(min_val) if min_val != 0 else 1
 
@@ -790,9 +788,7 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
     if snapshots:
         peak = snapshots[0].get("equity", 0)
         peak_date = snapshots[0].get("date", "")
-        peak_idx = 0
         max_dd = 0.0
-        current_dd_start = 0
 
         for i, s in enumerate(snapshots):
             eq = s.get("equity", 0) or 0
@@ -800,7 +796,6 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
             if eq > peak:
                 peak = eq
                 peak_date = dt
-                peak_idx = i
             dd = (peak - eq) / peak if peak > 0 else 0
             rolling_drawdown.append({"date": dt, "drawdown_pct": round(-dd * 100, 2)})
             if dd > max_dd:
@@ -1257,8 +1252,6 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
     # -----------------------------------------------------------------------
     # Streaks
     # -----------------------------------------------------------------------
-    max_consec_wins = 0
-    max_consec_losses = 0
     cur_streak_len = 0
     cur_streak_type = "none"
     winning_streaks = []

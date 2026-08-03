@@ -124,7 +124,7 @@ def check_trailing_stops(positions, ctx=None):
             if not atr or atr <= 0 or math.isnan(atr):
                 continue
 
-            recent_bars = bars.tail(5)
+            bars.tail(5)
 
             # 2026-06-11 — the water mark must be POSITION-scoped.
             # recent_bars covers the last 5 DAILY bars regardless of
@@ -147,7 +147,7 @@ def check_trailing_stops(positions, ctx=None):
                 trailing_stop = low_water + (atr * trailing_multiplier)
                 if current_price > trailing_stop:
                     abs_qty = abs(int(qty))
-                    pct_from_entry = (current_price - entry_price) / entry_price
+                    (current_price - entry_price) / entry_price
                     triggered.append({
                         "symbol": symbol,
                         "signal": "SELL",

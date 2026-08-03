@@ -17,7 +17,6 @@ back to a default of mega-cap tech if the file isn't present.
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -138,7 +137,7 @@ def daily_(max_tickers, skip_trending):
 
     with connect() as conn:
         if not skip_trending:
-            console.print(f"\n[bold cyan][1/2] Trending[/bold cyan]")
+            console.print("\n[bold cyan][1/2] Trending[/bold cyan]")
             try:
                 tickers = fetch_trending(conn)
                 console.print(f"  [green]✓[/green] {len(tickers)} trending: "
@@ -146,7 +145,7 @@ def daily_(max_tickers, skip_trending):
             except Exception as exc:
                 console.print(f"  [red]✗ trending failed[/red]: {exc}")
 
-        console.print(f"\n[bold cyan][2/2] Watchlist[/bold cyan]")
+        console.print("\n[bold cyan][2/2] Watchlist[/bold cyan]")
         try:
             overall = fetch_watchlist(conn, watchlist)
             console.print(f"  [green]✓ done[/green]: {overall}")
@@ -171,7 +170,7 @@ def trending():
     """Snapshot + show current top-trending StockTwits tickers."""
     with connect() as conn:
         try:
-            tickers = fetch_trending(conn)
+            fetch_trending(conn)
         except Exception as exc:
             console.print(f"[red]✗ failed[/red]: {exc}")
             return

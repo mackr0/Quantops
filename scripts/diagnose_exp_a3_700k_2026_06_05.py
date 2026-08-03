@@ -4,9 +4,7 @@ EXP-A3-700K-AggressiveFree. Used to verify whether the dashboard's
 whether drift makes it misleading.
 """
 import os
-import sqlite3
 import sys
-from contextlib import closing
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(
     os.path.abspath(__file__),

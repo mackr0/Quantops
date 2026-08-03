@@ -12,7 +12,6 @@ import time
 from typing import Dict, Tuple
 
 import alpaca_trade_api as tradeapi
-import config
 
 logger = logging.getLogger(__name__)
 

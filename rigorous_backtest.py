@@ -31,7 +31,7 @@ import random
 import statistics
 import time
 from contextlib import closing
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 

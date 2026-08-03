@@ -42,7 +42,6 @@ def _strip_comments_and_strings(src: str) -> str:
     looks at executable Python (best-effort)."""
     out_lines = []
     in_triple = False
-    triple_delim = None
     for line in src.splitlines():
         stripped = line
         # Toggle triple-string blocks

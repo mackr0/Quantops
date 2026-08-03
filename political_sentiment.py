@@ -13,10 +13,11 @@ the subscription.
 
 import json
 import logging
+import sqlite3
 import time
 import urllib.request
 import xml.etree.ElementTree as ET
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any, List
 
 import config
 from ai_providers import call_ai
@@ -298,7 +299,6 @@ def get_maga_mode_context(ctx=None) -> str:
     impact_str = "\n".join(impact_lines) if impact_lines else "  No sector-specific impact"
 
     # Specific ticker mentions and trade ideas
-    tickers = climate.get("ticker_mentions", [])
     trade_ideas = climate.get("trade_ideas", [])
     ideas_str = ""
     if trade_ideas:

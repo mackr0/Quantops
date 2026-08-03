@@ -12,7 +12,6 @@ Default parameters:
   - volume_surge_threshold: 5x
 """
 
-import pandas as pd
 from market_data import get_bars, add_indicators
 
 

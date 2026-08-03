@@ -29,7 +29,7 @@ expects from yfinance:
 from __future__ import annotations
 
 import logging
-from datetime import date as _date, datetime as _dt, timezone as _tz
+from datetime import date as _date
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)

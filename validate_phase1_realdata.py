@@ -7,7 +7,6 @@ silently no-ops because of an empty data path.
 Usage:  /opt/quantopsai/venv/bin/python3 validate_phase1_realdata.py
         Run from /opt/quantopsai. Exit 0 = no issues; exit 1 = issues found.
 """
-import os
 import sys
 import sqlite3
 import traceback

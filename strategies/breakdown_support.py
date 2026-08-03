@@ -43,7 +43,7 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
                 continue
 
             close_now = float(df["close"].iloc[-1])
-            low_now = float(df["low"].iloc[-1])
+            float(df["low"].iloc[-1])
             close_prev = float(df["close"].iloc[-2])
             vol_now = float(df["volume"].iloc[-1])
             avg_vol = float(df["volume"].iloc[-21:-1].mean())

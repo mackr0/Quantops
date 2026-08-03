@@ -48,11 +48,11 @@ def main():
             if isinstance(best, (int, float)) and best is not None:
                 print(f"  Best Trade:     {best:+.2f}%")
             else:
-                print(f"  Best Trade:     N/A")
+                print("  Best Trade:     N/A")
             if isinstance(worst, (int, float)) and worst is not None:
                 print(f"  Worst Trade:    {worst:+.2f}%")
             else:
-                print(f"  Worst Trade:    N/A")
+                print("  Worst Trade:    N/A")
             print(f"  Time:           {elapsed:.1f}s")
 
         except Exception as e:

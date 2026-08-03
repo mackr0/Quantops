@@ -7,7 +7,7 @@ import threading
 import urllib.request
 import urllib.error
 from contextlib import closing
-from datetime import date, datetime
+from datetime import datetime
 from typing import Dict
 
 import config
@@ -400,9 +400,9 @@ def _notify_veto_disabled(symbol, technical_signal, ai_result, ctx=None):
     body += _section("AI Analysis Said", ai_info)
 
     verdict = (
-        f'<div style="padding:12px;background:#fff3e0;border-left:4px solid #ff9800;margin-top:8px;font-size:13px">'
-        f"<strong>Trade was NOT executed.</strong> The AI overrode the technical signal."
-        f"</div>"
+        '<div style="padding:12px;background:#fff3e0;border-left:4px solid #ff9800;margin-top:8px;font-size:13px">'
+        "<strong>Trade was NOT executed.</strong> The AI overrode the technical signal."
+        "</div>"
     )
     body += verdict
 

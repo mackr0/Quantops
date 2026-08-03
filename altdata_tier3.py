@@ -565,7 +565,6 @@ _STAR_MANAGER_CIKS = {
     "0001067983": "Berkshire Hathaway",
     "0001336528": "Pershing Square",
     "0001603466": "Greenlight Capital",
-    "0001603466": "Greenlight Capital",
     "0001167483": "Third Point",
 }
 

@@ -249,9 +249,14 @@ class TestScreenerUsesAlpaca:
         monkeypatch.setattr("market_data._get_alpaca_data_client",
                             lambda: fake_client)
 
-        # yfinance must NOT be called on the happy path
+        # yfinance must NOT be called on the happy path. The screener
+        # calls it via yf_lock (its thread-safe wrapper) — patch THERE,
+        # the module that actually makes the call. (The old
+        # `screener.yf.download` target only worked by aliasing: it
+        # mutated the shared yfinance module object that yf_lock also
+        # references; screener itself never called `yf`.)
         monkeypatch.setattr(
-            "screener.yf.download",
+            "yf_lock.yf.download",
             MagicMock(side_effect=AssertionError("yfinance should not be called")),
         )
 
@@ -297,7 +302,9 @@ class TestScreenerUsesAlpaca:
         data = [[100, 100, 2_000_000, 2_000_000] for _ in range(5)]
         yf_df = pd.DataFrame(data, index=idx, columns=cols)
 
-        monkeypatch.setattr("screener.yf.download",
+        # Patch the real call site (yf_lock wrapper) — see the happy-
+        # path test above for why `screener.yf` was the wrong target.
+        monkeypatch.setattr("yf_lock.yf.download",
                             lambda *a, **kw: yf_df)
 
         result = screener.screen_dynamic_universe(
@@ -358,7 +365,6 @@ class TestScreenerUsesAlpaca:
                             lambda: fake_client)
 
         # Bypass the ">=100 assets" floor so the rest of the function runs.
-        orig = screener.screen_dynamic_universe
         import inspect
         # the build body moved into _screen_dynamic_universe_locked
         # (single-flight lock, funnel-review H3) — the guard contract
@@ -378,7 +384,7 @@ class TestScreenerUsesAlpaca:
                 return fake_assets_full
         monkeypatch.setattr("client.get_api", lambda ctx=None: FakeApi2())
 
-        result = screener.screen_dynamic_universe(
+        screener.screen_dynamic_universe(
             min_price=50.0, max_price=200.0, min_volume=1_000_000,
             market_type="test_zombie_filter",
             fallback_universe=["ALIVE_A", "ALIVE_B", "ZOMBIE1", "ZOMBIE2"],
@@ -432,7 +438,8 @@ class TestActiveAlpacaSymbolsHelper:
         assert result == {"AAPL", "MSFT"}
 
     def test_cache_hit_skips_alpaca(self, monkeypatch):
-        import screener, time
+        import screener
+        import time
         self._reset_cache(screener)
         # Pre-warm the cache
         screener._active_symbols_cache = {
@@ -521,7 +528,8 @@ class TestMigrationContract:
         The fetch logic lives in _get_bars_uncached after the
         2026-04-30 cache wrapper refactor — get_bars is now just a
         TTL cache around that function."""
-        import inspect, market_data
+        import inspect
+        import market_data
         src = inspect.getsource(market_data._get_bars_uncached)
         # The crypto (slash) branch returns yfinance directly — skip past
         # that chunk and inspect the equity path only.
@@ -540,7 +548,8 @@ class TestMigrationContract:
 
     def test_screener_tries_alpaca_before_yfinance(self):
         """Same invariant for the screener."""
-        import inspect, screener
+        import inspect
+        import screener
         # public entry + locked builder together: the Alpaca-first
         # ordering contract lives in the builder since the H3 split
         src = inspect.getsource(screener.screen_dynamic_universe) + \
@@ -557,7 +566,8 @@ class TestMigrationContract:
     def test_screener_equity_functions_use_alpaca(self):
         """screen_by_price_range, find_volume_surges, find_momentum_stocks,
         find_breakouts must use market_data.get_bars (Alpaca), not yf.download."""
-        import inspect, screener
+        import inspect
+        import screener
         for fn_name in ("screen_by_price_range", "find_volume_surges",
                         "find_momentum_stocks", "find_breakouts"):
             fn = getattr(screener, fn_name)
@@ -629,7 +639,8 @@ class TestMigrationContract:
         """multi_scheduler.py must call load_dotenv() before importing modules
         that use env vars (market_data, client, etc). Without this, the Alpaca
         data client gets empty keys and silently falls back to yfinance."""
-        import inspect, multi_scheduler
+        import inspect
+        import multi_scheduler
         src = inspect.getsource(multi_scheduler)
         dotenv_idx = src.find("load_dotenv()")
         assert dotenv_idx > 0, "multi_scheduler must call load_dotenv()"
@@ -643,7 +654,8 @@ class TestMigrationContract:
 
     def test_backtester_uses_alpaca(self):
         """Backtester must use market_data.get_bars, not yf.download."""
-        import inspect, backtester
+        import inspect
+        import backtester
         src_download = inspect.getsource(backtester._download_symbol)
         assert "yf.Ticker" not in src_download and "yf.download" not in src_download, (
             "backtester._download_symbol must use Alpaca via get_bars_daterange"
@@ -657,7 +669,8 @@ class TestMigrationContract:
         """app.py (gunicorn entry point) must call load_dotenv() so the web
         process has Alpaca credentials for dashboard data fetches (sector
         rotation, snapshots, etc)."""
-        import inspect, app
+        import inspect
+        import app
         src = inspect.getsource(app)
         assert "load_dotenv()" in src, (
             "app.py must call load_dotenv() — without it, the gunicorn web "
@@ -673,7 +686,8 @@ class TestMigrationContract:
 
         This contract test asserts the call is present. Removing or renaming
         the filter call re-introduces the log spam."""
-        import inspect, multi_scheduler
+        import inspect
+        import multi_scheduler
         src = inspect.getsource(multi_scheduler)
         # Find the MAGA block
         assert "MAGA Mode oversold scan" in src, (

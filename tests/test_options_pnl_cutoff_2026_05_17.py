@@ -235,7 +235,7 @@ class TestReEnableBranch:
             "models.update_trading_profile",
         ) as fake_upd, patch(
             "models.log_tuning_change",
-        ) as fake_log:
+        ):
             result = _optimize_options_pnl_cutoff(
                 conn, ctx, 1, 1, overall_wr=50.0, resolved=10,
             )

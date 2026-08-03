@@ -749,7 +749,7 @@ def _ensure_fresh_or_refuse(ctx, symbol: str) -> None:
             str(symbol).upper(), who, type(exc).__name__, exc)
         raise OversellGuardError(
             "freshness reconcile failed for %s (%s) — sell refused" % (
-                str(symbol).upper(), type(exc).__name__))
+                str(symbol).upper(), type(exc).__name__)) from exc
 
 
 def assert_sell_within_own_book(api, ctx, kwargs: dict) -> None:
@@ -850,7 +850,7 @@ def assert_buy_within_own_cash(api, ctx, kwargs: dict,
         return
     try:
         qty = int(float(kwargs.get("qty") or 0))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as _qty_exc:
         # This door's doctrine is FAIL-CLOSED: an order whose qty we
         # cannot even parse cannot be cash-checked, so it must not be
         # sent (no live call site produces this shape — reaching here
@@ -861,7 +861,7 @@ def assert_buy_within_own_cash(api, ctx, kwargs: dict,
             "(fail-closed).", kwargs.get("qty"), sym)
         raise CashFloorGuardError(
             "BUY %s refused: unparseable qty %r" % (
-                sym, kwargs.get("qty")))
+                sym, kwargs.get("qty"))) from _qty_exc
     if qty <= 0:
         return
     db_path = getattr(ctx, "db_path", None)
@@ -924,7 +924,7 @@ def assert_buy_within_own_cash(api, ctx, kwargs: dict,
             )
             raise CashFloorGuardError(
                 "BUY %s qty=%d refused: reference price unavailable "
-                "for the cash floor" % (sym, qty))
+                "for the cash floor" % (sym, qty)) from exc
     if not ref_price or ref_price <= 0:
         raise CashFloorGuardError(
             "BUY %s qty=%d refused: reference price %r unusable for "

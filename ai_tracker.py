@@ -1588,7 +1588,6 @@ def get_ai_performance(db_path=None):
         # apples-to-apples in actual-P&L terms across BUY and SHORT.
         # Legacy SELL was always "directional_short" semantically (see
         # _resolve_one), so we treat SELL the same as SHORT here.
-        DIRECTIONAL = ("BUY", "STRONG_SELL", "SHORT", "SELL")
         pnl_expr = (
             "CASE WHEN UPPER(predicted_signal) IN ('BUY') "
             "THEN actual_return_pct ELSE -actual_return_pct END"
@@ -1736,7 +1735,7 @@ def compute_rolling_win_rate(db_paths, window_days=7, lookback_days=60):
         sorted oldest -> newest. `n` is the number of resolved
         predictions inside that day's window.
     """
-    from datetime import date, datetime, timedelta
+    from datetime import datetime, timedelta
     from zoneinfo import ZoneInfo
     import sqlite3 as _sqlite3
 

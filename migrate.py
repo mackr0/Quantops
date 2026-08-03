@@ -10,7 +10,6 @@ Usage:
 """
 
 import os
-import sys
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -45,7 +44,7 @@ def migrate():
             is_admin=True,
         )
         print(f"  Created admin user (id={user_id})")
-        print(f"  Default password: quantopsai2026  <-- CHANGE THIS after first login\n")
+        print("  Default password: quantopsai2026  <-- CHANGE THIS after first login\n")
 
     # Step 3: Store credentials from .env on the user record
     print("[3/3] Storing credentials from .env...")
@@ -74,9 +73,9 @@ def migrate():
     else:
         print("No trading profiles found. Create them via the web UI Settings page.")
 
-    print(f"\n=== Migration Complete ===")
+    print("\n=== Migration Complete ===")
     print(f"Admin login: {admin_email}")
-    print(f"Web UI: http://localhost:5000 (local) or http://<droplet-ip> (remote)")
+    print("Web UI: http://localhost:5000 (local) or http://<droplet-ip> (remote)")
 
 
 if __name__ == "__main__":

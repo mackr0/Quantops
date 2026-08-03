@@ -14,7 +14,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 NAME = "market_engine"

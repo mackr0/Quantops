@@ -171,7 +171,7 @@ def _resolve_via_alpaca(api, order_id: str) -> Optional[Dict[str, Any]]:
         return None
     try:
         order = api.get_order(order_id)
-    except Exception as exc:
+    except Exception:
         return None  # Order purged or API miss; FIFO can still rescue
     raw_symbol = (getattr(order, "symbol", "") or "").strip().upper()
     if not raw_symbol or not _is_occ_symbol(raw_symbol):

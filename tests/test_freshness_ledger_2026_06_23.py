@@ -72,7 +72,8 @@ def test_get_symbol_epoch_missing_table_is_stale(tmp_path):
 
 
 def test_ensure_symbol_fresh_skips_when_fresh(tmp_path):
-    import journal, cycle_epoch
+    import journal
+    import cycle_epoch
     import reconcile_journal_to_broker as R
     db = _fresh_db(tmp_path)
     ep = cycle_epoch.current()
@@ -84,7 +85,8 @@ def test_ensure_symbol_fresh_skips_when_fresh(tmp_path):
 
 
 def test_ensure_symbol_fresh_reconciles_when_stale(tmp_path):
-    import journal, cycle_epoch
+    import journal
+    import cycle_epoch
     import reconcile_journal_to_broker as R
     db = _fresh_db(tmp_path)
     with sqlite3.connect(db) as c:
@@ -130,7 +132,8 @@ def test_reconcile_and_stamp_refuses_to_stamp_on_broker_error(tmp_path):
     """CRITICAL (adversarial review): reconcile_with_ctx RETURNS {"error":...}
     on broker-unreachable (it never raises). reconcile_and_stamp must NOT stamp
     fresh and must raise ReconcileUnavailable so the door fails closed."""
-    import journal, cycle_epoch
+    import journal
+    import cycle_epoch
     import reconcile_journal_to_broker as R
     db = _db_with_open_aapl(tmp_path)
     cycle_epoch.bump()
@@ -158,7 +161,8 @@ def test_ensure_symbol_fresh_refuses_on_broker_error(tmp_path):
 def test_reconcile_and_stamp_skipped_profile_no_stamp_no_raise(tmp_path):
     """A 'skipped' profile (no broker account) reconciles nothing: don't stamp
     and don't raise — its journal is its only truth."""
-    import journal, cycle_epoch
+    import journal
+    import cycle_epoch
     import reconcile_journal_to_broker as R
     db = _db_with_open_aapl(tmp_path)
     cycle_epoch.bump()

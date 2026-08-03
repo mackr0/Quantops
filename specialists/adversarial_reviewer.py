@@ -108,8 +108,8 @@ def _pair_book_summary(ctx: Any) -> str:
         if p.half_life_days > 20:
             flag = "  [SLOW: half-life > 20d, capital tied up]"
         elif abs(p.hedge_ratio - 1.0) > 0.5:
-            flag = (f"  [HEDGE FAR FROM 1.0: residual beta likely "
-                    f"under dollar-neutral sizing]")
+            flag = ("  [HEDGE FAR FROM 1.0: residual beta likely "
+                    "under dollar-neutral sizing]")
         lines.append(
             f"  - {p.label}  hedge={p.hedge_ratio:.2f}  "
             f"hl={p.half_life_days:.1f}d{flag}"

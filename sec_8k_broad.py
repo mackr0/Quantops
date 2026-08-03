@@ -43,7 +43,7 @@ import logging
 import re
 import sqlite3
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -231,7 +231,6 @@ def scrape_recent_8k_filings(max_filings: int = 100) -> Dict[str, Any]:
 
     # Per-filing processing: parse company info from title, fetch
     # items from filing index, persist new rows.
-    from sec_filings import lookup_cik
     # Build reverse map (cik → ticker) once per run for the symbols
     # most likely to be in our universe.
     reverse_cik = _build_reverse_cik_map()

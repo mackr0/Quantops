@@ -105,7 +105,7 @@ class TestPennyStockStopRestored:
         check, not a blanket price heuristic."""
         src = (REPO / "portfolio_manager.py").read_text()
         assert "_is_real_stock_holding" in src
-        idx = src.find("suspected option\n            # leg")
+        src.find("suspected option\n            # leg")
         # the guard's condition must reference the journal check
         guard = src[src.find("sub-$2 \"suspected option leg\" guard"):
                     src.find("sub-$2 \"suspected option leg\" guard") + 1400]

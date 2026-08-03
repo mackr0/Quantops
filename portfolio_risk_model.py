@@ -69,7 +69,7 @@ import logging
 import os
 import time
 import zipfile
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +217,6 @@ def fetch_french_factors(lookback_days: int = DEFAULT_LOOKBACK_DAYS):
     Returns DataFrame with columns [Mkt-RF, SMB, HML, RMW, CMA, Mom],
     indexed by date, in DECIMAL form. None if fetch fails.
     """
-    import pandas as pd
 
     csv_5f = _fetch_zip_csv(KEN_FRENCH_5F_URL, "ff5_daily.csv")
     csv_mom = _fetch_zip_csv(KEN_FRENCH_MOM_URL, "mom_daily.csv")

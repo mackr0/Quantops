@@ -141,12 +141,12 @@ def test_cycle_id_links_predictions_to_their_cycle(profile_db):
             ("cyc-2", 12),
         )
         conn.commit()
-    p1 = record_prediction(
+    record_prediction(
         symbol="AAPL", predicted_signal="BUY", confidence=70,
         reasoning="", price_at_prediction=180.0, db_path=profile_db,
         cycle_id="cyc-2",
     )
-    p2 = record_prediction(
+    record_prediction(
         symbol="MSFT", predicted_signal="HOLD", confidence=0,
         reasoning="", price_at_prediction=400.0, db_path=profile_db,
         cycle_id="cyc-2",

@@ -49,7 +49,7 @@ def test_no_candidates_when_too_close_to_52w_high():
     # 270 bars, then a sharp drop in the last 10. But high is right
     # there — disaster signal too close to highs to be a real disaster.
     prices = [100] * 260 + [95, 100] + [80] + [78, 79, 78, 77, 78, 77, 76, 77]
-    volumes = [1_000_000] * 260 + [1_000_000, 1_000_000, 5_000_000] + [1_000_000] * 8
+    [1_000_000] * 260 + [1_000_000, 1_000_000, 5_000_000] + [1_000_000] * 8
     # Last close = 77, high = ~101 → distance ~24% — actually triggers.
     # To make it NOT trigger, keep last close at 95+
     prices = [100] * 268 + [95, 96]
@@ -94,7 +94,6 @@ def test_no_candidate_when_recovery_happened():
     """If the stock has already recovered above the catalyst-bar close,
     the disaster has resolved — don't short."""
     from strategies.earnings_disaster_short import find_candidates
-    n = 270
     prices = [100] * 250 + [95, 100, 105] + [88]  # gap-down at index -8
     # Then recovery — last close is 110, well above catalyst_close=88
     prices += [92, 95, 100, 105, 108, 110, 112]

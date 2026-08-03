@@ -262,7 +262,7 @@ def run_ensemble(
         # Floor enforcement — un-disable arbitrarily until at least
         # 2 specialists run. Logged so operators can see when this
         # protective fallback fired.
-        kept = [s.NAME for s in specialists]
+        [s.NAME for s in specialists]
         excess = (len(disabled) - (len(specialists) - 2))
         if excess > 0:
             for nm in list(disabled)[:excess]:

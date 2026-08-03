@@ -192,7 +192,7 @@ class TestApiCycleDataScopesDropsToCycle:
         # The view reads `quantopsai_profile_{id}.db`; symlink ours
         os.symlink(db, tmp_path / "quantopsai_profile_999.db")
 
-        with app.test_client() as client:
+        with app.test_client():
             with patch("flask_login.utils._get_user", return_value=None):
                 # Bypass auth via test config
                 with app.test_request_context():

@@ -56,9 +56,11 @@ class TestStaleFallback:
             cache_key: (time.time() - 7200, stale_symbols),  # 2 hrs old
         }
 
-        # Force yfinance to fail
+        # Force yfinance to fail — patched at yf_lock, the wrapper the
+        # screener actually calls (screener.yf never existed as a call
+        # site; the old target worked only via module aliasing).
         monkeypatch.setattr(
-            "screener.yf.download",
+            "yf_lock.yf.download",
             MagicMock(side_effect=RuntimeError("yfinance hammered")),
         )
 

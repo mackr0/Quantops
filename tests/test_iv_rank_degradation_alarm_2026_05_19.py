@@ -39,7 +39,6 @@ def _run_alarm_block(db_path, *, n_legs, n_fb, seg_label="TEST"):
     the same threshold, the same noise floor, and the same alert
     payload shape. If the prod block in multi_scheduler.py changes,
     this test breaks loudly."""
-    bg = {"n_options_legs": n_legs, "fallback_iv_count": n_fb}
     if n_legs >= 3 and n_fb / max(1, n_legs) >= 0.80:
         pct = round(100.0 * n_fb / n_legs, 1)
         msg = (

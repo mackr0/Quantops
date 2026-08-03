@@ -251,7 +251,6 @@ def replay_scenario(
                            reading underestimates)
     """
     import numpy as np
-    import pandas as pd
 
     if not weights or not exposures:
         return None
@@ -281,7 +280,7 @@ def replay_scenario(
     if fr.empty:
         return None
     daily_pnl_pct = fr.values @ portfolio_betas    # length n_days
-    daily_pnl_dollars = daily_pnl_pct * portfolio_value
+    daily_pnl_pct * portfolio_value
 
     cumulative = np.cumprod(1 + daily_pnl_pct) - 1
     # Baseline peak is 0 (start of window) — otherwise a monotone-down

@@ -62,7 +62,7 @@ import logging
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from tuning_categories import categorize as _categorize
 

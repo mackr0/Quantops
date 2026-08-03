@@ -167,7 +167,6 @@ def get_insider_form4(symbol):
     data. yfinance grandfathered fallback handles symbols not yet in
     the local DB (cold-start) or until the daily scrape catches up."""
     try:
-        import os
         from pathlib import Path
         # Try the prod-conventional path first, then a relative path
         # for dev environments.
@@ -255,7 +254,7 @@ def get_insider_activity(symbol):
         # Count buys and sells
         for _, row in txns.iterrows():
             text = str(row.get("Text", "")).lower()
-            shares = abs(float(row.get("Shares", 0) or 0))
+            abs(float(row.get("Shares", 0) or 0))
             value = abs(float(row.get("Value", 0) or 0))
 
             if "purchase" in text or "buy" in text:
@@ -488,7 +487,6 @@ def get_intraday_patterns(symbol):
         # /v2/stocks/<sym>/bars endpoint with timeframe=5Min. Real-time,
         # free with our paper-account keys.
         import requests
-        import config
         from datetime import datetime, timedelta, timezone
         import pandas as pd
 
@@ -976,7 +974,7 @@ def get_insider_cluster(symbol):
                         continue
 
                 name = str(row.get("Insider", row.get("Name", "unknown")))
-                shares = abs(float(row.get("Shares", 0) or 0))
+                abs(float(row.get("Shares", 0) or 0))
                 value = abs(float(row.get("Value", 0) or 0))
 
                 buy_dates.append(date_val)
@@ -1692,7 +1690,7 @@ def get_biotech_milestones(symbol: str) -> Dict[str, Any]:
     }
 
     if pdufa_rows:
-        from datetime import datetime, date as _date
+        from datetime import datetime
         pdufa_date = pdufa_rows[0]["pdufa_date"]
         result["upcoming_pdufa_date"] = pdufa_date
         result["drug_name"] = pdufa_rows[0]["drug_name"]

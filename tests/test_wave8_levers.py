@@ -152,7 +152,7 @@ class TestFastLaneRetirement:
         from self_tuning import _optimize_fast_lane_retirement, _get_conn
         conn = _get_conn(db)
         with patch("self_tuning._get_recent_adjustment", return_value=None):
-            msg = _optimize_fast_lane_retirement(
+            _optimize_fast_lane_retirement(
                 conn, ctx, 1, 1, overall_wr=40.0, resolved=5)
         conn.close()
         conn = sqlite3.connect(db)
@@ -213,7 +213,7 @@ class TestFastLaneRetirement:
         from self_tuning import _optimize_fast_lane_retirement, _get_conn
         conn = _get_conn(db)
         with patch("self_tuning._get_recent_adjustment", return_value=None):
-            msg = _optimize_fast_lane_retirement(
+            _optimize_fast_lane_retirement(
                 conn, ctx, 1, 1, overall_wr=50.0, resolved=10)
         conn.close()
         conn = sqlite3.connect(db)
@@ -242,7 +242,7 @@ class TestFastLaneRetirement:
         from self_tuning import _optimize_fast_lane_retirement, _get_conn
         conn = _get_conn(db)
         with patch("self_tuning._get_recent_adjustment", return_value=None):
-            msg = _optimize_fast_lane_retirement(
+            _optimize_fast_lane_retirement(
                 conn, ctx, 1, 1, overall_wr=50.0, resolved=10)
         conn.close()
         conn = sqlite3.connect(db)
@@ -560,7 +560,8 @@ class TestMetaPregateThreshold:
     def test_migration_lowers_existing_05_to_035(self, tmp_path, monkeypatch):
         """Migration flips profiles still at 0.5 → 0.35. Profiles
         the operator already tuned are preserved."""
-        import config, models
+        import config
+        import models
         db = str(tmp_path / "users.db")
         conn = sqlite3.connect(db)
         # Include market_type — other migrations in init_user_db

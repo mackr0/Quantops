@@ -148,11 +148,11 @@ def main(argv=None):
 
         print()
         print("=== Plan ===")
-        print(f"  INSERT SELL row:")
+        print("  INSERT SELL row:")
         print(f"    symbol={EXPECTED_SYMBOL}, qty={FILL_QTY}, "
               f"price=${FILL_PRICE:.2f}")
         print(f"    order_id={EXPECTED_TRAILING_ORDER_ID}")
-        print(f"    signal_type=reconcile_backfill, status=closed")
+        print("    signal_type=reconcile_backfill, status=closed")
         print(f"  UPDATE entry trade #{ENTRY_TRADE_ID}:")
         print(f"    status=closed, pnl=${realized_pnl:+.2f}")
         print()
