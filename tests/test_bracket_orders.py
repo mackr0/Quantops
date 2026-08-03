@@ -274,6 +274,12 @@ def test_cancel_for_symbol_clears_db(tmp_db):
     from bracket_orders import cancel_for_symbol
     _seed_open_buy(tmp_db, "AAPL", 100, 150.0, existing_stop_id="will-die")
     api = MagicMock()
+    # Mock-parity (2026-08-03): a bare MagicMock order floats to
+    # filled_qty=1.0 via __float__, which reads as PARTIAL-FILL
+    # evidence and (correctly) blocks the pointer clear. Real broker
+    # truth for this scenario: order canceled, nothing filled.
+    api.get_order.return_value = MagicMock(status="canceled",
+                                           filled_qty=0)
     cancel_for_symbol(api, tmp_db, "AAPL")
 
     api.cancel_order.assert_called_with("will-die")
@@ -409,6 +415,9 @@ def test_cancel_for_symbol_clears_both_stop_and_tp(tmp_db):
     conn.commit()
     conn.close()
     api = MagicMock()
+    # Mock-parity (2026-08-03): see test_cancel_for_symbol_clears_db.
+    api.get_order.return_value = MagicMock(status="canceled",
+                                           filled_qty=0)
 
     cancel_for_symbol(api, tmp_db, "AAPL")
 
@@ -560,6 +569,9 @@ def test_cancel_for_symbol_clears_all_three_protective_orders(tmp_db):
     conn.commit()
     conn.close()
     api = MagicMock()
+    # Mock-parity (2026-08-03): see test_cancel_for_symbol_clears_db.
+    api.get_order.return_value = MagicMock(status="canceled",
+                                           filled_qty=0)
 
     cancel_for_symbol(api, tmp_db, "AAPL")
 

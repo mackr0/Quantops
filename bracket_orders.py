@@ -1763,6 +1763,32 @@ def sync_pending_protective_order_ids(api, db_path: str) -> dict:
             # Canceled / expired / rejected — broker order is dead.
             # Mark the row canceled so it stops counting as pending.
             if status in ("canceled", "expired", "rejected"):
+                # 2026-08-03 — canceled ≠ unfilled. A protective
+                # canceled mid-trigger keeps its partial fills
+                # (status='canceled', filled_qty>0): stamping the row
+                # canceled on status alone DISCARDS those shares from
+                # the book — the exact write that turned p212 GOOGL's
+                # 5-share broker cover into +5 broker-vs-virtual drift
+                # and tripped the kill switch. Any fill evidence →
+                # leave the row for the reconciler's protective-fill
+                # booking (backfill_partial/full), same handoff as the
+                # fully-filled branch above.
+                try:
+                    _filled = float(
+                        getattr(order, "filled_qty", 0) or 0)
+                except (ValueError, TypeError):
+                    _filled = 0.0
+                if _filled > 0:
+                    stats["deferred_partial_fill"] = (
+                        stats.get("deferred_partial_fill", 0) + 1)
+                    logger.warning(
+                        "sync: %s pending #%d broker status=%s but "
+                        "filled_qty=%s — PARTIAL FILL evidence; row "
+                        "left for the reconciler to book (never "
+                        "stamped canceled on status alone)",
+                        symbol, pending_id, status, _filled,
+                    )
+                    continue
                 try:
                     conn.execute(
                         "UPDATE trades SET status = 'canceled', pnl = NULL, "
@@ -1857,15 +1883,20 @@ def cancel_for_symbol(api, db_path: str, symbol: str) -> bool:
             ).fetchall()
             for r in rows:
                 row_filled = False
+                row_unverified = False
                 for oid in (r["protective_stop_order_id"],
                             r["protective_tp_order_id"],
                             r["protective_trailing_order_id"]):
                     if not oid:
                         continue
                     status = ""
+                    filled = 0.0
                     try:
+                        _ord = api.get_order(oid)
                         status = (getattr(
-                            api.get_order(oid), "status", "") or "").lower()
+                            _ord, "status", "") or "").lower()
+                        filled = float(
+                            getattr(_ord, "filled_qty", 0) or 0)
                     except Exception as _st_exc:
                         logger.debug(
                             "protective %s status lookup failed "
@@ -1882,8 +1913,85 @@ def cancel_for_symbol(api, db_path: str, symbol: str) -> bool:
                             symbol, str(oid)[:8],
                         )
                         continue
+                    # 2026-08-03 — canceled ≠ unfilled, and a
+                    # TRIGGERING protective must not be raced. Three
+                    # new fill-evidence gates (the p212 GOOGL 5-of-14
+                    # incident: this cancel landed one second after
+                    # the trailing stop began filling; the 5 covered
+                    # shares vanished from the book and the rump exit
+                    # bounced off 'insufficient qty'):
+                    #   partially_filled → the stop is EXECUTING right
+                    #     now. Do not cancel into it; abort the exit
+                    #     and let the protective finish or the next
+                    #     cycle act on reconciled books.
+                    if status == "partially_filled":
+                        any_filled = True
+                        row_filled = True
+                        logger.warning(
+                            "cancel_for_symbol(%s): protective %s is "
+                            "PARTIALLY FILLED (%s) and still working "
+                            "— not canceling into an executing stop; "
+                            "caller must abort its exit.",
+                            symbol, str(oid)[:8], filled,
+                        )
+                        continue
+                    #   terminal-with-fill → the order died with real
+                    #     fills the journal hasn't booked. Keep the
+                    #     pointer (the reconciler's protective-fill
+                    #     booking needs it) and abort the exit until
+                    #     books are true.
+                    if (status in ("canceled", "cancelled", "expired",
+                                   "rejected", "done_for_day")
+                            and filled > 0):
+                        any_filled = True
+                        row_filled = True
+                        logger.warning(
+                            "cancel_for_symbol(%s): protective %s is "
+                            "%s with filled_qty=%s — unbooked partial "
+                            "fill; keeping pointer for the reconciler "
+                            "and aborting the exit.",
+                            symbol, str(oid)[:8], status, filled,
+                        )
+                        continue
                     cancel_protective_stop(api, oid)
-                if not row_filled:
+                    #   post-cancel read-back → the cancel may have
+                    #     raced a trigger; only a broker-confirmed
+                    #     terminal-UNFILLED state may clear pointers.
+                    try:
+                        _post = api.get_order(oid)
+                        _post_status = (getattr(
+                            _post, "status", "") or "").lower()
+                        _post_filled = float(
+                            getattr(_post, "filled_qty", 0) or 0)
+                    except Exception as _pc_exc:
+                        logger.warning(
+                            "cancel_for_symbol(%s): post-cancel "
+                            "read-back failed for %s (%s) — cancel "
+                            "UNCONFIRMED, keeping pointers.",
+                            symbol, str(oid)[:8], _pc_exc,
+                        )
+                        row_unverified = True
+                        continue
+                    if _post_filled > 0:
+                        any_filled = True
+                        row_filled = True
+                        logger.warning(
+                            "cancel_for_symbol(%s): cancel of %s "
+                            "raced its trigger — broker reports "
+                            "status=%s filled_qty=%s. Keeping pointer "
+                            "for the reconciler and aborting the "
+                            "exit.",
+                            symbol, str(oid)[:8], _post_status,
+                            _post_filled,
+                        )
+                    elif _post_status not in (
+                            "canceled", "cancelled", "expired",
+                            "rejected", "done_for_day"):
+                        # Cancel not yet effective (still 'new'/
+                        # 'pending_cancel') — unconfirmed; keep
+                        # pointers, next sweep re-evaluates.
+                        row_unverified = True
+                if not row_filled and not row_unverified:
                     conn.execute(
                         "UPDATE trades SET protective_stop_order_id = NULL, "
                         "protective_tp_order_id = NULL, "

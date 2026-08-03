@@ -851,6 +851,26 @@ def _process_exit_trigger(trigger_signal, api, ctx, db_path, positions,
                 # A sibling profile's order on the shared account —
                 # NEVER cancel it.
                 continue
+            # 2026-08-03 — canceled ≠ unfilled (p212 GOOGL 5-of-14):
+            # this exact cancel raced the trailing stop's trigger by
+            # one second; 5 shares had already covered at the broker,
+            # the cancel killed the remaining 9, and the exit below
+            # then bounced off 'insufficient qty' while the 5 filled
+            # shares were in no journal. Two gates:
+            #   (1) an order that is already PARTIALLY FILLED is
+            #       executing — don't cancel into it; defer the exit
+            #       to the next cycle (the fill machinery/reconciler
+            #       books what filled, then the exit re-fires against
+            #       true books).
+            if (getattr(oo, "status", "") or "").lower() \
+                    == "partially_filled":
+                logging.warning(
+                    "Exit deferred for %s: own order %s is partially "
+                    "filled and executing — not canceling into it; "
+                    "will re-evaluate next cycle on reconciled books.",
+                    symbol, oo.id,
+                )
+                return
             try:
                 api.cancel_order(oo.id)
                 logging.info(
@@ -862,6 +882,34 @@ def _process_exit_trigger(trigger_signal, api, ctx, db_path, positions,
                     "Failed to cancel own order %s for %s: %s",
                     oo.id, symbol, exc,
                 )
+                continue
+            #   (2) read back the canceled order: if the cancel raced
+            #       a trigger and fills exist, those shares are not in
+            #       the journal yet — submitting the exit now would
+            #       request more than the broker holds. Defer; the
+            #       reconciler books the fill this cycle.
+            try:
+                _post = api.get_order(oo.id)
+                _post_filled = float(
+                    getattr(_post, "filled_qty", 0) or 0)
+            except Exception as _pc_exc:
+                logging.warning(
+                    "Exit deferred for %s: post-cancel read-back of "
+                    "own order %s failed (%s) — cannot verify the "
+                    "cancel was fill-free; will retry next cycle.",
+                    symbol, oo.id, _pc_exc,
+                )
+                return
+            if _post_filled > 0:
+                logging.warning(
+                    "Exit deferred for %s: cancel of own order %s "
+                    "raced its execution — broker reports "
+                    "filled_qty=%s not yet journaled. The reconciler "
+                    "books it this cycle; exit re-fires on true "
+                    "books.",
+                    symbol, oo.id, _post_filled,
+                )
+                return
     except Exception as exc:
         logging.debug(
             "Failed to list open orders for %s during exit: %s",
@@ -880,9 +928,10 @@ def _process_exit_trigger(trigger_signal, api, ctx, db_path, positions,
         # profiles' shares (the BATL 5,145-share oversell).
         if cancel_for_symbol(api, db_path, symbol):
             logging.warning(
-                "[%s] Poll exit ABORTED for %s — protective already "
-                "filled at broker; position closed, confirmation "
-                "pending.",
+                "[%s] Poll exit ABORTED for %s — protective fill "
+                "evidence at the broker (full or partial, possibly "
+                "still executing); exit deferred until the journal "
+                "reconciles to those fills.",
                 getattr(ctx, "display_name", "?") or "?", symbol,
             )
             return

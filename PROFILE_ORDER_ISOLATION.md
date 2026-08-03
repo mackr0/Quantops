@@ -99,7 +99,8 @@ already profile-isolated (correct). **C** = maintenance script / audit
 | `order_guard.py` `allowable_sell_qty` / `allowable_cover_qty` | Uses the profile's **own virtual qty** from its journal as the authority; the aggregate broker pool is consulted only as a drift *sanity check*, never to downsize against siblings (2026-06-09 rewrite). |
 | `bracket_orders.py` `ensure_protective_stops` | Filters broker coverage to `own_protective_ids` (the entry rows' `protective_*_order_id`) before deciding placement/skip. |
 | `reconcile_journal_to_broker.py` `_is_bracket_child_fill` | Attributes by **exact parent→child order-id linkage**, no fuzzy match. |
-| `bracket_orders.py` `cancel_for_symbol` | Cancels only the `protective_*_order_id`s recorded on **this profile's** open journal rows (not an account-wide list). |
+| `bracket_orders.py` `cancel_for_symbol` | Cancels only the `protective_*_order_id`s recorded on **this profile's** open journal rows (not an account-wide list). Since 2026-08-03 it also refuses to cancel into a `partially_filled` protective and requires a broker-confirmed terminal-unfilled read-back before clearing pointers (canceled ≠ unfilled). |
+| `reconcile_journal_to_broker.py` `_detect_protective_fill` layer 3 (2026-08-03) | When pointer columns were NULLed by cancel bookkeeping, scans **this profile's own** `pending_protective`/`canceled`/`expired` rows by their journaled `order_id` and chain-walks those ids only — same own-id discipline as the pointer walk, no symbol/qty/time matching. |
 
 ### Group C — maintenance scripts / read-only audits (not per-cycle)
 

@@ -168,6 +168,9 @@ def test_cancel_for_symbol_reports_filled_protective(tmp_path):
     )
     live = MagicMock()
     live.status = "new"
+    # Mock-parity (2026-08-03): bare MagicMock floats to 1.0 —
+    # a phantom partial fill. This scenario is a resting UNFILLED stop.
+    live.filled_qty = 0
     api.get_order.return_value = live
     assert cancel_for_symbol(api, db, "BATL") is False
 

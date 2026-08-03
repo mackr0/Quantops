@@ -117,9 +117,14 @@ def test_msft_flap_pending_fill_exit_verified(db):
     _add(conn, T1, "MSFT", "sell", 13, "dd6bac91", "canceled")
     api = FakeApi({"9fbec087": FakeOrder("filled", 13, side="sell")})
     assert _explain(api, db, "MSFT") is True
-    # Only OUR OWN live exit id queried — never the canceled protective,
-    # never the entry (A3 own-order-id-only)
-    assert api.calls == ["9fbec087"]
+    # Only OUR OWN order ids are ever queried (A3) — the entry id is
+    # never fetched. 2026-08-03: the recent canceled protective IS now
+    # queried (canceled ≠ unfilled — its fills would be evidence); it
+    # is unknown at the broker here, so it contributes nothing and the
+    # explanation still holds on the live exit alone.
+    assert "9fbec087" in api.calls
+    assert "entry001" not in api.calls
+    assert set(api.calls) <= {"9fbec087", "dd6bac91"}
 
 
 def test_vz_trailing_stop_pending_protective_filled(db):
@@ -428,8 +433,12 @@ def test_orphan_close_branch_consults_the_check():
 
 def test_candidate_predicate_matches_gvp_dead_set():
     # The helper's dead set must stay the complement of gvp's exit-side
-    # exclusions (minus pending_protective, which the helper handles as
-    # the v_pp bucket). If gvp's exit-side dead set gains/loses a
+    # exclusions MINUS the evidence trio (pending_protective, canceled,
+    # expired), which the helper handles as the v_pp bucket — selected
+    # for their broker-verified fills but never credited in j_net.
+    # 2026-08-03 (canceled ≠ unfilled): 'canceled'/'expired' moved from
+    # hard-dead to the evidence trio; a canceled protective's partial
+    # fills are own-exit evidence. If gvp's exit-side dead set gains a
     # status without the helper following, credited-but-unverified
     # evidence returns (the round-2 auto_reconciled_phantom_close hole).
     helper_src = open(os.path.join(
@@ -437,13 +446,16 @@ def test_candidate_predicate_matches_gvp_dead_set():
         "reconcile_journal_to_broker.py")).read()
     helper_body = helper_src.split("def _own_exit_fills_explain")[1]
     helper_body = helper_body.split("\ndef ")[0]
-    assert ("NOT IN "
-            "    ('canceled', 'expired', 'rejected', 'done_for_day', "
-            "     'auto_reconciled_phantom_close', "
-            "     'auto_closed_external') "
-            .replace(" ", "") in helper_body.replace("\"", "")
-            .replace("\n", "").replace(" ", "")), (
-        "helper dead set changed — re-derive from gvp's exit-side list")
+    flat = (helper_body.replace("\"", "").replace("\n", "")
+            .replace(" ", ""))
+    assert ("NOTIN('rejected','done_for_day',"
+            "'auto_reconciled_phantom_close',"
+            "'auto_closed_external')" in flat), (
+        "helper hard-dead set changed — re-derive from gvp's "
+        "exit-side list minus the evidence trio")
+    assert "ifstatus_rin(pending_protective,canceled,expired):" in flat, (
+        "the evidence trio (pending_protective/canceled/expired → vpp "
+        "bucket, never credited) is no longer intact")
     gvp_src = open(os.path.join(os.path.dirname(__file__), os.pardir,
                                 "journal.py")).read()
     # BOTH query variants (primary + legacy-schema fallback) must

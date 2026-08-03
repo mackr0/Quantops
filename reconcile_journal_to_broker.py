@@ -172,6 +172,13 @@ def _to_utc_iso(value) -> Optional[datetime]:
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
     s = str(value)
+    # Offset-aware ISO strings ("...+00:00" / "...Z") — the strptime
+    # formats below can't parse an offset. 2026-08-03.
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        pass
     for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S",
                 "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
         try:
@@ -179,6 +186,26 @@ def _to_utc_iso(value) -> Optional[datetime]:
             return dt.replace(tzinfo=timezone.utc)
         except ValueError:
             continue
+    return None
+
+
+def _fill_evidence_ts(order) -> Optional[datetime]:
+    """Best broker-reported timestamp for a fill-evidence order.
+
+    `filled_at` is authoritative when present, but Alpaca may leave it
+    NULL on a canceled order that carries partial fills — fall back
+    through the other broker-reported stamps rather than either
+    fabricating a time or dropping real fill evidence. 2026-08-03."""
+    for attr in ("filled_at", "canceled_at", "updated_at",
+                 "submitted_at"):
+        v = getattr(order, attr, None)
+        if v is None:
+            continue
+        if hasattr(v, "isoformat") and isinstance(v, datetime):
+            return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+        dt = _to_utc_iso(v)
+        if dt is not None:
+            return dt
     return None
 
 
@@ -434,16 +461,30 @@ def _own_exit_fills_explain(api, conn, db_path, symbol: str,
             "AND COALESCE(status,'open') = 'open'" + occ_clause + dq_clause,
             (symbol,),
         ).fetchone()[0]
+        # 2026-08-03 — 'canceled'/'expired' exit rows are SELECTED
+        # (they used to be excluded wholesale): canceled ≠ unfilled at
+        # Alpaca, and a protective canceled mid-trigger with partial
+        # fills is real own-exit evidence. They join the vpp bucket
+        # below (never credited by gvp), so their broker-verified
+        # fills adjust the net exactly like pending_protective rows.
+        # Truly-unfilled canceled rows contribute filled_qty=0 — a
+        # no-op. 'rejected'/'done_for_day' stay dead: neither can
+        # carry fills.
         rows = conn.execute(
             "SELECT order_id, side, qty, "
             "COALESCE(status,'open') AS status "
             "FROM trades WHERE symbol = ? "
             f"AND side IN ({', '.join(exit_sides)}) "
             "AND COALESCE(status,'open') NOT IN "
-            "    ('canceled', 'expired', 'rejected', 'done_for_day', "
+            "    ('rejected', 'done_for_day', "
             "     'auto_reconciled_phantom_close', "
             "     'auto_closed_external') "
-            "AND (COALESCE(status,'open') != 'closed' "
+            # settled/evidence statuses are bounded to the current
+            # episode (>= oldest open entry): older canceled/expired
+            # rows can't explain a live phantom state, and walking
+            # their long-dead order ids is pure retry cost.
+            "AND (COALESCE(status,'open') NOT IN "
+            "     ('closed', 'canceled', 'expired') "
             "     OR datetime(timestamp) >= datetime(?))"
             + occ_clause + dq_clause,
             (symbol, oldest_open or ""),
@@ -459,7 +500,8 @@ def _own_exit_fills_explain(api, conn, db_path, symbol: str,
         for row in rows:
             side_r = (row["side"] or "").lower()
             status_r = row["status"]
-            if status_r == "pending_protective":
+            if status_r in ("pending_protective", "canceled",
+                            "expired"):
                 bucket = "vpp"      # not credited in j_net
             elif is_short and side_r == "buy":
                 if status_r == "closed":
@@ -477,11 +519,21 @@ def _own_exit_fills_explain(api, conn, db_path, symbol: str,
                     all_verified = False  # credited but unverifiable
                     break
                 continue  # id-less placeholder: no credit, no fill
-            agg = by_order.setdefault(oid, {"credited": 0.0, "vpp": False})
+            agg = by_order.setdefault(
+                oid, {"credited": 0.0, "vpp": False, "strict": False})
             if bucket == "credited":
                 agg["credited"] += float(row["qty"] or 0)
+                agg["strict"] = True
             else:
                 agg["vpp"] = True
+                # 2026-08-03 — canceled/expired rows are EVIDENCE-
+                # OPTIONAL: they aren't credited in j_net, so an
+                # unverifiable one (dead synthetic id, GC'd chain)
+                # simply contributes no fill — suppression only gets
+                # HARDER. pending_protective/closed rows keep the
+                # strict fail-closed treatment they always had.
+                if status_r not in ("canceled", "expired"):
+                    agg["strict"] = True
 
         v_pp = 0.0
         total_verified_fill = 0.0
@@ -492,6 +544,8 @@ def _own_exit_fills_explain(api, conn, db_path, symbol: str,
                 # follows replaced_by on OUR ids otherwise.
                 order, _depth = walk_replace_chain_forward(api, oid)
                 if order is None:
+                    if not agg["strict"]:
+                        continue  # evidence-only row: no fill counted
                     all_verified = False  # unverifiable → halt
                     break
                 o_side = (getattr(order, "side", "") or "").lower()
@@ -500,7 +554,10 @@ def _own_exit_fills_explain(api, conn, db_path, symbol: str,
                     # order (e.g. a synthesized row carrying an entry
                     # id) — never fill-evidence for a close. A
                     # side-less order object is unverifiable, not a
-                    # pass (fail-CLOSED).
+                    # pass (fail-CLOSED). Evidence-only rows (canceled/
+                    # expired, never credited) just contribute nothing.
+                    if not agg["strict"]:
+                        continue
                     all_verified = False
                     break
                 filled = float(getattr(order, "filled_qty", 0) or 0)
@@ -883,7 +940,7 @@ def _is_bracket_child_fill(api, conn, action, fill_oid) -> bool:
         return False
 
 
-def _detect_protective_fill(api, row, used_sell_ids):
+def _detect_protective_fill(api, row, used_sell_ids, conn=None):
     """For any open BUY/SHORT, check whether its OWN protective order
     fired at the broker — independent of the symbol's broker_qty.
 
@@ -955,7 +1012,18 @@ def _detect_protective_fill(api, row, used_sell_ids):
         if (_depth > 0 and terminal_oid
                 and terminal_oid != stop_oid):
             used_sell_ids.add(terminal_oid)
-        if getattr(order, "status", "") != "filled":
+        # 2026-08-03 — canceled ≠ unfilled. Alpaca's status describes
+        # the ORDER, not the fills: a protective canceled mid-trigger
+        # keeps its partial fills (status='canceled', filled_qty>0 —
+        # the p212 GOOGL 5-of-14 trailing-stop cover that the whole
+        # detection layer used to skip). Fill evidence comes from any
+        # TERMINAL order; the filled_qty<=0 guard below drops the
+        # truly-unfilled ones. Active statuses (new, partially_filled,
+        # …) stay excluded: a working order's fills may still grow, and
+        # booking them now would strand the later increments.
+        if (getattr(order, "status", "") or "").lower() not in (
+                "filled", "canceled", "cancelled", "expired",
+                "rejected", "done_for_day"):
             continue
         # Side check: longs exit via 'sell', shorts cover via 'buy'
         side = (row["side"] or "").lower()
@@ -986,11 +1054,7 @@ def _detect_protective_fill(api, row, used_sell_ids):
             continue
         if fill_price <= 0:
             continue
-        filled_at = getattr(order, "filled_at", None)
-        if hasattr(filled_at, "isoformat"):
-            fa_dt = filled_at if filled_at.tzinfo else filled_at.replace(tzinfo=timezone.utc)
-        else:
-            fa_dt = _to_utc_iso(filled_at)
+        fa_dt = _fill_evidence_ts(order)
         detail = {
             "order_id": stop_oid,
             "filled_at": fa_dt,
@@ -1005,6 +1069,84 @@ def _detect_protective_fill(api, row, used_sell_ids):
             return "backfill_partial", detail
         # filled_qty > journal_qty shouldn't happen for a single
         # profile's protective order — fall through and skip.
+    #
+    # Layer 3 (2026-08-03) — OWN protective ROWS by order_id. The
+    # pointer columns above are NULLed by the exit path's cancel
+    # bookkeeping (cancel_for_symbol clears them the moment it cancels
+    # a protective), so a protective that partially filled BEFORE its
+    # cancel landed leaves no pointer to walk — but its
+    # pending_protective/canceled journal row still carries the
+    # order_id THIS profile submitted. Scan those rows and treat their
+    # broker-verified terminal fills exactly like pointer-column
+    # evidence. Still OWN-order_id-only: every id here was journaled
+    # by this profile at placement time, so A3 isolation is intact.
+    if conn is not None:
+        side = (row["side"] or "").lower()
+        expected_exit_side = "buy" if side == "short" else "sell"
+        row_sides = ("'buy'", "'cover'") if side == "short" else \
+            ("'sell'",)
+        try:
+            _l3_cols = {c[1] for c in conn.execute(
+                "PRAGMA table_info(trades)").fetchall()}
+            _l3_occ = " AND occ_symbol IS NULL" \
+                if "occ_symbol" in _l3_cols else ""
+            _l3_dq = " AND data_quality IS NULL" \
+                if "data_quality" in _l3_cols else ""
+            candidates = conn.execute(
+                "SELECT order_id FROM trades "
+                "WHERE symbol = ? "
+                f"AND side IN ({', '.join(row_sides)}) "
+                "AND COALESCE(status,'') IN "
+                "    ('pending_protective', 'canceled', 'expired') "
+                "AND order_id IS NOT NULL AND order_id != '' "
+                "AND datetime(timestamp) >= datetime(?)"
+                + _l3_occ + _l3_dq,
+                (row["symbol"], row["timestamp"] or ""),
+            ).fetchall()
+        except sqlite3.Error as _l3_exc:
+            logger.warning(
+                "_detect_protective_fill layer-3 scan failed for "
+                "%s: %s", row["symbol"], _l3_exc,
+            )
+            candidates = []
+        for cand in candidates:
+            oid = cand["order_id"]
+            if not oid or oid in used_sell_ids:
+                continue
+            order, _depth = _walk_replace_chain_forward(api, oid)
+            if order is None:
+                continue
+            terminal_oid = getattr(order, "id", None)
+            if (_depth > 0 and terminal_oid
+                    and terminal_oid != oid):
+                used_sell_ids.add(terminal_oid)
+            if (getattr(order, "status", "") or "").lower() not in (
+                    "filled", "canceled", "cancelled", "expired",
+                    "rejected", "done_for_day"):
+                continue
+            if getattr(order, "side", "") != expected_exit_side:
+                continue
+            try:
+                filled_qty = float(
+                    getattr(order, "filled_qty", 0) or 0)
+                fill_price = float(
+                    getattr(order, "filled_avg_price", 0) or 0)
+            except (ValueError, TypeError, AttributeError):
+                continue
+            if filled_qty <= 0 or fill_price <= 0:
+                continue
+            fa_dt = _fill_evidence_ts(order)
+            detail = {
+                "order_id": oid,
+                "filled_at": fa_dt,
+                "filled_qty": filled_qty,
+                "filled_avg_price": fill_price,
+                "order_type": getattr(order, "order_type", "?"),
+            }
+            if abs(filled_qty - journal_qty) < 0.5:
+                return "backfill_full", detail
+            if filled_qty < journal_qty:
+                return "backfill_partial", detail
     #
     # A3 PROFILE ISOLATION (2026-06-16) — the fuzzy symbol/qty/time
     # fallback (`_find_matching_exit_fill`) is DELETED. On a SHARED
@@ -1052,6 +1194,10 @@ def _select_open_rows(conn) -> List[sqlite3.Row]:
         "protective_stop_order_id", "protective_tp_order_id",
         "protective_trailing_order_id",
         "occ_symbol", "option_strategy",
+        # 2026-08-03 — the partial-cover heal computes pnl from the
+        # entry's EXECUTED price; without this column the bucket falls
+        # back to the decision price.
+        "fill_price",
     ) if c in cols]
     all_cols = base_cols + extra_cols
     # Phase 5e (2026-05-12) — EXCLUDE rows tagged with a
@@ -1804,7 +1950,7 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
             # 1399 GT from siblings → reconcile said "real_held" and missed
             # the exit.) This is the multi-profile-correct backfill path.
             prot_kind, prot_detail = _detect_protective_fill(
-                api, r, used_sell_ids,
+                api, r, used_sell_ids, conn=conn,
             )
             # 2026-06-11 — LIVE own-journal check (same race as the
             # phantom path below): an exit journaled mid-pass is
@@ -1816,9 +1962,17 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
             # (pending_protective) keep flowing through the
             # established pending-UPDATE path below.
             if prot_kind in ("backfill_full", "backfill_partial"):
+                # 2026-08-03 — 'canceled'/'expired' rows joined the
+                # placeholder set: a protective row mislabeled canceled
+                # while its order partially FILLED (the sync sweep's
+                # old status-only stamp) is exactly what the pending-
+                # UPDATE path below must heal. Only a LIVE journaled
+                # exit (open/closed/pending_fill) means "already
+                # booked, skip".
                 _fresh_exit = conn.execute(
                     "SELECT 1 FROM trades WHERE order_id = ? AND "
-                    "COALESCE(status, '') != 'pending_protective' "
+                    "COALESCE(status, '') NOT IN "
+                    "    ('pending_protective', 'canceled', 'expired') "
                     "LIMIT 1",
                     (prot_detail["order_id"],),
                 ).fetchone()
@@ -1852,7 +2006,9 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
                         "cover_order_id": prot_detail["order_id"],
                         "cover_price": prot_detail["filled_avg_price"],
                         "cover_qty": prot_detail["filled_qty"],
-                        "cover_filled_at": prot_detail["filled_at"].isoformat(),
+                        "cover_filled_at": (
+                            prot_detail["filled_at"].isoformat()
+                            if prot_detail["filled_at"] else None),
                         "cover_order_type": prot_detail["order_type"],
                         "source": "protective",
                     })
@@ -1863,7 +2019,9 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
                         "sell_order_id": prot_detail["order_id"],
                         "sell_price": prot_detail["filled_avg_price"],
                         "sell_qty": prot_detail["filled_qty"],
-                        "sell_filled_at": prot_detail["filled_at"].isoformat(),
+                        "sell_filled_at": (
+                            prot_detail["filled_at"].isoformat()
+                            if prot_detail["filled_at"] else None),
                         "sell_order_type": prot_detail["order_type"],
                         "source": "protective",
                     })
@@ -1873,11 +2031,21 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
                 actions["backfill_partial_sell"].append({
                     "trade_id": r["id"], "symbol": sym,
                     "journal_qty": qty, "broker_qty": broker_qty,
+                    # 2026-08-03 — the apply path needs the entry's
+                    # direction (a partial COVER row must be written
+                    # side='cover' or gvp treats it as a long lot and
+                    # drops it) and the executed entry price for pnl.
+                    "entry_side": side,
+                    "entry_fill_price": float(
+                        (r["fill_price"] if "fill_price" in r.keys()
+                         else 0) or r["price"] or 0),
                     "buy_price": float(r["price"] or 0),
                     "sell_order_id": prot_detail["order_id"],
                     "sell_price": prot_detail["filled_avg_price"],
                     "sell_qty": prot_detail["filled_qty"],
-                    "sell_filled_at": prot_detail["filled_at"].isoformat(),
+                    "sell_filled_at": (
+                        prot_detail["filled_at"].isoformat()
+                        if prot_detail["filled_at"] else None),
                     "sell_order_type": prot_detail["order_type"],
                     "source": "protective",
                 })
@@ -2169,9 +2337,17 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
                                 or a.get("cover_order_id"))
                     if not fill_oid:
                         continue
+                    # 2026-08-03 — 'canceled'/'expired' rows are
+                    # eligible for the flip too: a protective row that
+                    # a status-only sweep mislabeled canceled while its
+                    # broker order partially FILLED is the same
+                    # placeholder, and flipping it to closed-with-fill-
+                    # data IS the repair (p212 GOOGL 5-of-14).
                     pending_row = conn.execute(
                         "SELECT id, qty FROM trades "
-                        "WHERE order_id = ? AND status = 'pending_protective' "
+                        "WHERE order_id = ? AND status IN "
+                        "    ('pending_protective', 'canceled', "
+                        "     'expired') "
                         "LIMIT 1",
                         (fill_oid,),
                     ).fetchone()
@@ -2271,19 +2447,64 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
                             f" | reconciler: partial fill "
                             f"{filled_qty}/{a.get('journal_qty')}"
                         )
-                    conn.execute(
-                        "UPDATE trades "
-                        "SET status='closed', price=?, fill_price=?, "
-                        "    qty=?, "
-                        "    reason=COALESCE(reason || ' | ', '') || ? "
-                        "WHERE id=?",
-                        (
-                            fill_price, fill_price, filled_qty,
-                            f"reconciler: protective fill confirmed "
-                            f"@ ${fill_price:.2f}{note}",
-                            pending_row[0],
-                        ),
-                    )
+                    if kind == "partial":
+                        # 2026-08-03 — a PARTIAL flip leaves the entry
+                        # open, so this row must actually net in the
+                        # FIFO: shorts' protectives are journaled
+                        # side='buy', which gvp treats as a LONG lot
+                        # and drops unconsumed — the healed cover would
+                        # never reduce the short. Write the true exit
+                        # side ('cover'/'sell') and the realized pnl
+                        # from the entry's executed price (both broker-
+                        # verified; pnl stays NULL if the entry price
+                        # is unknown rather than fabricating one).
+                        new_side = ("cover"
+                                    if a.get("entry_side") == "short"
+                                    else "sell")
+                        entry_px = float(
+                            a.get("entry_fill_price")
+                            or a.get("buy_price") or 0)
+                        if entry_px > 0:
+                            if new_side == "cover":
+                                new_pnl = round(
+                                    (entry_px - fill_price)
+                                    * filled_qty, 2)
+                            else:
+                                new_pnl = round(
+                                    (fill_price - entry_px)
+                                    * filled_qty, 2)
+                        else:
+                            new_pnl = None
+                        conn.execute(
+                            "UPDATE trades "
+                            "SET status='closed', side=?, price=?, "
+                            "    fill_price=?, qty=?, pnl=?, "
+                            "    reason=COALESCE(reason || ' | ', '') "
+                            "        || ? "
+                            "WHERE id=?",
+                            (
+                                new_side, fill_price, fill_price,
+                                filled_qty, new_pnl,
+                                f"reconciler: protective fill "
+                                f"confirmed @ ${fill_price:.2f}{note}",
+                                pending_row[0],
+                            ),
+                        )
+                    else:
+                        conn.execute(
+                            "UPDATE trades "
+                            "SET status='closed', price=?, "
+                            "    fill_price=?, qty=?, "
+                            "    reason=COALESCE(reason || ' | ', '') "
+                            "        || ? "
+                            "WHERE id=?",
+                            (
+                                fill_price, fill_price, filled_qty,
+                                f"reconciler: protective fill "
+                                f"confirmed @ ${fill_price:.2f}{note}",
+                                pending_row[0],
+                            ),
+                        )
                     # Mark the entry-side BUY/SHORT closed too —
                     # the protective fully exited the position.
                     if kind != "partial":

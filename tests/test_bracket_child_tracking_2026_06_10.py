@@ -232,7 +232,10 @@ def test_sweep_bracket_branch_heals():
 
 def test_reconciler_exempts_bracket_children_before_halt():
     src = (REPO / "reconcile_journal_to_broker.py").read_text()
-    pending_idx = src.index("status = 'pending_protective'")
+    # 2026-08-03: the pending-row lookup now also matches mislabeled
+    # 'canceled'/'expired' rows (canceled ≠ unfilled heal) — anchor on
+    # the lookup's WHERE clause rather than the old exact-status match.
+    pending_idx = src.index("WHERE order_id = ? AND status IN ")
     orphan_idx = src.index("still_orphan_protective.append")
     check_idx = src.index("_is_bracket_child_fill(", pending_idx)
     assert check_idx < orphan_idx, (
@@ -248,7 +251,8 @@ def test_reconciler_exemption_performs_the_synthesis():
     drifts long while the broker is flat. Caught live: WCT entry
     still 'open' after the first exempted pass."""
     src = (REPO / "reconcile_journal_to_broker.py").read_text()
-    pending_idx = src.index("status = 'pending_protective'")
+    # 2026-08-03: same anchor update as the test above.
+    pending_idx = src.index("WHERE order_id = ? AND status IN ")
     check_idx = src.index("_is_bracket_child_fill(", pending_idx)
     orphan_idx = src.index("still_orphan_protective.append", check_idx)
     branch = src[check_idx:orphan_idx]
