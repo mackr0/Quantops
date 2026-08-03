@@ -170,3 +170,72 @@ class TestPageWiring:
         m = sm.collect_fleet_metrics(
             sorted(glob.glob("/opt/quantopsai/quantopsai_profile_*.db"))[:1])
         assert m["verdict_min_decisions"] == sm.MIN_DECISIONS_FOR_VERDICT
+
+
+class TestEvidenceFunnelRendered:
+    """2026-08-03 — the operator saw '27,649 calls · 19,926 graded' in
+    the header and 'Not enough evidence' in the verdict column and
+    reasonably asked whether the evidence was being ignored. The card
+    now renders the LIVE per-arm funnel (calls → graded → disagreements
+    → deduplicated positions → moot vetoes → scored) plus an explicit
+    checklist of the two verdict requirements, so the gap between
+    inventory and proof is visible on the page itself."""
+
+    def _render(self, edge_n, edge_p, moot=330):
+        import jinja2
+        tpl_dir = os.path.join(os.path.dirname(__file__), os.pardir,
+                               "templates")
+        env = jinja2.Environment(
+            loader=jinja2.FileSystemLoader(tpl_dir), autoescape=True)
+        src = open(os.path.join(tpl_dir, "shadow.html")).read()
+        # Render the content block standalone (base.html carries app
+        # context we don't need for a card-copy test).
+        body = src.split("{% block content %}", 1)[1]
+        body = body.rsplit("{% endblock %}", 1)[0]
+        arm = {
+            "calls": 13685, "graded": 9897, "disagree": 1240,
+            "dis_units": 185, "moot": moot, "edge_n": edge_n,
+            "edge_p": edge_p, "edge_p_sign": None,
+            "edge_per_decision": 0.012, "edge_points": 0.9,
+            "edge_wins": 36, "edge_losses": 35, "edge_ties": 7,
+            "verdict": "insufficient", "verdict_leader": None,
+            "verdict_line": "Not enough evidence — test line",
+            "cost": 1.23,
+            "errors": 0, "quota": 0, "throttled": 0,
+            "latency_ms": 0, "latency_n": 0, "agree": 8000,
+            "dis_resolved": 100, "shadow_right": 1, "primary_right": 1,
+            "shadow_only": 1, "primary_only": 1, "both_right": 1,
+            "neither_right": 1, "ungradable": 0, "dis_pending": 0,
+        }
+        m = {
+            "overview": {"calls": 13685, "graded": 9897, "cost": 1.23,
+                         "profiles": 1, "since_days": 30},
+            "per_model": {"test:arm": arm},
+            "by_purpose": {}, "by_primary_action": {},
+            "daily": {}, "recent_disagreements": [],
+            "verdict_min_decisions": 30,
+        }
+        return env.from_string(body).render(m=m)
+
+    def test_funnel_numbers_and_moot_rendered(self):
+        html = self._render(edge_n=78, edge_p=0.99)
+        assert "Evidence funnel" in html
+        assert "13,685" in html and "9,897" in html
+        assert "185 distinct positions" in html
+        assert "330" in html and "never traded" in html
+        assert "78 scored against real" in html
+
+    def test_unmet_p_requirement_shows_cross(self):
+        html = self._render(edge_n=78, edge_p=0.99)
+        # n met (78 >= 30), p unmet
+        assert "&#10003;" in html or "✓" in html
+        assert "needs &lt; 0.05" in html or "needs < 0.05" in html
+
+    def test_unmet_n_requirement_shows_progress(self):
+        html = self._render(edge_n=12, edge_p=None)
+        assert "have 12" in html
+        assert "no scored edge yet" in html
+
+    def test_both_met_shows_double_check(self):
+        html = self._render(edge_n=78, edge_p=0.01)
+        assert html.count("✓") == 2 or html.count("&#10003;") == 2

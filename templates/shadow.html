@@ -80,6 +80,39 @@
         <tr>
             <td colspan="8" class="muted" style="font-size:0.85em;padding-top:0;">{{ v.verdict_line }}</td>
         </tr>
+        <tr>
+            <td colspan="8" class="muted" style="font-size:0.8em;padding-top:0;">
+                <strong>Evidence funnel (live):</strong>
+                {{ "{:,}".format(v.calls) }} calls &rarr;
+                {{ "{:,}".format(v.graded) }} graded for agreement
+                (agreement can't pick a winner) &rarr;
+                {{ "{:,}".format(v.disagree) }} disagreements,
+                {{ "{:,}".format(v.dis_units) }} distinct positions after
+                de-duplication
+                {%- if v.moot %}; {{ "{:,}".format(v.moot) }} were vetoes on
+                candidates never traded &mdash; no real outcome to score
+                {%- endif %} &rarr;
+                <strong>{{ "{:,}".format(v.edge_n) }} scored against real
+                trade outcomes.</strong>
+                Verdict requires:
+                {% if v.edge_n >= m.verdict_min_decisions -%}
+                    <span class="pnl-pos">&#10003;</span>
+                {%- else -%}
+                    <span class="pnl-neg">&#10007;</span>
+                {%- endif %} {{ m.verdict_min_decisions }}+ scored
+                (have {{ v.edge_n }}) &middot;
+                {% if v.edge_p is not none and v.edge_p < 0.05 -%}
+                    <span class="pnl-pos">&#10003;</span> edge beyond chance
+                    (p={{ v.edge_p }})
+                {%- elif v.edge_p is not none -%}
+                    <span class="pnl-neg">&#10007;</span> edge beyond chance
+                    (p={{ v.edge_p }}, needs &lt; 0.05)
+                {%- else -%}
+                    <span class="pnl-neg">&#10007;</span> edge beyond chance
+                    (no scored edge yet)
+                {%- endif %}
+            </td>
+        </tr>
         {% endfor %}
         </tbody>
     </table>
