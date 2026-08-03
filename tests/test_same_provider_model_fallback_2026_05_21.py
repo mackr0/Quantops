@@ -397,6 +397,13 @@ class TestEndToEndSameProviderFallback:
         conn.commit()
         conn.close()
         monkeypatch.chdir(tmp_path)
+        # 2026-08-03 — the resolver stopped honoring a bare relative
+        # CWD path on 2026-07-24 (resolve_master_db_path is the single
+        # CWD-robust policy now), so chdir alone no longer points it at
+        # this fixture DB; pin the canonical resolver to it.
+        import market_data
+        monkeypatch.setattr(market_data, "resolve_master_db_path",
+                            lambda: str(db_path))
         return db_path
 
     def test_lite_503_routes_to_flash_same_provider(

@@ -44,8 +44,21 @@ class TestPregateStampsScores:
             return probs.get(features.get("symbol"), 0.5)
 
         import meta_model as mm
-        with patch.object(mm, "load_meta_bundle",
-                          return_value=object(), create=True), \
+        # 2026-08-03 — patch the REAL pregate API: the pipeline calls
+        # model_path_for_profile → load_model → predict_probability.
+        # (The old patch targeted a nonexistent `load_meta_bundle`
+        # with create=True, so the real load_model ran, found no
+        # model, fell open, and nothing was ever stamped.) The bundle
+        # must be a dict: the pregate reads .get("metrics") for the
+        # AUC floor and the per-direction sample counts; give both
+        # directions enough samples that no candidate is bypassed
+        # before scoring.
+        bundle = {"metrics": {"auc": 0.9,
+                              "n_train_long": 100,
+                              "n_train_short": 100}}
+        with patch.object(mm, "model_path_for_profile",
+                          return_value="/nonexistent/meta.pkl"), \
+             patch.object(mm, "load_model", return_value=bundle), \
              patch.object(mm, "predict_probability",
                           side_effect=fake_predict):
             out = _meta_pregate_candidates(cands, ctx)
