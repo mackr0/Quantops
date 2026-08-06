@@ -458,6 +458,12 @@ def test_every_raw_post_caller_journals_atomically():
     raw_post_markers = (
         "_log_strategy_legs(",
         "_rollback_multileg_broker_orders(",
+        # A0 journaling helper for rolled-back legs — writes the
+        # open/close rows itself, so it IS the atomic-journal marker
+        # for the sequential leg-submit site (2026-08-05: the
+        # journal-open-before-reversal fix moved it inside the scan
+        # window ahead of _log_strategy_legs).
+        "_journal_rolled_back_leg(",
         "_AtomicPlacementBreach",
         "log_trade(",
         "option_atomic_breach",

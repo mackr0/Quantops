@@ -1129,6 +1129,23 @@ def execute_multileg_strategy(
             # by sell_to_close; a sell_to_open by buy_to_close.
             rollback_results = []
             for sub in submitted:
+                # A0 (2026-08-05) — journal the OPEN first,
+                # UNCONDITIONALLY. The open order is live (often
+                # already filled) at the broker no matter what happens
+                # to the reversal below — and the failure that killed
+                # leg N usually kills the reversal too (the same 429
+                # rate-limit storm). Journaling the open only after a
+                # successful reversal submit is how p213's NEE $91 call
+                # (5 filled @ $0.97, order 64df7a8a) vanished from
+                # every book on 2026-08-04: leg 1 died on 429, the
+                # reversal died on 429, the except skipped journaling,
+                # and the broker held $485 of calls no journal knew
+                # about (broker_orphan + cash-parity drift on /issues).
+                if log:
+                    _journal_rolled_back_leg(
+                        db_path, sub["leg"], sub.get("order_id"),
+                        None, "leg-failure rollback (open leg)",
+                    )
                 try:
                     rev_side = "sell" if sub["leg"].side == "buy" else "buy"
                     rev = _submit_alpaca_order_raw(api, {
@@ -1143,11 +1160,12 @@ def execute_multileg_strategy(
                         "leg_index": sub["leg_index"],
                         "rollback_order_id": getattr(rev, "id", None),
                     })
-                    # A0 — journal both the open and rollback-close so
-                    # neither async fill orphans (leg-failure rollback).
+                    # A0 — journal the rollback-close as well so its
+                    # async fill can't orphan (the open row is already
+                    # written above).
                     if log:
                         _journal_rolled_back_leg(
-                            db_path, sub["leg"], sub.get("order_id"),
+                            db_path, sub["leg"], None,
                             getattr(rev, "id", None), "leg-failure rollback",
                         )
                 except Exception as rb_exc:
@@ -1155,6 +1173,39 @@ def execute_multileg_strategy(
                         "leg_index": sub["leg_index"],
                         "rollback_error": str(rb_exc),
                     })
+                    # The open leg could not be reversed — the broker
+                    # may hold a live one-sided position. The book IS
+                    # truthful (open row journaled above; update_fills
+                    # confirms by order_id) so the exit machinery can
+                    # manage it, but the operator must know a spread
+                    # degraded into a naked leg.
+                    logger.error(
+                        "Multileg rollback reversal FAILED for %s "
+                        "(open order %s journaled): %s: %s — position "
+                        "rides as a single leg until closed.",
+                        sub["leg"].occ_symbol, sub.get("order_id"),
+                        type(rb_exc).__name__, rb_exc,
+                    )
+                    try:
+                        from halt_helpers import _write_audit_alert
+                        _write_audit_alert(
+                            db_path, "multileg_rollback_reversal_failed",
+                            "critical",
+                            f"{sub['leg'].occ_symbol}: spread leg could "
+                            "not be reversed after a failed multileg "
+                            "open",
+                            (f"The {sub['leg'].side} leg (order "
+                             f"{sub.get('order_id')}) is live at the "
+                             f"broker but its rollback close could not "
+                             f"be submitted ({rb_exc}). The open IS "
+                             "journaled, so the books stay true and "
+                             "the exit machinery can manage the "
+                             "position — review whether to close it."),
+                        )
+                    except Exception:
+                        logger.exception(
+                            "multileg rollback: audit alert write "
+                            "failed")
             result.update({
                 "action": "ERROR",
                 "leg_order_ids": [s["order_id"] for s in submitted],
@@ -2007,7 +2058,7 @@ def _rollback_multileg_broker_orders(
     api,
     combo_order_id: Optional[str],
     leg_order_ids: Optional[List[str]],
-) -> None:
+) -> Dict[str, float]:
     """Cancel every broker order produced by a multileg submission so
     a partial / total journal-write failure can't leave the broker
     holding positions that no profile's virtual book reflects (the
@@ -2018,13 +2069,23 @@ def _rollback_multileg_broker_orders(
     one gets cancelled. Some IDs may be None (failed leg before its
     own submit completed); skip those.
 
+    2026-08-05 — canceled ≠ unfilled applies here too: a cancel of an
+    already-FILLED (or partially filled) order undoes NOTHING — the
+    fills are real positions. Every candidate order is read back after
+    its cancel and any fills are returned as {order_id: filled_qty} so
+    the caller can keep those journal rows alive instead of voiding
+    them (`_mark_legs_canceled` refuses to cancel-flag a row whose
+    order filled). Treating "already filled" as rollback success is
+    exactly how fills used to vanish from the books.
+
     Caller responsibility: invoke this on ANY exception inside the
     journal-write block. Re-raises the first cancel exception so the
     caller knows the rollback was incomplete and can halt the
-    profile.
+    profile (fills read back before that raise are still surfaced by
+    a CRITICAL log).
     """
     if api is None:
-        return
+        return {}
     candidates: List[str] = []
     if combo_order_id:
         candidates.append(str(combo_order_id))
@@ -2032,6 +2093,7 @@ def _rollback_multileg_broker_orders(
         if oid and str(oid) not in candidates:
             candidates.append(str(oid))
     first_exc: Optional[Exception] = None
+    filled_orders: Dict[str, float] = {}
     for oid in candidates:
         try:
             api.cancel_order(oid)
@@ -2039,8 +2101,8 @@ def _rollback_multileg_broker_orders(
                 "Multileg rollback: cancelled broker order %s", oid,
             )
         except Exception as exc:
-            # Treat "already terminal" cancels as success — the
-            # broker order is in the desired non-active state.
+            # An "already terminal" cancel is not an error — but it is
+            # NOT proof of undo either; the read-back below decides.
             msg = str(exc).lower()
             if (
                 "already" in msg and (
@@ -2052,26 +2114,62 @@ def _rollback_multileg_broker_orders(
                     "Multileg rollback: order %s already terminal: %s",
                     oid, exc,
                 )
-                continue
+            else:
+                logger.error(
+                    "Multileg rollback: cancel %s FAILED: %s: %s",
+                    oid, type(exc).__name__, exc,
+                )
+                if first_exc is None:
+                    first_exc = exc
+        # Read back the order regardless of how the cancel went: any
+        # fills survive the cancel and are real positions.
+        try:
+            _post = api.get_order(oid)
+            _fq = float(getattr(_post, "filled_qty", 0) or 0)
+            if _fq > 0:
+                filled_orders[oid] = _fq
+                logger.error(
+                    "Multileg rollback: order %s has filled_qty=%s "
+                    "(status=%s) — cancel did NOT undo these fills; "
+                    "their journal rows must stay alive.",
+                    oid, _fq, getattr(_post, "status", "?"),
+                )
+            # Combo parents carry per-leg fills too.
+            for _leg in (getattr(_post, "legs", None) or []):
+                _lq = float(getattr(_leg, "filled_qty", 0) or 0)
+                _lid = getattr(_leg, "id", None)
+                if _lq > 0 and _lid:
+                    filled_orders[str(_lid)] = _lq
+        except Exception as _rb_exc:
             logger.error(
-                "Multileg rollback: cancel %s FAILED: %s: %s",
-                oid, type(exc).__name__, exc,
+                "Multileg rollback: post-cancel read-back of %s "
+                "failed (%s) — treating as possibly-filled; journal "
+                "rows for it will be kept.",
+                oid, _rb_exc,
             )
-            if first_exc is None:
-                first_exc = exc
+            filled_orders[oid] = -1.0  # unknown: keep rows, fail-closed
     if first_exc is not None:
         raise first_exc
+    return filled_orders
 
 
 def _mark_legs_canceled(
     db_path: Optional[str],
     journal_row_ids: List[int],
+    filled_order_ids: Optional[Dict[str, float]] = None,
 ) -> None:
     """Flip status='canceled' on every journal row this same call
     successfully wrote before a later leg's log_trade raised. The
     FIFO position book filters on `status != 'canceled'`, so these
     rows stop affecting any virtual book derivation; the rows
     themselves survive for audit traceability.
+
+    2026-08-05 — canceled ≠ unfilled: rows whose broker order FILLED
+    (per the rollback's post-cancel read-back, passed as
+    `filled_order_ids`) are REAL positions and are never cancel-
+    flagged — voiding them is how fills used to vanish from the books
+    while staying at the broker. Those rows stay live; the caller's
+    halt puts the operator in front of them.
 
     Best-effort: the caller has already initiated broker rollback +
     profile halt before invoking this, so a DB failure here is logged
@@ -2082,13 +2180,33 @@ def _mark_legs_canceled(
         return
     from contextlib import closing
     import sqlite3
+    filled = filled_order_ids or {}
     with closing(sqlite3.connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
         placeholders = ",".join("?" * len(journal_row_ids))
-        conn.execute(
-            f"UPDATE trades SET status='canceled', pnl=NULL "
+        rows = conn.execute(
+            f"SELECT id, order_id, occ_symbol FROM trades "
             f"WHERE id IN ({placeholders})",
             list(journal_row_ids),
-        )
+        ).fetchall()
+        to_cancel = []
+        for r in rows:
+            if r["order_id"] and str(r["order_id"]) in filled:
+                logger.error(
+                    "_mark_legs_canceled: row #%d (%s, order %s) has "
+                    "BROKER FILLS — left alive, not cancel-flagged "
+                    "(canceled ≠ unfilled).",
+                    r["id"], r["occ_symbol"], r["order_id"],
+                )
+                continue
+            to_cancel.append(r["id"])
+        if to_cancel:
+            ph = ",".join("?" * len(to_cancel))
+            conn.execute(
+                f"UPDATE trades SET status='canceled', pnl=NULL "
+                f"WHERE id IN ({ph})",
+                to_cancel,
+            )
         conn.commit()
 
 
@@ -2282,8 +2400,9 @@ def _log_strategy_legs(strategy: OptionStrategy,
                 i, strategy.name, leg.occ_symbol, combo_order_id,
                 type(exc).__name__, exc,
             )
+            _rb_fills = {}
             try:
-                _rollback_multileg_broker_orders(
+                _rb_fills = _rollback_multileg_broker_orders(
                     api, combo_order_id, leg_order_ids,
                 )
             except Exception as cancel_exc:
@@ -2299,7 +2418,8 @@ def _log_strategy_legs(strategy: OptionStrategy,
             # same call as canceled so the virtual book treats the
             # whole strategy as never having existed.
             try:
-                _mark_legs_canceled(db_path, journaled_leg_ids)
+                _mark_legs_canceled(db_path, journaled_leg_ids,
+                                    filled_order_ids=_rb_fills)
             except Exception as mark_exc:
                 logger.error(
                     "Marking journaled legs %s canceled FAILED: "
