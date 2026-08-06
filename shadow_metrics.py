@@ -287,9 +287,22 @@ def _parse_ts(ts: Any) -> Optional[float]:
 
 
 class _ResolvedIndex:
-    """symbol → sorted [(epoch, return_pct, predicted_signal)] of
-    resolved predictions for one profile DB; nearest-within-window
-    lookup.
+    """symbol → sorted [(epoch, resolved, return_pct, predicted_signal)]
+    of ALL predictions for one profile DB; nearest-within-window lookup
+    that grades a shadow row against ITS OWN decision only.
+
+    2026-08-03 — the index previously held only RESOLVED predictions,
+    so a review whose own same-cycle prediction was still pending got
+    matched to the nearest resolved NEIGHBOR — a different cycle's
+    decision. Caught live on p210 GOOGL: the 15:38 review's own
+    prediction (SHORT, pending) sat at the same minute, but the
+    matcher graded the disagreement "moot" against a resolved HOLD
+    from a different cycle 27 minutes away — and the same mechanism
+    could just as easily SCORE a row against a neighboring decision's
+    P&L. Now the nearest prediction of ANY status is the match (that
+    is the decision the review actually gated); if it is pending, the
+    disagreement is PENDING — never silently reassigned to a
+    neighbor.
 
     `predicted_signal` rides along because it says whether a trade was
     actually TAKEN ('BUY'/'SHORT') or passed on ('HOLD') — without it a
@@ -300,10 +313,9 @@ class _ResolvedIndex:
         self._by_symbol: Dict[str, List[tuple]] = defaultdict(list)
         try:
             rows = conn.execute(
-                "SELECT symbol, timestamp, actual_return_pct, "
+                "SELECT symbol, timestamp, status, actual_return_pct, "
                 "       predicted_signal "
-                "FROM ai_predictions WHERE status = 'resolved' "
-                "AND actual_return_pct IS NOT NULL"
+                "FROM ai_predictions"
             ).fetchall()
         except sqlite3.OperationalError as exc:
             # `predicted_signal` missing (older schema) must NOT wipe out
@@ -312,34 +324,40 @@ class _ResolvedIndex:
             # purposes still grade on price; gate purposes become moot
             # because no trade direction is knowable.
             logger.warning(
-                "shadow metrics: resolved-prediction query failed (%s: %s) "
+                "shadow metrics: prediction query failed (%s: %s) "
                 "— retrying without predicted_signal; gate specialists "
                 "will read as moot until the column exists",
                 type(exc).__name__, exc,
             )
             try:
                 rows = [
-                    (s, t, r, None) for s, t, r in conn.execute(
-                        "SELECT symbol, timestamp, actual_return_pct "
-                        "FROM ai_predictions WHERE status = 'resolved' "
-                        "AND actual_return_pct IS NOT NULL"
+                    (s, t, st, r, None) for s, t, st, r in conn.execute(
+                        "SELECT symbol, timestamp, status, "
+                        "actual_return_pct FROM ai_predictions"
                     ).fetchall()
                 ]
             except sqlite3.OperationalError:
                 rows = []
-        for sym, ts, ret, psig in rows:
+        for sym, ts, status, ret, psig in rows:
             e = _parse_ts(ts)
-            if e is not None and sym:
-                self._by_symbol[str(sym).upper()].append(
-                    (e, float(ret), psig))
+            if e is None or not sym:
+                continue
+            is_resolved = (str(status or "").lower() == "resolved"
+                           and ret is not None)
+            self._by_symbol[str(sym).upper()].append(
+                (e, is_resolved,
+                 float(ret) if ret is not None else None, psig))
         for lst in self._by_symbol.values():
             lst.sort(key=lambda r: r[0])
 
     def outcome_for(self, symbol: str,
                     epoch: Optional[float]) -> Optional[tuple]:
-        """Nearest resolved prediction as `(return_pct,
-        predicted_signal)`, or None when nothing lands inside the
-        match window."""
+        """Outcome of the review's OWN decision: the nearest prediction
+        of ANY status inside the match window. Returns `(return_pct,
+        predicted_signal)` when that row is resolved, or None when the
+        row is still pending / nothing lands inside the window. On an
+        exact-distance tie the resolved row wins (never discard an
+        available grade to a same-second pending twin)."""
         if not symbol or epoch is None:
             return None
         lst = self._by_symbol.get(symbol.upper())
@@ -347,13 +365,23 @@ class _ResolvedIndex:
             return None
         i = bisect_left(lst, (epoch,))
         best = None
-        for j in (i - 1, i):
+        # i+1 included: same-epoch twins (dual-class dedupe writes two
+        # rows in one second) both sort at/after the bisect point, so a
+        # two-neighbor scan can miss the resolved twin.
+        for j in (i - 1, i, i + 1):
             if 0 <= j < len(lst):
                 d = abs(lst[j][0] - epoch)
-                if d <= _MATCH_WINDOW_SEC and (
-                        best is None or d < best[0]):
-                    best = (d, lst[j][1], lst[j][2])
-        return (best[1], best[2]) if best else None
+                if d > _MATCH_WINDOW_SEC:
+                    continue
+                cand = (d, not lst[j][1], lst[j])
+                if best is None or cand[:2] < best[:2]:
+                    best = cand
+        if best is None:
+            return None
+        _e, resolved, ret, psig = best[2]
+        if not resolved:
+            return None  # own decision not resolved yet → pending
+        return (ret, psig)
 
 
 def _classify_error(err: Optional[str]) -> Optional[str]:

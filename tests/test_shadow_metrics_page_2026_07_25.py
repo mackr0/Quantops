@@ -84,11 +84,18 @@ def _mk_profile(tmp_path, name, shadow_rows, predictions=()):
             " model, parsed_signal, agreement, error, cost_usd,"
             " latency_ms, primary_parsed) VALUES (?,?,?,?,?,?,?,?,?,?)",
             r)
-    for sym, ts, ret in predictions:
+    for p in predictions:
+        # 3-tuple (sym, ts, ret) = legacy resolved row; 5-tuple adds
+        # explicit (status, predicted_signal) for own-decision tests.
+        if len(p) == 3:
+            sym, ts, ret = p
+            status, psig = "resolved", None
+        else:
+            sym, ts, ret, status, psig = p
         conn.execute(
             "INSERT INTO ai_predictions (symbol, timestamp, status,"
-            " actual_return_pct) VALUES (?, ?, 'resolved', ?)",
-            (sym, ts, ret))
+            " actual_return_pct, predicted_signal) VALUES (?,?,?,?,?)",
+            (sym, ts, status, ret, psig))
     conn.commit()
     conn.close()
     return db
@@ -197,3 +204,75 @@ class TestRouteWiring:
                        "By primary action", "Recent disagreements",
                        "Shadow won", "Units", "Daily agreement trend"):
             assert needle in tpl, f"template lost section: {needle}"
+
+
+class TestOwnDecisionMatching:
+    """2026-08-03 — a review must be graded against ITS OWN decision,
+    never a neighboring cycle's. Caught live on p210 GOOGL: the 15:38
+    review's own prediction (SHORT) was still pending, so the resolved-
+    only index matched a resolved HOLD from a different cycle 27 min
+    away and filed the disagreement 'moot (no trade taken)'. The same
+    mechanism could score a row against a neighbor's P&L outright."""
+
+    PP_VETO = '{"symbol": "GOOGL", "verdict": "VETO"}'
+
+    def _rows(self):
+        return [(NOW, "ensemble:adversarial_reviewer", "anthropic",
+                 "haiku", "ALLOW", 0, None, 0.001, 900, self.PP_VETO)]
+
+    def test_pending_own_decision_stays_pending_not_moot(self, tmp_path):
+        """Own same-minute prediction pending, resolved HOLD neighbor
+        9 min later — the neighbor must NOT hijack the match."""
+        db = _mk_profile(
+            tmp_path, "401", shadow_rows=self._rows(),
+            predictions=[
+                ("GOOGL", "2026-07-25 14:00:00", None, "pending", "SHORT"),
+                ("GOOGL", "2026-07-25 14:09:00", 3.3, "resolved", "HOLD"),
+            ])
+        v = collect_fleet_metrics([db])["per_model"]["anthropic:haiku"]
+        assert v["dis_pending"] == 1, (
+            "own decision unresolved → the disagreement is PENDING")
+        assert v["moot"] == 0, (
+            "a neighboring cycle's resolved HOLD must never file this "
+            "review as moot")
+        assert v["dis_resolved"] == 0
+
+    def test_resolved_own_decision_scores_not_the_neighbor(self, tmp_path):
+        """Own same-minute prediction resolved as a TRADED short with
+        -5% return; resolved HOLD neighbor nearby. Must score against
+        the own traded decision (not moot)."""
+        db = _mk_profile(
+            tmp_path, "402", shadow_rows=self._rows(),
+            predictions=[
+                ("GOOGL", "2026-07-25 14:00:00", -5.0, "resolved", "SHORT"),
+                ("GOOGL", "2026-07-25 14:09:00", 3.3, "resolved", "HOLD"),
+            ])
+        v = collect_fleet_metrics([db])["per_model"]["anthropic:haiku"]
+        assert v["dis_resolved"] == 1
+        assert v["moot"] == 0, "own decision WAS traded — not moot"
+        assert v["edge_n"] == 1, "must be scored against the own trade"
+
+    def test_jitter_match_still_works_without_same_cycle_row(self, tmp_path):
+        """No own-minute row at all: the nearest prediction within the
+        window IS the review's decision (write jitter) — unchanged."""
+        db = _mk_profile(
+            tmp_path, "403", shadow_rows=self._rows(),
+            predictions=[
+                ("GOOGL", "2026-07-25 13:58:30", -5.0, "resolved", "SHORT"),
+            ])
+        v = collect_fleet_metrics([db])["per_model"]["anthropic:haiku"]
+        assert v["dis_resolved"] == 1
+        assert v["edge_n"] == 1
+
+    def test_exact_tie_prefers_the_resolved_twin(self, tmp_path):
+        """Two same-second rows (dual-class dedupe shape): grade from
+        the resolved one rather than pending forever."""
+        db = _mk_profile(
+            tmp_path, "404", shadow_rows=self._rows(),
+            predictions=[
+                ("GOOGL", "2026-07-25 14:00:00", None, "pending", "SHORT"),
+                ("GOOGL", "2026-07-25 14:00:00", -5.0, "resolved", "SHORT"),
+            ])
+        v = collect_fleet_metrics([db])["per_model"]["anthropic:haiku"]
+        assert v["dis_resolved"] == 1
+        assert v["edge_n"] == 1
