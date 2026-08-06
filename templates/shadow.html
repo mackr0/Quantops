@@ -94,6 +94,17 @@
                 {%- endif %} &rarr;
                 <strong>{{ "{:,}".format(v.edge_n) }} scored against real
                 trade outcomes.</strong>
+                {%- if v.match_exact or v.match_window %}
+                Outcomes matched
+                {%- if v.match_exact %} {{ v.match_exact }} by decision
+                id (exact)
+                {%- endif %}
+                {%- if v.match_exact and v.match_window %} &middot;
+                {%- endif %}
+                {%- if v.match_window %} {{ v.match_window }} by time
+                proximity (rows from before decision ids existed)
+                {%- endif %}.
+                {%- endif %}
                 Verdict requires:
                 {% if v.edge_n >= m.verdict_min_decisions -%}
                     <span class="pnl-pos">&#10003;</span>

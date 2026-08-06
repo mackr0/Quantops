@@ -71,31 +71,39 @@ def _mk_profile(tmp_path, name, shadow_rows, predictions=()):
             id INTEGER PRIMARY KEY, timestamp TEXT, purpose TEXT,
             provider TEXT, model TEXT, parsed_signal TEXT,
             agreement INTEGER, error TEXT, cost_usd REAL,
-            latency_ms INTEGER, primary_parsed TEXT
+            latency_ms INTEGER, primary_parsed TEXT, decision_id TEXT
         )""")
     conn.execute("""
         CREATE TABLE ai_predictions (
             id INTEGER PRIMARY KEY, symbol TEXT, timestamp TEXT,
-            status TEXT, actual_return_pct REAL, predicted_signal TEXT
+            status TEXT, actual_return_pct REAL, predicted_signal TEXT,
+            decision_id TEXT
         )""")
     for r in shadow_rows:
+        # 10-tuple = legacy row (decision_id NULL); 11-tuple carries it.
+        r = tuple(r) + (None,) if len(r) == 10 else tuple(r)
         conn.execute(
             "INSERT INTO ai_shadow_calls (timestamp, purpose, provider,"
             " model, parsed_signal, agreement, error, cost_usd,"
-            " latency_ms, primary_parsed) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            " latency_ms, primary_parsed, decision_id)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             r)
     for p in predictions:
         # 3-tuple (sym, ts, ret) = legacy resolved row; 5-tuple adds
-        # explicit (status, predicted_signal) for own-decision tests.
+        # explicit (status, predicted_signal); 6-tuple adds decision_id.
+        did = None
         if len(p) == 3:
             sym, ts, ret = p
             status, psig = "resolved", None
-        else:
+        elif len(p) == 5:
             sym, ts, ret, status, psig = p
+        else:
+            sym, ts, ret, status, psig, did = p
         conn.execute(
             "INSERT INTO ai_predictions (symbol, timestamp, status,"
-            " actual_return_pct, predicted_signal) VALUES (?,?,?,?,?)",
-            (sym, ts, status, ret, psig))
+            " actual_return_pct, predicted_signal, decision_id)"
+            " VALUES (?,?,?,?,?,?)",
+            (sym, ts, status, ret, psig, did))
     conn.commit()
     conn.close()
     return db
@@ -276,3 +284,110 @@ class TestOwnDecisionMatching:
         v = collect_fleet_metrics([db])["per_model"]["anthropic:haiku"]
         assert v["dis_resolved"] == 1
         assert v["edge_n"] == 1
+
+
+class TestExactDecisionMatching:
+    """2026-08-06 — operator directive: matching by time proximity 'is
+    hoping we get lucky'. Every specialist call now carries the
+    candidate's decision_id, the prediction row stores the same id,
+    and the scorer joins on it as an IDENTITY. Time-window matching
+    survives only for rows that predate the plumbing, counted
+    separately on the page."""
+
+    PP_VETO = '{"symbol": "GOOGL", "verdict": "VETO"}'
+
+    def _row(self, decision_id):
+        return [(NOW, "ensemble:adversarial_reviewer", "anthropic",
+                 "haiku", "ALLOW", 0, None, 0.001, 900, self.PP_VETO,
+                 decision_id)]
+
+    def test_exact_join_beats_a_nearer_neighbor(self, tmp_path):
+        """The review's own decision (by id) is 25 min away and TRADED;
+        an unrelated resolved HOLD sits at the same minute. The id must
+        win — scored, not moot."""
+        db = _mk_profile(
+            tmp_path, "501", shadow_rows=self._row("dec-1"),
+            predictions=[
+                ("GOOGL", "2026-07-25 14:00:10", 3.3, "resolved",
+                 "HOLD", None),                       # nearer, unrelated
+                ("GOOGL", "2026-07-25 14:25:00", -5.0, "resolved",
+                 "SHORT", "dec-1"),                    # its own decision
+            ])
+        v = collect_fleet_metrics([db])["per_model"]["anthropic:haiku"]
+        assert v["dis_resolved"] == 1
+        assert v["moot"] == 0, (
+            "the identity join must beat the nearer unrelated HOLD")
+        assert v["edge_n"] == 1
+        assert v["match_exact"] == 1 and v["match_window"] == 0
+
+    def test_exact_pending_never_falls_back_to_a_neighbor(self, tmp_path):
+        db = _mk_profile(
+            tmp_path, "502", shadow_rows=self._row("dec-2"),
+            predictions=[
+                ("GOOGL", "2026-07-25 14:00:10", 3.3, "resolved",
+                 "HOLD", None),
+                ("GOOGL", "2026-07-25 14:00:00", None, "pending",
+                 "SHORT", "dec-2"),
+            ])
+        v = collect_fleet_metrics([db])["per_model"]["anthropic:haiku"]
+        assert v["dis_pending"] == 1 and v["dis_resolved"] == 0
+
+    def test_legacy_row_without_id_uses_window_and_is_counted(self, tmp_path):
+        db = _mk_profile(
+            tmp_path, "503", shadow_rows=self._row(None),
+            predictions=[
+                ("GOOGL", "2026-07-25 14:00:10", -5.0, "resolved",
+                 "SHORT", None),
+            ])
+        v = collect_fleet_metrics([db])["per_model"]["anthropic:haiku"]
+        assert v["dis_resolved"] == 1
+        assert v["match_window"] == 1 and v["match_exact"] == 0
+
+    def test_id_on_row_but_no_prediction_falls_back(self, tmp_path):
+        """Prediction write failed/raced: the shadow row carries an id
+        nothing else has — fall back to the window rather than lose
+        the evidence."""
+        db = _mk_profile(
+            tmp_path, "504", shadow_rows=self._row("dec-orphan"),
+            predictions=[
+                ("GOOGL", "2026-07-25 14:00:10", -5.0, "resolved",
+                 "SHORT", None),
+            ])
+        v = collect_fleet_metrics([db])["per_model"]["anthropic:haiku"]
+        assert v["dis_resolved"] == 1
+        assert v["match_window"] == 1
+
+
+REPO_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), ".."))
+
+
+class TestDecisionIdPlumbing:
+    """Structural: the id must ride every hop — ensemble mint →
+    call_ai → dispatch_shadow_calls → row write → record_prediction."""
+
+    def test_ensemble_mints_and_threads(self):
+        src = open(os.path.join(REPO_DIR, "ensemble.py")).read()
+        assert '_c["_decision_id"] = _uuid.uuid4().hex' in src
+        assert src.count("decision_id=_chunk_decision_id") == 2, (
+            "both the tool-use and plain-prompt specialist calls must "
+            "carry the chunk's decision id")
+
+    def test_call_ai_threads_to_dispatch(self):
+        src = open(os.path.join(REPO_DIR, "ai_providers.py")).read()
+        i = src.index("dispatch_shadow_calls(")
+        assert "decision_id=decision_id" in src[i:i + 500]
+
+    def test_record_prediction_persists_it(self):
+        src = open(os.path.join(REPO_DIR, "ai_tracker.py")).read()
+        assert "rule_votes_json, decision_id)" in src, (
+            "ai_predictions INSERT lost the decision_id column")
+        src2 = open(os.path.join(REPO_DIR, "trade_pipeline.py")).read()
+        assert 'decision_id=c.get("_decision_id")' in src2
+
+    def test_migration_registry_covers_both_tables(self):
+        src = open(os.path.join(REPO_DIR, "journal.py")).read()
+        i = src.index('"ai_predictions": [')
+        assert '("decision_id", "TEXT")' in src[i:i + 400]
+        j = src.index('"ai_shadow_calls": [')
+        assert '("decision_id", "TEXT")' in src[j:j + 200]

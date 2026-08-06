@@ -311,42 +311,62 @@ class _ResolvedIndex:
 
     def __init__(self, conn: sqlite3.Connection):
         self._by_symbol: Dict[str, List[tuple]] = defaultdict(list)
+        # decision_id → (is_resolved, return_pct, predicted_signal):
+        # the EXACT join (2026-08-06). Populated when the column
+        # exists; empty on pre-migration DBs.
+        self._by_decision: Dict[str, tuple] = {}
         try:
             rows = conn.execute(
                 "SELECT symbol, timestamp, status, actual_return_pct, "
-                "       predicted_signal "
+                "       predicted_signal, decision_id "
                 "FROM ai_predictions"
             ).fetchall()
-        except sqlite3.OperationalError as exc:
-            # `predicted_signal` missing (older schema) must NOT wipe out
-            # every outcome — that would silently empty the page rather
-            # than degrade it. Retry without the column: forecast
-            # purposes still grade on price; gate purposes become moot
-            # because no trade direction is knowable.
-            logger.warning(
-                "shadow metrics: prediction query failed (%s: %s) "
-                "— retrying without predicted_signal; gate specialists "
-                "will read as moot until the column exists",
-                type(exc).__name__, exc,
-            )
+        except sqlite3.OperationalError:
             try:
                 rows = [
-                    (s, t, st, r, None) for s, t, st, r in conn.execute(
+                    (s, t, st, r, p, None) for s, t, st, r, p in
+                    conn.execute(
                         "SELECT symbol, timestamp, status, "
-                        "actual_return_pct FROM ai_predictions"
+                        "actual_return_pct, predicted_signal "
+                        "FROM ai_predictions"
                     ).fetchall()
                 ]
-            except sqlite3.OperationalError:
-                rows = []
-        for sym, ts, status, ret, psig in rows:
+            except sqlite3.OperationalError as exc:
+                # `predicted_signal` missing (older schema) must NOT
+                # wipe out every outcome — that would silently empty
+                # the page rather than degrade it. Retry without the
+                # column: forecast purposes still grade on price; gate
+                # purposes become moot because no trade direction is
+                # knowable.
+                logger.warning(
+                    "shadow metrics: prediction query failed (%s: %s) "
+                    "— retrying without predicted_signal; gate "
+                    "specialists will read as moot until the column "
+                    "exists",
+                    type(exc).__name__, exc,
+                )
+                try:
+                    rows = [
+                        (s, t, st, r, None, None) for s, t, st, r in
+                        conn.execute(
+                            "SELECT symbol, timestamp, status, "
+                            "actual_return_pct FROM ai_predictions"
+                        ).fetchall()
+                    ]
+                except sqlite3.OperationalError:
+                    rows = []
+        for sym, ts, status, ret, psig, did in rows:
             e = _parse_ts(ts)
             if e is None or not sym:
                 continue
             is_resolved = (str(status or "").lower() == "resolved"
                            and ret is not None)
-            self._by_symbol[str(sym).upper()].append(
-                (e, is_resolved,
-                 float(ret) if ret is not None else None, psig))
+            entry = (e, is_resolved,
+                     float(ret) if ret is not None else None, psig)
+            self._by_symbol[str(sym).upper()].append(entry)
+            if did:
+                self._by_decision[str(did)] = (
+                    is_resolved, entry[2], psig)
         for lst in self._by_symbol.values():
             lst.sort(key=lambda r: r[0])
 
@@ -382,6 +402,29 @@ class _ResolvedIndex:
         if not resolved:
             return None  # own decision not resolved yet → pending
         return (ret, psig)
+
+    def match_for(self, symbol: str, epoch: Optional[float],
+                  decision_id: Optional[str]) -> tuple:
+        """Preferred lookup (2026-08-06): `(outcome, predicted_signal,
+        method)` where method is 'exact' (joined by decision_id — an
+        identity, zero ambiguity), 'window' (nearest-in-time fallback
+        for rows predating the id plumbing), or None (no match at
+        all). outcome is None when the matched decision is still
+        pending."""
+        if decision_id:
+            hit = self._by_decision.get(str(decision_id))
+            if hit is not None:
+                is_resolved, ret, psig = hit
+                if not is_resolved:
+                    return (None, None, "exact")  # pending, exactly
+                return (ret, psig, "exact")
+            # id present on the shadow row but no prediction carries
+            # it (prediction write raced/failed) — fall back rather
+            # than lose the row.
+        m = self.outcome_for(symbol, epoch)
+        if m is None:
+            return (None, None, None)
+        return (m[0], m[1], "window")
 
 
 def _classify_error(err: Optional[str]) -> Optional[str]:
@@ -419,6 +462,13 @@ def _model_bucket() -> Dict[str, Any]:
         # never opened, so neither side can be right or wrong about it.
         "moot": 0,
         "dis_pending": 0,
+        # 2026-08-06 — how each RESOLVED disagreement found its
+        # outcome: 'exact' = joined by decision_id (an identity),
+        # 'window' = nearest-in-time fallback (rows predating the
+        # decision-id plumbing). Rendered on /shadow so the operator
+        # can watch inference-matched evidence age out.
+        "match_exact": 0,
+        "match_window": 0,
         # Distinct (profile, symbol) pairs behind the resolved
         # disagreements — the EFFECTIVE sample size. The same name is
         # re-reviewed every cycle and resolves against one price move,
@@ -534,13 +584,28 @@ def collect_fleet_metrics(profile_dbs: List[str],
                 rows = conn.execute(
                     "SELECT timestamp, purpose, provider, model, "
                     " parsed_signal, agreement, error, cost_usd, "
-                    " latency_ms, primary_parsed "
+                    " latency_ms, primary_parsed, decision_id "
                     "FROM ai_shadow_calls WHERE timestamp >= ? "
                     "ORDER BY id",
                     (cutoff,),
                 ).fetchall()
             except sqlite3.OperationalError:
-                continue
+                # decision_id may be missing on a pre-migration DB —
+                # degrade to the legacy shape (window matching only)
+                # rather than dropping the profile from the page.
+                try:
+                    rows = [
+                        tuple(r) + (None,) for r in conn.execute(
+                            "SELECT timestamp, purpose, provider, "
+                            " model, parsed_signal, agreement, error, "
+                            " cost_usd, latency_ms, primary_parsed "
+                            "FROM ai_shadow_calls "
+                            "WHERE timestamp >= ? ORDER BY id",
+                            (cutoff,),
+                        ).fetchall()
+                    ]
+                except sqlite3.OperationalError:
+                    continue
             if not rows:
                 continue
             overview["profiles"] += 1
@@ -551,7 +616,7 @@ def collect_fleet_metrics(profile_dbs: List[str],
         prof_label = db.replace("quantopsai_profile_", "p").replace(
             ".db", "")
         for (ts, purpose, provider, model, parsed_signal, agreement,
-             err, cost, latency, primary_parsed) in rows:
+             err, cost, latency, primary_parsed, row_decision_id) in rows:
             mkey = f"{provider}:{model}"
             m = per_model[mkey]
             m["calls"] += 1
@@ -599,10 +664,8 @@ def collect_fleet_metrics(profile_dbs: List[str],
             m["disagree"] += 1
             pk["disagree"] += 1
             ak["disagree"] += 1
-            match = resolved.outcome_for(
-                symbol, _parse_ts(ts)) if symbol else None
-            outcome = match[0] if match else None
-            predicted_signal = match[1] if match else None
+            outcome, predicted_signal, match_method = resolved.match_for(
+                symbol, _parse_ts(ts), row_decision_id)
             s_st = stance(parsed_signal)
             dis_row = {
                 "ts": str(ts)[:16], "profile": prof_label,
@@ -622,6 +685,10 @@ def collect_fleet_metrics(profile_dbs: List[str],
                 for b in (m, pk, ak):
                     b["dis_resolved"] += 1
                     b["_unit_keys"].add((prof_label, (symbol or "").upper()))
+                    if match_method == "exact":
+                        b["match_exact"] += 1
+                    elif match_method == "window":
+                        b["match_window"] += 1
                 is_gate = (purpose or "") in _GATE_PURPOSES
                 moot = False
                 if is_gate:

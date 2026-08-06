@@ -465,7 +465,8 @@ class TestEnsembleAggregation:
         (tool_use) which returns a dict {"verdicts": [...]}, not a string."""
         def fake_structured(prompt, schema, tool_name="emit",
                             provider="anthropic", model=None, api_key=None,
-                            max_tokens=4096, db_path=None, purpose=None):
+                            max_tokens=4096, db_path=None, purpose=None,
+                            decision_id=None):
             # Route by specialist name embedded in purpose tag
             if purpose and ":" in purpose:
                 spec_name = purpose.split(":", 1)[1]

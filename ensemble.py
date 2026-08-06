@@ -215,6 +215,16 @@ def run_ensemble(
     # _run_one_specialist — stage 2 runs on the smaller survivor list.)
     batch = candidates[:max_candidates]
 
+    # 2026-08-06 — mint a decision id per candidate (idempotent: keep
+    # an id minted by an earlier stage). Single-candidate specialist
+    # calls carry it to the shadow rows, and record_prediction stamps
+    # the same id on the outcome row — shadow→outcome matching becomes
+    # an exact join instead of a time-window inference.
+    import uuid as _uuid
+    for _c in batch:
+        if isinstance(_c, dict) and not _c.get("_decision_id"):
+            _c["_decision_id"] = _uuid.uuid4().hex
+
     # Phase 4 of pipeline refactor: when a per-pipeline specialist list
     # is supplied, use it directly (it was already filtered by
     # `pipelines.specialist_router.applicable_specialists(pipeline_name)`
@@ -303,6 +313,15 @@ def run_ensemble(
                 logger.warning("specialist %s build_prompt failed: %s", name, exc)
                 continue
 
+            # Exact shadow-join key: only a single-candidate chunk maps
+            # one call to one decision; multi-candidate chunks pass
+            # None and their shadow rows keep time-window matching.
+            _chunk_decision_id = (
+                chunk[0].get("_decision_id")
+                if len(chunk) == 1 and isinstance(chunk[0], dict)
+                else None
+            )
+
             verdicts: List[Dict[str, Any]] = []
             if use_tools:
                 try:
@@ -317,6 +336,7 @@ def run_ensemble(
                         max_tokens=2048,
                         db_path=getattr(ctx, "db_path", None),
                         purpose=f"ensemble:{name}",
+                        decision_id=_chunk_decision_id,
                     )
                     calls += 1
                     if result and isinstance(result.get("verdicts"), list):
@@ -355,6 +375,7 @@ def run_ensemble(
                         max_tokens=2048,
                         db_path=getattr(ctx, "db_path", None),
                         purpose=f"ensemble:{name}",
+                        decision_id=_chunk_decision_id,
                     )
                     calls += 1
                     verdicts = spec.parse_response(raw) or []

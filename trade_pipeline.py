@@ -3387,6 +3387,11 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                     raw_response=None,
                     meta_model_score=_meta_score,
                     online_meta_score=_online_meta_score,
+                    # 2026-08-06 — the candidate's decision id (minted
+                    # in run_ensemble) makes the shadow→outcome join
+                    # exact; None for candidates that skipped the
+                    # ensemble (their shadow rows use window matching).
+                    decision_id=c.get("_decision_id"),
                     # 2026-05-20 #185 — capture the deterministic-panel
                     # snapshot stashed by ai_analyst._build_batch_prompt.
                     # None when the panel fired no rules for this

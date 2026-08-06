@@ -658,7 +658,7 @@ def _enforce_cost_cap(prompt: str, model: Optional[str], max_tokens: int,
 
 
 def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1024,
-            db_path=None, purpose=None):
+            db_path=None, purpose=None, decision_id=None):
     """Send a prompt to the specified AI provider and return the response text.
 
     Args:
@@ -860,6 +860,7 @@ def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1
                 primary_provider=attempt_provider,
                 primary_model=attempt_model or "?",
                 primary_response=cleaned_response,
+                decision_id=decision_id,
             )
         except Exception as exc:
             logger.debug("shadow eval dispatch skipped: %s", exc)
@@ -918,7 +919,7 @@ def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1
 def call_ai_structured(prompt, schema, tool_name="emit",
                         provider="anthropic", model=None, api_key=None,
                         max_tokens=4096,
-                        db_path=None, purpose=None):
+                        db_path=None, purpose=None, decision_id=None):
     """Force a structured JSON response matching `schema` via tool_use.
 
     Solves the Haiku-drops-candidates bug: when asked for an array in a
@@ -937,7 +938,8 @@ def call_ai_structured(prompt, schema, tool_name="emit",
         # Fallback: plain text call, caller parses
         raw = call_ai(prompt, provider=provider, model=model,
                       api_key=api_key, max_tokens=max_tokens,
-                      db_path=db_path, purpose=purpose)
+                      db_path=db_path, purpose=purpose,
+                      decision_id=decision_id)
         try:
             import json as _json
             return _json.loads(raw)

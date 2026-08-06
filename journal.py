@@ -390,7 +390,12 @@ def init_db(db_path=None):
                 primary_provider TEXT,
                 primary_model TEXT,
                 primary_response TEXT,
-                primary_parsed TEXT
+                primary_parsed TEXT,
+                -- 2026-08-06 — per-candidate decision id shared with the
+                -- ai_predictions row of the same decision: the exact
+                -- shadow→outcome join key (time-window matching remains
+                -- only as the fallback for pre-migration rows).
+                decision_id TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_ai_shadow_ts
                 ON ai_shadow_calls(timestamp DESC);
@@ -632,6 +637,24 @@ def init_db(db_path=None):
         # any column added to the schema that wasn't present when the DB
         # was first created. Replaces the old per-column migration functions.
         _migrate_all_columns(conn)
+
+        # Indexes on MIGRATED columns must be created AFTER the column
+        # migration — inside the executescript above, CREATE INDEX on a
+        # not-yet-ALTERed column aborts the whole script on every
+        # pre-migration DB (caught by the API-JSON gate before it could
+        # break prod startup, 2026-08-06).
+        for _idx_sql in (
+            "CREATE INDEX IF NOT EXISTS idx_ai_shadow_decision "
+            "ON ai_shadow_calls(decision_id)",
+            # ai_predictions is created by ai_tracker.init_tracker_db,
+            # which may not have run yet on a fresh DB — tolerate.
+            "CREATE INDEX IF NOT EXISTS idx_ai_predictions_decision "
+            "ON ai_predictions(decision_id)",
+        ):
+            try:
+                conn.execute(_idx_sql)
+            except sqlite3.OperationalError as _idx_exc:
+                logger.debug("decision_id index deferred: %s", _idx_exc)
 
         # Post-migration indexes. Any index referencing a column that
         # only exists after migration must be built here, AFTER
@@ -954,6 +977,10 @@ def _migrate_all_columns(conn):
             ("pred_id", "INTEGER"),
         ],
         "ai_predictions": [
+            # 2026-08-06 — exact shadow-eval join key (shared with
+            # ai_shadow_calls.decision_id; minted per candidate before
+            # the ensemble runs).
+            ("decision_id", "TEXT"),
             ("regime_at_prediction", "TEXT"),
             ("strategy_type", "TEXT"),
             ("features_json", "TEXT"),
@@ -1058,6 +1085,13 @@ def _migrate_all_columns(conn):
             # NULL on rows written before the column existed; NULL
             # also when the panel didn't fire any rules.
             ("rule_votes_json", "TEXT"),
+        ],
+        # 2026-08-06 — decision_id ALTER-adds onto EXISTING DBs (the
+        # CREATE only covers fresh ones). NULL on rows written before
+        # this shipped; shadow_metrics falls back to time-window
+        # matching for those, labeled as such on /shadow.
+        "ai_shadow_calls": [
+            ("decision_id", "TEXT"),
         ],
         # `call_id` joins primary cost-ledger rows to the
         # ai_shadow_calls rows produced by the shadow dispatcher for

@@ -486,39 +486,23 @@ def _compute_agreement(primary_parsed: Any, shadow_parsed: Any) -> Optional[int]
 # ---------------------------------------------------------------------------
 
 def _write_shadow_row(db_path: str, row: Dict[str, Any]) -> None:
-    """Insert one shadow call row. Non-raising."""
+    """Insert one shadow call row. Non-raising.
+
+    2026-08-06 — writes `decision_id` (the exact join key to the same
+    decision's ai_predictions row). On a DB that predates the column
+    (migration runs at scheduler startup; a web-process write can race
+    it once), retry WITHOUT the column rather than lose the row — a
+    dropped row is data loss; a row without decision_id merely falls
+    back to time-window matching."""
     try:
         conn = sqlite3.connect(db_path)
         try:
-            conn.execute(
-                """INSERT INTO ai_shadow_calls
-                     (call_id, purpose, provider, model, prompt_hash,
-                      prompt_text, raw_response, parsed_signal,
-                      latency_ms, input_tokens, output_tokens, cost_usd,
-                      error, agreement, primary_provider, primary_model,
-                      primary_response, primary_parsed)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    row.get("call_id"),
-                    row.get("purpose"),
-                    row.get("provider"),
-                    row.get("model"),
-                    row.get("prompt_hash"),
-                    row.get("prompt_text"),
-                    row.get("raw_response"),
-                    row.get("parsed_signal"),
-                    row.get("latency_ms"),
-                    int(row.get("input_tokens") or 0),
-                    int(row.get("output_tokens") or 0),
-                    float(row.get("cost_usd") or 0.0),
-                    row.get("error"),
-                    row.get("agreement"),
-                    row.get("primary_provider"),
-                    row.get("primary_model"),
-                    row.get("primary_response"),
-                    row.get("primary_parsed"),
-                ),
-            )
+            try:
+                _insert_shadow_row(conn, row, with_decision_id=True)
+            except sqlite3.OperationalError as _col_exc:
+                if "decision_id" not in str(_col_exc):
+                    raise
+                _insert_shadow_row(conn, row, with_decision_id=False)
             conn.commit()
         finally:
             conn.close()
@@ -536,6 +520,43 @@ def _write_shadow_row(db_path: str, row: Dict[str, Any]) -> None:
             row.get("call_id"), row.get("provider"), row.get("model"),
             type(exc).__name__, exc,
         )
+
+
+def _insert_shadow_row(conn, row: Dict[str, Any],
+                       with_decision_id: bool) -> None:
+    cols = ("call_id, purpose, provider, model, prompt_hash, "
+            "prompt_text, raw_response, parsed_signal, "
+            "latency_ms, input_tokens, output_tokens, cost_usd, "
+            "error, agreement, primary_provider, primary_model, "
+            "primary_response, primary_parsed")
+    vals = [
+        row.get("call_id"),
+        row.get("purpose"),
+        row.get("provider"),
+        row.get("model"),
+        row.get("prompt_hash"),
+        row.get("prompt_text"),
+        row.get("raw_response"),
+        row.get("parsed_signal"),
+        row.get("latency_ms"),
+        int(row.get("input_tokens") or 0),
+        int(row.get("output_tokens") or 0),
+        float(row.get("cost_usd") or 0.0),
+        row.get("error"),
+        row.get("agreement"),
+        row.get("primary_provider"),
+        row.get("primary_model"),
+        row.get("primary_response"),
+        row.get("primary_parsed"),
+    ]
+    if with_decision_id:
+        cols += ", decision_id"
+        vals.append(row.get("decision_id"))
+    conn.execute(
+        f"INSERT INTO ai_shadow_calls ({cols}) "
+        f"VALUES ({', '.join('?' * len(vals))})",
+        vals,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -558,6 +579,7 @@ def _run_one_shadow(
     primary_response: str,
     primary_parsed: Any,
     model_label: Optional[str] = None,
+    decision_id: Optional[str] = None,
 ) -> None:
     """Execute one shadow call and persist its row. Catches every
     exception — never propagates.
@@ -582,6 +604,7 @@ def _run_one_shadow(
         "primary_response": primary_response,
         "primary_parsed": (json.dumps(primary_parsed)
                            if primary_parsed is not None else None),
+        "decision_id": decision_id,
     }
 
     # Quota stand-down (2026-07-24): a provider whose account has no
@@ -686,6 +709,7 @@ def dispatch_shadow_calls(
     primary_provider: str,
     primary_model: str,
     primary_response: str,
+    decision_id: Optional[str] = None,
 ) -> Optional[str]:
     """Fire shadow model calls for this primary invocation. Returns the
     `call_id` minted for the primary call so the cost ledger row can be
@@ -761,6 +785,7 @@ def dispatch_shadow_calls(
                                    if primary_parsed is not None else None),
                 "error": "no api key configured for shadow provider",
                 "latency_ms": 0,
+                "decision_id": decision_id,
             })
             continue
 
@@ -781,6 +806,7 @@ def dispatch_shadow_calls(
                 primary_model=primary_model,
                 primary_response=primary_response,
                 primary_parsed=primary_parsed,
+                decision_id=decision_id,
             )
         except RuntimeError as exc:
             # RuntimeError = ThreadPoolExecutor rejected the submission

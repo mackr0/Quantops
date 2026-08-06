@@ -151,7 +151,8 @@ def init_tracker_db(db_path=None):
                 resolved_at TEXT,
                 resolution_price REAL,
                 days_held INTEGER,
-                prediction_type TEXT
+                prediction_type TEXT,
+                decision_id TEXT
             );
         """)
         conn.commit()
@@ -200,7 +201,14 @@ def record_prediction(symbol, predicted_signal, confidence, reasoning,
                       raw_response=None, meta_model_score=None,
                       online_meta_score=None,
                       # 2026-05-20 #185 — deterministic-panel snapshot
-                      rule_votes=None):
+                      rule_votes=None,
+                      # 2026-08-06 — exact shadow-eval join key: the
+                      # per-candidate decision id minted before the
+                      # ensemble ran, carried by every shadow row of
+                      # the same decision. Makes disagreement→outcome
+                      # matching an identity instead of a time-window
+                      # inference.
+                      decision_id=None):
     """Save an AI prediction to the database.
 
     Parameters
@@ -309,9 +317,9 @@ def record_prediction(symbol, predicted_signal, confidence, reasoning,
                 features_json, prediction_type,
                 cycle_id, prompt_text, raw_response_json,
                 meta_model_score, online_meta_score,
-                rule_votes_json)
+                rule_votes_json, decision_id)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?,
-                       ?, ?, ?, ?, ?, ?)""",
+                       ?, ?, ?, ?, ?, ?, ?)""",
             (
                 datetime.utcnow().isoformat(),
                 symbol.upper(),
@@ -332,6 +340,7 @@ def record_prediction(symbol, predicted_signal, confidence, reasoning,
                 meta_model_score,
                 online_meta_score,
                 rule_votes_json,
+                decision_id,
             ),
         )
         conn.commit()

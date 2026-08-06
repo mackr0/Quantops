@@ -5,6 +5,14 @@ at the top.
 
 ---
 
+## 2026-08-06 — Shadow evaluation joins on a decision ID, not a clock. Severity: MEDIUM (measurement integrity for the page that decides model promotion).
+
+Operator directive, verbatim: time-proximity matching "seems like you just hope we get lucky — why can't we have an id for the decision that is sent to each so that it is 100% a certainty which decisions match." Correct, and now built: `run_ensemble` mints a `decision_id` per candidate (idempotent), every single-candidate specialist call carries it through `call_ai` → `dispatch_shadow_calls` → the `ai_shadow_calls` row, and `record_prediction` stamps the same id on the `ai_predictions` outcome row. The scorer (`_ResolvedIndex.match_for`) joins on the id as an IDENTITY — exact, unambiguous, and immune to the neighbor-cycle interleavings the 08-05 matcher fix mitigated. An exactly-matched decision that is still pending stays pending; it can never borrow a neighbor's outcome.
+
+Time-window matching survives strictly as the fallback for rows that predate the plumbing (and the rare shadow row whose prediction write failed), and the /shadow funnel now reports how each arm's resolved disagreements matched — "N by decision id (exact) · M by time proximity" — so inference-matched evidence visibly ages out of the dataset.
+
+Plumbing notes: both schemas gain `decision_id` via the CREATEs AND explicit `_migrate_all_columns` entries (the 2026-07-02 lesson — CREATE only covers fresh DBs); the shadow-row INSERT retries without the column if a write races the startup migration (a lost row is data loss; a row without the id merely window-matches); multi-candidate specialist chunks pass no id (one call spanning N decisions has no single identity) and keep window semantics. Pinned by 8 new tests: exact-beats-nearer-neighbor, exact-pending-never-borrows, legacy-window fallback + counters, orphan-id fallback, and structural pins on every hop of the plumbing.
+
 ## 2026-08-05 — Canceled ≠ unfilled reaches the multileg rollback: a spread that dies mid-open can no longer strand a filled leg outside every book. Severity: HIGH (p213's NEE $91 call — 5 filled @ $0.97 — existed at the broker and in no journal; broker_orphan +5 and $485 of cash-parity drift on account 56).
 
 2026-08-04 17:12Z: p213's AI opened a NEE bull call spread; the combo hit a 429 rate-limit, fell back to sequential; leg 0 (buy) submitted and FILLED; leg 1 died on 429 — and so did the rollback reversal, because a rate-limit storm doesn't spare the cleanup. Two rollback defects, both the 08-03 class on the options side (and the site that day's audit explicitly flagged and deliberately deferred — a misjudgment; it warns, it does not halt):
