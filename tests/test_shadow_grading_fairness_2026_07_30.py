@@ -250,6 +250,130 @@ class TestGateSpecialistsAreNotForecasters:
         assert (v["shadow_only"], v["primary_only"]) == (1, 0)
 
 
+class TestPageConsistency:
+    """2026-08-07 — found by rendering the deployed page and reading it.
+    The summary tables had drifted from the corrected scoring beneath
+    them: a filesystem path in a column, gate verdicts filed under a
+    directional heading, and a row whose parts didn't sum to its total.
+
+    (Originally written 2026-07-30 but lost before commit when
+    droplet-sync hard-reset the working tree; re-derived against the
+    current implementation.)
+    """
+
+    def test_profile_label_is_not_a_filesystem_path(self, tmp_path):
+        """The Profile column read '/opt/quantopsai/p212' — the label
+        stripped the filename but left the directory attached."""
+        db = _mk_profile(
+            tmp_path, "418",
+            shadow_rows=[(NOW, "ensemble:pattern_recognizer", "anthropic",
+                          "haiku", "BUY", 0, None, 0.001, 900, PP_SELL)],
+            predictions=[("CVX", "2026-07-30T14:02:00", 6.0)],
+        )
+        m = collect_fleet_metrics([db])
+        label = m["recent_disagreements"][0]["profile"]
+        assert label == "p418"
+        assert "/" not in label and os.sep not in label
+
+    def test_gate_verdicts_are_not_filed_under_bearish(self, tmp_path):
+        """`stance()` maps VETO to bearish, so grouping by stance filed
+        every reviewer veto under a directional heading — the same
+        category error the scoring was fixed for."""
+        db = _mk_profile(
+            tmp_path, "419",
+            shadow_rows=[(NOW, "ensemble:adversarial_reviewer", "anthropic",
+                          "haiku", "HOLD", 0, None, 0.001, 900,
+                          '{"symbol": "CVX", "verdict": "VETO"}')],
+            predictions=[("CVX", "2026-07-30T14:02:00", -6.0, "BUY")],
+        )
+        actions = collect_fleet_metrics([db])["by_primary_action"]
+        assert "gate: block" in actions
+        assert "bearish" not in actions
+
+    def test_gate_allow_is_its_own_row(self, tmp_path):
+        db = _mk_profile(
+            tmp_path, "420",
+            shadow_rows=[(NOW, "ensemble:adversarial_reviewer", "anthropic",
+                          "haiku", "VETO", 0, None, 0.001, 900,
+                          '{"symbol": "CVX", "verdict": "HOLD"}')],
+            predictions=[("CVX", "2026-07-30T14:02:00", -6.0, "BUY")],
+        )
+        actions = collect_fleet_metrics([db])["by_primary_action"]
+        assert "gate: allow" in actions
+        assert "neutral" not in actions
+
+    def test_gate_exit_advice_gets_its_own_row(self, tmp_path):
+        """A reviewer SELL is advice about a DIFFERENT held position. It
+        must not be silently counted as a block on this candidate."""
+        db = _mk_profile(
+            tmp_path, "421",
+            shadow_rows=[(NOW, "ensemble:risk_assessor", "anthropic",
+                          "haiku", "HOLD", 0, None, 0.001, 900,
+                          '{"symbol": "CVX", "verdict": "SELL"}')],
+            predictions=[("CVX", "2026-07-30T14:02:00", -6.0, "BUY")],
+        )
+        actions = collect_fleet_metrics([db])["by_primary_action"]
+        assert "gate: exit advice" in actions
+        assert "gate: block" not in actions
+
+    def test_forecast_verdicts_still_group_by_direction(self, tmp_path):
+        db = _mk_profile(
+            tmp_path, "422",
+            shadow_rows=[(NOW, "ensemble:pattern_recognizer", "anthropic",
+                          "haiku", "BUY", 0, None, 0.001, 900, PP_SELL)],
+            predictions=[("CVX", "2026-07-30T14:02:00", 6.0)],
+        )
+        actions = collect_fleet_metrics([db])["by_primary_action"]
+        assert "bearish" in actions
+        assert not any(k.startswith("gate:") for k in actions)
+
+    def test_resolved_disagreements_reconcile_exactly(self, tmp_path):
+        """Every resolved row must land in exactly one outcome bucket.
+        The per-model table showed Resolved=896 against buckets summing
+        to 859 because `ungradable` had no column — numbers that don't
+        add up train the reader to distrust the page."""
+        rows, preds = [], []
+        cases = [
+            # (purpose, shadow verdict, primary verdict, return, traded)
+            ("ensemble:pattern_recognizer", "BUY", "SELL", 6.0, "HOLD"),
+            ("ensemble:pattern_recognizer", "BUY", "SELL", -6.0, "HOLD"),
+            ("ensemble:pattern_recognizer", "BUY", "HOLD", 0.2, "HOLD"),
+            ("ensemble:adversarial_reviewer", "VETO", "HOLD", -6.0, "HOLD"),
+            ("ensemble:adversarial_reviewer", "VETO", "HOLD", -6.0, "BUY"),
+            ("batch_select", "A:BUY", "HOLD", 6.0, "HOLD"),
+        ]
+        for i, (purpose, sv, pv, ret, traded) in enumerate(cases):
+            ts = f"2026-07-30 1{i}:00:00"
+            sym = f"SYM{i}"
+            rows.append((ts, purpose, "anthropic", "haiku", sv, 0, None,
+                         0.001, 900,
+                         '{"symbol": "%s", "verdict": "%s"}' % (sym, pv)))
+            preds.append((sym, ts.replace(" ", "T"), ret, traded))
+        db = _mk_profile(tmp_path, "423", rows, preds)
+        v = collect_fleet_metrics([db])["per_model"]["anthropic:haiku"]
+        bucketed = (v["shadow_only"] + v["primary_only"] + v["both_right"]
+                    + v["neither_right"] + v["moot"] + v["ungradable"])
+        assert bucketed == v["dis_resolved"], (
+            f"{v['dis_resolved']} resolved but {bucketed} bucketed — "
+            f"a resolved row fell through every branch"
+        )
+
+    def test_template_does_not_truncate_the_variant_tag(self):
+        """'gemini-3.1-flash-lite@adve' hid the one token that
+        identifies a prompt-variant arm."""
+        tpl = open(os.path.join(os.path.dirname(__file__), os.pardir,
+                                "templates", "shadow.html")).read()
+        for chop in ("[:26]", "[:22]", "[:20]"):
+            assert chop not in tpl, f"model-name truncation came back: {chop}"
+
+    def test_every_outcome_bucket_is_rendered(self):
+        tpl = open(os.path.join(os.path.dirname(__file__), os.pardir,
+                                "templates", "shadow.html")).read()
+        for field in ("v.shadow_only", "v.primary_only", "v.both_right",
+                      "v.neither_right", "v.moot", "v.ungradable"):
+            assert field in tpl, f"outcome bucket not shown: {field}"
+
+
 class TestEffectiveSampleSize:
     def test_repeat_reviews_of_one_name_are_one_unit(self, tmp_path):
         """Nine reviews of CVX resolving against one price move are

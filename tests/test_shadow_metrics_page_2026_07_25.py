@@ -172,10 +172,16 @@ class TestCollect:
         assert (v["quota"], v["throttled"], v["errors"]) == (1, 1, 1)
 
     def test_category_cuts_present(self, tmp_path):
+        # Uses a FORECAST specialist so the by-primary-action cut is a
+        # directional bucket. Since 2026-08-07 the VETO-authority
+        # specialists group under "gate: allow"/"gate: block" instead —
+        # a veto decides whether a trade happens, it is not a bearish
+        # forecast. See TestPageConsistency in
+        # test_shadow_grading_fairness_2026_07_30.py.
         db = _mk_profile(
             tmp_path, "304",
             shadow_rows=[
-                (NOW, "ensemble:risk_assessor", "anthropic", "haiku",
+                (NOW, "ensemble:pattern_recognizer", "anthropic", "haiku",
                  "SELL", 1, None, 0.001, 900, PP_SELL),
                 (NOW, "transcript_sentiment", "anthropic", "haiku",
                  "NEUTRAL", 1, None, 0.001, 900,
@@ -183,7 +189,7 @@ class TestCollect:
             ],
         )
         m = collect_fleet_metrics([db])
-        assert set(m["by_purpose"]) == {"ensemble:risk_assessor",
+        assert set(m["by_purpose"]) == {"ensemble:pattern_recognizer",
                                         "transcript_sentiment"}
         assert "bearish" in m["by_primary_action"]
         assert m["per_model"]["anthropic:haiku"]["agreement_pct"] == 100.0

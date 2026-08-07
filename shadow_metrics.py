@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import random
 import sqlite3
 from bisect import bisect_left
@@ -613,8 +614,11 @@ def collect_fleet_metrics(profile_dbs: List[str],
         finally:
             conn.close()
 
-        prof_label = db.replace("quantopsai_profile_", "p").replace(
-            ".db", "")
+        # basename FIRST: callers pass absolute paths, and replacing only
+        # the filename part left the directory attached, rendering
+        # "/opt/quantopsai/p212" in the page's Profile column.
+        prof_label = os.path.basename(db).replace(
+            "quantopsai_profile_", "p").replace(".db", "")
         for (ts, purpose, provider, model, parsed_signal, agreement,
              err, cost, latency, primary_parsed, row_decision_id) in rows:
             mkey = f"{provider}:{model}"
@@ -651,7 +655,27 @@ def collect_fleet_metrics(profile_dbs: List[str],
             pk["calls"] += 1
             pk["graded"] += 1
             p_st = stance(primary_signal)
-            ak = by_action[(p_st or "set-level", mkey)]
+            # Group by what the primary actually DID. `stance()` maps
+            # VETO to "bearish", so grouping gate specialists by stance
+            # filed every reviewer veto under a directional heading —
+            # the same category error the SCORING was fixed for: a veto
+            # is not a forecast that the price will fall. Gate purposes
+            # get their own allow/block rows.
+            if (purpose or "") in _GATE_PURPOSES:
+                _gc = gate_call(primary_signal)
+                if _gc:
+                    action_key = "gate: " + _gc
+                elif (primary_signal or "").strip().upper() in (
+                        "SELL", "STRONG_SELL"):
+                    # Advice about closing a DIFFERENT, already-held
+                    # position — not a ruling on the candidate under
+                    # review, so it never counts as a block on it.
+                    action_key = "gate: exit advice"
+                else:
+                    action_key = "gate: unrecognised"
+            else:
+                action_key = p_st or "set-level"
+            ak = by_action[(action_key, mkey)]
             ak["calls"] += 1
             ak["graded"] += 1
             if agreement == 1:

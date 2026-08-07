@@ -5,6 +5,20 @@ at the top.
 
 ---
 
+## 2026-08-07 — /shadow's detail tables catch up with its corrected scoring: gate verdicts stop being filed as "bearish", the per-model row adds up again, and a filesystem path leaves the UI. Severity: MEDIUM (the detail tables contradicted the headline).
+
+Four defects found by rendering the deployed page and reading it. All four were fixed on 2026-07-30 but the work was never committed — `droplet-sync.sh` hard-resets to `origin/main`, so an uncommitted working tree was discarded at the next deploy. Re-derived against the current implementation (the decision-ID join and evidence funnel landed since), not replayed as a stale patch.
+
+**Gate verdicts were still filed under a directional heading.** The SCORING learned on 2026-07-30 that a VETO-authority verdict is a gate, not a forecast — but "By primary action" still grouped by `stance()`, which maps VETO to "bearish". Every reviewer veto was therefore counted as a bearish call. The tell was on the page: the `@adversarial_v2` arm only ever runs on `ensemble:adversarial_reviewer`, yet it appeared under "bearish" with 777 graded calls. Gate purposes now group as `gate: allow` / `gate: block`, and a reviewer `SELL` — advice about closing a DIFFERENT, already-held position — gets `gate: exit advice` rather than being silently counted as a block on the candidate under review. Live effect: haiku's "bearish" bucket fell from 4,630 graded to 1,430 as ~2,700 gate verdicts moved to where they belong.
+
+**The per-model row didn't add up.** Resolved=897 against outcome buckets summing to 859 — the missing 38 were `ungradable`, which had no column. Both detail tables now render every bucket (Shadow won / Primary won / Both / Neither / Moot / Ungradable) and a test asserts the invariant directly: every resolved row must land in exactly one bucket, so a future branch that forgets a counter fails loudly instead of quietly losing rows. Verified live — 96+97+25+111+530+38 = 897.
+
+**A filesystem path in the Profile column.** `prof_label` stripped `quantopsai_profile_` and `.db` from an ABSOLUTE path, rendering `/opt/quantopsai/p212`. Now basename-first: `p212`.
+
+**Model names truncated the variant tag.** Clipped to 20–26 characters, the new arm rendered as `gemini-3.1-flash-lite@adve`, cutting off the one token that identifies a prompt-variant arm. Truncation removed; those columns already scroll.
+
+Pinned in `test_shadow_grading_fairness_2026_07_30.py::TestPageConsistency` (8 tests: label is not a path, gate verdicts not filed as bearish, allow/block/exit-advice each their own row, forecast verdicts still directional, the reconciliation invariant, no truncation constants, every bucket rendered). `test_shadow_metrics_page_2026_07_25.py::test_category_cuts_present` was moved off `risk_assessor` onto a forecast specialist so it still tests a directional cut.
+
 ## 2026-08-06 — Shadow evaluation joins on a decision ID, not a clock. Severity: MEDIUM (measurement integrity for the page that decides model promotion).
 
 Operator directive, verbatim: time-proximity matching "seems like you just hope we get lucky — why can't we have an id for the decision that is sent to each so that it is 100% a certainty which decisions match." Correct, and now built: `run_ensemble` mints a `decision_id` per candidate (idempotent), every single-candidate specialist call carries it through `call_ai` → `dispatch_shadow_calls` → the `ai_shadow_calls` row, and `record_prediction` stamps the same id on the `ai_predictions` outcome row. The scorer (`_ResolvedIndex.match_for`) joins on the id as an IDENTITY — exact, unambiguous, and immune to the neighbor-cycle interleavings the 08-05 matcher fix mitigated. An exactly-matched decision that is still pending stays pending; it can never borrow a neighbor's outcome.
