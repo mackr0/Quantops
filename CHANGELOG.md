@@ -5,6 +5,37 @@ at the top.
 
 ---
 
+## 2026-08-07 — THE 70%: a gold rally in a calm bull market was declaring a fleet-wide "Crisis State", and the AI was doing what it was told. Severity: HIGH (the single largest cause of the system not trading).
+
+Operator: *"fix the problem of more than 70% being useless, that is the whole point of the session."*
+
+**The measurement.** Over the 7 days to 2026-08-07, **1,217 of 1,738 cycles (70.0%) selected zero trades.** That is not a starved menu — only **2** cycles had an empty shortlist. In 1,217 cycles the AI was shown 3-10 real candidates and took none. **38.4% of those cycles cite "Crisis State" in the AI's own stated reasoning**, verbatim: *"I am electing to pass on all candidates this cycle. The portfolio is currently operating in a 'Crisis State' with high market uncertainty…"*
+
+**What the "crisis" was.** All ten profiles sat at level ELEVATED (0.5× position sizes) on ONE medium-severity signal — `gold_rally: "GLD +3.1% over 5 days (safe-haven demand)"` — against this tape:
+
+| reading | value |
+|---|---|
+| `spy_5d_pct` | **+3.65%** — equities rallying just as hard |
+| `vix` | **15.41** — calm |
+| `price_shock_count_30m` | 0 |
+| `yield_spread_10y2y` | +0.43 — not inverted |
+
+Three defects stacked to turn a benign gold rally into a fleet-wide stand-down:
+
+**1. The gold signal asserted its conclusion without its premise.** "Safe-haven demand" means gold up *and equities down*. The sibling detector `_check_bond_stock_divergence` — the other flight-to-safety check in the same file — already required `spy_5d < 0` for exactly this reason. The gold check never got the same condition, so it fired on gold strength alone. It now requires equity weakness (`gold_rally_spy_max_pct`, default 0.0), records `gld_5d_pct` for analysis either way, and stays silent when the equity reading is unavailable — a crisis flag asserted without its defining condition is the whole bug.
+
+**2. One medium signal forced ELEVATED.** `_classify_level` returned ELEVATED at `total >= 1`, contradicting its own docstring directly above it ("VIX normal → ELEVATED with ≥ 2 signals"). Now two signals are required on the VIX-normal path — but a single **HIGH**-severity signal still escalates alone, because those are the genuine flight-to-safety detectors and one of them firing is real information before VIX moves.
+
+**3. ELEVATED told the AI to stop trading.** Every non-normal level carried "Bias toward capital preservation; tighter stops; **prefer exits over entries**." At ELEVATED the designed response is HALF SIZE, not no trades. The AI read the sentence literally and passed. Guidance is now level-appropriate: ELEVATED says *"Trade normally but SIZE DOWN by the multiplier and keep stops tighter. This is a size adjustment, NOT a reason to stand aside — good setups should still be taken, smaller."* Crisis and severe keep the stand-down language.
+
+**Verified live.** Re-running the detector against the current tape returns **`normal`, size ×1.0** — where it had been ELEVATED at ×0.5. Gold is now up **7.4%** over 5 days (a bigger move than the one that triggered the false crisis), but with SPY +3.6% and VIX 14.98 it is correctly not a flight to safety.
+
+**Same family as the sizing anchor fixed hours earlier the same day**, and the confidence-bar inversion before that: a protective mechanism, calibrated without a floor, quietly converting into "don't trade". That is now three separate mechanisms found doing this. The pattern is not any single threshold — it is that **every guard was written to describe what is forbidden and none stated what good looks like.**
+
+Not yet addressed, and now the largest remaining contributor: **78.2% of zero-selection cycles cite conviction/confidence** — the AI judging its own candidates below bar. That is a bigger share than the crisis language and is the next thing to measure.
+
+Pinned in `test_crisis_false_positive_2026_08_07.py` (9 tests: the exact 2026-08-06 reading set produces no signal, the detector still fires when equities ARE falling, sub-threshold gold never fires, a missing equity reading stays silent, the gold reading is still recorded, and the ELEVATED guidance branches) plus 3 rewritten cases in `test_crisis.py` covering the new ladder (1 medium → NORMAL, 2 medium → ELEVATED, 1 HIGH → ELEVATED).
+
 ## 2026-08-07 — The shortlist had a long-side "already held" filter and no short-side mirror: 236 of 288 SKIP drops were the AI picking names it was already short. Severity: MEDIUM (silently starved an already-starved funnel).
 
 `_rank_candidates` has filtered long signals on held symbols since it was written:

@@ -60,10 +60,36 @@ class TestClassifyLevel:
         from crisis_detector import _classify_level, SEVERE, CRISIS, ELEVATED
         three = [{"name": str(i), "severity": "medium"} for i in range(3)]
         assert _classify_level(three, vix_level=15) == CRISIS
-        one = [{"name": "x", "severity": "medium"}]
-        assert _classify_level(one, vix_level=15) == ELEVATED
         five = [{"name": str(i), "severity": "medium"} for i in range(5)]
         assert _classify_level(five, vix_level=15) == SEVERE
+
+    def test_one_medium_signal_in_a_calm_tape_is_NOT_elevated(self):
+        """CHANGED 2026-08-07 — this previously returned ELEVATED, which
+        contradicted `_classify_level`'s own docstring ("VIX normal →
+        ELEVATED with ≥ 2 signals") and cost real money: a single
+        medium `gold_rally` flag put all ten profiles on 0.5x sizing
+        with VIX at 15.4, SPY +3.65% over 5 days and zero price shocks,
+        and the prompt then told the AI to prefer exits over entries.
+        One medium signal with the volatility complex asleep is a
+        curiosity, not a crisis."""
+        from crisis_detector import _classify_level, NORMAL
+        one = [{"name": "gold_rally", "severity": "medium"}]
+        assert _classify_level(one, vix_level=15) == NORMAL
+
+    def test_two_medium_signals_in_a_calm_tape_ARE_elevated(self):
+        from crisis_detector import _classify_level, ELEVATED
+        two = [{"name": "a", "severity": "medium"},
+               {"name": "b", "severity": "medium"}]
+        assert _classify_level(two, vix_level=15) == ELEVATED
+
+    def test_a_single_HIGH_severity_signal_still_escalates_alone(self):
+        """The genuine flight-to-safety detectors (bond/stock
+        divergence, credit stress) are high severity. One of those is
+        real information even before VIX moves, so it must still
+        escalate on its own — the fix must not blunt them."""
+        from crisis_detector import _classify_level, ELEVATED
+        one_high = [{"name": "bond_stock_divergence", "severity": "high"}]
+        assert _classify_level(one_high, vix_level=15) == ELEVATED
 
 
 # ---------------------------------------------------------------------------

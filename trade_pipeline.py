@@ -5772,12 +5772,33 @@ def _build_market_context(regime_info, political_context, ctx):
             if cs.get("level", "normal") != "normal":
                 signals = ", ".join(s.get("name", "?")
                                     for s in cs.get("signals", []))
+                # 2026-08-07 — the guidance is now LEVEL-APPROPRIATE.
+                # Every non-normal level used to carry "prefer exits
+                # over entries", which is a stop-trading instruction.
+                # At ELEVATED the designed response is HALF SIZE, not
+                # no trades — but the AI read the sentence literally
+                # and passed: "Crisis State with high market
+                # uncertainty… electing to pass on all candidates"
+                # appeared in 38.4% of the 1,215 zero-selection cycles
+                # in the week to 2026-08-07. Standing down entirely is
+                # the CRISIS-level response, and only crisis/severe say
+                # so now.
+                _lvl = cs["level"].lower()
+                if _lvl == "elevated":
+                    _guidance = (
+                        "Trade normally but SIZE DOWN by the multiplier "
+                        "above and keep stops tighter. This is a "
+                        "size adjustment, NOT a reason to stand aside — "
+                        "good setups should still be taken, smaller."
+                    )
+                else:
+                    _guidance = ("Bias toward capital preservation; "
+                                 "tighter stops; prefer exits over "
+                                 "entries.")
                 crisis_ctx = (
                     f"CRISIS STATE: {cs['level'].upper()} "
                     f"(size x{cs.get('size_multiplier', 1.0):.2f}). "
-                    f"Signals: {signals}. "
-                    f"Bias toward capital preservation; tighter stops; "
-                    f"prefer exits over entries."
+                    f"Signals: {signals}. {_guidance}"
                 )
         except (ImportError, sqlite3.OperationalError, sqlite3.DatabaseError,
                 KeyError, AttributeError, OSError) as _cs_exc:

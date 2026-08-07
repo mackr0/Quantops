@@ -20,7 +20,8 @@ Monitored signals:
 
 Crisis levels, in escalating order:
   normal        — trade normally
-  elevated      — 0.5× position sizes, tighter stops (1 or 2 warning signals)
+  elevated      — 0.5× position sizes, tighter stops (2 warning signals,
+                  or 1 HIGH-severity signal)
   crisis        — no new longs, hold existing (3-4 signals or VIX > 35)
   severe        — liquidate, 100% cash (5+ signals or VIX > 45)
 """
@@ -45,6 +46,11 @@ THRESHOLDS = {
     "correlation_spike":       0.75,   # pairwise rolling correlation avg
     "bond_stock_divergence":   3.0,    # TLT up pct - SPY down pct >= threshold
     "gold_rally_pct":          3.0,    # GLD 5d move to trigger safe-haven flag
+    # ...but only when equities are actually WEAK. Gold and stocks
+    # rallying together is a liquidity/inflation regime, not a flight
+    # to safety (2026-08-07: GLD +3.1% with SPY +3.65% and VIX 15.4
+    # put the whole fleet into ELEVATED).
+    "gold_rally_spy_max_pct":  0.0,
     "credit_stress_drop_pct": -2.0,    # HYG/LQD ratio drop over 10 days
     "event_cluster_count":     3,      # price shocks in last 30 minutes
     "skew_extreme":            150.0,  # CBOE Skew — institutional tail-risk hedging
@@ -243,19 +249,48 @@ def _check_bond_stock_divergence(readings: Dict[str, Any]) -> Optional[Dict[str,
 
 
 def _check_gold_rally(readings: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Sharp gold rally = safe-haven demand."""
+    """Sharp gold rally WITH equities weak = safe-haven demand.
+
+    2026-08-07 — this fired on gold strength ALONE, and "safe-haven
+    demand" is not what gold rising means when equities are rising with
+    it. On 2026-08-06 it put all ten profiles into crisis level
+    ELEVATED (0.5x sizing, and a prompt line telling the AI to "prefer
+    exits over entries") on this reading set:
+
+        gld_5d_pct  +3.12   <- the trigger
+        spy_5d_pct  +3.65   <- equities rallying just as hard
+        vix          15.41  <- calm
+        price_shock_count_30m  0
+
+    Gold and stocks rising together is a liquidity / inflation regime,
+    not a flight to safety. The sibling signal `_check_bond_stock_
+    divergence` — the other flight-to-safety detector in this file —
+    already requires `spy_5d < 0` for exactly this reason; this one
+    simply never got the same condition.
+
+    Equity confirmation is now required. Gold strength on its own is
+    recorded in `readings` for analysis but is not a crisis signal.
+    """
     gld = _fetch_close_series("GLD", days=10)
     if gld is None or len(gld) < 6:
         return None
     gld_5d = (float(gld.iloc[-1]) - float(gld.iloc[-6])) / float(gld.iloc[-6]) * 100
     readings["gld_5d_pct"] = round(gld_5d, 2)
-    if gld_5d >= THRESHOLDS["gold_rally_pct"]:
-        return {
-            "name": "gold_rally",
-            "severity": "medium",
-            "detail": f"GLD +{gld_5d:.1f}% over 5 days (safe-haven demand)",
-        }
-    return None
+    if gld_5d < THRESHOLDS["gold_rally_pct"]:
+        return None
+    # `_check_bond_stock_divergence` runs earlier in detect() and
+    # populates spy_5d_pct. If it is unavailable we cannot confirm
+    # flight-to-safety, so we do NOT raise the signal: a crisis flag
+    # asserted without its defining condition is what caused this.
+    spy_5d = readings.get("spy_5d_pct")
+    if spy_5d is None or float(spy_5d) >= THRESHOLDS["gold_rally_spy_max_pct"]:
+        return None
+    return {
+        "name": "gold_rally",
+        "severity": "medium",
+        "detail": f"GLD +{gld_5d:.1f}% over 5 days while SPY "
+                  f"{float(spy_5d):+.1f}% (safe-haven demand)",
+    }
 
 
 def _check_credit_stress(readings: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -369,10 +404,22 @@ def _classify_level(signals: List[Dict[str, Any]], vix_level: float) -> str:
             return CRISIS
         return ELEVATED
 
+    # VIX-normal path. 2026-08-07 — this required only ONE signal to
+    # declare ELEVATED, contradicting the docstring directly above it
+    # ("VIX normal → ELEVATED with ≥ 2 signals"). One medium-severity
+    # signal in a demonstrably calm tape (VIX 15.4, SPY +3.65% over 5
+    # days, zero price shocks) halved position sizes fleet-wide and
+    # told the AI to prefer exits over entries. A single medium signal
+    # with the volatility complex asleep is a curiosity, not a crisis.
+    #
+    # A HIGH-severity signal still escalates on its own — those are the
+    # genuine flight-to-safety detectors (bond/stock divergence, credit
+    # stress), and one of them firing is real information even when VIX
+    # has not moved yet.
     if total >= 5:
         return SEVERE
     if total >= 3:
         return CRISIS
-    if total >= 1:
+    if high_signals or total >= 2:
         return ELEVATED
     return NORMAL
