@@ -5,6 +5,32 @@ at the top.
 
 ---
 
+## 2026-08-07 — THE CASH STOCKPILE: the Kelly anchor is out of the decision prompt and a conviction-banded size target is in. Severity: HIGH (the system was structurally defeating its own purpose).
+
+Operator, restating a directive given since the project began: *"my goal has been to trade NOT STOCKPILE CASH… why do you insist on stockpiling cash in all the accounts when I keep saying to not build it to do this?"* He is right, and the measurement is damning.
+
+**The evidence (7 days to 2026-08-07, profiles 210-219).** The fleet held **42.8% cash — $1.30M of $3.03M idle** — while the RANDOM control profiles (207 BuyHoldSPY, 208 RandomA, 209 RandomB) ran at **4.8-5.4%**. A random trade picker was deploying its capital; the AI was not. Per-profile cash ranged 23% to 91%.
+
+**It was not inaction — 903 trades opened in those 7 days.** The capital sat idle for three compounding reasons, and this change addresses the one with the clearest mechanism:
+
+**Position sizing was half the mandate, and the AI was choosing it.** Open positions ran a 4.11% median against per-profile caps of 8-13%. Critically, nothing downstream was clipping them: the P4.2 telemetry stamp `_size_pct_ai` — the AI's OWN raw proposal — had a median of **4.00%** across 1,107 selected trades. The AI was asking for half its allowance and getting exactly what it asked for.
+
+**Why it asked low: we told it to.** The fractional-Kelly figure rendered into the decision prompt had a median of **0.03 — 3%**. That number is computed from a per-direction edge history which **P3.1 (2026-07-27) already ruled untrustworthy**, having been recorded while the system was flying blind on broken 13F / dark-pool / FINRA joins. We were anchoring live sizing decisions to a statistic this changelog had documented as meaningless three weeks earlier, and the AI dutifully obeyed it.
+
+**The fix, per operator decision ("do a and c, remove the kelly anchor and set the band"):**
+
+1. **The Kelly block is removed from the decision prompt** (`ai_analyst.py`). `kelly_sizing` is otherwise untouched and still computes — the /performance page renders it for the operator, and `trade_pipeline` still stamps `_size_kelly_frac` on every selected trade so the AI-vs-Kelly comparison survives for the post-fix analysis. It simply no longer steers.
+
+2. **The risk-limits block now states a TARGET BAND per conviction tier**, in the profile's own numbers: high conviction (75+) → 75-100% of cap, normal (60-74) → 50-75%, marginal (just above the bar) → 30-50%. On a 10% cap that reads "high 7.5-10.0%, normal 5.0-7.5%, marginal 3.0-5.0%"; it scales per profile, so a 13%-cap book is told 9.8-13.0%. The hard cap is still stated and still labelled the primary cap. The block now says in as many words that sizing at the bottom of the band is **not** the cautious choice — "idle cash earns nothing and teaches the system nothing."
+
+The normal-conviction floor (5.0% on a 10% cap) deliberately sits **above** the 4.0% median the AI had been proposing, so the band actually changes the behaviour rather than blessing it.
+
+**This is the third recurrence of this failure mode.** The `_confidence_bar_block` docstring records an earlier one in the same words — "a bar at/above the AI's honest median turns the gate into the allocator (132 blocks vs 39 buys in half a day, books at 70-92% cash), the exact inversion of the operator's inform-don't-suppress design." The lesson generalizes: **a limit stated without a target reads to the model as "smaller is safer."** Every gate we add needs to say what good looks like, not only what is forbidden.
+
+Two related findings NOT addressed here, logged for the follow-up: **70.3% of cycles select zero trades** (8,836 candidates shortlisted → 732 selected, 8.3%), and **240 of 288 `SKIP` drops are "Already short X"** — the AI is repeatedly shown names it is already short (GOOGL 74, KO 56, SO 52, EQIX 30, WMT 28), picks them, and the order is discarded, burning selection capacity on guaranteed no-ops. Also cleared as non-causes: the kill switch blocked 114 trades but only during a 14-minute window on 08-04 (KO book-integrity finding, auto-cleared, currently off), and CONFIDENCE_GATE's 300 drops were all genuinely 30-44 confidence against a 45 bar.
+
+Pinned in `test_sizing_band_2026_08_07.py` (8 tests: Kelly absent from the prompt but still computing for reporting and telemetry, all three tiers present, band scales with the profile cap, hard cap still stated, the "not the cautious choice" framing present, and a regression guard asserting the normal-conviction floor sits above the 4.0% median that caused this).
+
 ## 2026-08-07 — /shadow's detail tables catch up with its corrected scoring: gate verdicts stop being filed as "bearish", the per-model row adds up again, and a filesystem path leaves the UI. Severity: MEDIUM (the detail tables contradicted the headline).
 
 Four defects found by rendering the deployed page and reading it. All four were fixed on 2026-07-30 but the work was never committed — `droplet-sync.sh` hard-resets to `origin/main`, so an uncommitted working tree was discarded at the next deploy. Re-derived against the current implementation (the decision-ID join and evidence funnel landed since), not replayed as a stale patch.

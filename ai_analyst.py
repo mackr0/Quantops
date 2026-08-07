@@ -1179,30 +1179,26 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context,
             type(_dd_exc).__name__, _dd_exc,
         )
 
-    # P4.2 of LONG_SHORT_PLAN.md — Kelly position sizing block.
-    # Reads per-direction edge stats from ai_predictions and surfaces
-    # the fractional-Kelly recommendation. Soft guidance — doesn't
-    # override max_position_pct but tells the AI the size that
-    # matches observed edge.
-    kelly_block = ""
-    db_path_for_kelly = getattr(ctx, "db_path", None) if ctx else None
-    if db_path_for_kelly:
-        try:
-            from kelly_sizing import (
-                compute_kelly_recommendation, render_for_prompt as kelly_render,
-            )
-            rec_long = compute_kelly_recommendation(db_path_for_kelly, "long")
-            rec_short = (compute_kelly_recommendation(db_path_for_kelly, "short")
-                          if enable_shorts else None)
-            kelly_block = kelly_render(rec_long, rec_short)
-        except (ImportError, KeyError, ValueError, AttributeError,
-                TypeError, OSError) as _kl_exc:
-            # AI-prompt enrichment; prompt continues without
-            # Kelly-sizing block. Surface for follow-up.
-            logger.debug(
-                "Kelly-sizing block render failed: %s: %s",
-                type(_kl_exc).__name__, _kl_exc,
-            )
+    # P4.2's Kelly sizing block was REMOVED from the decision prompt on
+    # 2026-08-07 (operator directive: "remove the kelly anchor and set
+    # the band").
+    #
+    # It was anchoring the AI low with a number this project had already
+    # documented as meaningless. Measured over the 7 days to 2026-08-07:
+    # the fractional-Kelly figure fed to the prompt had a median of
+    # 0.03 — 3% — because it is computed from an edge history that P3.1
+    # (2026-07-27) explicitly ruled untrustworthy, having been recorded
+    # while the system was flying blind on broken alt-data joins. The AI
+    # dutifully proposed a 4.0% median size against caps of 8-13%, and
+    # the fleet sat at 42.8% cash while the RANDOM control profiles ran
+    # at 5%. A conviction-banded target now lives in `risk_limits_block`
+    # above.
+    #
+    # `kelly_sizing` itself is untouched and still computes: the
+    # /performance page renders it for the operator, and trade_pipeline
+    # stamps `_size_kelly_frac` on every selected trade so the
+    # AI-vs-Kelly comparison stays available for later analysis. The
+    # ONLY change is that it no longer steers the decision.
 
     # P4.1 of LONG_SHORT_PLAN.md — book-beta target directive.
     # When ctx.target_book_beta is set and the book has measurable
@@ -1345,13 +1341,37 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context,
                 # independent virtual accounts — the AI must not be told about,
                 # or constrained by, other profiles' holdings. Per-profile
                 # concentration is conveyed by the own-book PORTFOLIO FIT signal.
+                # 2026-08-07 — a CAP alone produced chronic under-
+                # deployment: measured over 7 days the AI's own
+                # proposals (`_size_pct_ai`) had a median of 4.0%
+                # against caps of 8-13%, and the fleet sat at 42.8%
+                # cash while the RANDOM control profiles ran at 5%.
+                # "Max X or less" with no target reads as "smaller is
+                # safer", so the block now states the intended band
+                # per conviction tier in the profile's own numbers.
+                _m = max_pos_pct * 100
+                _eq = equity_for_limits
                 risk_limits_block = (
                     f"\n  System risk limits (system-enforced; "
                     f"proposals above auto-blocked):\n"
                     f"    >>> Max position size: "
-                    f"{max_pos_pct * 100:.1f}% of equity "
-                    f"(${position_cap_dollars:,.0f}) <<< (primary cap; "
-                    f"every BUY / STRONG_BUY sized to this max-or-less)"
+                    f"{_m:.1f}% of equity "
+                    f"(${position_cap_dollars:,.0f}) <<< (primary cap — "
+                    f"a hard ceiling; never exceed it)\n"
+                    f"    >>> TARGET SIZE by conviction — "
+                    f"high (confidence 75+): {_m * 0.75:.1f}-{_m:.1f}% "
+                    f"of equity (${_eq * max_pos_pct * 0.75:,.0f}-"
+                    f"${position_cap_dollars:,.0f}) · "
+                    f"normal (60-74): {_m * 0.50:.1f}-{_m * 0.75:.1f}% · "
+                    f"marginal (just above the bar): "
+                    f"{_m * 0.30:.1f}-{_m * 0.50:.1f}% <<<\n"
+                    f"    Sizing at the bottom of the band by default is "
+                    f"NOT the cautious choice. This book exists to be "
+                    f"invested; idle cash earns nothing and teaches the "
+                    f"system nothing. If a trade is worth taking, size it "
+                    f"in the band its conviction warrants — if it isn't "
+                    f"worth a normal-conviction position, it is probably "
+                    f"not worth taking at all."
                     f"{anomaly_line}"
                 )
     except Exception as _rl_exc:
@@ -1384,7 +1404,6 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context,
         f"{exposure_block}"
         f"{beta_target_block}"
         f"{target_block}"
-        f"{kelly_block}"
         f"{drawdown_block}"
         f"{risk_budget_block}"
         f"{mfe_capture_block}"
