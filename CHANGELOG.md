@@ -5,6 +5,32 @@ at the top.
 
 ---
 
+## 2026-08-07 — The AI was not being timid: 69% of everything on its menu was a non-idea, and 43% of cycles were 100% non-ideas. Severity: HIGH (the largest single component of the 70% zero-selection rate).
+
+Operator: *"fix the conviction/confidence problem too."*
+
+**78.2% of zero-selection cycles cite conviction or confidence**, which reads like AI timidity. It is not. Checking the MENUS instead of the wording:
+
+| | median best-candidate \|score\| |
+|---|---|
+| every one of 8,744 shortlisted candidates | **0.0** |
+| cycles where the AI TRADED | **3.0** |
+| cycles where the AI PASSED | **0.0** |
+
+The AI trades when a real candidate exists and passes when the menu is all zeros. **That is correct behaviour.** The conviction language was an accurate description of what it had been handed.
+
+**Why the menus were zeros.** 69% of every candidate shown to the AI was an `_apply_menu_floor` backfill entry — no deterministic rule fired, `signal="NEUTRAL"`, `score=0` — and **43.2% of cycles (748 of 1,733) had a menu that was 100% backfill.** On those the AI passed 714 times. That bucket alone is ~59% of all zero-selection cycles.
+
+**The defect was presentation, not judgment.** Those entries were appended to the section headed **"LONG CANDIDATES (ranked by technical score)"**. The AI read a long-ideas list full of score-0 non-ideas and declined — exactly as written. Yet `_apply_menu_floor` always intended them to be tradeable; its own reason string reads *"surfaced by indicator extremity for AI judgment"*. Nothing in the prompt ever said so, and `NEUTRAL / score 0` under a "technical score" heading says the opposite.
+
+They now render in their own **DISCRETIONARY WATCH** section which states plainly that NEUTRAL/0 means *no rule fired*, not that there is no opportunity — that the rule library is a prioritizer rather than the limit of what is tradeable, and that passing on every name every cycle is itself a costly decision because "this book learns only from positions it actually holds." Real triggered signals keep their own section, so a genuine score-3 idea is never diluted by backfill.
+
+**A correction to my own earlier analysis in this session.** I first measured menu-floor padding by counting the `_menu_floor` marker in `ai_cycles.shortlist_json` and reported "0% padding". That was wrong: `cycle_data["shortlist"]` serializes an explicit key whitelist that drops every underscore-prefixed field, so the marker was never stored. The measurement was reading a field that does not exist in that table. Re-measured by signal shape, padding is 69%. `_is_discretionary_candidate` therefore falls back to shape (`NEUTRAL` + no votes) when the marker is absent, and a test pins that fallback.
+
+**Fourth mechanism found in a single day converting a guard into "don't trade"**, after the Kelly sizing anchor, the crisis-state false positive, and the confidence-bar inversion documented weeks earlier. Every one of them described what was forbidden and none stated what good looks like. That is the actual root cause of the operator's standing complaint, and it is a design habit rather than any individual threshold.
+
+Pinned in `test_discretionary_watch_2026_08_07.py` (12 tests: classification incl. the stripped-marker fallback and the NEUTRAL-with-votes exclusion, the block's framing, section separation in both the shorts-enabled and shorts-disabled paths, the all-backfill menu still rendering, and a guard that a no-rule-fired name never appears under LONG CANDIDATES).
+
 ## 2026-08-07 — THE 70%: a gold rally in a calm bull market was declaring a fleet-wide "Crisis State", and the AI was doing what it was told. Severity: HIGH (the single largest cause of the system not trading).
 
 Operator: *"fix the problem of more than 70% being useless, that is the whole point of the session."*

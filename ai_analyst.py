@@ -742,6 +742,54 @@ def _iv_rank_pct(sym):
     return None
 
 
+def _is_discretionary_candidate(c) -> bool:
+    """True for a shortlist entry that no deterministic rule triggered
+    — `_apply_menu_floor`'s extremity-ranked backfill."""
+    if not isinstance(c, dict):
+        return False
+    if c.get("_menu_floor"):
+        return True
+    # Defensive: the marker is dropped by some serialization paths, so
+    # fall back to the shape those entries always have.
+    return ((c.get("signal") or "").upper() in ("NEUTRAL", "")
+            and not (c.get("votes") or {}))
+
+
+def _discretionary_block(lines) -> str:
+    """Render the no-rule-fired names as what they ARE.
+
+    2026-08-07 — these entries were being appended to "LONG CANDIDATES
+    (ranked by technical score)" carrying signal=NEUTRAL and score=0,
+    and the AI read that exactly as written: a long-ideas list full of
+    non-ideas. Measured over the 7 days to 2026-08-07, **69% of every
+    candidate shown to the AI was one of these**, and **43.2% of cycles
+    had a menu that was 100% of them** — on those the AI passed 714 of
+    748 times, which is the single largest component of the 70%
+    zero-selection rate.
+
+    The AI was not being timid; it was declining menus that contained
+    no trade ideas. `_apply_menu_floor` always intended these to be
+    tradeable — its own reason string reads "surfaced by indicator
+    extremity for AI judgment" — but nothing in the prompt ever said
+    so, and NEUTRAL/0 reads as "nothing here". This states the intent.
+    """
+    return (
+        "DISCRETIONARY WATCH — no deterministic rule fired on these; "
+        "they are surfaced by raw indicator extremity (RSI distance "
+        "from 50, volume surge, 10-day rate of change) for YOUR "
+        "judgment:\n"
+        + "\n".join(lines)
+        + "\n  NOTE: 'NEUTRAL / score 0' here means NO RULE FIRED — it "
+        "does NOT mean there is no opportunity. The rule library is a "
+        "prioritizer, not the limit of what is tradeable, and it is "
+        "silent far more often than the market is. Judge these on the "
+        "evidence shown; if you see a setup worth taking, take it and "
+        "size it by your conviction. Passing on every name every cycle "
+        "is itself a decision, and a costly one — this book learns "
+        "only from positions it actually holds."
+    )
+
+
 def _confidence_bar_block(ctx) -> str:
     """The profile's entry confidence bar, rendered for the decision
     prompt's risk section.
@@ -2234,11 +2282,14 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context,
     if enable_shorts:
         long_lines = []
         short_lines = []
+        watch_lines = []
         for i, c in enumerate(candidates_data):
             sig = (c.get("signal") or "").upper()
             line = cand_lines[i]
             if sig in ("SELL", "STRONG_SELL", "SHORT", "STRONG_SHORT"):
                 short_lines.append(line)
+            elif _is_discretionary_candidate(c):
+                watch_lines.append(line)
             else:
                 long_lines.append(line)
         sections = []
@@ -2250,6 +2301,8 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context,
                             + "\n".join(short_lines))
         else:
             sections.append("SHORT CANDIDATES: (none triggered this scan)")
+        if watch_lines:
+            sections.append(_discretionary_block(watch_lines))
 
         # P2.3 of LONG_SHORT_PLAN.md — pair-trade opportunities.
         # Same-sector long+short pairs surfaced separately so the AI
@@ -2329,8 +2382,19 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context,
 
         candidates_section = "\n\n".join(sections)
     else:
-        candidates_section = ("CANDIDATES (ranked by technical score):\n"
-                              + "\n".join(cand_lines))
+        triggered, watch = [], []
+        for i, c in enumerate(candidates_data):
+            (watch if _is_discretionary_candidate(c)
+             else triggered).append(cand_lines[i])
+        parts = []
+        if triggered:
+            parts.append("CANDIDATES (ranked by technical score):\n"
+                         + "\n".join(triggered))
+        if watch:
+            parts.append(_discretionary_block(watch))
+        candidates_section = "\n\n".join(parts) if parts else (
+            "CANDIDATES (ranked by technical score):\n"
+            + "\n".join(cand_lines))
 
     # --- Actions allowed ---
     actions = "BUY"
