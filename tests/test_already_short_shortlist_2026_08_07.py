@@ -34,7 +34,18 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from trade_pipeline import _rank_candidates  # noqa: E402
+from trade_pipeline import (  # noqa: E402
+    _rank_candidates, short_held_stock_symbols,
+)
+
+
+class _Pos(dict):
+    """Minimal stand-in for a broker Position: dict access plus the
+    `is_option` attribute the real class exposes."""
+
+    def __init__(self, symbol, qty, is_option=False):
+        super().__init__(symbol=symbol, qty=qty)
+        self.is_option = is_option
 
 
 def _sig(symbol, signal, score, price=100.0):
@@ -105,6 +116,47 @@ class TestExitsMustStillFlow:
         assert ("AAPL", "BUY") not in _syms(out)
 
 
+class TestOptionLegsDoNotPoisonTheSet:
+    """Caught in review of this very change, against the live p210 book.
+
+    Option legs share the UNDERLYING's symbol — p210 really holds
+    EQIX stock -8 alongside EQIX option legs -1 and +1. A first cut of
+    `_is_short_stock_position` counted any negative qty, so a symbol
+    held LONG in stock with a SHORT option leg would have been marked
+    "already short" and its stock EXIT suppressed. `positions_dict` a
+    few lines below already filters `is_option` for the same collision.
+    """
+
+    def test_short_option_leg_on_a_long_stock_does_not_mark_it_short(self):
+        assert short_held_stock_symbols([
+            _Pos("EQIX", 8.0, is_option=False),
+            _Pos("EQIX", -1.0, is_option=True),
+        ]) == set(), (
+            "a short OPTION leg must not mark the underlying as "
+            "already-short — that would suppress the stock's exit"
+        )
+
+    def test_short_stock_is_still_detected_alongside_option_legs(self):
+        """The real p210 shape."""
+        assert short_held_stock_symbols([
+            _Pos("EQIX", -8.0, is_option=False),
+            _Pos("EQIX", -1.0, is_option=True),
+            _Pos("EQIX", 1.0, is_option=True),
+        ]) == {"EQIX"}
+
+    def test_long_stock_alone_is_never_short(self):
+        assert short_held_stock_symbols(
+            [_Pos("AAPL", 100.0, is_option=False)]) == set()
+
+    def test_unparseable_qty_fails_open(self):
+        assert short_held_stock_symbols(
+            [_Pos("KO", "n/a", is_option=False)]) == set()
+
+    def test_empty_and_none_are_safe(self):
+        assert short_held_stock_symbols([]) == set()
+        assert short_held_stock_symbols(None) == set()
+
+
 class TestNoCollateralChange:
     def test_omitting_the_argument_changes_nothing(self):
         """Back-compat: callers that don't pass short_held_symbols (and
@@ -132,8 +184,9 @@ class TestPipelineWiring:
         assert "short_held_symbols=short_held_symbols" in src, (
             "the set must actually be handed to _rank_candidates"
         )
-        # It must be derived from position sign, not from held_symbols.
-        assert "_is_short_position" in src
+        # Derived from position sign via the shared helper, not from
+        # held_symbols (which would filter exits).
+        assert "short_held_stock_symbols(positions_list)" in src
 
     def test_filter_is_counted_for_observability(self):
         src = open(os.path.join(os.path.dirname(__file__), os.pardir,

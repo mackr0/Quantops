@@ -2558,19 +2558,7 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     # same handful of names every cycle (GOOGL 74, KO 56, SO 52,
     # EQIX 30, WMT 28). Long-held symbols are deliberately NOT in this
     # set — a SELL on a long position is an EXIT and must keep flowing.
-    def _is_short_position(p):
-        try:
-            return float(p.get("qty") or 0) < 0
-        except (TypeError, ValueError):
-            # Unparseable qty: treat as NOT short, so the candidate
-            # still reaches the AI. Failing open here costs one wasted
-            # menu slot; failing closed would silently hide a tradable
-            # name.
-            return False
-
-    short_held_symbols = {
-        p["symbol"] for p in positions_list if _is_short_position(p)
-    }
+    short_held_symbols = short_held_stock_symbols(positions_list)
     # Stock-only dict for the prediction classifier (line ~1829) — the
     # AI's BUY / SELL / SHORT predictions are stock-level signals;
     # classifying against stock holdings is the right interpretation.
@@ -4723,6 +4711,41 @@ _CATALYST_SHORT_STRATEGIES = {
 }
 
 
+def short_held_stock_symbols(positions_list) -> set:
+    """Symbols this book is already SHORT in STOCK.
+
+    2026-08-07. Used to keep a short candidate on a name we're already
+    short off the AI's menu — `_execute_signal` rejects it downstream
+    ("Already short X"), so shortlisting it spends a scarce menu slot
+    on something that cannot become a trade.
+
+    STOCK only, and that is load-bearing twice over:
+
+      * Option legs share the UNDERLYING's symbol — a live p210 book
+        holds EQIX stock -8 alongside EQIX option legs -1 and +1. A
+        version of this that counted any negative qty would mark a
+        LONG-held stock as "already short" on the strength of a short
+        option leg, and then suppress the SELL that exits the stock.
+        `positions_dict` filters `is_option` for the same collision.
+      * Only negative-qty positions qualify. A SELL on a LONG holding
+        is an EXIT and must always keep flowing.
+
+    Unparseable qty fails OPEN (not short): one wasted menu slot beats
+    silently hiding a tradable name.
+    """
+    out = set()
+    for p in positions_list or ():
+        if getattr(p, "is_option", False):
+            continue
+        try:
+            qty = float(p.get("qty") or 0)
+        except (TypeError, ValueError):
+            continue
+        if qty < 0:
+            out.add(p["symbol"])
+    return out
+
+
 def _classify_market_regime() -> str:
     """Return 'strong_bull' | 'neutral' | 'bear' from SPY trend.
 
@@ -4968,9 +4991,9 @@ def _rank_candidates(strategy_results, held_symbols, enable_shorts,
         # KO 56, SO 52, EQIX 30, WMT 28) — directly starving a funnel
         # the operator had already flagged as under-trading.
         #
-        # `short_held_symbols` contains ONLY negative-qty positions, so
-        # a SELL on a LONG holding still flows: that is an exit, and
-        # exits must never be filtered here.
+        # `short_held_symbols` contains ONLY negative-qty STOCK
+        # positions, so a SELL on a LONG holding still flows: that is
+        # an exit, and exits must never be filtered here.
         if _is_short_action(action) and symbol in short_held_symbols:
             short_skips["already_short"] += 1
             continue

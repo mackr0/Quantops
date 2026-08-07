@@ -20,6 +20,14 @@ Fixed symmetrically: `short_held_symbols` — built from **negative-qty position
 
 **The load-bearing subtlety:** the filter keys on `short_held_symbols`, NOT `held_symbols`. A SELL on a LONG holding is an EXIT and must keep flowing — filtering on `held_symbols` would strand every long position the AI wanted to close, a far worse bug than the one being fixed. A position with an unparseable qty is treated as not-short (fails open: one wasted menu slot beats silently hiding a tradable name).
 
+**Follow-up correction, same day — the short-held set is STOCK-only.** The first cut counted ANY negative-qty position, which was wrong, and checking the helper against the live p210 book rather than trusting it is what surfaced it. Option legs share the UNDERLYING's symbol:
+
+    EQIX stock  -8.0   is_option=False
+    EQIX option -1.0   is_option=True
+    EQIX option +1.0   is_option=True
+
+So a symbol held **long in stock** with a **short option leg** would have been marked "already short" and the SELL that exits the stock filtered off the menu — trapping the position. That is precisely the failure the new tests were written to prevent, present in the implementation of the fix itself. `positions_dict` twenty lines away already filters `is_option` for the same collision. Extracted to a module-level, directly testable `short_held_stock_symbols(positions_list)` that skips option legs; verified against the real p210 book, which returns `{EQIX, KO, WMT}` with EQIX qualifying on its stock leg only. Five further tests cover the option-leg collision, unparseable qty, and empty/None input.
+
 Pinned in `test_already_short_shortlist_2026_08_07.py` (9 tests: all four short verbs filtered when already short, SELL on a long holding still flows with shorts both enabled and disabled, the long-side BUY rule untouched, omitting the new argument changes nothing, and wiring assertions that the set comes from position sign and that the filter is counted).
 
 ## 2026-08-07 — THE CASH STOCKPILE: the Kelly anchor is out of the decision prompt and a conviction-banded size target is in. Severity: HIGH (the system was structurally defeating its own purpose).
