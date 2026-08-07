@@ -5,6 +5,23 @@ at the top.
 
 ---
 
+## 2026-08-07 — The shortlist had a long-side "already held" filter and no short-side mirror: 236 of 288 SKIP drops were the AI picking names it was already short. Severity: MEDIUM (silently starved an already-starved funnel).
+
+`_rank_candidates` has filtered long signals on held symbols since it was written:
+
+    if _is_long_action(action) and symbol in held_symbols:
+        continue
+
+There was never a short-side counterpart. A SHORT/SELL signal on a name the book was already short passed straight into the AI's ~15-slot menu, the AI picked it, and `_execute_signal` then discarded the order with "Already short {symbol}".
+
+**Measured over the 7 days to 2026-08-07 (profiles 210-219): 236 of 288 `SKIP` drops were exactly this**, concentrated on five names re-nominated cycle after cycle — GOOGL 74, KO 56, SO 52, EQIX 30, WMT 28. Every one consumed a menu slot that could not become a trade, inside a funnel already flagged as under-trading (70.3% of cycles selected nothing). The waste compounded the very problem it sat inside.
+
+Fixed symmetrically: `short_held_symbols` — built from **negative-qty positions only** — is passed into `_rank_candidates`, and a short action on a name in that set is filtered before the menu is built. The count appears in the existing short-candidate filter log line, because a silent filter is how the original omission survived for months.
+
+**The load-bearing subtlety:** the filter keys on `short_held_symbols`, NOT `held_symbols`. A SELL on a LONG holding is an EXIT and must keep flowing — filtering on `held_symbols` would strand every long position the AI wanted to close, a far worse bug than the one being fixed. A position with an unparseable qty is treated as not-short (fails open: one wasted menu slot beats silently hiding a tradable name).
+
+Pinned in `test_already_short_shortlist_2026_08_07.py` (9 tests: all four short verbs filtered when already short, SELL on a long holding still flows with shorts both enabled and disabled, the long-side BUY rule untouched, omitting the new argument changes nothing, and wiring assertions that the set comes from position sign and that the filter is counted).
+
 ## 2026-08-07 — THE CASH STOCKPILE: the Kelly anchor is out of the decision prompt and a conviction-banded size target is in. Severity: HIGH (the system was structurally defeating its own purpose).
 
 Operator, restating a directive given since the project began: *"my goal has been to trade NOT STOCKPILE CASH… why do you insist on stockpiling cash in all the accounts when I keep saying to not build it to do this?"* He is right, and the measurement is damning.

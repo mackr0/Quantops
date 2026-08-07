@@ -2550,6 +2550,27 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
         positions_list = [p for p in positions_list if ("/" in p["symbol"]) == is_crypto]
 
     held_symbols = {p["symbol"] for p in positions_list}
+    # 2026-08-07 — symbols ALREADY held short. A second short on a name
+    # we're already short is dropped downstream by _execute_signal
+    # ("Already short X"), so shortlisting it burns one of the AI's
+    # scarce menu slots on a guaranteed no-op. Measured over the 7 days
+    # to 2026-08-07: 236 of 288 SKIP drops were exactly this, on the
+    # same handful of names every cycle (GOOGL 74, KO 56, SO 52,
+    # EQIX 30, WMT 28). Long-held symbols are deliberately NOT in this
+    # set — a SELL on a long position is an EXIT and must keep flowing.
+    def _is_short_position(p):
+        try:
+            return float(p.get("qty") or 0) < 0
+        except (TypeError, ValueError):
+            # Unparseable qty: treat as NOT short, so the candidate
+            # still reaches the AI. Failing open here costs one wasted
+            # menu slot; failing closed would silently hide a tradable
+            # name.
+            return False
+
+    short_held_symbols = {
+        p["symbol"] for p in positions_list if _is_short_position(p)
+    }
     # Stock-only dict for the prediction classifier (line ~1829) — the
     # AI's BUY / SELL / SHORT predictions are stock-level signals;
     # classifying against stock holdings is the right interpretation.
@@ -2850,7 +2871,8 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     shortlist = _rank_candidates(strategy_results, held_symbols, enable_shorts,
                                   deprecated_strategies=deprecated_types,
                                   target_short_pct=target_short_pct_for_rank,
-                                  ctx=ctx, symbol_reputation=symbol_reputation)
+                                  ctx=ctx, symbol_reputation=symbol_reputation,
+                                  short_held_symbols=short_held_symbols)
 
     # Ensure every shortlisted candidate has a valid price. If the
     # strategy's get_bars call failed during scoring, the candidate
@@ -4884,7 +4906,8 @@ def _apply_menu_floor(shortlist, scanned_symbols, held_symbols,
 def _rank_candidates(strategy_results, held_symbols, enable_shorts,
                       deprecated_strategies=None,
                       target_short_pct=0.0,
-                      ctx=None, symbol_reputation=None):
+                      ctx=None, symbol_reputation=None,
+                      short_held_symbols=None):
     """Rank strategy results into a shortlist for AI batch review.
 
     When shorts are disabled: returns top ~15 long candidates by abs(score),
@@ -4910,6 +4933,7 @@ def _rank_candidates(strategy_results, held_symbols, enable_shorts,
     deprecation in either path.
     """
     deprecated_strategies = deprecated_strategies or set()
+    short_held_symbols = short_held_symbols or set()
 
     def _is_long_action(a):
         return a in ("BUY", "STRONG_BUY")
@@ -4919,7 +4943,8 @@ def _rank_candidates(strategy_results, held_symbols, enable_shorts,
 
     long_eligible = []
     short_eligible = []
-    short_skips = {"borrow": 0, "squeeze": 0, "regime": 0}
+    short_skips = {"borrow": 0, "squeeze": 0, "regime": 0,
+                   "already_short": 0}
     _chronic_skips = []
     market_regime = _classify_market_regime() if enable_shorts else "neutral"
 
@@ -4932,6 +4957,22 @@ def _rank_candidates(strategy_results, held_symbols, enable_shorts,
         if _is_short_action(action) and symbol not in held_symbols and not enable_shorts:
             continue
         if _is_long_action(action) and symbol in held_symbols:
+            continue
+        # 2026-08-07 — the SHORT-side mirror of the line above, which
+        # had no counterpart for six months. A short on a name already
+        # held short is rejected downstream by _execute_signal
+        # ("Already short X"), so shortlisting it spends one of the
+        # AI's ~15 menu slots on something that CANNOT become a trade.
+        # It was 236 of 288 SKIP drops in the 7 days to 2026-08-07 —
+        # the same five names re-nominated every cycle (GOOGL 74,
+        # KO 56, SO 52, EQIX 30, WMT 28) — directly starving a funnel
+        # the operator had already flagged as under-trading.
+        #
+        # `short_held_symbols` contains ONLY negative-qty positions, so
+        # a SELL on a LONG holding still flows: that is an exit, and
+        # exits must never be filtered here.
+        if _is_short_action(action) and symbol in short_held_symbols:
+            short_skips["already_short"] += 1
             continue
 
         # 2026-07-21 (evening) — CHRONIC-ZERO-WIN exclusion. The
@@ -5035,9 +5076,10 @@ def _rank_candidates(strategy_results, held_symbols, enable_shorts,
     if enable_shorts and any(short_skips.values()):
         logging.info(
             "Short candidate filters (regime=%s): %d filtered for borrow, "
-            "%d for squeeze risk, %d for regime gate",
+            "%d for squeeze risk, %d for regime gate, %d already short",
             market_regime, short_skips["borrow"],
             short_skips["squeeze"], short_skips["regime"],
+            short_skips["already_short"],
         )
 
     # Concentration-aware ranking (2026-06-30): down-weight a LONG
