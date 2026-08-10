@@ -5,6 +5,16 @@ at the top.
 
 ---
 
+## 2026-08-08 — The evidence hierarchy + the resurrection net: a wrongful void now survives at most one cycle, no matter which writer causes it. Severity: HIGH (p211's live BAC short put — 3 contracts, fill broker-verified — was voided by ONE transient 404; broker orphan + cash-parity failure on account 56).
+
+The incident: p211 sold 3 BAC Sep-18 $60 puts (filled 3 @ $0.72, journaled, fill_price backfilled from a SUCCESSFUL broker read). A day later the phantom sweep's order lookup threw a transient 404 and the row was voided on that single failed read — status=canceled, price=0 — orphaning a live short position the broker still holds. The operator's verdict on the pattern of per-writer patches was correct and is now policy: stop fixing leaks one writer at a time; make the class impossible underneath all of them.
+
+**Mechanism 1 — evidence hierarchy at the void writers.** A journal row booked on a broker-verified fill was written on STRONGER evidence than any failed lookup, so no lookup failure may destroy it: the phantom sweep now refuses to void any row carrying fill evidence (404, broker-None, and even a terminal-unfilled reading — a journal/broker contradiction is an operator alarm, never a silent void in the destructive direction). And a 404 only voids anything after a direct, cache-bypassing confirm — one flaky (or stale-cached) read proves nothing. Same confirm discipline added to update_fills' order-unknown void.
+
+**Mechanism 2 — the net.** `phantom_sweep.resurrect_wrongly_voided`, running wherever the sweep runs (every cycle, every profile): every dead journal row's broker order is checked against broker truth, and an order with FILLS is a real position — the row is restored from that evidence (qty=filled_qty, price=filled_avg_price; entry-side rows and sell-to-open options come back 'open', exits come back 'pending_fill' so the normal state machine closes them through the FIFO). Instrument-agnostic and writer-agnostic by construction: it operates on order ids and fills, not on stock/option code branches, so it also covers whatever the NEXT writer bug is. Every resurrection writes a CRITICAL `wrongful_void_resurrected` audit alert, because the net firing means some writer upstream destroyed evidence and must be found. Cheap: terminal orders are cached forever, so each dead row costs one API read once.
+
+Pinned by 11 tests in `test_evidence_hierarchy_2026_08_08.py`, including the exact BAC shape (voided sell-to-open put restored to an open short), partial-fill entries restored at broker qty, filled exits restored to pending_fill, genuine voids left standing, and a structural pin that the net runs inside every sweep.
+
 ## 2026-08-07 — The AI was not being timid: 69% of everything on its menu was a non-idea, and 43% of cycles were 100% non-ideas. Severity: HIGH (the largest single component of the 70% zero-selection rate).
 
 Operator: *"fix the conviction/confidence problem too."*

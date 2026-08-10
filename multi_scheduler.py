@@ -1605,6 +1605,18 @@ def _task_update_fills(ctx):
                            ).strftime("%Y-%m-%d %H:%M:%S")
                 if ("not found" in _es or "404" in _es) and (
                         _row_ts and _row_ts < _cutoff):
+                    # 2026-08-08 — a single (possibly cached) 404 is
+                    # not proof. Direct cache-bypassing confirm; any
+                    # non-404 answer means "not confirmed unknown" and
+                    # the row waits for the next pass.
+                    try:
+                        if api.get_order(trade["order_id"]) is not None:
+                            continue
+                    except Exception as _direct_exc:
+                        _dds = str(_direct_exc).lower()
+                        if ("not found" not in _dds
+                                and "404" not in _dds):
+                            continue
                     conn.execute(
                         "UPDATE trades SET status = 'canceled', price = 0 "
                         "WHERE id = ?", (trade["id"],),

@@ -29,7 +29,10 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 def _healer_exc_block():
     src = open(os.path.join(REPO, "multi_scheduler.py")).read()
     idx = src.index("ORDER-NOT-FOUND voiding")
-    return src[idx:idx + 2400]
+    # Window widened 2400 → 3400 on 2026-08-08: the direct
+    # cache-bypassing confirm block sits between the 404 check and the
+    # debug-and-continue fallback now.
+    return src[idx:idx + 3400]
 
 
 class TestHealerVoidsUnknownOrders:
