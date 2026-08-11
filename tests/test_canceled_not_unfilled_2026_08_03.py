@@ -509,3 +509,86 @@ class TestCanceledWritersAreAudited:
             "stale _AUDITED_CANCELED_WRITERS entries (writer no "
             "longer exists / renamed) — remove them so they can't "
             f"mask a future writer of the same name: {sorted(stale)}")
+
+
+class TestOwnRoundtripNeverExternal:
+    """2026-08-10 — external means NOT OURS. An option OCC that went
+    account-flat because this profile's OWN journaled orders opened
+    and closed it is an ordinary close whose state-machine flip
+    lagged; stamping it 'auto_closed_external' excludes both legs
+    from the cash algebra and vanishes the pair's net premium (the
+    p211 AMGN/PM/KO $142 cash residual on account 56)."""
+
+    def _fixture(self, tmp_path, close_status="open"):
+        db = _mk_db()
+        short = _insert(db, timestamp="2026-08-06T15:31:00",
+                        symbol="AMGN", side="sell", qty=2.0,
+                        price=4.75, fill_price=4.75,
+                        order_id="occ-open", status="open",
+                        occ_symbol="AMGN260821P00390000")
+        cover = _insert(db, timestamp="2026-08-10T14:43:00",
+                        symbol="AMGN", side="buy", qty=2.0,
+                        price=2.16, fill_price=2.16,
+                        order_id="occ-close", status=close_status,
+                        occ_symbol="AMGN260821P00390000")
+        api = FakeAPI(orders={
+            "occ-open": FakeOrder("occ-open", "filled", side="sell",
+                                  filled_qty=2, filled_avg_price=4.75,
+                                  qty=2),
+            "occ-close": FakeOrder("occ-close", "filled", side="buy",
+                                   filled_qty=2, filled_avg_price=2.16,
+                                   qty=2),
+        })
+        return db, short, cover, api
+
+    def _run(self, db, api, monkeypatch):
+        import sqlite3 as _sq
+        import order_status_cache
+        monkeypatch.setattr(order_status_cache, "get_order_cached",
+                            lambda a, oid, **kw: a.get_order(oid))
+        from reconcile_journal_to_broker import reconcile_option_orphans
+        from datetime import date
+        conn = _sq.connect(db)
+        conn.row_factory = _sq.Row
+        try:
+            out = reconcile_option_orphans(
+                api, conn, [], date(2026, 8, 10), True)
+        finally:
+            conn.close()
+        return out
+
+    def test_flat_own_pair_books_as_ordinary_close(self, tmp_path,
+                                                   monkeypatch):
+        db, short, cover, api = self._fixture(tmp_path)
+        out = self._run(db, api, monkeypatch)
+        assert any(d.get("kind") == "own_close" for d in out)
+        assert _row(db, short)["status"] == "closed"
+        assert _row(db, cover)["status"] == "closed"
+
+    def test_unverified_close_falls_back_to_external_path(
+            self, tmp_path, monkeypatch):
+        """Close order unknown at broker → NOT provably ours → the
+        external-evidence path decides (here: no evidence → leg stays
+        open)."""
+        db, short, cover, api = self._fixture(tmp_path)
+        del api.orders["occ-close"]
+        out = self._run(db, api, monkeypatch)
+        assert not any(d.get("kind") == "own_close" for d in out)
+        assert _row(db, short)["status"] == "open"
+
+    def test_one_sided_flat_still_external_path(self, tmp_path,
+                                                monkeypatch):
+        """Only the entry exists (true external close shape): the
+        own-roundtrip branch must not claim it."""
+        db = _mk_db()
+        _insert(db, timestamp="2026-08-06T15:31:00",
+                symbol="AMGN", side="sell", qty=2.0,
+                price=4.75, fill_price=4.75,
+                order_id="occ-open", status="open",
+                occ_symbol="AMGN260821P00390000")
+        api = FakeAPI(orders={
+            "occ-open": FakeOrder("occ-open", "filled", side="sell",
+                                  filled_qty=2, filled_avg_price=4.75,
+                                  qty=2)})
+        out = self._run(db, api, monkeypatch)
+        assert not any(d.get("kind") == "own_close" for d in out)

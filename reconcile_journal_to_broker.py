@@ -1279,6 +1279,63 @@ def _external_close_evidence(api, occ_symbol):
     return None
 
 
+def _own_occ_roundtrip(api, conn, occ: str):
+    """Row ids of this profile's LIVE rows for `occ` when they form a
+    complete OWN round-trip: two or more rows whose signed quantities
+    net to flat and whose OWN order_ids are all broker-verified
+    FILLED at their journaled quantities. None otherwise.
+
+    2026-08-10 (the p211 AMGN/PM/KO cash holes): an ordinary own
+    short-then-buy-back pair went account-flat before the fill state
+    machine flipped it, and the orphan backstop stamped BOTH legs
+    'auto_closed_external' — handing their cash to an activities pass
+    that rightly books nothing for ordinary fills (trade rows own
+    that), so the pair's net premium vanished from the virtual books
+    (+$142 cash-parity residual on account 56). External means NOT
+    OURS: when our own journaled orders fully explain the flatness,
+    it is an OWN close and must be booked as one.
+    """
+    try:
+        rows = conn.execute(
+            "SELECT id, side, qty, order_id FROM trades "
+            "WHERE occ_symbol = ? "
+            "AND COALESCE(status, 'open') IN ('open', 'pending_fill')",
+            (occ,),
+        ).fetchall()
+    except sqlite3.Error:
+        return None
+    if len(rows) < 2:
+        return None
+    net = 0.0
+    ids = []
+    for r in rows:
+        side = (r["side"] or "").lower()
+        qty = float(r["qty"] or 0)
+        oid = r["order_id"]
+        if qty <= 0 or not oid:
+            return None
+        net += qty if side == "buy" else -qty
+        try:
+            from order_status_cache import get_order_cached
+            order = get_order_cached(api, oid)
+        except Exception:
+            return None  # unverifiable → not provably ours; fall back
+        if order is None:
+            return None
+        if (getattr(order, "status", "") or "").lower() != "filled":
+            return None
+        try:
+            if abs(float(getattr(order, "filled_qty", 0) or 0)
+                   - qty) > 0.001:
+                return None
+        except (TypeError, ValueError):
+            return None
+        ids.append(r["id"])
+    if abs(net) > 0.001:
+        return None
+    return ids
+
+
 def reconcile_option_orphans(api, conn, positions, today,
                              apply_changes) -> list:
     """OPTION-ORPHAN BACKSTOP (2026-06-17). Per-cycle broker-truth pass
@@ -1438,6 +1495,51 @@ def reconcile_option_orphans(api, conn, positions, today,
         # close produces its activity within a cycle and the leg
         # closes then, with the activity id in the reason.
         if kind == "auto_closed":
+            # 2026-08-10 — OWN CLOSE FIRST. If this profile's own
+            # journaled orders fully explain the flat OCC (a complete,
+            # broker-verified own round-trip whose state-machine flip
+            # simply lagged), book it as an ORDINARY close: rows go
+            # 'closed' (pnl NULL — recompute_realized_pnl trues it
+            # from fills) and their cash stays leg-based. Stamping own
+            # round-trips 'auto_closed_external' handed their cash to
+            # the activities pass, which books nothing for ordinary
+            # fills — the AMGN/PM/KO premium holes on account 56.
+            _own_ids = _own_occ_roundtrip(api, conn, occ)
+            if _own_ids:
+                if apply_changes:
+                    try:
+                        ph = ",".join("?" * len(_own_ids))
+                        conn.execute(
+                            f"UPDATE trades SET status='closed', "
+                            f"reason = COALESCE(reason || ' | ', '') "
+                            f"|| ? WHERE id IN ({ph})",
+                            (["reconcile: own round-trip complete — "
+                              "all legs broker-verified filled on own "
+                              "order ids; booked as ordinary close "
+                              "(state-machine flip lagged)"]
+                             + list(_own_ids)),
+                        )
+                        conn.commit()
+                    except sqlite3.Error as _own_exc:
+                        logger.warning(
+                            "own-roundtrip close failed for %s: %s",
+                            occ, _own_exc)
+                        continue
+                logger.info(
+                    "Reconcile: option %s account-flat and fully "
+                    "explained by OWN filled orders (%d rows) — "
+                    "booked as ordinary close, NOT external.",
+                    occ, len(_own_ids),
+                )
+                closed.append({
+                    "trade_id": _g(leg, "id"), "occ_symbol": occ,
+                    "symbol": _g(leg, "symbol"),
+                    "side": (_g(leg, "side") or ""),
+                    "qty": float(_g(leg, "qty") or 0),
+                    "kind": "own_close",
+                    "new_status": "closed",
+                })
+                continue
             _ev = _external_close_evidence(api, occ)
             if _ev is None:
                 logger.warning(
