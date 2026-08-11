@@ -292,7 +292,16 @@ class TestStandings:
                "edge_wins": 30, "edge_losses": 10, "edge_ties": 0,
                "verdict": "shadow_better", "verdict_leader": "shadow",
                "verdict_line": "x", "cost": 1.0, "match_exact": 1,
-               "match_window": 0}
+               "match_window": 0, "agree": 0, "dis_resolved": 1,
+               "shadow_right": 1, "primary_right": 0,
+               "shadow_only": 1, "primary_only": 0, "both_right": 0,
+               "neither_right": 0, "ungradable": 0, "dis_pending": 0,
+               "errors": 0, "quota": 0, "throttled": 0,
+               "latency_ms": 0, "latency_n": 0,
+               "agreement_pct": None, "avg_latency_ms": None,
+               "gate_calls": 0, "gate_block_pct": None,
+               "gate_primary_block_pct": None,
+               "purposes_covered": 1}
         m = {"overview": {"calls": 1, "graded": 1, "cost": 1.0,
                           "profiles": 1, "since_days": 30},
              "per_model": {"openai:nano": arm},

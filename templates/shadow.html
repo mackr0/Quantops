@@ -91,8 +91,8 @@
                 {% elif v.verdict == 'primary_better' %}<strong class="pnl-neg">Primary is better</strong>
                 {% else %}<span class="muted">Not enough evidence</span>{% endif %}
             </td>
-            <td>{% if v.edge_per_decision is not none %}<strong>{{ "%+.2f"|format(v.edge_per_decision) }} pts</strong>{% else %}—{% endif %}</td>
-            <td>{% if v.edge_points is not none %}{{ "%+.0f"|format(v.edge_points) }} pts{% else %}—{% endif %}</td>
+            <td class="{% if v.edge_per_decision is not none and v.edge_per_decision > 0 %}pnl-pos{% elif v.edge_per_decision is not none and v.edge_per_decision < 0 %}pnl-neg{% endif %}">{% if v.edge_per_decision is not none %}<strong>{{ "%+.2f"|format(v.edge_per_decision) }} pts</strong>{% else %}—{% endif %}</td>
+            <td class="{% if v.edge_points is not none and v.edge_points > 0 %}pnl-pos{% elif v.edge_points is not none and v.edge_points < 0 %}pnl-neg{% endif %}">{% if v.edge_points is not none %}{{ "%+.0f"|format(v.edge_points) }} pts{% else %}—{% endif %}</td>
             <td>{{ v.edge_n }}{% if v.edge_n < m.verdict_min_decisions %} <span class="muted">/ {{ m.verdict_min_decisions }}</span>{% endif %}</td>
             <td>{% if v.edge_wins + v.edge_losses %}{{ v.edge_wins }}W / {{ v.edge_losses }}L{% else %}—{% endif %}</td>
             <td>{{ v.edge_p if v.edge_p is not none else "—" }}</td>
@@ -201,8 +201,8 @@
             <td>{{ v.disagree }}</td>
             <td>{{ v.dis_resolved }}</td>
             <td><strong>{{ v.dis_units }}</strong></td>
-            <td class="pnl-pos"><strong>{{ v.shadow_only }}</strong></td>
-            <td><strong>{{ v.primary_only }}</strong></td>
+            <td class="{% if v.shadow_only > v.primary_only %}pnl-pos{% elif v.shadow_only < v.primary_only %}pnl-neg{% endif %}"><strong>{{ v.shadow_only }}</strong></td>
+            <td class="{% if v.primary_only > v.shadow_only %}pnl-pos{% elif v.primary_only < v.shadow_only %}pnl-neg{% endif %}"><strong>{{ v.primary_only }}</strong></td>
             <td class="muted">{{ v.both_right }}</td>
             <td class="muted">{{ v.neither_right }}</td>
             <td class="muted">{{ v.moot }}</td>
@@ -300,8 +300,8 @@
                 <td>{{ v.agreement_pct if v.agreement_pct is not none else "—" }}{% if v.agreement_pct is not none %}%{% endif %}</td>
                 <td>{{ v.dis_resolved }}</td>
                 <td><strong>{{ v.dis_units }}</strong></td>
-                <td class="pnl-pos">{{ v.shadow_only }}</td>
-                <td>{{ v.primary_only }}</td>
+                <td class="{% if v.shadow_only > v.primary_only %}pnl-pos{% elif v.shadow_only < v.primary_only %}pnl-neg{% endif %}">{{ v.shadow_only }}</td>
+                <td class="{% if v.primary_only > v.shadow_only %}pnl-pos{% elif v.primary_only < v.shadow_only %}pnl-neg{% endif %}">{{ v.primary_only }}</td>
                 <td class="muted">{{ v.moot }}</td>
                 <td class="muted">{{ v.ungradable }}</td>
                 <td class="muted">{{ v.dis_pending }}</td>
@@ -342,8 +342,8 @@
                 <td>{{ v.agreement_pct if v.agreement_pct is not none else "—" }}{% if v.agreement_pct is not none %}%{% endif %}</td>
                 <td>{{ v.dis_resolved }}</td>
                 <td><strong>{{ v.dis_units }}</strong></td>
-                <td class="pnl-pos">{{ v.shadow_only }}</td>
-                <td>{{ v.primary_only }}</td>
+                <td class="{% if v.shadow_only > v.primary_only %}pnl-pos{% elif v.shadow_only < v.primary_only %}pnl-neg{% endif %}">{{ v.shadow_only }}</td>
+                <td class="{% if v.primary_only > v.shadow_only %}pnl-pos{% elif v.primary_only < v.shadow_only %}pnl-neg{% endif %}">{{ v.primary_only }}</td>
                 <td class="muted">{{ v.moot }}</td>
                 <td class="muted">{{ v.ungradable }}</td>
             </tr>

@@ -472,3 +472,35 @@ class TestVisibilityFixes20260811:
         assert "Prompt-variant process" in tpl
         assert "Primary blocks (same calls)" in tpl
         assert "Scope" in tpl
+
+
+class TestOutcomeColoring20260811:
+    """2026-08-11 — the Shadow-won column was hardcoded green (a
+    column-identity color). Normal convention: whichever side won more
+    gets green, the other red, ties neutral — and edge numbers color
+    by sign."""
+
+    def test_no_static_green_on_shadow_won(self):
+        tpl = open(os.path.join(REPO_DIR, "templates",
+                                "shadow.html")).read()
+        assert 'class="pnl-pos">{{ v.shadow_only }}' not in tpl
+        assert 'class="pnl-pos"><strong>{{ v.shadow_only }}' not in tpl
+
+    def test_comparative_classes_present(self):
+        tpl = open(os.path.join(REPO_DIR, "templates",
+                                "shadow.html")).read()
+        assert tpl.count(
+            "{% if v.shadow_only > v.primary_only %}pnl-pos"
+            "{% elif v.shadow_only < v.primary_only %}pnl-neg") == 3, (
+            "all three tables must color the tally by who is ahead")
+        assert ("{% if v.primary_only > v.shadow_only %}pnl-pos"
+                "{% elif v.primary_only < v.shadow_only %}pnl-neg"
+                ) in tpl
+
+    def test_edge_cells_color_by_sign(self):
+        tpl = open(os.path.join(REPO_DIR, "templates",
+                                "shadow.html")).read()
+        assert ("v.edge_per_decision is not none and "
+                "v.edge_per_decision > 0 %}pnl-pos") in tpl
+        assert ("v.edge_per_decision is not none and "
+                "v.edge_per_decision < 0 %}pnl-neg") in tpl
