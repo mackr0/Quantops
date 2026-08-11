@@ -39,6 +39,27 @@
 
 <article>
     <header><h3 style="margin:0;">Bottom line — would following this arm have made more money?</h3></header>
+    {% if m.standings and (m.standings.better or m.standings.worse) %}
+    <p style="font-size:0.95em;">
+        <strong>Standings vs the primary</strong> (each arm judged on
+        its own disagreements with the same primary — a ranking through
+        the common opponent, not a direct arm-vs-arm trial):
+        {% for mk, e in m.standings.better -%}
+            <strong class="pnl-pos">{{ mk }}</strong> beats the primary
+            ({{ "%+.2f"|format(e) }} pts/decision){{ ", " if not loop.last }}
+        {%- endfor %}
+        {%- if m.standings.better and m.standings.worse %}; {% endif %}
+        the primary beats
+        {% for mk, e in m.standings.worse -%}
+            <strong class="pnl-neg">{{ mk }}</strong>
+            ({{ "%+.2f"|format(e) }} pts/decision){{ ", " if not loop.last }}
+        {%- endfor %}{% if not m.standings.worse %}no arm yet{% endif %}.
+        {% if m.standings.undecided %}
+        Not enough evidence to place:
+        {{ m.standings.undecided|join(", ") }}.
+        {% endif %}
+    </p>
+    {% endif %}
     <p class="muted" style="font-size:0.9em;margin-top:0;">
         Each arm scored by the <strong>return points you'd have banked
         by acting on its call instead of the primary's</strong>, summed
@@ -168,6 +189,7 @@
             <th title="no stance to compare (apex trade-set strings), or the move stayed inside the noise band">Ungradable</th>
             <th>Pending</th><th>Errors</th><th>Quota</th>
             <th>Throttled</th><th>Cost</th><th>Latency</th>
+            <th title="how many decision categories this arm shadows — a prompt variant deliberately covers only the category its rewrite targets">Scope</th>
         </tr></thead>
         <tbody>
         {% for mk, v in m.per_model.items() %}
@@ -191,6 +213,7 @@
             <td class="muted">{{ v.throttled }}</td>
             <td>${{ "%.4f"|format(v.cost) }}</td>
             <td>{{ v.avg_latency_ms }} ms</td>
+            <td>{{ v.purposes_covered }} categor{{ "y" if v.purposes_covered == 1 else "ies" }}</td>
         </tr>
         {% endfor %}
         </tbody>
@@ -205,6 +228,51 @@
         dozen units a lopsided-looking result is routinely a handful of
         repeated names.
     </p>
+</article>
+
+{% set variant_arms = [] %}
+{% for mk, v in m.per_model.items() %}{% if "@" in mk and v.gate_calls %}{% set _ = variant_arms.append((mk, v)) %}{% endif %}{% endfor %}
+<article>
+    <header><h3 style="margin:0;">Prompt-variant process — is the rewrite doing what it was built to do?</h3></header>
+    <p class="muted" style="font-size:0.9em;">
+        A <code>@variant</code> arm runs the SAME model as the primary
+        with rewritten instructions, so before any money verdict its
+        first test is behavioral: on the very same review calls, does
+        it block trades at a different rate? (The rewrite's goal:
+        fewer blanket vetoes, each one citing evidence.) Money
+        verdicts for a veto-authority arm accrue slowly — this is the
+        experiment's live readout in the meantime.
+    </p>
+    {% if variant_arms %}
+    <div class="overflow-auto">
+    <table class="striped">
+        <thead><tr>
+            <th>Arm</th>
+            <th title="review calls where both sides gave a clear allow/block verdict">Compared calls</th>
+            <th>Arm blocks</th>
+            <th>Primary blocks (same calls)</th>
+            <th>Difference</th>
+        </tr></thead>
+        <tbody>
+        {% for mk, v in variant_arms %}
+        <tr>
+            <td><code>{{ mk }}</code></td>
+            <td>{{ v.gate_calls }}</td>
+            <td><strong>{{ v.gate_block_pct }}%</strong></td>
+            <td>{{ v.gate_primary_block_pct }}%</td>
+            <td>{% if v.gate_block_pct is not none and v.gate_primary_block_pct is not none %}
+                {{ "%+.1f"|format(v.gate_block_pct - v.gate_primary_block_pct) }} pts
+                {% else %}—{% endif %}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    {% else %}
+    <p class="muted">No prompt-variant arm is currently reporting
+        review calls — configure one in a profile's shadow settings to
+        populate this section.</p>
+    {% endif %}
 </article>
 
 <article>

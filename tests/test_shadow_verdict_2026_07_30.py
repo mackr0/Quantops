@@ -239,3 +239,71 @@ class TestEvidenceFunnelRendered:
     def test_both_met_shows_double_check(self):
         html = self._render(edge_n=78, edge_p=0.01)
         assert html.count("✓") == 2 or html.count("&#10003;") == 2
+
+
+class TestStandings:
+    """2026-08-11 — one row said 'Primary is better', another 'This
+    arm is better'; the operator had to chain the verdicts by hand.
+    The standings line states the transitive ordering, refuses to
+    place undecided arms, and names its own limitation (ranking
+    through the common opponent, not arm-vs-arm)."""
+
+    def test_ordering_and_refusal(self):
+        from shadow_metrics import _standings
+        s = _standings({
+            "openai:nano": {"verdict": "shadow_better",
+                            "edge_per_decision": 1.88},
+            "anthropic:haiku": {"verdict": "primary_better",
+                                "edge_per_decision": -1.58},
+            "google:variant": {"verdict": "insufficient",
+                               "edge_per_decision": None},
+        })
+        assert s["better"] == [("openai:nano", 1.88)]
+        assert s["worse"] == [("anthropic:haiku", -1.58)]
+        assert s["undecided"] == ["google:variant"]
+
+    def test_multiple_better_sorted_best_first(self):
+        from shadow_metrics import _standings
+        s = _standings({
+            "a": {"verdict": "shadow_better", "edge_per_decision": 0.5},
+            "b": {"verdict": "shadow_better", "edge_per_decision": 2.0},
+        })
+        assert [m for m, _ in s["better"]] == ["b", "a"]
+
+    def test_rendered_line(self):
+        html = TestEvidenceFunnelRendered()._render(
+            edge_n=78, edge_p=0.99)
+        # _render's fixture has no decided arms → no standings line
+        assert "Standings vs the primary" not in html
+
+    def test_rendered_line_with_decided_arms(self):
+        import jinja2
+        # rebuild the fixture with a decided arm + standings
+        tpl_dir = os.path.join(os.path.dirname(__file__), os.pardir,
+                               "templates")
+        src = open(os.path.join(tpl_dir, "shadow.html")).read()
+        body = src.split("{% block content %}", 1)[1]
+        body = body.rsplit("{% endblock %}", 1)[0]
+        env = jinja2.Environment(
+            loader=jinja2.FileSystemLoader(tpl_dir), autoescape=True)
+        arm = {"calls": 1, "graded": 1, "disagree": 1, "dis_units": 1,
+               "moot": 0, "edge_n": 40, "edge_p": 0.01,
+               "edge_per_decision": 1.88, "edge_points": 75.0,
+               "edge_wins": 30, "edge_losses": 10, "edge_ties": 0,
+               "verdict": "shadow_better", "verdict_leader": "shadow",
+               "verdict_line": "x", "cost": 1.0, "match_exact": 1,
+               "match_window": 0}
+        m = {"overview": {"calls": 1, "graded": 1, "cost": 1.0,
+                          "profiles": 1, "since_days": 30},
+             "per_model": {"openai:nano": arm},
+             "by_purpose": {}, "by_primary_action": {}, "daily": {},
+             "recent_disagreements": [],
+             "verdict_min_decisions": 30,
+             "standings": {"better": [("openai:nano", 1.88)],
+                           "worse": [("anthropic:haiku", -1.58)],
+                           "undecided": ["google:variant"]}}
+        html = env.from_string(body).render(m=m)
+        assert "Standings vs the primary" in html
+        assert "beats the primary" in html
+        assert "Not enough evidence to place" in html
+        assert "not a direct arm-vs-arm trial" in html

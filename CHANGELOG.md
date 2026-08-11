@@ -5,6 +5,20 @@ at the top.
 
 ---
 
+## 2026-08-11 — /shadow readability batch: standings stated, the variant experiment visible, recents representative, profiles named. Severity: LOW-MEDIUM (the variant's live experiment had no readout at all).
+
+Four operator observations in one sitting, all real:
+
+**Standings.** With Haiku's row reading "Primary is better" and nano's "This arm is better," the reader had to notice every row is a separate head-to-head against the SAME primary and chain them. The Bottom line card now opens with a Standings sentence — arms that beat the primary (best first, with edge), arms the primary beats, and unplaced arms, never ranked (refusal stays the page's ethic). It names its own limitation: a ranking through the common opponent, not a direct arm-vs-arm trial.
+
+**The prompt variant was tested but nowhere measured.** Its whole experiment — does the rewritten reviewer prompt veto less than the primary's, with evidence — had no stat on the page; money verdicts for a veto-authority arm accrue too slowly to be its readout. A "Prompt-variant process" card now shows same-call block rates: on identical review calls, the arm's block % vs the primary's, with the difference. Computed per arm from rows already on disk (`gate_calls`/`gate_blocks`/`gate_primary_blocks`); None (rendered as unmeasured) when an arm saw no gate calls — never a fake 0%.
+
+**Recent disagreements were neither recent nor representative.** The old `[:60]` slice took rows in profile-then-insertion order (not newest-first — a genuine bug), and a 14:1 volume mismatch meant the variant effectively never appeared. Now: newest-first, up to 20 per arm, merged and capped — every arm visible.
+
+**Profiles are named.** "p211" reads as a database, not a book; the Profile column now shows the operator's display names (EXP-A2-NoAltData, …), falling back to pNNN only when the caller can't supply names. Plus a Scope column on the per-model summary ("1 category" for the variant) so a deliberately-scoped arm reads as scoped, not absent.
+
+Pinned by nine new tests across ordering/refusal, per-arm representation + newest-first, same-call block rates incl. the unmeasured state, display names, and template carriage.
+
 ## 2026-08-10 — "External" now means NOT OURS: the option-orphan backstop books own round-trips as ordinary closes, and the $142 cash residual on account 56 is repaired. Severity: MEDIUM (cash-parity integrity; the residual was three vanished option-premium flows).
 
 The account-56 cash residual decomposed per symbol (using the exact house cash algebra — an approximate replay produced garbage and was discarded): AMGN +$518, PM −$315, KO −$41, plus sub-tolerance stock noise. All three were ordinary own round-trips — p211 sold the put, p211 bought it back on its own journaled order — that `reconcile_option_orphans` stamped `auto_closed_external` when the OCC went account-flat before the fill state machine flipped it. Its "closing evidence" check accepted ANY fill activity on the contract — including our own buy-back — as proof of an external event. Both legs then left the cash algebra ('auto_closed_external' rows are excluded by design), handing their cash to the activities pass, which rightly books nothing for ordinary fills; the pair's net premium simply vanished from the virtual books.

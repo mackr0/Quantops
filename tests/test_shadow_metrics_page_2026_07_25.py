@@ -397,3 +397,78 @@ class TestDecisionIdPlumbing:
         assert '("decision_id", "TEXT")' in src[i:i + 400]
         j = src.index('"ai_shadow_calls": [')
         assert '("decision_id", "TEXT")' in src[j:j + 200]
+
+
+class TestVisibilityFixes20260811:
+    """2026-08-11 — operator: 'most of the page only has the different
+    models, not the variant' and 'pNUMBER for profile name is obtuse'.
+    Pins: per-arm representation in recent disagreements (newest
+    first), same-call gate block rates (the variant's process
+    readout), purposes-covered scope, and display-name labels."""
+
+    PP_VETO = '{"symbol": "GOOGL", "verdict": "VETO"}'
+
+    def test_recent_list_represents_low_volume_arms(self, tmp_path):
+        rows = []
+        # 50 disagreements for the loud arm, 2 for the quiet variant
+        for i in range(50):
+            rows.append((f"2026-07-25 14:{i%60:02d}:00",
+                         "ensemble:adversarial_reviewer", "anthropic",
+                         "haiku", "ALLOW", 0, None, 0.001, 900,
+                         self.PP_VETO))
+        rows.append(("2026-07-25 10:00:00",
+                     "ensemble:adversarial_reviewer", "google",
+                     "lite@adversarial_v2", "ALLOW", 0, None, 0.001,
+                     900, self.PP_VETO))
+        rows.append(("2026-07-25 10:05:00",
+                     "ensemble:adversarial_reviewer", "google",
+                     "lite@adversarial_v2", "ALLOW", 0, None, 0.001,
+                     900, self.PP_VETO))
+        db = _mk_profile(tmp_path, "601", shadow_rows=rows)
+        m = collect_fleet_metrics([db])
+        models = {d["model"] for d in m["recent_disagreements"]}
+        assert "google:lite@adversarial_v2" in models, (
+            "a low-volume arm must still appear in the recent list")
+        ts = [d["ts"] for d in m["recent_disagreements"]]
+        assert ts == sorted(ts, reverse=True), "newest first"
+
+    def test_gate_block_rates_same_calls(self, tmp_path):
+        rows = [
+            (NOW, "ensemble:adversarial_reviewer", "google",
+             "lite@adversarial_v2", "ALLOW", 0, None, 0.001, 900,
+             self.PP_VETO),
+            (NOW, "ensemble:adversarial_reviewer", "google",
+             "lite@adversarial_v2", "VETO", 1, None, 0.001, 900,
+             self.PP_VETO),
+        ]
+        db = _mk_profile(tmp_path, "602", shadow_rows=rows)
+        v = collect_fleet_metrics([db])["per_model"][
+            "google:lite@adversarial_v2"]
+        assert v["gate_calls"] == 2
+        assert v["gate_block_pct"] == 50.0     # blocked 1 of 2
+        assert v["gate_primary_block_pct"] == 100.0
+        assert v["purposes_covered"] == 1
+
+    def test_no_gate_calls_reads_unmeasured(self, tmp_path):
+        db = _mk_profile(tmp_path, "603", shadow_rows=[
+            (NOW, "ensemble:pattern_recognizer", "anthropic", "haiku",
+             "BUY", 0, None, 0.001, 900, PP_SELL)])
+        v = collect_fleet_metrics([db])["per_model"]["anthropic:haiku"]
+        assert v["gate_block_pct"] is None, "never 0% for unmeasured"
+
+    def test_profile_display_name_used(self, tmp_path):
+        db = _mk_profile(tmp_path, "604", shadow_rows=[
+            (NOW, "ensemble:pattern_recognizer", "anthropic", "haiku",
+             "BUY", 0, None, 0.001, 900, PP_SELL)],
+            predictions=[("NVDA", "2026-07-25T13:58:30", 4.0)])
+        m = collect_fleet_metrics(
+            [db], profile_names={db: "EXP-A2-NoAltData"})
+        assert m["recent_disagreements"][0]["profile"] == \
+            "EXP-A2-NoAltData"
+
+    def test_template_carries_the_new_sections(self):
+        tpl = open(os.path.join(REPO_DIR, "templates",
+                                "shadow.html")).read()
+        assert "Prompt-variant process" in tpl
+        assert "Primary blocks (same calls)" in tpl
+        assert "Scope" in tpl

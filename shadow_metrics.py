@@ -470,6 +470,14 @@ def _model_bucket() -> Dict[str, Any]:
         # can watch inference-matched evidence age out.
         "match_exact": 0,
         "match_window": 0,
+        # 2026-08-11 — prompt-variant process metrics: on VETO-
+        # authority calls, how often did this arm block vs the primary
+        # ON THE SAME CALLS? For a variant arm this IS the experiment
+        # (the rewrite exists to veto less, with evidence); the page
+        # showed no stat for it.
+        "gate_calls": 0,
+        "gate_blocks": 0,
+        "gate_primary_blocks": 0,
         # Distinct (profile, symbol) pairs behind the resolved
         # disagreements — the EFFECTIVE sample size. The same name is
         # re-reviewed every cycle and resolves against one price move,
@@ -557,12 +565,18 @@ def _finalize_edge(edge_by_unit: Dict[tuple, List[float]]) -> Dict[str, Any]:
 
 
 def collect_fleet_metrics(profile_dbs: List[str],
-                          days: int = 30) -> Dict[str, Any]:
+                          days: int = 30,
+                          profile_names: Optional[Dict[str, str]] = None,
+                          ) -> Dict[str, Any]:
     """Aggregate the full metric set across profile DBs.
+
+    `profile_names` (2026-08-11): optional {db_path: display name} so
+    the page shows the profile's NAME instead of the obtuse pNNN
+    label; missing entries fall back to pNNN.
 
     Returns a dict the /shadow template renders directly:
       overview, per_model, by_purpose, by_primary_action,
-      recent_disagreements, daily.
+      recent_disagreements, daily, standings.
     """
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)
               ).strftime("%Y-%m-%d %H:%M:%S")
@@ -619,6 +633,12 @@ def collect_fleet_metrics(profile_dbs: List[str],
         # "/opt/quantopsai/p212" in the page's Profile column.
         prof_label = os.path.basename(db).replace(
             "quantopsai_profile_", "p").replace(".db", "")
+        # 2026-08-11 — the operator's display name beats the pNNN
+        # shorthand wherever the caller can supply it.
+        if profile_names:
+            prof_label = (profile_names.get(db)
+                          or profile_names.get(prof_label)
+                          or prof_label)
         for (ts, purpose, provider, model, parsed_signal, agreement,
              err, cost, latency, primary_parsed, row_decision_id) in rows:
             mkey = f"{provider}:{model}"
@@ -654,6 +674,17 @@ def collect_fleet_metrics(profile_dbs: List[str],
             pk = by_purpose[(purpose or "?", mkey)]
             pk["calls"] += 1
             pk["graded"] += 1
+            # Prompt-variant process metrics: same-call block rates on
+            # gate purposes (2026-08-11).
+            if (purpose or "") in _GATE_PURPOSES:
+                _arm_gate = gate_call(parsed_signal)
+                _pri_gate = gate_call(primary_signal)
+                if _arm_gate is not None and _pri_gate is not None:
+                    m["gate_calls"] += 1
+                    if _arm_gate == "block":
+                        m["gate_blocks"] += 1
+                    if _pri_gate == "block":
+                        m["gate_primary_blocks"] += 1
             p_st = stance(primary_signal)
             # Group by what the primary actually DID. `stance()` maps
             # VETO to "bearish", so grouping gate specialists by stance
@@ -800,6 +831,14 @@ def collect_fleet_metrics(profile_dbs: List[str],
         b["h2h_n"] = h2h
         b["shadow_win_pct"] = (round(b["shadow_only"] / h2h * 100, 1)
                                if h2h else None)
+        # Same-call gate block rates (2026-08-11): None when the arm
+        # saw no gate calls — never 0%, which would read as measured.
+        gc = b.get("gate_calls", 0)
+        b["gate_block_pct"] = (round(b["gate_blocks"] / gc * 100, 1)
+                               if gc else None)
+        b["gate_primary_block_pct"] = (
+            round(b["gate_primary_blocks"] / gc * 100, 1)
+            if gc else None)
         b.update(_finalize_edge(b.pop("_edge_by_unit", {}) or {}))
         return b
 
@@ -808,6 +847,12 @@ def collect_fleet_metrics(profile_dbs: List[str],
     by_purpose_out: Dict[str, Dict[str, Dict]] = defaultdict(dict)
     for (purpose, mkey), v in sorted(by_purpose.items()):
         by_purpose_out[purpose][mkey] = _finalize(dict(v))
+    # Purposes-covered scope per arm (2026-08-11): a variant that fires
+    # on ONE purpose by design must read as scoped, not absent.
+    for mk, v in per_model_out.items():
+        pv = sorted(p for (p, k2) in by_purpose if k2 == mk)
+        v["purposes_covered"] = len(pv)
+        v["purposes_list"] = pv
     by_action_out: Dict[str, Dict[str, Dict]] = defaultdict(dict)
     for (act, mkey), v in sorted(by_action.items()):
         by_action_out[act][mkey] = _finalize(dict(v))
@@ -825,6 +870,57 @@ def collect_fleet_metrics(profile_dbs: List[str],
         "per_model": per_model_out,
         "by_purpose": dict(by_purpose_out),
         "by_primary_action": dict(by_action_out),
-        "recent_disagreements": recent_dis[:60],
+        "recent_disagreements": _recent_selection(recent_dis),
         "daily": dict(daily_out),
+        "standings": _standings(per_model_out),
     }
+
+
+def _recent_selection(recent_dis: List[Dict],
+                      per_arm: int = 20, cap: int = 60) -> List[Dict]:
+    """Latest disagreements with EVERY arm represented. 2026-08-11 —
+    two defects: the old `[:60]` slice was in profile-then-insertion
+    order (not newest-first), and a 14:1 call-volume mismatch meant a
+    low-volume arm (the prompt variant) effectively never appeared.
+    Now: newest-first per arm, up to `per_arm` rows each, merged
+    newest-first, capped at `cap`."""
+    by_model: Dict[str, List[Dict]] = defaultdict(list)
+    for d in recent_dis:
+        by_model[d.get("model") or "?"].append(d)
+    picked: List[Dict] = []
+    for rows in by_model.values():
+        rows.sort(key=lambda d: d.get("ts") or "", reverse=True)
+        picked.extend(rows[:per_arm])
+    picked.sort(key=lambda d: d.get("ts") or "", reverse=True)
+    return picked[:cap]
+
+
+def _standings(per_model: Dict[str, Dict]) -> Dict[str, list]:
+    """Rank arms relative to the shared opponent (the primary), from
+    each arm's own pairwise verdict. 2026-08-11 — the operator read
+    'Primary is better' on one row and 'This arm is better' on
+    another and reasonably asked which model wins overall: every row
+    is a separate head-to-head against the SAME primary, so the
+    ordering falls out of chaining them — but the page must state it,
+    not leave the reader to infer transitively.
+
+    Returns {'better': [(model, edge/dec)...] sorted best-first,
+    'worse': [...] sorted worst-first, 'undecided': [model...]}.
+    Undecided arms are never ranked — refusing is the page's whole
+    ethic. The ranking is THROUGH the common opponent (each arm is
+    scored on its own disagreement set), not a direct arm-vs-arm
+    trial; the template says so."""
+    better, worse, undecided = [], [], []
+    for mk, v in per_model.items():
+        verdict = v.get("verdict")
+        edge = v.get("edge_per_decision")
+        if verdict == "shadow_better":
+            better.append((mk, edge))
+        elif verdict == "primary_better":
+            worse.append((mk, edge))
+        else:
+            undecided.append(mk)
+    better.sort(key=lambda x: -(x[1] or 0))
+    worse.sort(key=lambda x: (x[1] or 0))
+    return {"better": better, "worse": worse,
+            "undecided": sorted(undecided)}

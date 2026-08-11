@@ -1083,8 +1083,11 @@ def shadow_page():
     profiles = get_user_profiles(current_user.effective_user_id)
     dbs = [f"/opt/quantopsai/quantopsai_profile_{p['id']}.db"
            for p in profiles]
+    # 2026-08-11 — display names, not pNNN, in the Profile column.
+    names = {f"/opt/quantopsai/quantopsai_profile_{p['id']}.db":
+             (p.get("name") or f"p{p['id']}") for p in profiles}
     try:
-        metrics = collect_fleet_metrics(dbs)
+        metrics = collect_fleet_metrics(dbs, profile_names=names)
     except Exception as exc:
         logger.warning("shadow_page: metrics collection failed: %s", exc)
         metrics = {
