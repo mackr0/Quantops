@@ -114,6 +114,27 @@ def _fetch_benchmark_returns(ticker: str, start_date: str, end_date: str) -> Dic
 # Data gathering
 # ---------------------------------------------------------------------------
 
+def _trade_notional(t: Dict) -> float:
+    """A closed trade's cost basis in DOLLARS: price x qty, with the
+    100x contract multiplier for option rows (occ_symbol set).
+
+    2026-08-12 — the single source for every per-trade-return
+    denominator in this module. Computing option basis as bare
+    price x qty understates it 100x, so pnl/cost returns exploded
+    into the thousands of percent: a 1-lot PM put closed for -$315
+    against a $5.10 premium scored -6,176% instead of -61.8%, and
+    the worst-5% tail averaged to the -4360% CVaR the operator
+    caught on /performance. (The 2026-05-12 fix for the same symptom
+    filtered data_quality-corrupted rows; LEGITIMATE option trades
+    reached the same formula the moment real option pairs closed.)"""
+    price = t.get("price", 0) or 0
+    qty = t.get("qty", 0) or 0
+    if price <= 0 or qty <= 0:
+        return 0.0
+    mult = 100.0 if t.get("occ_symbol") else 1.0
+    return float(price) * float(qty) * mult
+
+
 def _gather_trades(db_paths) -> List[Dict]:
     """Collect all closed trades (with pnl) from the provided DBs.
 
@@ -144,9 +165,16 @@ def _gather_trades(db_paths) -> List[Dict]:
                     " AND data_quality IS NULL"
                     if "data_quality" in cols else ""
                 )
+                # occ_symbol (2026-08-12): without it every option
+                # trade's cost basis is understated 100x (the contract
+                # multiplier) and per-trade returns explode into the
+                # thousands of percent — the -4360% CVaR class.
+                _occ_col = (", occ_symbol" if "occ_symbol" in cols
+                            else ", NULL AS occ_symbol")
                 rows = conn.execute(
                     f"SELECT timestamp, symbol, side, qty, price, pnl, strategy, "
-                    f"decision_price, fill_price, slippage_pct, status "
+                    f"decision_price, fill_price, slippage_pct, status"
+                    f"{_occ_col} "
                     f"FROM trades WHERE pnl IS NOT NULL{dq_clause} "
                     f"ORDER BY timestamp ASC"
                 ).fetchall()
@@ -864,11 +892,9 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
     # one trade's return isn't a distribution.
     trade_return_pcts = []
     for t in trades:
-        price = t.get("price", 0) or 0
-        qty = t.get("qty", 0) or 0
         pnl = t.get("pnl", 0) or 0
-        if price > 0 and qty > 0:
-            cost = price * qty
+        cost = _trade_notional(t)
+        if cost > 0:
             trade_return_pcts.append(pnl / cost * 100)
 
     MIN_TRADES_FOR_VAR = 5
@@ -952,9 +978,7 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
     scratch_trades = []   # in between (effectively break-even)
     for t in trades:
         pnl = float(t.get("pnl") or 0)
-        qty = float(t.get("qty") or 0)
-        price = float(t.get("price") or 0)
-        notional = abs(qty * price)
+        notional = _trade_notional(t)
         if pnl == 0 or notional <= 0:
             # Zero pnl or unsizeable → scratch by definition
             scratch_trades.append(t)
@@ -1023,11 +1047,9 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
     win_return_pcts = []
     loss_return_pcts = []
     for t in trades:
-        price = t.get("price", 0) or 0
-        qty = t.get("qty", 0) or 0
         pnl = t.get("pnl", 0) or 0
-        if price > 0 and qty > 0:
-            cost = price * qty
+        cost = _trade_notional(t)
+        if cost > 0:
             ret_pct = pnl / cost * 100
             if pnl > 0:
                 win_return_pcts.append(ret_pct)
@@ -1496,11 +1518,11 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
                                          # executions reduce; adverse adds.
 
     for t in trades:
-        price = t.get("price", 0) or 0
         qty = t.get("qty", 0) or 0
         side = (t.get("side") or "").lower()
-        if price > 0 and qty > 0:
-            position_sizes.append(price * qty)
+        _notional = _trade_notional(t)
+        if _notional > 0:
+            position_sizes.append(_notional)
 
         # Closed-trade signed slippage cost. Positive = adverse, negative
         # = favorable. Sign convention matches journal.get_slippage_stats:
