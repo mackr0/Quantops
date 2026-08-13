@@ -108,3 +108,82 @@ class TestScratchClassificationOptionBasis:
              "occ_symbol": "PM260821P00190000"}
         pnl_pct = t["pnl"] / _trade_notional(t) * 100.0
         assert -0.5 < pnl_pct < 0, pnl_pct
+
+
+class TestFillTrueNotional20260813:
+    def test_fill_price_beats_garbage_decision_price(self):
+        """p212 GOOG covers: price column $2.13 (garbage), fill_price
+        $328.03 (broker truth). The notional must be fill-true — the
+        same expression the cash algebra uses."""
+        from metrics.legacy import _trade_notional
+        t = {"price": 2.13, "fill_price": 328.03, "qty": 5,
+             "occ_symbol": None}
+        assert _trade_notional(t) == pytest.approx(1640.15)
+
+    def test_price_fallback_when_no_fill(self):
+        from metrics.legacy import _trade_notional
+        t = {"price": 50.0, "fill_price": None, "qty": 2,
+             "occ_symbol": None}
+        assert _trade_notional(t) == pytest.approx(100.0)
+
+
+class TestEpisodeReturns20260813:
+    def test_spread_legs_group_into_one_episode(self):
+        """A GOOG bull call spread's legs scored +443% and -602%
+        individually — the episode nets to one modest return over the
+        legs' combined capital at risk."""
+        from metrics.legacy import _episode_returns
+        legs = [
+            {"_db": "a.db", "symbol": "GOOG", "pnl": 2460.0,
+             "price": 1.85, "fill_price": 1.85, "qty": 3,
+             "occ_symbol": "GOOG260821C00200000",
+             "option_strategy": "bull_call_spread",
+             "expiry": "2026-08-21", "spread_max_loss": 456.0,
+             "timestamp": "2026-07-22T15:00:00"},
+            {"_db": "a.db", "symbol": "GOOG", "pnl": -2148.0,
+             "price": 1.19, "fill_price": 1.19, "qty": 3,
+             "occ_symbol": "GOOG260821C00210000",
+             "option_strategy": "bull_call_spread",
+             "expiry": "2026-08-21", "spread_max_loss": 456.0,
+             "timestamp": "2026-07-22T15:00:01"},
+        ]
+        rets = _episode_returns(legs)
+        assert len(rets) == 1
+        assert rets[0] == pytest.approx((2460 - 2148) / 912 * 100, rel=1e-3)
+
+    def test_stock_rows_stay_per_trade(self):
+        from metrics.legacy import _episode_returns
+        rows = [
+            {"_db": "a.db", "symbol": "AAA", "pnl": 10.0,
+             "price": 50.0, "fill_price": 50.0, "qty": 10,
+             "occ_symbol": None, "timestamp": "2026-08-01"},
+            {"_db": "a.db", "symbol": "BBB", "pnl": -20.0,
+             "price": 50.0, "fill_price": 50.0, "qty": 10,
+             "occ_symbol": None, "timestamp": "2026-08-01"},
+        ]
+        assert len(_episode_returns(rows)) == 2
+
+    def test_lottery_single_leg_keeps_its_real_return(self):
+        """A $0.04 call that made $350 is a genuine 17.5x — truth
+        stays; only fabricated extremes die."""
+        from metrics.legacy import _episode_returns
+        rows = [{"_db": "a.db", "symbol": "FCX", "pnl": 350.0,
+                 "price": 0.04, "fill_price": 0.04, "qty": 5,
+                 "occ_symbol": "FCX260724C00070000",
+                 "option_strategy": None, "expiry": "2026-07-24",
+                 "spread_max_loss": None,
+                 "timestamp": "2026-07-24T15:00:00"}]
+        rets = _episode_returns(rows)
+        assert rets[0] == pytest.approx(1750.0, rel=1e-3)
+
+    def test_different_profiles_never_group(self):
+        from metrics.legacy import _episode_returns
+        leg = {"symbol": "GOOG", "pnl": 100.0, "price": 1.0,
+               "fill_price": 1.0, "qty": 1,
+               "occ_symbol": "GOOG260821C00200000",
+               "option_strategy": "bull_call_spread",
+               "expiry": "2026-08-21", "spread_max_loss": None,
+               "timestamp": "2026-07-22T15:00:00"}
+        a = dict(leg, _db="a.db")
+        b = dict(leg, _db="b.db")
+        assert len(_episode_returns([a, b])) == 2

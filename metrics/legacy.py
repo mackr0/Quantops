@@ -127,12 +127,70 @@ def _trade_notional(t: Dict) -> float:
     caught on /performance. (The 2026-05-12 fix for the same symptom
     filtered data_quality-corrupted rows; LEGITIMATE option trades
     reached the same formula the moment real option pairs closed.)"""
-    price = t.get("price", 0) or 0
+    # Fill-true price, same expression as journal.get_virtual_cash
+    # (COALESCE(NULLIF(fill_price,0), price)) — the decision-price
+    # column can carry garbage while fill_price holds the broker's
+    # actual execution (p212 GOOG covers: price $2.13, fill $328.03).
+    # Two implementations of "what did this trade cost" is how books
+    # and metrics drift apart.
+    price = t.get("fill_price") or 0
+    try:
+        price = float(price)
+    except (TypeError, ValueError):
+        price = 0.0
+    if price <= 0:
+        price = t.get("price", 0) or 0
     qty = t.get("qty", 0) or 0
     if price <= 0 or qty <= 0:
         return 0.0
     mult = 100.0 if t.get("occ_symbol") else 1.0
     return float(price) * float(qty) * mult
+
+
+def _episode_returns(trades: List[Dict]) -> List[float]:
+    """Per-DECISION return percentages: the honest unit for the
+    return distribution behind VaR/CVaR and win/loss stats.
+
+    2026-08-13 — a defined-risk spread's individual legs legitimately
+    score ±600% against their own premiums (the long leg gains what
+    the short leg loses), so treating each option LEG as an
+    independent trade makes tail metrics meaningless even with a
+    correct basis. Option rows group into their spread episode — same
+    profile DB, underlying, strategy, expiry, close date — and the
+    episode's return is Σpnl over its capital at risk
+    (Σ spread_max_loss when the legs carry it, else Σ premium
+    notional). Stock rows and single-leg options remain their own
+    episodes; a lottery-ticket long call keeping a legitimate 17x
+    return is truth, not a bug (its loss is bounded at -100% by
+    construction).
+    """
+    episodes: Dict[tuple, Dict[str, float]] = {}
+    out: List[float] = []
+    for t in trades:
+        pnl = float(t.get("pnl") or 0)
+        notional = _trade_notional(t)
+        if notional <= 0:
+            continue
+        if t.get("occ_symbol"):
+            key = (t.get("_db"), t.get("symbol"),
+                   t.get("option_strategy") or t.get("occ_symbol"),
+                   str(t.get("expiry") or ""),
+                   str(t.get("timestamp") or "")[:10])
+            ep = episodes.setdefault(
+                key, {"pnl": 0.0, "risk": 0.0, "notional": 0.0})
+            ep["pnl"] += pnl
+            try:
+                ep["risk"] += float(t.get("spread_max_loss") or 0)
+            except (TypeError, ValueError):
+                pass
+            ep["notional"] += notional
+        else:
+            out.append(pnl / notional * 100.0)
+    for ep in episodes.values():
+        basis = ep["risk"] if ep["risk"] > 0 else ep["notional"]
+        if basis > 0:
+            out.append(ep["pnl"] / basis * 100.0)
+    return out
 
 
 def _gather_trades(db_paths) -> List[Dict]:
@@ -169,17 +227,23 @@ def _gather_trades(db_paths) -> List[Dict]:
                 # trade's cost basis is understated 100x (the contract
                 # multiplier) and per-trade returns explode into the
                 # thousands of percent — the -4360% CVaR class.
-                _occ_col = (", occ_symbol" if "occ_symbol" in cols
-                            else ", NULL AS occ_symbol")
+                # option_strategy/expiry/spread_max_loss feed the
+                # spread-episode grouping (2026-08-13).
+                _extra = "".join(
+                    f", {c}" if c in cols else f", NULL AS {c}"
+                    for c in ("occ_symbol", "option_strategy",
+                              "expiry", "spread_max_loss"))
                 rows = conn.execute(
                     f"SELECT timestamp, symbol, side, qty, price, pnl, strategy, "
                     f"decision_price, fill_price, slippage_pct, status"
-                    f"{_occ_col} "
+                    f"{_extra} "
                     f"FROM trades WHERE pnl IS NOT NULL{dq_clause} "
                     f"ORDER BY timestamp ASC"
                 ).fetchall()
                 for r in rows:
-                    all_trades.append(dict(r))
+                    d = dict(r)
+                    d["_db"] = str(db_path)
+                    all_trades.append(d)
         except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as _ag_exc:
             # Per-DB trade aggregation loop; one bad DB shouldn't
             # kill cross-profile metrics. Surface for follow-up.
@@ -890,12 +954,7 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
     # VaR / CVaR from trade returns — undefined with zero closed trades.
     # We also want a minimum sample (5+) before reporting VaR honestly;
     # one trade's return isn't a distribution.
-    trade_return_pcts = []
-    for t in trades:
-        pnl = t.get("pnl", 0) or 0
-        cost = _trade_notional(t)
-        if cost > 0:
-            trade_return_pcts.append(pnl / cost * 100)
+    trade_return_pcts = _episode_returns(trades)
 
     MIN_TRADES_FOR_VAR = 5
     if len(trade_return_pcts) >= MIN_TRADES_FOR_VAR:
@@ -1046,15 +1105,11 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
     # Avg win/loss %
     win_return_pcts = []
     loss_return_pcts = []
-    for t in trades:
-        pnl = t.get("pnl", 0) or 0
-        cost = _trade_notional(t)
-        if cost > 0:
-            ret_pct = pnl / cost * 100
-            if pnl > 0:
-                win_return_pcts.append(ret_pct)
-            elif pnl < 0:
-                loss_return_pcts.append(ret_pct)
+    for ret_pct in _episode_returns(trades):
+        if ret_pct > 0:
+            win_return_pcts.append(ret_pct)
+        elif ret_pct < 0:
+            loss_return_pcts.append(ret_pct)
 
     result["avg_win_pct"] = round(_mean(win_return_pcts), 2) if win_return_pcts else 0.0
     result["avg_loss_pct"] = round(_mean(loss_return_pcts), 2) if loss_return_pcts else 0.0
