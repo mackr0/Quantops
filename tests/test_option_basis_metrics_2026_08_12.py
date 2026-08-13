@@ -187,3 +187,40 @@ class TestEpisodeReturns20260813:
         a = dict(leg, _db="a.db")
         b = dict(leg, _db="b.db")
         assert len(_episode_returns([a, b])) == 2
+
+
+class TestOccDerivedEpisodeKey20260813:
+    def test_metadata_less_close_legs_still_group(self):
+        """The p212 GOOG close legs: option_strategy, expiry and
+        spread_max_loss all EMPTY — the OCC's embedded expiry must
+        group them anyway."""
+        from metrics.legacy import _episode_returns
+        legs = [
+            {"_db": "a.db", "symbol": "GOOG", "pnl": 2460.0,
+             "price": 1.85, "fill_price": 1.85, "qty": 3,
+             "occ_symbol": "GOOG260724C00375000",
+             "option_strategy": None, "expiry": None,
+             "spread_max_loss": None,
+             "timestamp": "2026-07-22 13:45:11"},
+            {"_db": "a.db", "symbol": "GOOG", "pnl": -2148.0,
+             "price": 1.19, "fill_price": 1.19, "qty": 3,
+             "occ_symbol": "GOOG260724C00380000",
+             "option_strategy": None, "expiry": None,
+             "spread_max_loss": None,
+             "timestamp": "2026-07-22 13:45:15"},
+        ]
+        rets = _episode_returns(legs)
+        assert len(rets) == 1
+        # basis = premium notional sum: 555 + 357 = 912
+        assert rets[0] == pytest.approx((2460 - 2148) / 912 * 100,
+                                        rel=1e-3)
+
+    def test_different_expiries_never_group(self):
+        from metrics.legacy import _episode_returns
+        a = {"_db": "a.db", "symbol": "GOOG", "pnl": 100.0,
+             "price": 1.0, "fill_price": 1.0, "qty": 1,
+             "occ_symbol": "GOOG260724C00375000",
+             "option_strategy": None, "expiry": None,
+             "spread_max_loss": None, "timestamp": "2026-07-22"}
+        b = dict(a, occ_symbol="GOOG260821C00375000")
+        assert len(_episode_returns([a, b])) == 2

@@ -172,9 +172,17 @@ def _episode_returns(trades: List[Dict]) -> List[float]:
         if notional <= 0:
             continue
         if t.get("occ_symbol"):
+            # Expiry from the OCC itself (chars -15:-9 = YYMMDD) —
+            # close-leg rows routinely carry EMPTY option_strategy/
+            # expiry columns (the p212 GOOG spread's exits), and
+            # keying on the bare occ left each leg its own episode.
+            # Same profile + underlying + OCC-expiry + close date is
+            # one decision-cluster.
+            occ = str(t.get("occ_symbol"))
+            occ_expiry = occ[-15:-9] if len(occ) >= 15 else ""
             key = (t.get("_db"), t.get("symbol"),
-                   t.get("option_strategy") or t.get("occ_symbol"),
-                   str(t.get("expiry") or ""),
+                   t.get("option_strategy") or "",
+                   occ_expiry or str(t.get("expiry") or ""),
                    str(t.get("timestamp") or "")[:10])
             ep = episodes.setdefault(
                 key, {"pnl": 0.0, "risk": 0.0, "notional": 0.0})
