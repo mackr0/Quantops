@@ -5,6 +5,14 @@ at the top.
 
 ---
 
+## 2026-08-13 — Calculation Verification Register: an audit-grade accounting of every displayed number. Severity: n/a (documentation + 15 flagged findings).
+
+Operator directive: the system will be audited by humans — map every displayed/used calculation page by page, state exactly what is computed and why that way, validate correctness, and call out anything suspect for review. Built as `calculation_verification/` — deliberately OUTSIDE `docs/` so the in-app Documents tab can never serve it, with `test_calc_verification_register_2026_08_13.py` pinning three guarantees: the folder stays invisible to the docs viewer, the coverage tracker cannot claim DONE for a missing file or omit an existing one, and every per-page SUSPECT must have a SUSPECTS.md entry (flagged items cannot silently vanish).
+
+Coverage: all eleven surfaces DONE — /performance, /dashboard, /trades, /ai (all four tabs), /ai-performance(+legacy), /shadow, /issues, /backtest(+history), universe popup, /admin, and the daily email digest. Every entry carries the implemented formula with source location, a why-this-way rationale (incident history where a formula was shaped by one), inputs, and a verification verdict.
+
+The register's first pass produced **15 open suspects (S1–S19, some resolved same-week)** — among them: three different win/loss/scratch definitions across surfaces; an /ai tile labeled "Prediction Accuracy" that displays a profit factor; a "99% VaR" tile rendering the 95% column; the legacy AI-performance page with permanently-empty sections; unseeded 30-symbol sampling on /backtest presented without caveat; the daily email's ET/UTC day-boundary and cap-before-filter trade selection; and Sharpe/Sortino methodology gaps on /performance. Each has a proposed resolution and awaits operator review per the register's rule: nothing leaves the suspects list except fixed-with-note or accepted-with-rationale.
+
 ## 2026-08-12 — /performance option basis: the −4360% CVaR was a missing contract multiplier. Severity: MEDIUM (risk metrics on the performance page were wrong for every option-trading profile).
 
 Operator caught Per-Trade CVaR (95%) at −4360.5% against a −9.9% VaR on p211's risk section — impossible for a tail mean. Root cause: every per-trade return in `metrics/legacy.py` divided pnl by `price × qty` with **no 100× option contract multiplier** (the trades SELECT didn't even fetch `occ_symbol`), so a 1-lot PM put closed for −$315 against a $5.10 premium scored −6,176% instead of −61.8%, and the worst-5% tail averaged to exactly the number on the page. The 2026-05-12 fix for this identical symptom (−8409% CVaR) only filtered `data_quality`-corrupted rows — LEGITIMATE option closes reached the same formula the moment real option pairs closed (the 08-11 own-close repairs surfaced it within a day).
