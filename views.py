@@ -1092,7 +1092,8 @@ def shadow_page():
         logger.warning("shadow_page: metrics collection failed: %s", exc)
         metrics = {
             "overview": {"calls": 0, "graded": 0, "cost": 0.0,
-                         "profiles": 0, "since_days": 30},
+                         "cost_30d": 0.0, "profiles": 0,
+                         "since_days": None, "daily_trend_days": 30},
             "per_model": {}, "by_purpose": {},
             "by_primary_action": {}, "recent_disagreements": [],
             "daily": {},

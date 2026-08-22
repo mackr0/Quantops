@@ -4,7 +4,10 @@
 <h2>Shadow Model Evaluation</h2>
 <p class="muted">
     Fleet-wide A/B comparison of shadow models against the primary on
-    every shadowed call ({{ m.overview.since_days }}-day window).
+    every shadowed call{% if m.overview.since_days %}
+    ({{ m.overview.since_days }}-day window){% else %} &mdash; the
+    complete history of the experiment, from each arm's first call to
+    now{% endif %}.
     Observational only &mdash; shadow calls never affect trading.
     The decision-quality judge is <strong>resolved disagreements</strong>:
     when a shadow model disagreed and the underlying prediction has
@@ -96,7 +99,7 @@
             <td>{{ v.edge_n }}{% if v.edge_n < m.verdict_min_decisions %} <span class="muted">/ {{ m.verdict_min_decisions }}</span>{% endif %}</td>
             <td>{% if v.edge_wins + v.edge_losses %}{{ v.edge_wins }}W / {{ v.edge_losses }}L{% else %}—{% endif %}</td>
             <td>{{ v.edge_p if v.edge_p is not none else "—" }}</td>
-            <td>${{ "%.2f"|format(v.cost) }}</td>
+            <td>${{ "%.2f"|format(v.cost_30d) }}</td>
         </tr>
         <tr>
             <td colspan="8" class="muted" style="font-size:0.85em;padding-top:0;">{{ v.verdict_line }}</td>
@@ -167,7 +170,8 @@
     <p>
         <strong>{{ m.overview.calls }}</strong> shadow calls &middot;
         <strong>{{ m.overview.graded }}</strong> graded (agreement computed) &middot;
-        <strong>${{ "%.4f"|format(m.overview.cost) }}</strong> spend &middot;
+        <strong>${{ "%.4f"|format(m.overview.cost) }}</strong> total spend
+        (${{ "%.2f"|format(m.overview.cost_30d) }} last 30 days) &middot;
         {{ m.overview.profiles }} profiles reporting
     </p>
 </article>
@@ -188,7 +192,7 @@
             <th title="VETO-authority verdicts on a trade that was never opened — no position existed, so neither side can be right">Moot</th>
             <th title="no stance to compare (apex trade-set strings), or the move stayed inside the noise band">Ungradable</th>
             <th>Pending</th><th>Errors</th><th>Quota</th>
-            <th>Throttled</th><th>Cost</th><th>Latency</th>
+            <th>Throttled</th><th>Cost (total)</th><th>Latency</th>
             <th title="how many decision categories this arm shadows — a prompt variant deliberately covers only the category its rewrite targets">Scope</th>
         </tr></thead>
         <tbody>
@@ -355,7 +359,9 @@
 </article>
 
 <article>
-    <header><h3 style="margin:0;">Daily agreement trend</h3></header>
+    <header><h3 style="margin:0;">Daily agreement trend
+        {% if m.overview.daily_trend_days %}<span class="muted" style="font-size:0.7em;font-weight:normal;">(last {{ m.overview.daily_trend_days }} days &mdash; the totals above cover the full history)</span>{% endif %}
+    </h3></header>
     <div class="overflow-auto">
     <table class="striped">
         <thead><tr><th>Day (UTC)</th>

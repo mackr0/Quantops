@@ -9,6 +9,18 @@ per-symbol decisions with resolved outcomes). View wiring:
 Verification pass: 2026-08-13 at commit `70ffbe2`, cross-checked
 against live fleet data during the 08-05→08-11 shadow-page rebuild.
 
+**Time scope (2026-08-21):** every metric on the page is computed over
+the FULL shadow history — `collect_fleet_metrics` runs with no date
+cutoff. Until 2026-08-21 the page used a rolling 30-day window; it
+never showed because the arms started 07-23, but it was about to roll
+the earliest scored decisions off the back, weakening settled verdicts
+while nothing was wrong. Two deliberate exceptions remain windowed:
+the standings' **Cost (30d)** column (spend is a run-rate question)
+and the daily-trend table (display-capped at the latest 30 days; the
+cap is labeled on the page and touches no aggregate). Pinned by
+`tests/test_shadow_alltime_2026_08_21.py`, including a structural
+check that the view can't quietly pass a window again.
+
 ---
 
 ## Standings sentence
@@ -54,7 +66,9 @@ computed alongside for the win-count question. *Why bootstrap:*
 per-decision returns are heavy-tailed at these sample sizes; a t-test
 would overclaim. **VERIFIED**
 
-**Cost (30d)** — Σ `cost_usd` over the arm's shadow rows in window.
+**Cost (30d)** — Σ `cost_usd` over the arm's shadow rows of the last
+30 days (a true run-rate, accumulated separately from the all-history
+metrics; the per-model summary shows lifetime cost as "Cost (total)").
 **VERIFIED**
 
 **Evidence funnel line** — live per-arm counts: calls → graded

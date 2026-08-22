@@ -153,6 +153,11 @@ def grade_gate(gate_val: Optional[str],
 MIN_DECISIONS_FOR_VERDICT = 30
 VERDICT_ALPHA = 0.05
 
+# The daily-trend table shows this many most-recent days. Display-only:
+# every aggregate metric on the page is computed over the full history
+# (see collect_fleet_metrics — days=None since 2026-08-21).
+DAILY_TREND_DAYS = 30
+
 
 def decision_value(stance_val: Optional[str],
                    return_pct: Optional[float]) -> Optional[float]:
@@ -442,7 +447,7 @@ def _model_bucket() -> Dict[str, Any]:
     return {
         "calls": 0, "graded": 0, "agree": 0, "disagree": 0,
         "errors": 0, "quota": 0, "throttled": 0,
-        "cost": 0.0, "latency_ms": 0, "latency_n": 0,
+        "cost": 0.0, "cost_30d": 0.0, "latency_ms": 0, "latency_n": 0,
         # Disagreement outcomes. shadow_right/primary_right count every
         # resolved disagreement where that side's stance matched, so
         # both sides CAN be right (opposite stances, one flat outcome
@@ -565,10 +570,20 @@ def _finalize_edge(edge_by_unit: Dict[tuple, List[float]]) -> Dict[str, Any]:
 
 
 def collect_fleet_metrics(profile_dbs: List[str],
-                          days: int = 30,
+                          days: Optional[int] = None,
                           profile_names: Optional[Dict[str, str]] = None,
                           ) -> Dict[str, Any]:
     """Aggregate the full metric set across profile DBs.
+
+    `days=None` (the default since 2026-08-21) reads the ENTIRE shadow
+    history: the page states the experiment's full current standing, so
+    a rolling window that silently drops the earliest evidence off the
+    back is wrong for it — verdicts would weaken as scored decisions
+    age out, looking like regression when nothing changed. Pass an int
+    only for a deliberately bounded slice. Two windowed figures remain
+    regardless: `cost_30d` (spend is judged as a run-rate, not a
+    lifetime total) and the daily trend (capped at DAILY_TREND_DAYS
+    rows — a per-day table can't grow a row per trading day forever).
 
     `profile_names` (2026-08-11): optional {db_path: display name} so
     the page shows the profile's NAME instead of the obtuse pNNN
@@ -578,16 +593,21 @@ def collect_fleet_metrics(profile_dbs: List[str],
       overview, per_model, by_purpose, by_primary_action,
       recent_disagreements, daily, standings.
     """
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)
-              ).strftime("%Y-%m-%d %H:%M:%S")
+    cutoff = None
+    if days is not None:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)
+                  ).strftime("%Y-%m-%d %H:%M:%S")
+    cost_cutoff = (datetime.now(timezone.utc) - timedelta(days=30)
+                   ).strftime("%Y-%m-%d %H:%M:%S")
     per_model: Dict[str, Dict] = defaultdict(_model_bucket)
     by_purpose: Dict[tuple, Dict] = defaultdict(_model_bucket)
     by_action: Dict[tuple, Dict] = defaultdict(_model_bucket)
     daily: Dict[tuple, Dict] = defaultdict(
         lambda: {"graded": 0, "agree": 0})
     recent_dis: List[Dict] = []
-    overview = {"calls": 0, "graded": 0, "cost": 0.0,
-                "profiles": 0, "since_days": days}
+    overview = {"calls": 0, "graded": 0, "cost": 0.0, "cost_30d": 0.0,
+                "profiles": 0, "since_days": days,
+                "daily_trend_days": DAILY_TREND_DAYS}
 
     for db in profile_dbs:
         try:
@@ -595,14 +615,16 @@ def collect_fleet_metrics(profile_dbs: List[str],
         except sqlite3.Error:
             continue
         try:
+            where = "WHERE timestamp >= ? " if cutoff else ""
+            params = (cutoff,) if cutoff else ()
             try:
                 rows = conn.execute(
                     "SELECT timestamp, purpose, provider, model, "
                     " parsed_signal, agreement, error, cost_usd, "
                     " latency_ms, primary_parsed, decision_id "
-                    "FROM ai_shadow_calls WHERE timestamp >= ? "
+                    "FROM ai_shadow_calls " + where +
                     "ORDER BY id",
-                    (cutoff,),
+                    params,
                 ).fetchall()
             except sqlite3.OperationalError:
                 # decision_id may be missing on a pre-migration DB —
@@ -614,9 +636,9 @@ def collect_fleet_metrics(profile_dbs: List[str],
                             "SELECT timestamp, purpose, provider, "
                             " model, parsed_signal, agreement, error, "
                             " cost_usd, latency_ms, primary_parsed "
-                            "FROM ai_shadow_calls "
-                            "WHERE timestamp >= ? ORDER BY id",
-                            (cutoff,),
+                            "FROM ai_shadow_calls " + where +
+                            "ORDER BY id",
+                            params,
                         ).fetchall()
                     ]
                 except sqlite3.OperationalError:
@@ -647,6 +669,12 @@ def collect_fleet_metrics(profile_dbs: List[str],
             overview["calls"] += 1
             m["cost"] += float(cost or 0)
             overview["cost"] += float(cost or 0)
+            # Run-rate spend: the standings' cost column answers "what
+            # is this arm costing me NOW", so it stays a 30-day figure
+            # even though every evidence metric is all-history.
+            if str(ts) >= cost_cutoff:
+                m["cost_30d"] += float(cost or 0)
+                overview["cost_30d"] += float(cost or 0)
             if latency:
                 m["latency_ms"] += int(latency)
                 m["latency_n"] += 1
@@ -823,6 +851,7 @@ def collect_fleet_metrics(profile_dbs: List[str],
         b["avg_latency_ms"] = (b["latency_ms"] // b["latency_n"]
                                if b["latency_n"] else None)
         b["cost"] = round(b["cost"], 4)
+        b["cost_30d"] = round(b.get("cost_30d", 0.0), 4)
         b["dis_units"] = len(b.pop("_unit_keys", ()) or ())
         # Head-to-head share, over rows where exactly one side matched.
         # None when no such row exists — never 0%, which would read as
@@ -862,8 +891,15 @@ def collect_fleet_metrics(profile_dbs: List[str],
                if v["graded"] else None)
         daily_out[day][mkey] = {"graded": v["graded"],
                                 "agreement_pct": pct}
+    # The daily trend is a recent-activity view, not an evidence store:
+    # cap it at the latest DAILY_TREND_DAYS days so the all-history
+    # page doesn't grow a table row per trading day forever. Every
+    # aggregate above is computed over the FULL row set.
+    recent_days = set(sorted(daily_out.keys())[-DAILY_TREND_DAYS:])
+    daily_out = {d: v for d, v in daily_out.items() if d in recent_days}
     recent_dis.sort(key=lambda r: r["ts"], reverse=True)
     overview["cost"] = round(overview["cost"], 4)
+    overview["cost_30d"] = round(overview["cost_30d"], 4)
     return {
         "verdict_min_decisions": MIN_DECISIONS_FOR_VERDICT,
         "overview": overview,

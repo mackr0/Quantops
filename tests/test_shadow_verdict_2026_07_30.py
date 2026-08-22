@@ -200,7 +200,7 @@ class TestEvidenceFunnelRendered:
             "edge_wins": 36, "edge_losses": 35, "edge_ties": 7,
             "verdict": "insufficient", "verdict_leader": None,
             "verdict_line": "Not enough evidence — test line",
-            "cost": 1.23,
+            "cost": 1.23, "cost_30d": 1.23,
             "errors": 0, "quota": 0, "throttled": 0,
             "latency_ms": 0, "latency_n": 0, "agree": 8000,
             "dis_resolved": 100, "shadow_right": 1, "primary_right": 1,
@@ -209,7 +209,8 @@ class TestEvidenceFunnelRendered:
         }
         m = {
             "overview": {"calls": 13685, "graded": 9897, "cost": 1.23,
-                         "profiles": 1, "since_days": 30},
+                         "cost_30d": 1.23, "profiles": 1,
+                         "since_days": 30},
             "per_model": {"test:arm": arm},
             "by_purpose": {}, "by_primary_action": {},
             "daily": {}, "recent_disagreements": [],
@@ -291,7 +292,8 @@ class TestStandings:
                "edge_per_decision": 1.88, "edge_points": 75.0,
                "edge_wins": 30, "edge_losses": 10, "edge_ties": 0,
                "verdict": "shadow_better", "verdict_leader": "shadow",
-               "verdict_line": "x", "cost": 1.0, "match_exact": 1,
+               "verdict_line": "x", "cost": 1.0, "cost_30d": 1.0,
+               "match_exact": 1,
                "match_window": 0, "agree": 0, "dis_resolved": 1,
                "shadow_right": 1, "primary_right": 0,
                "shadow_only": 1, "primary_only": 0, "both_right": 0,
@@ -303,7 +305,8 @@ class TestStandings:
                "gate_primary_block_pct": None,
                "purposes_covered": 1}
         m = {"overview": {"calls": 1, "graded": 1, "cost": 1.0,
-                          "profiles": 1, "since_days": 30},
+                          "cost_30d": 1.0, "profiles": 1,
+                          "since_days": 30},
              "per_model": {"openai:nano": arm},
              "by_purpose": {}, "by_primary_action": {}, "daily": {},
              "recent_disagreements": [],
