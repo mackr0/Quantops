@@ -93,6 +93,7 @@ def initialize_from_history(
     profile_id: int,
     db_path: str,
     base_dir: str = ".",
+    ai_model: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Bootstrap the SGD model from all historical resolved
     predictions for this profile. Run once per profile (or after
@@ -106,7 +107,8 @@ def initialize_from_history(
 
     # Use a small min_samples (10) — online models can bootstrap from
     # fewer rows than GBM's 100 because they keep learning incrementally.
-    X, y, feature_names = build_training_set(db_path, min_samples=10)
+    X, y, feature_names = build_training_set(db_path, min_samples=10,
+                                             ai_model=ai_model)
     if X is None or y is None or feature_names is None:
         logger.info(
             "online_meta_model: not enough training data for profile %s",

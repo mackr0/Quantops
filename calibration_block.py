@@ -51,13 +51,28 @@ _DIRECTIONAL_WHERE = (
 )
 
 
-def _bucket(conn: sqlite3.Connection, where: str, params: Tuple = ()
+def _model_scope(conn: sqlite3.Connection, ai_model: Optional[str]
+                 ) -> Tuple[str, Tuple]:
+    """SQL fragment scoping rows to the profile's CURRENT model
+    (docs/25 5.4). Without attribution (no column, or no model given)
+    the scope is everything — the pre-08-23 behaviour."""
+    if not ai_model:
+        return "1=1", ()
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(ai_predictions)")}
+    if "ai_model" not in cols:
+        return "1=1", ()
+    return "ai_model = ?", (ai_model,)
+
+
+def _bucket(conn: sqlite3.Connection, where: str, params: Tuple = (),
+            scope: Tuple[str, Tuple] = ("1=1", ())
             ) -> Tuple[int, int, Optional[float]]:
-    """(n, wins, mean_return) for DIRECTIONAL rows matching `where`."""
+    """(n, wins, mean_return) for DIRECTIONAL rows matching `where`
+    inside the model `scope`."""
     row = conn.execute(
         f"SELECT COUNT(*), SUM(actual_outcome='win'), AVG(actual_return_pct) "
         f"FROM ai_predictions WHERE {_BASE_WHERE} AND {_DIRECTIONAL_WHERE} "
-        f"AND ({where})", params,
+        f"AND ({scope[0]}) AND ({where})", tuple(scope[1]) + tuple(params),
     ).fetchone()
     n = int(row[0] or 0)
     wins = int(row[1] or 0)
@@ -65,32 +80,44 @@ def _bucket(conn: sqlite3.Connection, where: str, params: Tuple = ()
     return n, wins, mean
 
 
-def compute_track_record(db_path: str) -> Dict[str, Any]:
+def compute_track_record(db_path: str,
+                         ai_model: Optional[str] = None) -> Dict[str, Any]:
     """Raw numbers for the block (and for tests / the register).
     Returns {"total": n, "overall": (n, wins, mean), "recent": (...),
     "by_band": [...], "by_signal": [...], "by_strategy": [...],
-    "by_regime": [...]} — each list item (label, n, wins, mean)."""
-    out: Dict[str, Any] = {"total": 0}
+    "by_regime": [...], "other_models": n} — each list item
+    (label, n, wins, mean). With `ai_model`, every bucket is scoped to
+    rows that model produced; `other_models` counts this profile's
+    resolved directional rows made by OTHER (or unattributed) models —
+    stated, never blended (docs/25 5.4)."""
+    out: Dict[str, Any] = {"total": 0, "other_models": 0}
     with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
-        n, w, m = _bucket(conn, "1=1")
+        scope = _model_scope(conn, ai_model)
+        n, w, m = _bucket(conn, "1=1", scope=scope)
         out["total"] = n
         out["overall"] = (n, w, m)
+        if scope[0] != "1=1":
+            out["other_models"] = int(conn.execute(
+                f"SELECT COUNT(*) FROM ai_predictions WHERE {_BASE_WHERE} "
+                f"AND {_DIRECTIONAL_WHERE} AND NOT (ai_model = ?)"
+                f" OR ({_BASE_WHERE} AND {_DIRECTIONAL_WHERE} AND ai_model IS NULL)",
+                (ai_model,)).fetchone()[0] or 0)
         if n == 0:
             return out
         out["recent"] = _bucket(
             conn, "datetime(resolved_at) >= datetime('now', ?)",
-            (f"-{RECENT_DAYS} days",))
+            (f"-{RECENT_DAYS} days",), scope=scope)
         out["by_band"] = [
             (label,) + _bucket(conn, "confidence >= ? AND confidence < ?",
-                               (lo, hi))
+                               (lo, hi), scope=scope)
             for label, lo, hi in _BANDS
         ]
         sig: Dict[str, List[int]] = {}
         for raw, n_, w_, m_ in conn.execute(
                 f"SELECT UPPER(predicted_signal), COUNT(*), "
                 f"SUM(actual_outcome='win'), AVG(actual_return_pct) "
-                f"FROM ai_predictions WHERE {_BASE_WHERE} "
-                f"GROUP BY UPPER(predicted_signal)"):
+                f"FROM ai_predictions WHERE {_BASE_WHERE} AND ({scope[0]}) "
+                f"GROUP BY UPPER(predicted_signal)", tuple(scope[1])):
             label = _SIGNAL_LABELS.get(raw or "", None)
             if label is None:
                 continue
@@ -109,7 +136,9 @@ def compute_track_record(db_path: str) -> Dict[str, Any]:
                 f"SELECT COALESCE(strategy_type, '?'), COUNT(*), "
                 f"SUM(actual_outcome='win'), AVG(actual_return_pct) "
                 f"FROM ai_predictions WHERE {_BASE_WHERE} AND {_DIRECTIONAL_WHERE} "
-                f"GROUP BY strategy_type ORDER BY COUNT(*) DESC LIMIT 6")
+                f"AND ({scope[0]}) "
+                f"GROUP BY strategy_type ORDER BY COUNT(*) DESC LIMIT 6",
+                tuple(scope[1]))
         ]
         out["by_regime"] = [
             (str(r), int(n_ or 0), int(w_ or 0),
@@ -118,7 +147,9 @@ def compute_track_record(db_path: str) -> Dict[str, Any]:
                 f"SELECT COALESCE(regime_at_prediction, '?'), COUNT(*), "
                 f"SUM(actual_outcome='win'), AVG(actual_return_pct) "
                 f"FROM ai_predictions WHERE {_BASE_WHERE} AND {_DIRECTIONAL_WHERE} "
-                f"GROUP BY regime_at_prediction ORDER BY COUNT(*) DESC LIMIT 4")
+                f"AND ({scope[0]}) "
+                f"GROUP BY regime_at_prediction ORDER BY COUNT(*) DESC LIMIT 4",
+                tuple(scope[1]))
         ]
     return out
 
@@ -131,22 +162,29 @@ def _fmt(label: str, n: int, wins: int, mean: Optional[float]) -> str:
     return f"{label}: {wr:.0f}% win rate on {n}{mv}"
 
 
-def render_track_record(db_path: str) -> str:
+def render_track_record(db_path: str, ai_model: Optional[str] = None) -> str:
     """The prompt block. Empty string only when the DB can't be read
-    (logged); a thin record is stated as such, never hidden."""
+    (logged); a thin record is stated as such, never hidden. With
+    `ai_model`, the record is the CURRENT model's own; any history this
+    profile has under other models is stated as a count, not blended."""
     try:
-        rec = compute_track_record(db_path)
+        rec = compute_track_record(db_path, ai_model=ai_model)
     except (sqlite3.Error, OSError) as exc:
         logger.warning("calibration block: could not read %s: %s: %s",
                        db_path, type(exc).__name__, exc)
         return ""
     total = rec.get("total", 0)
+    other = rec.get("other_models", 0)
+    other_line = (
+        f"\n    (This profile also has {other} resolved directional "
+        "predictions made by a previous model — not yours, not counted.)"
+        if other else "")
     if total < MIN_TOTAL_FOR_BLOCK:
         return (
-            "\n  YOUR TRACK RECORD (this profile): only "
+            "\n  YOUR TRACK RECORD (this profile, this model): only "
             f"{total} resolved directional predictions so far — too few "
             "to calibrate on. Rate confidence honestly; every prediction "
-            "is scored."
+            "is scored." + other_line
         )
     n, w, m = rec["overall"]
     rn, rw, rm = rec["recent"]
@@ -172,4 +210,6 @@ def render_track_record(db_path: str) -> str:
         "    Use this: if a band or call type has underperformed, say so "
         "in your reasoning and rate accordingly — your stated confidence "
         "is scored against outcomes and feeds this profile's calibration.")
+    if other_line:
+        lines.append(other_line.strip("\n"))
     return "\n".join(lines)

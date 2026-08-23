@@ -981,6 +981,13 @@ def _migrate_all_columns(conn):
             # ai_shadow_calls.decision_id; minted per candidate before
             # the ensemble runs).
             ("decision_id", "TEXT"),
+            # 2026-08-23 — model attribution: WHICH model made this
+            # prediction. Lets a profile switch primaries without a
+            # reset: the track record, meta-model and scoreboard scope
+            # to the profile's current model instead of blending the
+            # old model's record into the new one's brains.
+            ("ai_provider", "TEXT"),
+            ("ai_model", "TEXT"),
             ("regime_at_prediction", "TEXT"),
             ("strategy_type", "TEXT"),
             ("features_json", "TEXT"),

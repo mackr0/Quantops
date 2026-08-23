@@ -152,11 +152,19 @@ def _parse_features_json(row_features_json: Optional[str]) -> Optional[Dict[str,
 # ---------------------------------------------------------------------------
 
 def build_training_set(db_path: str,
-                        min_samples: int = MIN_TRAINING_SAMPLES
+                        min_samples: int = MIN_TRAINING_SAMPLES,
+                        ai_model: Optional[str] = None,
                         ) -> Tuple[Optional[List[List[float]]],
                                     Optional[List[int]],
                                     Optional[List[str]]]:
     """Assemble resolved predictions into ML training data.
+
+    `ai_model` (2026-08-23, docs/25 5.4): when given and the
+    `ai_model` column exists, train ONLY on rows that model produced.
+    The meta-model calibrates the decision-maker's stated confidence;
+    after a primary switch it must re-learn the new model, not keep the
+    old model's habits. Rows without attribution (pre-08-23) are
+    excluded under a model filter — never silently blended.
 
     Returns (X, y, feature_names) where:
         X is a list of feature vectors
@@ -180,6 +188,14 @@ def build_training_set(db_path: str,
                 "PRAGMA table_info(ai_predictions)"
             )}
             has_ptype = "prediction_type" in cols
+            model_clause = ""
+            model_args: tuple = ()
+            if ai_model and "ai_model" in cols:
+                model_clause = "AND ai_model = ? "
+                model_args = (ai_model,)
+            elif ai_model:
+                logger.info("meta-model: ai_model column absent on %s — "
+                            "training without a model filter", db_path)
             # ORDER BY id ASC is REQUIRED for time-ordered train/test split.
             if has_ptype:
                 rows = conn.execute(
@@ -188,7 +204,8 @@ def build_training_set(db_path: str,
                     "WHERE status = 'resolved' "
                     "AND actual_outcome IN ('win', 'loss') "
                     "AND features_json IS NOT NULL "
-                    "ORDER BY id ASC"
+                    + model_clause +
+                    "ORDER BY id ASC", model_args,
                 ).fetchall()
             else:
                 rows = conn.execute(
@@ -198,7 +215,8 @@ def build_training_set(db_path: str,
                     "WHERE status = 'resolved' "
                     "AND actual_outcome IN ('win', 'loss') "
                     "AND features_json IS NOT NULL "
-                    "ORDER BY id ASC"
+                    + model_clause +
+                    "ORDER BY id ASC", model_args,
                 ).fetchall()
     except Exception as exc:
         logger.warning("Failed to load training data from %s: %s", db_path, exc)
@@ -388,12 +406,14 @@ def load_model(path: str) -> Optional[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 def train_and_save(profile_id: int, db_path: str,
-                   base_dir: str = ".") -> Optional[Dict[str, Any]]:
+                   base_dir: str = ".",
+                   ai_model: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Train a model for a profile and save to disk.
 
     Returns the model bundle on success, None if insufficient data.
+    `ai_model` scopes training to the profile's current decision-maker.
     """
-    X, y, feature_names = build_training_set(db_path)
+    X, y, feature_names = build_training_set(db_path, ai_model=ai_model)
     if X is None:
         return None
 

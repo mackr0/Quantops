@@ -152,7 +152,9 @@ def init_tracker_db(db_path=None):
                 resolution_price REAL,
                 days_held INTEGER,
                 prediction_type TEXT,
-                decision_id TEXT
+                decision_id TEXT,
+                ai_provider TEXT,
+                ai_model TEXT
             );
         """)
         conn.commit()
@@ -208,7 +210,11 @@ def record_prediction(symbol, predicted_signal, confidence, reasoning,
                       # the same decision. Makes disagreement→outcome
                       # matching an identity instead of a time-window
                       # inference.
-                      decision_id=None):
+                      decision_id=None,
+                      # 2026-08-23 — model attribution (docs/25 5.4):
+                      # which provider/model made this prediction, so a
+                      # profile can switch primaries without a reset.
+                      ai_provider=None, ai_model=None):
     """Save an AI prediction to the database.
 
     Parameters
@@ -317,9 +323,9 @@ def record_prediction(symbol, predicted_signal, confidence, reasoning,
                 features_json, prediction_type,
                 cycle_id, prompt_text, raw_response_json,
                 meta_model_score, online_meta_score,
-                rule_votes_json, decision_id)
+                rule_votes_json, decision_id, ai_provider, ai_model)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?,
-                       ?, ?, ?, ?, ?, ?, ?)""",
+                       ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 datetime.utcnow().isoformat(),
                 symbol.upper(),
@@ -341,6 +347,8 @@ def record_prediction(symbol, predicted_signal, confidence, reasoning,
                 online_meta_score,
                 rule_votes_json,
                 decision_id,
+                ai_provider,
+                ai_model,
             ),
         )
         conn.commit()

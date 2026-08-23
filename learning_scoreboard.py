@@ -41,13 +41,22 @@ def _new_week() -> Dict[str, Any]:
             "ret_sum": 0.0}
 
 
-def profile_weekly_predictions(db_path: str) -> Dict[str, Dict[str, Any]]:
-    """{iso_week: raw counters} from one profile's resolved predictions."""
+def profile_weekly_predictions(db_path: str,
+                               ai_model: Optional[str] = None
+                               ) -> Dict[str, Dict[str, Any]]:
+    """{iso_week: raw counters} from one profile's resolved predictions.
+    With `ai_model` (docs/25 5.4), only rows that model produced count —
+    an arm's curve is the model's own, even after a primary switch."""
     weeks: Dict[str, Dict[str, Any]] = defaultdict(_new_week)
     with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(ai_predictions)")}
+        clause, args = "", ()
+        if ai_model and "ai_model" in cols:
+            clause, args = " AND ai_model = ?", (ai_model,)
         rows = conn.execute(
             f"SELECT timestamp, UPPER(predicted_signal), confidence, "
             f"actual_return_pct FROM ai_predictions WHERE {_RESOLVED_WHERE}"
+            + clause, args,
         ).fetchall()
     for ts, sig, conf, ret in rows:
         try:
@@ -213,7 +222,7 @@ def collect_scoreboard(profiles: List[Dict[str, Any]],
         rep = {"profile_id": p["id"], "name": p.get("name") or f"p{p['id']}",
                "weeks": {}, "equity_weeks": {}}
         try:
-            raw = profile_weekly_predictions(db)
+            raw = profile_weekly_predictions(db, ai_model=p.get("ai_model"))
             rep["weeks"] = {wk: _finalize_week(w) for wk, w in raw.items()}
             rep["equity_weeks"] = profile_weekly_equity_returns(db)
         except (sqlite3.Error, OSError) as exc:

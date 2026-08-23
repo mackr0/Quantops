@@ -20,7 +20,10 @@ does that at the horizon.
 
 **Arm** — `ai_provider:ai_model` of the profile; replicates = all
 enabled profiles with that pair. A profile with `strategy_type`
-other than `ai` is not an arm. **VERIFIED (code)**
+other than `ai` is not an arm. Prediction rows count toward the arm
+only when their `ai_model` is the profile's current model (docs/25
+5.4), so a promoted primary's curve is its own from its first week.
+**VERIFIED** (fixture: 10 current-model + 10 prior-model rows → n=10).
 
 **Week** — ISO week (`YYYY-Www`) of the prediction's `timestamp`
 (decision time, not resolution time) so a week's row is fixed once

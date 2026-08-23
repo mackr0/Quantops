@@ -5,6 +5,12 @@ at the top.
 
 ---
 
+## 2026-08-23 — Promotion without a reset: model attribution on every prediction, learned state scoped to the current model, an audited promote operation. Severity: MEDIUM (the production scenario — switch primaries without halting — would have blended models' brains).
+
+Operator requirement: in production one primary trades while challengers shadow; when one proves itself it becomes the primary with no halt and no starting over. Switching a profile's model was already a setting (book, positions, history and tuner state all stay), but the learned state was not attributed to the model that produced it — a promoted model would have been shown the old model's track record as its own and scored by a meta-model calibrated to the old model's confidence.
+
+Now: `ai_predictions` carries `ai_provider`/`ai_model` (migration + fresh-DB schema; `record_prediction` stamps them from the profile context); the track-record prompt block, `meta_model.build_training_set` (and the online model's bootstrap) and the Learning Scoreboard scope to the profile's current model, with other-model history stated as a count rather than blended; `model_promotion.promote(profile_id, provider, model)` swaps primary ↔ shadow lists and keys in one write (the new primary leaves the shadow list, the old primary joins it with its key moved to the shadow map), refuses unregistered, already-primary or keyless targets, logs a `model_promoted` activity, and touches no positions or orders. Tests pin the stamp, the three scopings, and the promotion swap through the real profile writer.
+
 ## 2026-08-23 — Deploy deleted the learning archive; recovered, and the class closed. Severity: HIGH (data loss, recovered from backups within the hour).
 
 `sync.sh` rsyncs the repo to prod with `--delete`, excluding `backups/` but not `predictions_archive/`. The Experiment 1 reset wrote its 170,536-row learning archive to the repo-root `predictions_archive/` at 17:40 UTC; the next deploy at 17:54 deleted it. Discovered at 18:40 while answering the operator's question about what happens to the two months of learning data. Recovery: the reset's pre-wipe DB backups (`backups/pre-orphan-cleanup-20260823T174011Z`, 1.5 GB, all 13 profile DBs) were intact, and `archive_predictions` re-ran over them — exactly 170,536 rows again — into `backups/predictions_archive/<pid>/exp1_final_20260823/`.

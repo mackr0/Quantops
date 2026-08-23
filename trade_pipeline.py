@@ -3397,6 +3397,9 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                     raw_response=None,
                     meta_model_score=_meta_score,
                     online_meta_score=_online_meta_score,
+                    # 2026-08-23 — model attribution (docs/25 5.4)
+                    ai_provider=getattr(ctx, "ai_provider", None) if ctx else None,
+                    ai_model=getattr(ctx, "ai_model", None) if ctx else None,
                     # 2026-08-06 — the candidate's decision id (minted
                     # in run_ensemble) makes the shadow→outcome join
                     # exact; None for candidates that skipped the
@@ -5755,7 +5758,8 @@ def _build_market_context(regime_info, political_context, ctx):
         # stated as such, never shown as 0%.
         try:
             from calibration_block import render_track_record
-            calibration_block = render_track_record(ctx.db_path)
+            calibration_block = render_track_record(
+                ctx.db_path, ai_model=getattr(ctx, "ai_model", None))
         except Exception as _cb_exc:
             logger.warning(
                 "calibration block unavailable for %s: %s: %s",

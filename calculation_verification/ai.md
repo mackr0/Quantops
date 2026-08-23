@@ -113,6 +113,14 @@ every number so the model (and an auditor) can discount thin buckets.
 **VERIFIED** (fixture: 25-sample band shows 100%, 3-sample band shows
 n<10; recent window splits by resolved_at).
 
+**Model scope (2026-08-23, docs/25 5.4)** — every bucket is computed
+over rows where `ai_model` equals the profile's CURRENT model; rows
+made by other (or unattributed) models are counted once and stated
+("also has N resolved directional predictions made by a previous
+model — not yours, not counted"), never blended. Without attribution
+(no column / no model given) the scope is everything. **VERIFIED**
+(fixture: 25 nano wins + 40 prior-model losses → 100% on 25, 40 stated).
+
 **Failure behaviour** — an unreadable profile DB logs a WARNING and
 renders nothing; the prompt proceeds without the block. **VERIFIED**
 

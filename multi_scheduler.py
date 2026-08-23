@@ -4329,7 +4329,11 @@ def _task_retrain_meta_model(ctx):
                 "[%s] Meta-model retrain skipped — enable_meta_model=False "
                 "(NoMetaModel ablation arm trains nothing)", seg_label)
             return
-        bundle = meta_model.train_and_save(profile_id, ctx.db_path)
+        # Scoped to the profile's CURRENT model (docs/25 5.4): after a
+        # primary switch the meta-model re-learns the new decision-maker
+        # instead of carrying the old one's confidence habits.
+        bundle = meta_model.train_and_save(
+            profile_id, ctx.db_path, ai_model=getattr(ctx, "ai_model", None))
         if bundle is None:
             logging.info(f"[{seg_label}] Meta-model: insufficient training data yet")
             return
@@ -4357,7 +4361,8 @@ def _task_retrain_meta_model(ctx):
         # ai_tracker.resolve_predictions.
         try:
             from online_meta_model import initialize_from_history
-            online = initialize_from_history(profile_id, ctx.db_path)
+            online = initialize_from_history(
+                profile_id, ctx.db_path, ai_model=getattr(ctx, "ai_model", None))
             if online is not None:
                 logging.info(
                     f"[{seg_label}] Online meta-model initialized "

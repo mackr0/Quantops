@@ -391,9 +391,18 @@ procedure.
 - [ ] 5.3 Significance: bootstrap on weekly excess returns pooled across
       replicates, p < 0.05; if no arm clears it, extend 4 weeks and
       re-read — never pick from noise.
-- [ ] 5.4 Promotion procedure written down (Settings changes, shadow
-      list rotation, register updates) and rehearsed once on a
-      baseline profile.
+- [x] 5.4 **Promotion without a reset** (operator requirement
+      2026-08-23: switch primaries in production without halting or
+      starting the brains over). Every prediction now carries the
+      model that made it (`ai_predictions.ai_provider/ai_model`); the
+      track-record block, meta-model training and the Scoreboard scope
+      to the profile's CURRENT model and state other-model history
+      instead of blending it; `model_promotion.promote(profile_id,
+      provider, model)` swaps primary ↔ shadow and keys in one audited
+      write (activity log `model_promoted`), never touching positions
+      or orders; the profile keeps its book, history and tuner state and
+      trades on the next cycle. Done 2026-08-23. Rehearsal on a live
+      profile: ____ (after the horizon read).
 - [ ] 5.5 Post-decision: the losing arms remain shadows on the winner's
       profiles so the leaderboard keeps running.
 
