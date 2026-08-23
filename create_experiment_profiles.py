@@ -1,36 +1,31 @@
-"""Create the 13 fresh-start experiment profiles per docs/15 v2.
+"""Create the Experiment 2 profiles per docs/25 (Model Selection &
+Learning Plan) — nine arm-profiles: three models × three replicates.
+
+Experiment 1's thirteen-profile manifest (docs/15 v2.1: baselines,
+ablations, scale arms) lives at git tag `exp1-system-stability-final`;
+see docs/26_EXPERIMENTS.md for why it was retired. The Buy-Hold-SPY and
+Random baselines are NO LONGER profiles — they are virtual benchmarks
+(`virtual_benchmarks.py`, decision D6) created by the reset script.
+
+Design rule (docs/25 step 1): every arm-profile is IDENTICAL except
+`ai_provider` / `ai_model` / `shadow_models`. Same capital, same risk
+settings, same specialist set, same universe. Anything that differs
+between arms other than the model is a confound.
 
 Idempotent (safe to re-run): if a profile with the same name already
 exists for the given user_id, it's UPDATED in place rather than
-duplicated. New profiles are created with `alpaca_account_id=NULL`
-so the user can wire them to the fresh Alpaca accounts via the
-settings UI afterward (no API keys required at script-run time).
+duplicated. New profiles are created with `alpaca_account_id=NULL`;
+the reset script links them by the EXP-A{n}- prefix.
 
 Usage:
-    # Dry-run — show what would be created/updated
-    /opt/quantopsai/venv/bin/python create_experiment_profiles.py
-
-    # Actually create/update
+    /opt/quantopsai/venv/bin/python create_experiment_profiles.py          # dry-run
     /opt/quantopsai/venv/bin/python create_experiment_profiles.py --apply
-
-    # Different user
-    /opt/quantopsai/venv/bin/python create_experiment_profiles.py \\
-        --apply --user-id 2
-
-After running, the operator does the following in the UI:
-  1. Create 3 fresh Alpaca paper accounts in the Alpaca dashboard,
-     fund them: Acct 1 = $1M, Acct 2 = $1.25M, Acct 3 = $750K.
-  2. Add each Alpaca account to QuantOps via /settings → Alpaca Accounts.
-  3. On each profile's settings page, set the `alpaca_account_id`
-     to one of the 3 accounts per the docs/15 v2 layout.
-
-That's it. Audits will fire warnings until alpaca_account_id is set
-on every profile (no broker == no reconciliation), so leaving it
-unset is a deliberate WIP signal.
+    /opt/quantopsai/venv/bin/python create_experiment_profiles.py --apply --user-id 2
 """
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from typing import Any, Dict, List
@@ -43,311 +38,120 @@ log = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────
-# THE 13-PROFILE MANIFEST (per docs/15 v2)
+# THE ARMS (docs/25 decision D1, 2026-08-23)
 # ─────────────────────────────────────────────────────────────────────
 #
-# Each entry MUST be self-describing. The script never invents a
-# default that isn't in this manifest — what you see here is what
-# gets written.
+# Each arm: (name stem, account group, ai_provider, ai_model, shadow list).
+# Cross-shadowing is SPECIALIST purposes only (config.SHADOW_PURPOSES,
+# decision D5). The Luna arm also shadows gpt-4.1-nano — Experiment 1's
+# one real finding — to bridge old evidence to new.
 
-PROFILES: List[Dict[str, Any]] = [
-
-    # ── Account 1: Baselines ($1M, 4 × $250K) ─────────────────────────
+ARMS: List[Dict[str, Any]] = [
     {
-        "name": "EXP-A1-BuyHoldSPY",
-        "market_type": "stocks",  # post-2026-05-20 unified stock universe
-        "initial_capital": 250_000.0,
-        "strategy_type": "buy_hold",
-        # All AI flags moot for buy_hold but set explicitly so the
-        # ctx fields populate cleanly.
-        "enable_alt_data": 1,
-        "enable_meta_model": 1,
-        "enable_self_tuning": 1,
-        "enable_options": 0,  # buy_hold doesn't trade options
-        "enable_short_selling": 0,
-        "is_virtual": 1,
-        "max_position_pct": 1.0,   # 100% SPY
-        "max_total_positions": 1,
+        "stem": "LUNA", "group": "A1",
+        "ai_provider": "openai", "ai_model": "gpt-5.6-luna",
+        "shadow_models": ["google:gemini-3.5-flash-lite",
+                          "google:gemini-3.7-flash",
+                          "openai:gpt-4.1-nano"],
     },
     {
-        "name": "EXP-A1-RandomA",
-        "market_type": "stocks",
-        "initial_capital": 250_000.0,
-        "strategy_type": "random",
-        "enable_alt_data": 1, "enable_meta_model": 1,
-        "enable_self_tuning": 1, "enable_options": 0,
-        "enable_short_selling": 0,
-        "is_virtual": 1,
-        "max_position_pct": 0.20,   # equal-weight across 5 picks
-        "max_total_positions": 5,
+        "stem": "G35LITE", "group": "A2",
+        "ai_provider": "google", "ai_model": "gemini-3.5-flash-lite",
+        "shadow_models": ["openai:gpt-5.6-luna",
+                          "google:gemini-3.7-flash"],
     },
     {
-        "name": "EXP-A1-RandomB",
-        "market_type": "stocks",
-        "initial_capital": 250_000.0,
-        "strategy_type": "random",
-        "enable_alt_data": 1, "enable_meta_model": 1,
-        "enable_self_tuning": 1, "enable_options": 0,
-        "enable_short_selling": 0,
-        "is_virtual": 1,
-        "max_position_pct": 0.20,
-        "max_total_positions": 5,
-    },
-    {
-        # THE ANCHOR — every Account 2 ablation compares to this profile.
-        "name": "EXP-A1-FullSystemStandard",
-        "market_type": "stocks",
-        "initial_capital": 250_000.0,
-        "strategy_type": "ai",
-        "enable_alt_data": 1,
-        "enable_meta_model": 1,
-        "enable_self_tuning": 1,
-        "enable_options": 1,
-        "enable_short_selling": 1,
-        "is_virtual": 1,
-        "max_position_pct": 0.10,
-        "max_total_positions": 999,  # effectively uncapped (2026-06-11): the AI
-        # decides position count; only BuyHoldSPY (1) and the Randoms (5)
-        # keep fixed caps for the life of the experiment.
-        # 0-100 integer scale — the SAME scale the AI's confidence and
-        # the entry gate use. Seeded as fraction 0.60 until 2026-07-15,
-        # which made the gate a no-op and poisoned the tuner's anchors
-        # (see CHANGELOG 2026-07-15 confidence-gate scale repair).
-        # 45 everywhere since 2026-07-17: the gate is a BACKSTOP against
-        # no-conviction ideas, not the allocator. The old per-arm bars
-        # (60/65/55) sat at/above the AI's honest median (62) — and the
-        # meta-model blend discounts confidence AFTER the AI states it —
-        # so the gate blocked most entry flow and books stockpiled cash
-        # (07-17: 132 blocks vs 39 buys in half a day). The QUALITY bar
-        # lives in the prompt; the hard floor here should almost never
-        # bind. Per-profile tuning of this value belongs to the tuner,
-        # informed by gate-drop counterfactual outcomes.
-        "ai_confidence_threshold": 45,
-    },
-
-    # ── Account 2: Ablations ($1M, 5 × $200K) ────────────────────────
-    # Capital reduced from $250K → $200K vs Anchor so the account
-    # totals fit Alpaca's $1M paper-account funding cap. Comparison
-    # metrics (% return, Sharpe) are capital-invariant for large-caps
-    # with percentage-based position sizing, so the 80% capital
-    # difference is documented but not a confounder. Only the named
-    # flag differs from Anchor on each ablation — that's what makes
-    # the delta meaningful.
-    {
-        "name": "EXP-A2-NoAltData",
-        "market_type": "stocks",
-        "initial_capital": 200_000.0,
-        "strategy_type": "ai",
-        "enable_alt_data": 0,   # ← the only knob different from Anchor
-        "enable_meta_model": 1,
-        "enable_self_tuning": 1,
-        "enable_options": 1,
-        "enable_short_selling": 1,
-        "is_virtual": 1,
-        "max_position_pct": 0.10,
-        "max_total_positions": 999,  # effectively uncapped (2026-06-11): the AI
-        # decides position count; only BuyHoldSPY (1) and the Randoms (5)
-        # keep fixed caps for the life of the experiment.
-        "ai_confidence_threshold": 45,
-    },
-    {
-        "name": "EXP-A2-NoMetaModel",
-        "market_type": "stocks",
-        "initial_capital": 200_000.0,
-        "strategy_type": "ai",
-        "enable_alt_data": 1,
-        "enable_meta_model": 0,  # ←
-        "enable_self_tuning": 1,
-        "enable_options": 1,
-        "enable_short_selling": 1,
-        "is_virtual": 1,
-        "max_position_pct": 0.10,
-        "max_total_positions": 999,  # effectively uncapped (2026-06-11): the AI
-        # decides position count; only BuyHoldSPY (1) and the Randoms (5)
-        # keep fixed caps for the life of the experiment.
-        "ai_confidence_threshold": 45,
-    },
-    {
-        "name": "EXP-A2-NoSelfTuning",
-        "market_type": "stocks",
-        "initial_capital": 200_000.0,
-        "strategy_type": "ai",
-        "enable_alt_data": 1,
-        "enable_meta_model": 1,
-        "enable_self_tuning": 0,  # ←
-        "enable_options": 1,
-        "enable_short_selling": 1,
-        "is_virtual": 1,
-        "max_position_pct": 0.10,
-        "max_total_positions": 999,  # effectively uncapped (2026-06-11): the AI
-        # decides position count; only BuyHoldSPY (1) and the Randoms (5)
-        # keep fixed caps for the life of the experiment.
-        "ai_confidence_threshold": 45,
-    },
-    {
-        "name": "EXP-A2-NoOptions",
-        "market_type": "stocks",
-        "initial_capital": 200_000.0,
-        "strategy_type": "ai",
-        "enable_alt_data": 1,
-        "enable_meta_model": 1,
-        "enable_self_tuning": 1,
-        "enable_options": 0,  # ←
-        "enable_short_selling": 1,
-        "is_virtual": 1,
-        "max_position_pct": 0.10,
-        "max_total_positions": 999,  # effectively uncapped (2026-06-11): the AI
-        # decides position count; only BuyHoldSPY (1) and the Randoms (5)
-        # keep fixed caps for the life of the experiment.
-        "ai_confidence_threshold": 45,
-    },
-    {
-        # COMBINED ablation — tests whether alt-data + meta-model are
-        # complementary or redundant.
-        "name": "EXP-A2-NoAltData-NoMetaModel",
-        "market_type": "stocks",
-        "initial_capital": 200_000.0,
-        "strategy_type": "ai",
-        "enable_alt_data": 0,    # ←
-        "enable_meta_model": 0,  # ←
-        "enable_self_tuning": 1,
-        "enable_options": 1,
-        "enable_short_selling": 1,
-        "is_virtual": 1,
-        "max_position_pct": 0.10,
-        "max_total_positions": 999,  # effectively uncapped (2026-06-11): the AI
-        # decides position count; only BuyHoldSPY (1) and the Randoms (5)
-        # keep fixed caps for the life of the experiment.
-        "ai_confidence_threshold": 45,
-    },
-
-    # ── Account 3: Product candidate + scale ($750K, 4 profiles) ─────
-    {
-        # THE $25K real-money question.
-        # Constrained best-of-all-strategies: small enough to
-        # concentrate, but with all signal sources ON.
-        "name": "EXP-A3-25K-Candidate",
-        "market_type": "stocks",
-        "initial_capital": 25_000.0,
-        "strategy_type": "ai",
-        "enable_alt_data": 1,
-        "enable_meta_model": 1,
-        "enable_self_tuning": 1,
-        "enable_options": 1,           # single-leg only at this size
-        "enable_short_selling": 0,     # shorts tie up too much margin
-        "is_virtual": 1,
-        "max_position_pct": 0.20,      # up to 20% per pick — conviction
-        "max_total_positions": 999,  # effectively uncapped (2026-06-11): the AI
-        # decides position count; only BuyHoldSPY (1) and the Randoms (5)
-        # keep fixed caps for the life of the experiment.
-        "ai_confidence_threshold": 45,
-    },
-    {
-        # Reproducibility replica — IDENTICAL config, different
-        # profile_id so RNG paths diverge. ±5% vs Candidate = signal.
-        "name": "EXP-A3-25K-Replica",
-        "market_type": "stocks",
-        "initial_capital": 25_000.0,
-        "strategy_type": "ai",
-        "enable_alt_data": 1,
-        "enable_meta_model": 1,
-        "enable_self_tuning": 1,
-        "enable_options": 1,
-        "enable_short_selling": 0,
-        "is_virtual": 1,
-        "max_position_pct": 0.20,
-        "max_total_positions": 999,  # effectively uncapped (2026-06-11): the AI
-        # decides position count; only BuyHoldSPY (1) and the Randoms (5)
-        # keep fixed caps for the life of the experiment.
-        "ai_confidence_threshold": 45,
-    },
-    {
-        # 10× scaling test — same constraints as Candidate.
-        "name": "EXP-A3-250K-ConservativeScale",
-        "market_type": "stocks",
-        "initial_capital": 250_000.0,
-        "strategy_type": "ai",
-        "enable_alt_data": 1,
-        "enable_meta_model": 1,
-        "enable_self_tuning": 1,
-        "enable_options": 1,
-        "enable_short_selling": 0,
-        "is_virtual": 1,
-        "max_position_pct": 0.20,
-        "max_total_positions": 999,  # effectively uncapped (2026-06-11): the AI
-        # decides position count; only BuyHoldSPY (1) and the Randoms (5)
-        # keep fixed caps for the life of the experiment.
-        "ai_confidence_threshold": 45,
-    },
-    {
-        # Aggressive Free — all small-account constraints DROPPED.
-        # Upper-bound test: does lifting constraints unlock alpha?
-        # Sized to fill Account 3 to the $1M Alpaca cap after the
-        # $25K + $25K + $250K from the other three profiles.
-        "name": "EXP-A3-700K-AggressiveFree",
-        "market_type": "stocks",
-        "initial_capital": 700_000.0,
-        "strategy_type": "ai",
-        "enable_alt_data": 1,
-        "enable_meta_model": 1,
-        "enable_self_tuning": 1,
-        "enable_options": 1,
-        "enable_short_selling": 1,     # shorts ON
-        "is_virtual": 1,
-        "max_position_pct": 0.08,      # smaller per-position to fit 15
-        "max_total_positions": 999,  # effectively uncapped (2026-06-11): the AI
-        # decides position count; only BuyHoldSPY (1) and the Randoms (5)
-        # keep fixed caps for the life of the experiment.
-        "ai_confidence_threshold": 45,
+        "stem": "G37FLASH", "group": "A3",
+        "ai_provider": "google", "ai_model": "gemini-3.7-flash",
+        "shadow_models": ["openai:gpt-5.6-luna",
+                          "google:gemini-3.5-flash-lite"],
     },
 ]
 
+REPLICATES_PER_ARM = 3
+# Decision D2 (operator): capital per replicate. Three per $1M paper
+# account → $750K per account, under Alpaca's $1M cap with headroom.
+CAPITAL_PER_REPLICATE = 250_000.0
 
-# 2026-06-04 — every profile must explicitly carry ai_provider +
-# ai_model in source. The schema defaults (anthropic / claude-haiku)
-# don't match what the operator actually uses (google / gemini), so
-# without this, every fresh-start reset silently reverts AI config and
-# 401s on the first cycle (caught on the 2026-06-04 reset, see
-# CHANGELOG). Applied via setdefault so per-profile overrides in the
-# manifest above still win. Single source of truth — future provider
-# switches change ONE line here, not 13.
-_AI_PROVIDER_DEFAULTS = {
-    "ai_provider": "google",
-    # 2026-06-30: upgraded to gemini-3.1-flash-lite (the live cohort's model).
-    # Folded in so the rebuild manifest matches reality and the MANIFEST DRIFT
-    # check stays clean (step5b also restores the live model, but the manifest
-    # is the source of truth for a from-scratch build).
-    "ai_model": "gemini-3.1-flash-lite",
+# The settings every replicate shares — the Experiment 1 "FullSystem"
+# anchor configuration, unchanged, so Experiment 2's results are
+# comparable to the retired anchor.
+_COMMON: Dict[str, Any] = {
+    "market_type": "stocks",
+    "initial_capital": CAPITAL_PER_REPLICATE,
+    "strategy_type": "ai",
+    "enable_alt_data": 1,
+    "enable_meta_model": 1,
+    "enable_self_tuning": 1,
+    "enable_options": 1,
+    "enable_short_selling": 1,
+    "is_virtual": 1,
+    "max_position_pct": 0.10,
+    "max_total_positions": 999,   # the AI decides position count
+    # 0-100 integer scale — the SAME scale the AI's confidence and the
+    # entry gate use; 45 is the operator-set backstop floor.
+    "ai_confidence_threshold": 45,
+    "enable_shadow_eval": 1,
 }
-for _p in PROFILES:
-    for _k, _v in _AI_PROVIDER_DEFAULTS.items():
-        _p.setdefault(_k, _v)
 
 
-# Capital integrity check — fails loudly if the manifest doesn't sum
-# to the intended $3M, so a typo can't quietly miss target capital.
+def _build_profiles() -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for arm in ARMS:
+        for i in range(1, REPLICATES_PER_ARM + 1):
+            spec = dict(_COMMON)
+            spec["name"] = f"EXP-{arm['group']}-{arm['stem']}-{i}"
+            spec["ai_provider"] = arm["ai_provider"]
+            spec["ai_model"] = arm["ai_model"]
+            spec["shadow_models"] = json.dumps(arm["shadow_models"])
+            out.append(spec)
+    return out
+
+
+PROFILES: List[Dict[str, Any]] = _build_profiles()
+
+EXPECTED_TOTAL = CAPITAL_PER_REPLICATE * REPLICATES_PER_ARM * len(ARMS)
+EXPECTED_COUNTS = {arm["group"]: REPLICATES_PER_ARM for arm in ARMS}
+
+
 def _verify_manifest_totals() -> None:
+    """Fails loudly if the manifest doesn't match the design: nine
+    profiles, equal capital, three per account group, every arm
+    naming a registered model, every non-model field identical."""
     total = sum(p["initial_capital"] for p in PROFILES)
-    expected = 3_000_000.0
-    if abs(total - expected) > 0.01:
+    if abs(total - EXPECTED_TOTAL) > 0.01:
         raise ValueError(
-            f"Manifest totals ${total:,.0f}, expected ${expected:,.0f}. "
-            "Edit PROFILES until they sum exactly."
-        )
-    counts = {}
+            f"Manifest totals ${total:,.0f}, expected ${EXPECTED_TOTAL:,.0f}.")
+    counts: Dict[str, int] = {}
     for p in PROFILES:
-        if p["name"].startswith("EXP-A1"):
-            counts["A1"] = counts.get("A1", 0) + 1
-        elif p["name"].startswith("EXP-A2"):
-            counts["A2"] = counts.get("A2", 0) + 1
-        elif p["name"].startswith("EXP-A3"):
-            counts["A3"] = counts.get("A3", 0) + 1
-    if counts != {"A1": 4, "A2": 5, "A3": 4}:
+        group = p["name"].split("-")[1]
+        counts[group] = counts.get(group, 0) + 1
+    if counts != EXPECTED_COUNTS:
         raise ValueError(
             f"Profile-name prefixes give counts {counts}; expected "
-            "{'A1': 4, 'A2': 5, 'A3': 4} per docs/15 v2."
-        )
-    log.info("manifest verified: 13 profiles totaling $%s", f"{total:,.0f}")
+            f"{EXPECTED_COUNTS} per docs/25.")
+    from ai_providers import PROVIDERS
+    for arm in ARMS:
+        if arm["ai_model"] not in PROVIDERS[arm["ai_provider"]]["models"]:
+            raise ValueError(
+                f"arm {arm['stem']}: {arm['ai_provider']}:{arm['ai_model']} "
+                "is not in ai_providers.PROVIDERS")
+        for entry in arm["shadow_models"]:
+            prov, _, mid = entry.partition(":")
+            if mid not in PROVIDERS.get(prov, {}).get("models", {}):
+                raise ValueError(
+                    f"arm {arm['stem']}: shadow {entry} not registered")
+    varying = {"name", "ai_provider", "ai_model", "shadow_models"}
+    base = {k: v for k, v in PROFILES[0].items() if k not in varying}
+    for p in PROFILES[1:]:
+        other = {k: v for k, v in p.items() if k not in varying}
+        if other != base:
+            raise ValueError(
+                f"{p['name']} differs from {PROFILES[0]['name']} in a "
+                f"non-model field: {set(other.items()) ^ set(base.items())}")
+    log.info("manifest verified: %d profiles totaling $%s; arms=%s",
+             len(PROFILES), f"{total:,.0f}",
+             [f"{a['ai_provider']}:{a['ai_model']}" for a in ARMS])
 
 
 def _existing_profile_by_name(user_id: int, name: str):
@@ -395,7 +199,7 @@ def main():
     args = ap.parse_args()
 
     log.info("=" * 70)
-    log.info("EXPERIMENT PROFILE BUILDER (apply=%s, user=%d)",
+    log.info("EXPERIMENT 2 PROFILE BUILDER (apply=%s, user=%d)",
              args.apply, args.user_id)
     log.info("=" * 70)
 
@@ -413,29 +217,22 @@ def main():
         if not args.apply:
             existing = _existing_profile_by_name(args.user_id, spec["name"])
             marker = "[exists]" if existing else "[new]   "
-            cap = spec["initial_capital"]
-            stype = spec["strategy_type"]
-            log.info("  %s %s  $%-10s strategy=%s",
-                     marker, spec["name"], f"{int(cap):,}", stype)
+            log.info("  %s %s  $%-10s %s:%s shadows=%s",
+                     marker, spec["name"],
+                     f"{int(spec['initial_capital']):,}",
+                     spec["ai_provider"], spec["ai_model"],
+                     spec["shadow_models"])
 
     log.info("=" * 70)
     if args.apply:
         log.info("DONE: created=%d  updated=%d",
                  actions["created"], actions["updated"])
         log.info(
-            "\nNext steps:\n"
-            "  1. Create 3 fresh Alpaca paper accounts in the Alpaca dashboard:\n"
-            "       Acct 1 funded $1,000,000\n"
-            "       Acct 2 funded $1,000,000\n"
-            "       Acct 3 funded $1,000,000\n"
-            "       (Alpaca paper accounts cap at $1M each → 3 × $1M = $3M)\n"
-            "  2. /settings → Alpaca Accounts → add each one\n"
-            "  3. For each EXP-A1-* profile: set alpaca_account_id = Acct 1\n"
-            "     For each EXP-A2-* profile: set alpaca_account_id = Acct 2\n"
-            "     For each EXP-A3-* profile: set alpaca_account_id = Acct 3\n"
-            "  4. Run ./morning_health_check.sh to confirm 13 profiles\n"
-            "     discovered + audit_alerts empty\n"
-            "  5. Let it run; first measurement window starts day 15"
+            "\nNext steps (the reset script does these when run end-to-end):\n"
+            "  1. Link EXP-A1-* → account A1, EXP-A2-* → A2, EXP-A3-* → A3\n"
+            "  2. Install per-provider AI keys and shadow keys on each profile\n"
+            "  3. Create the virtual benchmarks (Buy-Hold-SPY + Random x10)\n"
+            "  4. certify_books.py → CERTIFIED CLEAN, then restart services"
         )
     else:
         log.info(

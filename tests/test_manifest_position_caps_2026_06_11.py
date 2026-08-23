@@ -34,14 +34,13 @@ REPO = Path(__file__).resolve().parent.parent
 # ---------------------------------------------------------------------------
 
 def test_manifest_caps_match_operator_contract():
+    # 2026-08-23 — Experiment 2 manifest: nine AI arm-profiles and no
+    # baseline profiles (Buy-Hold / Random are virtual benchmarks now,
+    # docs/25 D6), so only the AI-profile half of the contract remains.
     from create_experiment_profiles import PROFILES
-    by_name = {p["name"]: p for p in PROFILES}
-    assert by_name["EXP-A1-BuyHoldSPY"]["max_total_positions"] == 1
-    assert by_name["EXP-A1-RandomA"]["max_total_positions"] == 5
-    assert by_name["EXP-A1-RandomB"]["max_total_positions"] == 5
     ai_profiles = [p for p in PROFILES if p.get("strategy_type") == "ai"]
-    assert len(ai_profiles) == 10, (
-        f"Expected 10 AI-driven profiles in the manifest, found "
+    assert len(ai_profiles) == 9, (
+        f"Expected 9 AI-driven profiles in the manifest, found "
         f"{len(ai_profiles)} — update this test alongside any "
         "experiment redesign."
     )
@@ -83,7 +82,7 @@ def _db_with_profile(tmp_path, name, **overrides):
 def test_drift_report_flags_diverged_setting(tmp_path):
     from clean_orphaned_profiles import _report_manifest_drift
     db = _db_with_profile(
-        tmp_path, "EXP-A1-FullSystemStandard", max_total_positions=10,
+        tmp_path, "EXP-A1-LUNA-1", max_total_positions=10,
     )
     n = _report_manifest_drift(db)
     assert n >= 1, (
@@ -94,7 +93,7 @@ def test_drift_report_flags_diverged_setting(tmp_path):
 
 def test_drift_report_quiet_when_matching(tmp_path):
     from clean_orphaned_profiles import _report_manifest_drift
-    db = _db_with_profile(tmp_path, "EXP-A1-FullSystemStandard")
+    db = _db_with_profile(tmp_path, "EXP-A1-LUNA-1")
     assert _report_manifest_drift(db) == 0
 
 

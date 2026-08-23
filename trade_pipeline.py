@@ -5718,6 +5718,7 @@ def _build_market_context(regime_info, political_context, ctx):
     # Get performance summary + learned patterns from self-tuning
     profile_summary = None
     learned_patterns = []
+    calibration_block = ""
     if ctx is not None:
         try:
             from self_tuning import get_batch_context_data
@@ -5747,6 +5748,20 @@ def _build_market_context(regime_info, political_context, ctx):
                 "post-mortem pattern annotation failed: %s: %s",
                 type(_pm_exc).__name__, _pm_exc,
             )
+        # 2026-08-23 (docs/25 step 4.2) — the profile's own resolved
+        # track record, in every batch prompt: the in-context learning a
+        # frozen-weight model can actually do. render_track_record
+        # logs and returns "" on an unreadable DB; a thin record is
+        # stated as such, never shown as 0%.
+        try:
+            from calibration_block import render_track_record
+            calibration_block = render_track_record(ctx.db_path)
+        except Exception as _cb_exc:
+            logger.warning(
+                "calibration block unavailable for %s: %s: %s",
+                getattr(ctx, "db_path", "?"), type(_cb_exc).__name__, _cb_exc,
+            )
+            calibration_block = ""
 
     # Sector rotation (free, cached 30min)
     sector_rotation = {}
@@ -5982,6 +5997,7 @@ def _build_market_context(regime_info, political_context, ctx):
         "political_context": political_context,
         "profile_summary": profile_summary,
         "learned_patterns": learned_patterns,
+        "calibration_block": calibration_block,
         "sector_rotation": sector_rotation,
         "crisis_context": crisis_ctx,
         "macro_context": macro_context,

@@ -71,6 +71,31 @@ would overclaim. **VERIFIED**
 metrics; the per-model summary shows lifetime cost as "Cost (total)").
 **VERIFIED**
 
+**Apex `batch_select` rows — scored per symbol (2026-08-23, docs/25
+item 1.3)** — the apex call's decision is a trade SET, canonicalised
+to `SYM:ACTION,...` (empty → `PASS`). Until 08-23 these rows were
+"set-level / ungradable" and the most important decision in the
+system was never compared. Now `_score_batch_select_pair` explodes the
+two sets: for every symbol in their union, each side's stance is its
+action if it picked the symbol, else **neutral** (choosing not to
+trade a name is a decision, graded like a HOLD). Symbols both sides
+treated identically are not disagreements and are skipped. Each
+remaining symbol is matched to the primary's own prediction by symbol
+and time (a batched call carries no single decision id) and graded
+with the forecaster rules (`grade`, `decision_value`); each scored
+symbol is one `(profile, symbol)` unit with its own edge delta.
+Symbols without a resolved outcome stay pending (nobody credited).
+*Why this way:* the alternative — a set-equality verdict — can't say
+who was RIGHT; per-symbol exploding reuses the exact grading the
+specialist rows already get, so the apex call is judged by the same
+rules as everything else. **VERIFIED** (three fixture cases:
+shadow-right, pending, and shared-pick-excluded).
+
+**Shadow scope (2026-08-23, decision D5)** — only purposes matching
+`config.SHADOW_PURPOSES` (default `ensemble:`) are shadowed; the apex
+call is compared through the experiment's live replicates instead.
+Out-of-scope purposes write no row and cost nothing. **VERIFIED**
+
 **Evidence funnel line** — live per-arm counts: calls → graded
 (agreement computable) → disagreements → distinct units → moot →
 scored, plus outcome-match method: **N by decision id (exact)** vs

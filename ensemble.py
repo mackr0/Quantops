@@ -60,13 +60,15 @@ def veto_authorized_names(specialists) -> set:
 CONFIDENCE_FLOOR = 25.0
 
 
-# Chunk size for specialist calls. With tool_use (Anthropic) the model
-# reliably returns every requested entry, so chunking is only a hedge.
-# With plain-prompt fallback, chunks of 5 help reduce drop rate — and since
-# 2026-07-02 the multileg dispatch BATCHES a cycle's option proposals into
-# one review, where a dropped verdict silently fails OPEN (missing symbol =
-# not vetoed). The plain-prompt path therefore uses the documented smaller
-# chunk (review M4); a cycle's option batch (~2-3 proposals) fits in one.
+# Chunk size for specialist calls. Since 2026-08-23 every provider runs
+# the schema-enforced structured path (docs/25 item 1.2), so ONE chunk
+# size applies to all vendors — an experiment arm must never see a
+# different batch shape than another. The structured contract makes
+# the model return every requested entry; the per-chunk symbol-drop
+# warning in _run_one_specialist is the backstop for the fail-OPEN
+# class (a missing verdict in a batched veto review = not vetoed).
+# CHUNK_SIZE_PLAIN is retained only as the historical value of the
+# retired plain-prompt path (tests reference it); nothing uses it.
 CHUNK_SIZE = 15
 CHUNK_SIZE_PLAIN = 5
 
@@ -204,7 +206,6 @@ def run_ensemble(
         raw:         {specialist_name: [verdict_dicts]}
         cost_calls:  number of AI calls made
     """
-    from ai_providers import call_ai
     from specialists import discover_specialists
 
     if not candidates:
@@ -291,7 +292,12 @@ def run_ensemble(
         batch, EARNINGS_ANALYST_WINDOW_DAYS
     )
 
-    use_tools = (ai_provider == "anthropic")
+    # 2026-08-23 (docs/25 item 1.2) — EVERY provider runs the schema-
+    # enforced structured path. Until now only Anthropic did (forced
+    # tool_use) while OpenAI/Gemini got a plain prompt + text parser,
+    # so a model comparison measured parsers as much as models.
+    # call_ai_structured now routes all vendors through their native
+    # structured-output mode with the same schema.
 
     def _run_one_specialist(spec, cand_list):
         """One specialist's full pass over `cand_list` (chunked). Returns
@@ -303,7 +309,7 @@ def run_ensemble(
         combined: List[Dict[str, Any]] = []
         seen_syms: set = set()
         calls = 0
-        _chunk = CHUNK_SIZE if use_tools else CHUNK_SIZE_PLAIN
+        _chunk = CHUNK_SIZE
         spec_chunks = [cand_list[i:i + _chunk]
                        for i in range(0, len(cand_list), _chunk)]
         for chunk in spec_chunks:
@@ -323,67 +329,52 @@ def run_ensemble(
             )
 
             verdicts: List[Dict[str, Any]] = []
-            if use_tools:
-                try:
-                    from ai_providers import call_ai_structured
-                    result = call_ai_structured(
-                        prompt,
-                        schema=_verdicts_schema(),
-                        tool_name="submit_verdicts",
-                        provider=ai_provider,
-                        model=ai_model,
-                        api_key=ai_api_key,
-                        max_tokens=2048,
-                        db_path=getattr(ctx, "db_path", None),
-                        purpose=f"ensemble:{name}",
-                        decision_id=_chunk_decision_id,
-                    )
-                    calls += 1
-                    if result and isinstance(result.get("verdicts"), list):
-                        # Normalize shape — parse_response clamps/validates
-                        from specialists._common import VALID_VERDICTS
-                        for v in result["verdicts"]:
-                            if not isinstance(v, dict):
-                                continue
-                            sym = v.get("symbol")
-                            verdict = v.get("verdict")
-                            if not isinstance(sym, str) or verdict not in VALID_VERDICTS:
-                                continue
-                            try:
-                                conf = float(v.get("confidence", 0))
-                            except (TypeError, ValueError):
-                                conf = 0.0
-                            verdicts.append({
-                                "symbol": sym,
-                                "verdict": verdict,
-                                "confidence": max(0.0, min(100.0, conf)),
-                                "reasoning": str(v.get("reasoning", ""))[:400],
-                            })
-                except Exception as exc:
+            try:
+                from ai_providers import call_ai_structured
+                result = call_ai_structured(
+                    prompt,
+                    schema=_verdicts_schema(),
+                    tool_name="submit_verdicts",
+                    provider=ai_provider,
+                    model=ai_model,
+                    api_key=ai_api_key,
+                    max_tokens=2048,
+                    db_path=getattr(ctx, "db_path", None),
+                    purpose=f"ensemble:{name}",
+                    decision_id=_chunk_decision_id,
+                )
+                calls += 1
+                if result and isinstance(result.get("verdicts"), list):
+                    # Normalize shape — clamp/validate like parse_response
+                    from specialists._common import VALID_VERDICTS
+                    for v in result["verdicts"]:
+                        if not isinstance(v, dict):
+                            continue
+                        sym = v.get("symbol")
+                        verdict = v.get("verdict")
+                        if not isinstance(sym, str) or verdict not in VALID_VERDICTS:
+                            continue
+                        try:
+                            conf = float(v.get("confidence", 0))
+                        except (TypeError, ValueError):
+                            conf = 0.0
+                        verdicts.append({
+                            "symbol": sym,
+                            "verdict": verdict,
+                            "confidence": max(0.0, min(100.0, conf)),
+                            "reasoning": str(v.get("reasoning", ""))[:400],
+                        })
+                elif result is None:
                     logger.warning(
-                        "specialist %s tool call failed on chunk: %s", name, exc
+                        "specialist %s: %s/%s returned no schema-shaped "
+                        "verdicts on chunk", name, ai_provider, ai_model,
                     )
-                    verdicts = []
-            else:
-                # Non-Anthropic fallback — plain prompt + text parser
-                try:
-                    raw = call_ai(
-                        prompt,
-                        provider=ai_provider,
-                        model=ai_model,
-                        api_key=ai_api_key,
-                        max_tokens=2048,
-                        db_path=getattr(ctx, "db_path", None),
-                        purpose=f"ensemble:{name}",
-                        decision_id=_chunk_decision_id,
-                    )
-                    calls += 1
-                    verdicts = spec.parse_response(raw) or []
-                except Exception as exc:
-                    logger.warning(
-                        "specialist %s AI call failed on chunk: %s", name, exc
-                    )
-                    verdicts = []
+            except Exception as exc:
+                logger.warning(
+                    "specialist %s structured call failed on chunk: %s",
+                    name, exc,
+                )
+                verdicts = []
 
             # Dedupe in case the same symbol shows up in multiple chunks
             for v in verdicts:

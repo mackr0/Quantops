@@ -102,6 +102,22 @@ def build_payload(user_id: int) -> Dict[str, Any]:
                        for d, r in normalized],
         })
 
+    # 2026-08-23 (docs/25 D6) — virtual benchmarks (Buy-Hold-SPY and the
+    # Random replicas tracked without a broker) render in the same
+    # series shape; negative profile ids keep them distinct from
+    # trading profiles. A read failure is logged, never hidden.
+    try:
+        from virtual_benchmarks import list_series as _bench_series
+        bench = _bench_series(user_id)
+    except Exception as exc:
+        logger.warning("comparative_returns: virtual benchmark series "
+                       "unavailable: %s: %s", type(exc).__name__, exc)
+        bench = []
+    for b in bench:
+        if b["points"]:
+            any_points = True
+        series.append(b)
+
     payload: Dict[str, Any] = {"series": series, "empty_state": False,
                                "empty_message": ""}
     if not any_points:

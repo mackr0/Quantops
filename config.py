@@ -65,6 +65,17 @@ NOTIFICATION_EMAIL = os.getenv("NOTIFICATION_EMAIL", "mack@mackenziesmith.com")
 # shadow call. Default is intentionally tiny since shadow models are
 # the cheap tier (Gemini Flash-Lite, DeepSeek, GPT-4.1 Nano).
 SHADOW_DAILY_COST_CAP_USD = float(os.getenv("SHADOW_DAILY_COST_CAP_USD", "1.0"))
+# Shadow purpose scope (2026-08-23, docs/25 decision D5): only AI calls
+# whose purpose starts with one of these prefixes are shadowed. The
+# specialist calls ("ensemble:*") are where same-call shadowing earns
+# its keep; the apex batch_select call (78% of tokens) is compared via
+# the experiment's live replicates instead. Empty tuple = shadow
+# everything (the pre-08-23 behavior). Override with a comma-separated
+# SHADOW_PURPOSES env var.
+SHADOW_PURPOSES = tuple(
+    p.strip() for p in os.getenv("SHADOW_PURPOSES", "ensemble:").split(",")
+    if p.strip()
+)
 
 # Default trading parameters (overridden per-profile via UserContext)
 DEFAULT_MAX_POSITION_PCT = 0.10

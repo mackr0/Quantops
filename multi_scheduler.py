@@ -2609,13 +2609,14 @@ def _task_stat_arb_universe_scan(ctx):
     from zoneinfo import ZoneInfo
 
     now_et = _dt.datetime.now(ZoneInfo("America/New_York"))
-    if now_et.weekday() != 6:  # Sunday only
-        return
-
     profile_id = getattr(ctx, "profile_id", None)
     seg_label = ctx.display_name or ctx.segment
     today = now_et.strftime("%Y-%m-%d")
     marker = f".stat_arb_scan_done_p{profile_id or 'X'}.marker"
+    # Weekly by marker date, any day (see _weekly_task_due — the
+    # Sunday-only gate never fired because the fleet sleeps weekends).
+    if not _weekly_task_due(marker, today):
+        return
 
     try:
         with open(marker) as f:
@@ -4176,6 +4177,21 @@ def _task_daily_snapshot(ctx):
         f"positions={len(positions)}, cash=${account['cash']:,.2f}, "
         f"daily_pnl={'$%.2f' % daily_pnl if daily_pnl is not None else 'N/A'}"
     )
+    # 2026-08-23 (docs/25 D6) — virtual benchmarks are marked to market
+    # alongside the profile snapshots. Idempotent per ET day: the first
+    # profile's snapshot task marks them, later ones find nothing due.
+    # Fleet-level work hooked here because this task already runs on
+    # the daily-snapshot cadence; a failure is logged, never swallowed,
+    # and never blocks the profile's own snapshot (already written).
+    try:
+        from virtual_benchmarks import run_daily_if_due
+        _bm = run_daily_if_due(getattr(ctx, "user_id", None))
+        if _bm is not None:
+            logging.info("Virtual benchmarks marked: %d ok, %d failed",
+                         _bm["marked"], _bm["failed"])
+    except Exception as exc:
+        logging.error("virtual benchmark mark-to-market failed: %s: %s",
+                      type(exc).__name__, exc)
 
 
 def _task_self_tune(ctx):
@@ -5359,21 +5375,12 @@ def _task_capital_rebalance(ctx):
     from zoneinfo import ZoneInfo
 
     now_et = _dt.datetime.now(ZoneInfo("America/New_York"))
-    if now_et.weekday() != 6:  # Sunday only
-        return
-
     seg_label = ctx.display_name or ctx.segment
     today = now_et.strftime("%Y-%m-%d")
     marker = ".capital_rebalance_done.marker"
-
-    try:
-        with open(marker) as f:
-            if f.read().strip() == today:
-                logging.info(
-                    f"[{seg_label}] Capital rebalance already ran today — skipping.")
-                return
-    except FileNotFoundError:
-        pass
+    # Weekly by marker date, any day (see _weekly_task_due).
+    if not _weekly_task_due(marker, today):
+        return
 
     try:
         from capital_allocator import rebalance
@@ -5423,6 +5430,32 @@ def _task_capital_rebalance(ctx):
             f"[{seg_label}] Capital rebalance task failed: {exc}")
 
 
+def _weekly_task_due(marker: str, today: str, min_days: int = 7) -> bool:
+    """True when a weekly task should run: its marker file is missing,
+    unreadable, or holds a date at least `min_days` before `today`.
+
+    2026-08-23 (docs/25 step 4.1): the weekly tasks were gated on
+    `weekday() == 6` (Sunday) — but the fleet spends every night and
+    weekend parked in the sleep loop, so no task cycle ever runs on a
+    Sunday unless the process happens to restart on one. The
+    post-mortem marker on prod read 2026-07-26 on 2026-08-23: the
+    "learned patterns" mechanism had not run for four weeks, which is
+    why `learned_patterns` held zero rows. Weekly now means "first
+    task cycle at least seven days after the last run", on any day."""
+    import datetime as _dt
+    try:
+        with open(marker) as f:
+            last = f.read().strip()
+        last_d = _dt.date.fromisoformat(last)
+    except (FileNotFoundError, ValueError):
+        return True
+    except OSError as exc:
+        logging.warning("weekly marker %s unreadable (%s) — treating as due",
+                        marker, exc)
+        return True
+    return (_dt.date.fromisoformat(today) - last_d).days >= min_days
+
+
 def _task_post_mortem(ctx):
     """Weekly losing-week post-mortem: when the past 7 days
     materially underperformed the long-term baseline, cluster the
@@ -5430,27 +5463,19 @@ def _task_post_mortem(ctx):
     learned_pattern. The AI prompt picks it up automatically next
     week via the existing learned_patterns plumbing.
 
-    Sundays only; file-based idempotency marker prevents re-fire on
-    restart. Per-profile (each profile's losses are clustered against
-    its own baseline)."""
+    Weekly by marker date (see _weekly_task_due) — no longer
+    Sunday-only. Per-profile (each profile's losses are clustered
+    against its own baseline)."""
     import datetime as _dt
     from zoneinfo import ZoneInfo
 
     now_et = _dt.datetime.now(ZoneInfo("America/New_York"))
-    if now_et.weekday() != 6:  # Sunday only
-        return
-
     seg_label = ctx.display_name or ctx.segment
     profile_id = getattr(ctx, "profile_id", 0)
     today = now_et.strftime("%Y-%m-%d")
     marker = f".post_mortem_done_p{profile_id}.marker"
-
-    try:
-        with open(marker) as f:
-            if f.read().strip() == today:
-                return  # already ran for this profile this week
-    except FileNotFoundError:
-        pass
+    if not _weekly_task_due(marker, today):
+        return
 
     try:
         from post_mortem import analyze_recent_week
@@ -5485,9 +5510,17 @@ def _task_auto_strategy_generation(ctx):
     and promotes passers into shadow mode.
     """
     import datetime as _dt
-    # Only run on Sundays (weekday 6 = Sunday in Python's 0=Mon convention)
-    if _dt.datetime.utcnow().weekday() != 6:
+    # Weekly by marker date, any day (see _weekly_task_due — the
+    # Sunday-only gate never fired because the fleet sleeps weekends).
+    _today = _dt.datetime.utcnow().strftime("%Y-%m-%d")
+    _marker = f".auto_strategy_done_p{getattr(ctx, 'profile_id', 'X')}.marker"
+    if not _weekly_task_due(_marker, _today):
         return
+    try:
+        with open(_marker, "w") as _f:
+            _f.write(_today)
+    except OSError as _m_exc:
+        logging.warning("auto-strategy weekly marker write failed: %s", _m_exc)
 
     try:
         from strategy_proposer import propose_strategies

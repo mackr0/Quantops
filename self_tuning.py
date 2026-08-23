@@ -6,6 +6,7 @@ its own learning.
 """
 
 import logging
+import os
 import sqlite3
 import time
 from contextlib import closing
@@ -196,6 +197,17 @@ def _apply_param_change(profile_id: int, user_id: int,
             "never auto-tuned", param_name, profile_id,
         )
         return old_value, False, " [refused: operator-only param]"
+    # Retired levers (docs/25 step 3): non-binding parameters are never
+    # tuned by any path — see RETIRED_PARAMS. Same choke-point
+    # placement as the operator-only firewall, so the disaster-
+    # prevention path is covered, not just the upward registry.
+    if param_name in RETIRED_PARAMS:
+        logger.warning(
+            "self-tuner refused to change retired param %s (profile %s, "
+            "%s): non-binding lever — every change to it is tuning-history "
+            "noise (docs/25 step 3)", param_name, profile_id, adjustment_type,
+        )
+        return old_value, False, " [refused: retired non-binding param]"
     # One-way valve (2026-07-17): the entry-confidence FLOOR may move
     # DOWN under tuner power (drift-toward-trading: false-negative
     # evidence lowers it, auto-loosen can pick it) but never UP. The
@@ -2295,6 +2307,60 @@ _OPTIMIZER_DIRECTION = {
 _DIRECTION_PRIORITY = ("LOOSEN", "BIDIRECTIONAL", "STRUCTURAL", "TIGHTEN")
 
 
+# ---------------------------------------------------------------------------
+# Evidence mode (docs/25 step 3, 2026-08-23)
+# ---------------------------------------------------------------------------
+#
+# Experiment 1's tuner made 429 changes with no measurable improvement
+# (win rate 37.0% → 37.9% around changes). Most moved knobs that do not
+# bind (max_total_positions oscillating 999→749→562→976 while
+# max_position_pct is the real cap) or reversed themselves by
+# auto-expiry (ATR take-profit tighten / expire / re-tighten loops), or
+# acted on tiny samples (per-symbol caps on a handful of trades, a
+# strategy deprecated on a rolling-10 win rate). A tuner that cannot
+# tell signal from noise is churn, and churn across replicates is
+# variance the experiment has to pay for.
+#
+# Phase 1 runs the tuner in "evidence" mode: only the optimizers below
+# run. Each has a large-sample, outcome-linked signal — signal weights
+# (thousands of resolved predictions per signal), the meta pre-gate
+# threshold (AUC-driven), false-negative evidence that LOWERS the entry
+# floor, the trade-count auto-loosener, auto-expiry (the tuner's own
+# "did it help" check), the RSI thresholds (dozens of samples with a
+# stated effect), the short-selling / options-cutoff toggles, and the
+# upward position-size lever. Everything else is off until it can show
+# the same. `_optimize_prompt_layout` is off for a second reason: arms
+# must see identical prompts, or the model comparison is confounded.
+# SELF_TUNER_MODE=full restores the legacy registry.
+EVIDENCE_BACKED_OPTIMIZERS = frozenset({
+    "_optimize_signal_weights",
+    "_optimize_meta_pregate_threshold",
+    "_optimize_false_negatives",
+    "_optimize_trade_count_auto_loosen",
+    "_optimize_auto_expire_old_tightenings",
+    "_optimize_rsi_overbought",
+    "_optimize_rsi_oversold",
+    "_optimize_short_selling_toggle",
+    "_optimize_options_pnl_cutoff",
+    "_optimize_position_size_upward",
+})
+
+# Parameters no tuner path may move, on ANY mode: max_total_positions
+# is seeded at 999 ("the AI decides") and does not bind — the binding
+# cap is max_position_pct — so every change to it is noise in the
+# tuning history. Refused at the single apply choke point so the
+# disaster-prevention path (adjustment_type=concentration_reduce) is
+# covered as well as the upward registry.
+RETIRED_PARAMS = frozenset({"max_total_positions"})
+
+
+def _tuner_mode() -> str:
+    """'evidence' (default) or 'full'. Read at call time so a test or an
+    operator can flip it without a restart."""
+    mode = (os.getenv("SELF_TUNER_MODE", "evidence") or "evidence").strip().lower()
+    return mode if mode in ("evidence", "full") else "evidence"
+
+
 def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, resolved):
     """Run upward optimization strategies on a healthy profile.
 
@@ -2384,6 +2450,19 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
             _OPTIMIZER_DIRECTION.get(fn.__name__, "TIGHTEN")
         ),
     )
+    # Evidence mode (docs/25 step 3): only the allowlisted optimizers
+    # run. The skipped names are logged once per run so the cut is
+    # visible in the scheduler log, never silent.
+    if _tuner_mode() == "evidence":
+        skipped = [fn.__name__ for fn in optimizers
+                   if fn.__name__ not in EVIDENCE_BACKED_OPTIMIZERS]
+        optimizers = [fn for fn in optimizers
+                      if fn.__name__ in EVIDENCE_BACKED_OPTIMIZERS]
+        logger.info(
+            "self-tuner evidence mode (profile %s): running %d evidence-"
+            "backed optimizers; %d retired for Phase 1 (%s)",
+            profile_id, len(optimizers), len(skipped), ", ".join(skipped),
+        )
 
     results = []
     saw_loosener_fire = False

@@ -1,5 +1,24 @@
 # Self-Tuner Guardrails + Case-File RAG + Specialist Library
 
+> **2026-08-23 — Evidence mode (docs/25 step 3).** The tuner now runs
+> in `SELF_TUNER_MODE=evidence` by default: only the optimizers in
+> `self_tuning.EVIDENCE_BACKED_OPTIMIZERS` run — signal weights, the
+> meta pre-gate threshold, false-negative floor lowering, the
+> trade-count auto-loosener, auto-expiry (the tuner's own "did it
+> help" check), the RSI thresholds, the short-selling and options-cutoff
+> toggles, and upward position sizing. Everything else is retired for
+> Experiment 2 Phase 1: Experiment 1's 429 changes produced no
+> measurable improvement, mostly on knobs that do not bind
+> (`max_total_positions`, now refused at `_apply_param_change` on every
+> path — `RETIRED_PARAMS`) or that reversed themselves by auto-expiry
+> (ATR take-profit ping-pong), or acted on tiny samples (per-symbol
+> caps, a strategy deprecated on a rolling-10 win rate).
+> `_optimize_prompt_layout` is off for a second reason: experiment arms
+> must see identical prompts. `SELF_TUNER_MODE=full` restores the
+> legacy registry. The guardrail sections below still apply to the
+> optimizers that remain. Pinned by
+> `tests/test_self_tuner_evidence_mode_2026_08_23.py`.
+
 This document covers three components of the learning loop that compound the system's edge over time without scaling the apex AI's cost:
 
 1. **Self-tuner guardrails** — five deterministic rules that protect the autonomous parameter tuner from compounding-restriction failure modes.

@@ -47,7 +47,16 @@ def _ctx():
 
 
 def _run(specs, candidates, monkeypatch, pipeline_kind=None):
-    monkeypatch.setattr("ai_providers.call_ai", lambda *a, **k: "[]")
+    # 2026-08-23 — every provider runs the structured path now (docs/25
+    # item 1.2), so the harness answers call_ai_structured with the
+    # spec's canned verdicts, keyed by the prompt the spec built.
+    by_name = {s.NAME: list(s._verdicts) for s in specs}
+
+    def _structured(prompt, schema, **kw):
+        name = prompt.split(":", 1)[1]
+        return {"verdicts": by_name.get(name, [])}
+
+    monkeypatch.setattr("ai_providers.call_ai_structured", _structured)
     return ens.run_ensemble(
         candidates, _ctx(), ai_provider="google", ai_model="m", ai_api_key="k",
         specialists_override=specs, pipeline_kind=pipeline_kind,
@@ -149,16 +158,17 @@ def test_no_blockers_advisors_see_everything(monkeypatch):
     assert out["per_symbol"]["BTC/USD"]["verdict"] == "BUY"
 
 
-def test_plain_prompt_path_uses_small_chunks(monkeypatch):
-    # Review M4: on the non-tool (plain-prompt) path a dropped verdict in a
-    # batched review fails OPEN (missing symbol = not vetoed), so chunks
-    # shrink to CHUNK_SIZE_PLAIN — the documented reliable size.
+def test_every_provider_uses_the_same_chunk_size(monkeypatch):
+    # 2026-08-23 (docs/25 item 1.2): the plain-prompt path is gone, so a
+    # non-Anthropic provider gets the SAME chunking as Anthropic — an
+    # experiment arm must never see a different batch shape than another.
     calls = []
     spec = _Spec("risk_assessor", veto=True, calls=calls)
     cands = [{"symbol": f"S{i}"} for i in range(7)]
-    _run([spec], cands, monkeypatch)   # google → plain-prompt path
-    assert all(len(c) <= ens.CHUNK_SIZE_PLAIN for c in calls), calls
-    assert sum(len(c) for c in calls) == 7
+    _run([spec], cands, monkeypatch)   # google → structured path too
+    # The retired plain path would have split this 5 + 2.
+    assert [len(c) for c in calls] == [7], calls
+    assert 7 <= ens.CHUNK_SIZE
 
 
 # --- batched multileg dispatch ------------------------------------------------

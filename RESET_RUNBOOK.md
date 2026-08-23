@@ -44,6 +44,25 @@ and the institutional universe from day one.
 
 ## 1. Prepare the dated reset script
 
+**Experiment 2 (2026-08-24 onward): the current script is
+`full_fresh_start_2026_08_24.py`.** It differs from the lineage below in
+four ways — read its docstring before running:
+- Alpaca keys are NOT pasted into source. Export
+  `RESET_ALPACA_A1_KEY` / `RESET_ALPACA_A1_SECRET` (and A2, A3) before
+  running; unset vars leave `TODO-` placeholders that fail step 1.
+- AI keys are per provider: `RESET_NEW_GOOGLE_AI_KEY` **and**
+  `RESET_NEW_OPENAI_AI_KEY` are both required (step 1 refuses otherwise);
+  step 5c installs each profile's own provider key plus a shadow-key map
+  for the other vendors.
+- Step 1c archives every profile's learning data to
+  `predictions_archive/` BEFORE the wipe and aborts on failure — the
+  archive is no longer a manual step.
+- Step 4b creates the virtual benchmarks (Buy-Hold-SPY + Random × 10);
+  there are no benchmark purchase steps and no baseline profiles.
+
+For a later reset, clone `full_fresh_start_2026_08_24.py`. The
+pre-Experiment-2 lineage notes follow.
+
 Clone the **most recent** reset script (it carries the full lineage — funding
 guard, RC1–RC11, gap fixes). As of 2026-06-30 that is
 `full_fresh_start_2026_06_29.py` (the 2026-06-30 reset cloned it to

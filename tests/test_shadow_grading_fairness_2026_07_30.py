@@ -128,20 +128,57 @@ class TestNeutralIsGradable:
         assert v["shadow_only"] == 0
         assert v["primary_only"] == 6
 
-    def test_set_level_rows_credit_nobody(self, tmp_path):
-        """Apex trade-set strings have no stance. Neither side may be
-        credited — that asymmetry is the bug in miniature."""
+    def test_set_level_rows_are_scored_per_symbol(self, tmp_path):
+        """2026-08-23 (docs/25 item 1.3): an apex trade-set row is no
+        longer "ungradable" — it is exploded symbol by symbol. Here the
+        primary passed (no trades) while the shadow shorted CVX and
+        GOOG. CVX fell 6% → the shadow's short was right and the
+        primary's implicit HOLD missed a real move; GOOG has no resolved
+        outcome → not scored, not credited to anyone. Symmetric by
+        construction: both sides are graded against the same move."""
         db = _mk_profile(
             tmp_path, "404",
             shadow_rows=[(NOW, "batch_select", "openai", "nano",
                           "CVX:SHORT,GOOG:SHORT", 0, None, 0.001, 900,
-                          '{"symbol": "CVX", "trades": []}')],
+                          '{"trades": []}')],
             predictions=[("CVX", "2026-07-30T14:02:00", -6.0)],
         )
         v = collect_fleet_metrics([db])["per_model"]["openai:nano"]
-        assert v["ungradable"] == 1
-        assert (v["shadow_only"], v["primary_only"]) == (0, 0)
+        assert v["ungradable"] == 0
+        assert v["dis_resolved"] == 1
+        assert (v["shadow_only"], v["primary_only"]) == (1, 0)
+        assert (v["shadow_right"], v["primary_right"]) == (1, 0)
+        assert v["edge_n"] == 1 and v["edge_points"] > 0
+
+    def test_set_level_row_with_no_outcomes_is_pending(self, tmp_path):
+        db = _mk_profile(
+            tmp_path, "405",
+            shadow_rows=[(NOW, "batch_select", "openai", "nano",
+                          "CVX:BUY", 0, None, 0.001, 900,
+                          '{"trades": [{"symbol": "GOOG", "action": "BUY"}]}')],
+            predictions=[],
+        )
+        v = collect_fleet_metrics([db])["per_model"]["openai:nano"]
+        assert v["dis_pending"] == 1
+        assert v["dis_resolved"] == 0
         assert (v["shadow_right"], v["primary_right"]) == (0, 0)
+
+    def test_set_level_symbol_both_picked_same_way_is_not_a_disagreement(
+            self, tmp_path):
+        """Both sides picked CVX:BUY; only the shadow added GOOG:BUY.
+        CVX must NOT be scored (no disagreement on it); GOOG is a
+        BUY-vs-HOLD disagreement scored against GOOG's move."""
+        db = _mk_profile(
+            tmp_path, "406",
+            shadow_rows=[(NOW, "batch_select", "openai", "nano",
+                          "CVX:BUY,GOOG:BUY", 0, None, 0.001, 900,
+                          '{"trades": [{"symbol": "CVX", "action": "BUY"}]}')],
+            predictions=[("CVX", "2026-07-30T14:02:00", 5.0),
+                         ("GOOG", "2026-07-30T14:02:00", 4.0)],
+        )
+        v = collect_fleet_metrics([db])["per_model"]["openai:nano"]
+        assert v["dis_resolved"] == 1          # GOOG only
+        assert v["shadow_only"] == 1           # GOOG rose, shadow bought
 
 
 class TestGateSpecialistsAreNotForecasters:

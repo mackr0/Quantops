@@ -6,41 +6,49 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# 2026-08-23 — registry refreshed against each vendor's current model
+# page (docs/25 §1). Every id here has an ai_pricing entry (pinned by
+# test). "(legacy)" marks models still callable but no longer on the
+# vendor's current-models page — fine for existing rows, not for new
+# experiment arms. The picker's availability badge (live list-models
+# call) remains the runtime truth for what a key can actually reach.
 PROVIDERS = {
     "anthropic": {
         "name": "Anthropic (Claude)",
-        # 2026-06-24 — replaced the dated claude-sonnet-4-20250514 /
-        # claude-opus-4-20250514 ids: Anthropic's live /v1/models no longer
-        # lists them (deprecated) and they had no pricing entry, so they
-        # showed blank cost. claude-sonnet-4-6 / claude-opus-4-6 are both
-        # live AND priced.
         "models": {
-            "claude-haiku-4-5-20251001": "Claude Haiku 4.5 (cheapest)",
-            "claude-sonnet-4-6": "Claude Sonnet 4.6 (balanced)",
-            "claude-opus-4-6": "Claude Opus 4.6 (most capable)",
+            "claude-haiku-4-5-20251001": "Claude Haiku 4.5 (small)",
+            "claude-sonnet-5": "Claude Sonnet 5 (mid)",
+            "claude-opus-5": "Claude Opus 5 (frontier)",
+            "claude-fable-5": "Claude Fable 5 (frontier+, thinking always on)",
+            "claude-sonnet-4-6": "Claude Sonnet 4.6 (legacy)",
+            "claude-opus-4-6": "Claude Opus 4.6 (legacy)",
         },
     },
     "openai": {
         "name": "OpenAI (GPT)",
         "models": {
-            "gpt-4.1-nano": "GPT-4.1 Nano (cheapest)",
-            "gpt-4o-mini": "GPT-4o Mini (cheap)",
-            "gpt-4o": "GPT-4o (balanced)",
-            "o3-mini": "o3-mini (reasoning)",
+            "gpt-5-nano": "GPT-5 Nano (smallest)",
+            "gpt-5.6-luna": "GPT-5.6 Luna (small, current gen)",
+            "gpt-5-mini": "GPT-5 Mini (small+)",
+            "gpt-5.4-mini": "GPT-5.4 Mini (mid-)",
+            "gpt-5.6-terra": "GPT-5.6 Terra (mid)",
+            "gpt-5.6-sol": "GPT-5.6 Sol (frontier)",
+            "gpt-4.1-nano": "GPT-4.1 Nano (legacy)",
+            "gpt-4o-mini": "GPT-4o Mini (legacy)",
+            "gpt-4o": "GPT-4o (legacy)",
+            "o3-mini": "o3-mini (legacy reasoning)",
         },
     },
     "google": {
         "name": "Google (Gemini)",
-        # 2026-06-24 — dropped gemini-2.0-flash (Google DEPRECATED it; live
-        # generateContent returns 404) and added gemini-2.5-flash, the cheap
-        # standard tier ($0.35/$0.70 per 1M — ~7x cheaper than Claude Haiku)
-        # that was missing from the picker. Switched the pro entry to the
-        # stable `gemini-2.5-pro` id.
         "models": {
-            "gemini-2.5-flash-lite": "Gemini 2.5 Flash-Lite (cheapest)",
-            "gemini-2.5-flash": "Gemini 2.5 Flash (cheap, reliable)",
-            "gemini-3.1-flash-lite": "Gemini 3.1 Flash-Lite (newer cheap tier)",
-            "gemini-2.5-pro": "Gemini 2.5 Pro (most capable)",
+            "gemini-3.1-flash-lite": "Gemini 3.1 Flash-Lite (small)",
+            "gemini-3.5-flash-lite": "Gemini 3.5 Flash-Lite (small, current gen)",
+            "gemini-3.7-flash": "Gemini 3.7 Flash (mid)",
+            "gemini-3.1-pro-preview": "Gemini 3.1 Pro (frontier, PREVIEW)",
+            "gemini-2.5-flash-lite": "Gemini 2.5 Flash-Lite (legacy)",
+            "gemini-2.5-flash": "Gemini 2.5 Flash (legacy)",
+            "gemini-2.5-pro": "Gemini 2.5 Pro (legacy)",
         },
     },
     "deepseek": {
@@ -52,11 +60,12 @@ PROVIDERS = {
     },
 }
 
-# Default (cheapest) model per provider
+# Default model per provider when a caller passes model=None: the
+# cheapest CURRENT-generation model, never a legacy id.
 _DEFAULT_MODELS = {
     "anthropic": "claude-haiku-4-5-20251001",
-    "openai": "gpt-4.1-nano",
-    "google": "gemini-2.5-flash-lite",
+    "openai": "gpt-5.6-luna",
+    "google": "gemini-3.1-flash-lite",
     "deepseek": "deepseek-chat",
 }
 
@@ -569,19 +578,63 @@ def _enumerate_chain_skip_reasons(primary_provider: str):
     return notes
 
 
-def _call_provider(provider, prompt, model, api_key, max_tokens):
+def _openai_strict_schema(schema):
+    """Rewrite a JSON schema into the subset OpenAI's strict structured
+    outputs accept: every object carries `additionalProperties: false`
+    and lists EVERY property as required; numeric range keywords
+    (minimum/maximum) are dropped because strict mode rejects them —
+    callers already clamp confidence downstream. Pure function; the
+    input is not mutated."""
+    import copy
+
+    def _walk(node):
+        if isinstance(node, dict):
+            out = {}
+            for k, v in node.items():
+                if k in ("minimum", "maximum"):
+                    continue
+                out[k] = _walk(v)
+            if out.get("type") == "object" and isinstance(
+                    out.get("properties"), dict):
+                out["additionalProperties"] = False
+                out["required"] = list(out["properties"].keys())
+            return out
+        if isinstance(node, list):
+            return [_walk(x) for x in node]
+        return node
+
+    return _walk(copy.deepcopy(schema))
+
+
+def _call_provider(provider, prompt, model, api_key, max_tokens,
+                   schema=None):
     """Dispatch to provider-specific helper. Returns a NORMALIZED 4-tuple
     (text, in_tok, out_tok, cached_tok) — providers whose helper returns the
     legacy 3-tuple get cached_tok=0. cached_tok = prompt tokens served from
     the provider's implicit cache (billed at a deep discount; captured for
-    honest cost-ledger pricing, 2026-07-02)."""
+    honest cost-ledger pricing, 2026-07-02).
+
+    `schema` (2026-08-23, docs/25 item 1.2): when given, EVERY vendor is
+    held to it through its own native structured-output mechanism —
+    Anthropic forced tool_use, OpenAI strict json_schema response
+    format, Gemini response_json_schema — and the returned text is the
+    schema-shaped JSON. Before this, only Anthropic got schema
+    enforcement while OpenAI/Gemini went through a text parser, so any
+    model comparison measured parsers as much as models."""
+    # schema is forwarded ONLY when set, so the many 4-positional test
+    # patchers of _call_google/_call_openai/_call_anthropic keep working
+    # (mock-signature-parity lesson, 2026-07-02).
+    extra = {"schema": schema} if schema is not None else {}
     if provider == "anthropic":
-        result = _call_anthropic(prompt, model, api_key, max_tokens)
+        result = _call_anthropic(prompt, model, api_key, max_tokens, **extra)
     elif provider == "openai":
-        result = _call_openai(prompt, model, api_key, max_tokens)
+        result = _call_openai(prompt, model, api_key, max_tokens, **extra)
     elif provider == "google":
-        result = _call_google(prompt, model, api_key, max_tokens)
+        result = _call_google(prompt, model, api_key, max_tokens, **extra)
     elif provider == "deepseek":
+        if schema is not None:
+            logger.info("deepseek: no native schema mode — prompt-level "
+                        "JSON only (model=%s)", model)
         result = _call_deepseek(prompt, model, api_key, max_tokens)
     else:
         raise ValueError(f"Unknown AI provider: {provider!r}")
@@ -658,8 +711,13 @@ def _enforce_cost_cap(prompt: str, model: Optional[str], max_tokens: int,
 
 
 def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1024,
-            db_path=None, purpose=None, decision_id=None):
+            db_path=None, purpose=None, decision_id=None, schema=None):
     """Send a prompt to the specified AI provider and return the response text.
+
+    `schema` (optional JSON schema): when given, the provider's native
+    structured-output mode is used and the returned text is JSON that
+    conforms to it; the same schema is handed to every shadow arm so
+    they are held to the identical contract.
 
     Args:
         prompt: The user prompt string
@@ -792,9 +850,13 @@ def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1
                 )
                 _time.sleep(sleep_seconds)
             try:
+                # The schema kwarg is passed ONLY when set so every
+                # existing 5-positional patcher of _call_provider keeps
+                # working (mock-signature-parity lesson, 2026-07-02).
                 _pr = _call_provider(
                     attempt_provider, prompt, attempt_model,
                     attempt_key, max_tokens,
+                    **({"schema": schema} if schema is not None else {}),
                 )
                 # Tolerate the legacy 3-tuple contract (tests and any
                 # external patcher of _call_provider) — cached tokens
@@ -861,6 +923,7 @@ def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1
                 primary_model=attempt_model or "?",
                 primary_response=cleaned_response,
                 decision_id=decision_id,
+                **({"schema": schema} if schema is not None else {}),
             )
         except Exception as exc:
             logger.debug("shadow eval dispatch skipped: %s", exc)
@@ -920,89 +983,57 @@ def call_ai_structured(prompt, schema, tool_name="emit",
                         provider="anthropic", model=None, api_key=None,
                         max_tokens=4096,
                         db_path=None, purpose=None, decision_id=None):
-    """Force a structured JSON response matching `schema` via tool_use.
+    """Force a structured JSON response matching `schema` — on EVERY
+    provider, through that provider's native mechanism (see
+    `_call_provider`). Returns the parsed dict, or None when the
+    provider returned something that isn't a JSON object.
 
-    Solves the Haiku-drops-candidates bug: when asked for an array in a
-    normal prompt, Haiku sometimes returns a single object or truncated
-    list. Tool-use forces the model to call a function with an argument
-    matching the schema — the SDK returns a validated dict, no parsing.
+    2026-08-23 (docs/25 item 1.2): this used to be Anthropic-only
+    (forced tool_use) with OpenAI/Google silently falling back to a
+    plain text call and a best-effort json.loads — no cost-ledger row
+    on the Anthropic path, no shadow dispatch, and two different output
+    contracts across vendors. Now every provider goes through `call_ai`
+    with the schema, so cost capping, retries, failover, the cost
+    ledger, and shadow dispatch (shadows receive the same schema) are
+    identical regardless of vendor.
 
-    Currently implemented for Anthropic only. OpenAI/Google fall back to
-    a plain call_ai and the caller must parse normally.
-
-    Returns
-    -------
-    dict (the tool input), or None on failure.
+    Solves the Haiku-drops-candidates bug (asked for an array in a
+    normal prompt, small models sometimes return a single object or a
+    truncated list) for every model, not just Claude.
     """
-    if provider != "anthropic":
-        # Fallback: plain text call, caller parses
-        raw = call_ai(prompt, provider=provider, model=model,
-                      api_key=api_key, max_tokens=max_tokens,
-                      db_path=db_path, purpose=purpose,
-                      decision_id=decision_id)
-        try:
-            import json as _json
-            return _json.loads(raw)
-        except Exception:
-            return None
-
-    if not api_key:
-        raise ValueError("api_key required")
+    import json as _json
     if model is None:
-        model = _DEFAULT_MODELS.get("anthropic")
-
-    # Cost cap (added 2026-05-15 — pipeline-wide hard stop). Same gate
-    # as call_ai. Raises CostCapExceeded when over budget.
+        model = _DEFAULT_MODELS.get(provider)
+    # Cost cap gate here as well as inside call_ai: the structural test
+    # requires EVERY public entry point to gate explicitly (a check, not
+    # a charge — calling it twice costs nothing and can't double-bill).
     _enforce_cost_cap(prompt, model, max_tokens, db_path, purpose)
-
+    raw = call_ai(prompt, provider=provider, model=model,
+                  api_key=api_key, max_tokens=max_tokens,
+                  db_path=db_path, purpose=purpose,
+                  decision_id=decision_id, schema=schema)
+    if not raw:
+        return None
     try:
-        import anthropic
-    except ImportError as exc:
-        raise ImportError(
-            "The 'anthropic' package is required. pip install anthropic"
-        ) from exc
-
-    client = anthropic.Anthropic(api_key=api_key)
-    tool_spec = {
-        "name": tool_name,
-        "description": "Submit the structured result for this request.",
-        "input_schema": schema,
-    }
-    message = client.messages.create(
-        model=model,
-        max_tokens=max_tokens,
-        tools=[tool_spec],
-        tool_choice={"type": "tool", "name": tool_name},
-        messages=[{"role": "user", "content": prompt}],
-    )
-
-    # Cost logging
-    usage = getattr(message, "usage", None)
-    in_tok = getattr(usage, "input_tokens", 0) if usage else 0
-    out_tok = getattr(usage, "output_tokens", 0) if usage else 0
-    if db_path:
+        parsed = _json.loads(raw)
+    except (ValueError, TypeError):
         try:
-            from ai_cost_ledger import log_ai_call
-            log_ai_call(db_path, "anthropic", model or "?",
-                        in_tok, out_tok, purpose or "")
-        except (ImportError, AttributeError, OSError) as _cl_exc:
-            # ai_cost_ledger telemetry write; AI call result already
-            # returned to caller. Surface for follow-up so cost
-            # tracking gaps are diagnosed.
-            logger.debug(
-                "ai_cost_ledger telemetry write failed: %s: %s",
-                type(_cl_exc).__name__, _cl_exc,
-            )
-
-    # Find the tool_use block and return its input
-    for block in message.content:
-        if getattr(block, "type", None) == "tool_use":
-            return dict(getattr(block, "input", {}) or {})
-    return None
+            parsed = _json.loads(_strip_markdown_fences(raw))
+        except (ValueError, TypeError):
+            logger.warning(
+                "call_ai_structured: %s/%s returned non-JSON despite a "
+                "schema (purpose=%s): %r", provider, model, purpose,
+                (raw or "")[:200])
+            return None
+    return parsed if isinstance(parsed, dict) else None
 
 
-def _call_anthropic(prompt, model, api_key, max_tokens):
-    """Call Anthropic Claude API. Returns (text, input_tokens, output_tokens)."""
+def _call_anthropic(prompt, model, api_key, max_tokens, schema=None):
+    """Call Anthropic Claude API. Returns (text, input_tokens, output_tokens).
+
+    With `schema`, the model is forced to call a single tool whose
+    input_schema is the schema; the tool input is returned serialized
+    as JSON text so the caller contract (text) is unchanged."""
     try:
         import anthropic
     except ImportError as exc:
@@ -1012,6 +1043,33 @@ def _call_anthropic(prompt, model, api_key, max_tokens):
         ) from exc
 
     client = anthropic.Anthropic(api_key=api_key)
+    if schema is not None:
+        import json as _json
+        tool_spec = {
+            "name": "emit",
+            "description": "Submit the structured result for this request.",
+            "input_schema": schema,
+        }
+        message = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            tools=[tool_spec],
+            tool_choice={"type": "tool", "name": "emit"},
+            messages=[{"role": "user", "content": prompt}],
+        )
+        usage = getattr(message, "usage", None)
+        in_tok = getattr(usage, "input_tokens", 0) if usage else 0
+        out_tok = getattr(usage, "output_tokens", 0) if usage else 0
+        for block in message.content:
+            if getattr(block, "type", None) == "tool_use":
+                return (_json.dumps(dict(getattr(block, "input", {}) or {})),
+                        in_tok, out_tok)
+        # Forced tool_choice guarantees a tool_use block; reaching here
+        # means the API contract changed — surface it, never return "".
+        raise RuntimeError(
+            "anthropic structured call returned no tool_use block "
+            f"(model={model}, stop_reason="
+            f"{getattr(message, 'stop_reason', None)!r})")
     message = client.messages.create(
         model=model,
         max_tokens=max_tokens,
@@ -1023,8 +1081,18 @@ def _call_anthropic(prompt, model, api_key, max_tokens):
     return message.content[0].text, in_tok, out_tok
 
 
-def _call_openai(prompt, model, api_key, max_tokens):
-    """Call OpenAI API. Returns (text, input_tokens, output_tokens)."""
+_OPENAI_REASONING_MODEL_RE = re.compile(r"^(gpt-5|o\d)")
+
+
+def _call_openai(prompt, model, api_key, max_tokens, schema=None):
+    """Call OpenAI API. Returns (text, input_tokens, output_tokens).
+
+    2026-08-23: uses `max_completion_tokens` (the GPT-5.x family rejects
+    the legacy `max_tokens`), pins `reasoning_effort="low"` on reasoning
+    models so a 4K completion budget isn't consumed by hidden reasoning
+    before any JSON is written, and with `schema` uses strict
+    json_schema structured outputs (schema rewritten by
+    `_openai_strict_schema`)."""
     try:
         from openai import OpenAI
     except ImportError as exc:
@@ -1034,11 +1102,35 @@ def _call_openai(prompt, model, api_key, max_tokens):
         ) from exc
 
     client = OpenAI(api_key=api_key)
-    response = client.chat.completions.create(
-        model=model,
-        max_tokens=max_tokens,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    kwargs = {
+        "model": model,
+        "max_completion_tokens": max_tokens,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    if schema is not None:
+        kwargs["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "emit",
+                "schema": _openai_strict_schema(schema),
+                "strict": True,
+            },
+        }
+    if _OPENAI_REASONING_MODEL_RE.match(model or ""):
+        kwargs["reasoning_effort"] = "low"
+    try:
+        response = client.chat.completions.create(**kwargs)
+    except Exception as exc:
+        # A model that doesn't take reasoning_effort answers 400 naming
+        # the parameter. Retry once without it rather than guessing the
+        # per-model parameter surface in advance.
+        if "reasoning_effort" in kwargs and "reasoning_effort" in str(exc):
+            logger.info("openai: %s rejected reasoning_effort — retrying "
+                        "without it", model)
+            kwargs.pop("reasoning_effort")
+            response = client.chat.completions.create(**kwargs)
+        else:
+            raise
     usage = getattr(response, "usage", None)
     in_tok = getattr(usage, "prompt_tokens", 0) if usage else 0
     out_tok = getattr(usage, "completion_tokens", 0) if usage else 0
@@ -1077,8 +1169,11 @@ def _call_deepseek(prompt, model, api_key, max_tokens):
     return response.choices[0].message.content, in_tok, out_tok
 
 
-def _call_google(prompt, model, api_key, max_tokens):
+def _call_google(prompt, model, api_key, max_tokens, schema=None):
     """Call Google Gemini API. Returns (text, input_tokens, output_tokens).
+
+    With `schema` (2026-08-23), `response_json_schema` constrains the
+    output to the schema — Gemini's native structured-output mode.
 
     Uses the new `google-genai` SDK (replaces the deprecated
     `google-generativeai`). API surface verified 2026-05-17 against
@@ -1103,13 +1198,16 @@ def _call_google(prompt, model, api_key, max_tokens):
     # intermittently returns markdown ("Here's an evaluation…"), which downstream
     # parsers reject with JSONDecodeError → retry cascade → ~10× cycle slowdown
     # (observed 2026-05-20: pid21-24 stuck for 13+ min/cycle).
+    config = {
+        "max_output_tokens": max_tokens,
+        "response_mime_type": "application/json",
+    }
+    if schema is not None:
+        config["response_json_schema"] = schema
     response = client.models.generate_content(
         model=model,
         contents=prompt,
-        config={
-            "max_output_tokens": max_tokens,
-            "response_mime_type": "application/json",
-        },
+        config=config,
     )
     meta = getattr(response, "usage_metadata", None)
     in_tok = getattr(meta, "prompt_token_count", 0) if meta else 0

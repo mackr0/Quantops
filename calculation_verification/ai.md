@@ -80,6 +80,37 @@ closed round-trips (≥5) with clamped sim counts; options backtest
 summarizes win rate / totals / Sharpe-proxy `avg/σ(n−1)`.
 **VERIFIED (code)**
 
+## Prompt-side numbers — the track-record block (in-context learning)
+
+Source: `calibration_block.py` (`compute_track_record`,
+`render_track_record`), injected by `trade_pipeline` into the batch
+context as `calibration_block` and rendered by
+`ai_analyst._build_batch_prompt` after the learned-patterns section.
+Added 2026-08-23 (docs/25 step 4.2). Every shadow arm receives the
+same prompt, so the block is identical across arms.
+
+**Resolved set** — `status='resolved' AND actual_outcome IN
+('win','loss')`, `data_quality`-tagged rows excluded; scratch outcomes
+are outside the denominator — the same definition as the /ai Brain
+tab's directional win rate (S12's chosen definition). **VERIFIED**
+(fixture: 15W/5L with 10 scratch + 10 tagged + 10 pending rows → 20
+resolved, 15 wins).
+
+**Per bucket** — `win rate = wins / n`, `mean move = AVG(actual_return_pct)`
+over the bucket; buckets: all-time, last 30 days (by `resolved_at`),
+stated-confidence band (0–25 / 25–50 / 50–75 / 75–100), call family
+(BUY incl. STRONG_BUY; SELL incl. STRONG_SELL; SHORT; HOLD), top-6
+`strategy_type`, top-4 `regime_at_prediction`. Any bucket with n < 10
+renders as `n<10 (not enough to judge)` — never a percentage; a
+profile with < 20 resolved rows renders a one-line statement, never
+0%. *Why:* a model shown "100% on 2" will over-weight it; the n is on
+every number so the model (and an auditor) can discount thin buckets.
+**VERIFIED** (fixture: 25-sample band shows 100%, 3-sample band shows
+n<10; recent window splits by resolved_at).
+
+**Failure behaviour** — an unreadable profile DB logs a WARNING and
+renders nothing; the prompt proceeds without the block. **VERIFIED**
+
 ## Strategy tab
 
 **Validation scores** — stored `passed_gates/total_gates × 100` from

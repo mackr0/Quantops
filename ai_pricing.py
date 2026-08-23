@@ -14,31 +14,64 @@ from __future__ import annotations
 from typing import Dict, Optional
 
 
-# Prices as of 2026 roadmap planning. Update as providers change pricing.
-# The leading entries are the ones we actually use; the rest are reasonable
-# fallbacks so unknown models don't silently produce $0.
+# 2026-08-23 — every price below was read from the provider's OFFICIAL
+# pricing page on this date (platform.claude.com/docs/en/about-claude/
+# pricing, developers.openai.com/api/docs/pricing, ai.google.dev/
+# gemini-api/docs/pricing). Standard tier, non-batch, uncached, short
+# context. Promotional rates are marked with their end date; when one
+# lapses, update the number AND this date. The previous table had
+# claude-opus-4-6 at 3x its real rate and gemini-2.5-flash / -pro
+# output prices ~3.5x and 2x too low.
+PRICES_VERIFIED_ON = "2026-08-23"
+
 PRICING: Dict[str, Dict[str, float]] = {
-    # Anthropic Claude
-    "claude-haiku-4-5-20251001":   {"input":  1.00, "output":  5.00},
-    "claude-haiku-4-5":             {"input":  1.00, "output":  5.00},
+    # ---- Anthropic Claude (Claude 4.7+ models use a tokenizer that
+    #      produces ~30% more tokens for the same text — effective cost
+    #      per call is higher than the per-token rate suggests) ----
+    "claude-fable-5":               {"input": 10.00, "output": 50.00},
+    "claude-opus-5":                {"input":  5.00, "output": 25.00},
+    "claude-opus-4-8":              {"input":  5.00, "output": 25.00},
+    "claude-opus-4-7":              {"input":  5.00, "output": 25.00},
+    "claude-opus-4-6":              {"input":  5.00, "output": 25.00},
+    "claude-opus-4-6[1m]":          {"input":  5.00, "output": 25.00},
+    "claude-sonnet-5":              {"input":  2.00, "output": 10.00},
     "claude-sonnet-4-6":            {"input":  3.00, "output": 15.00},
-    "claude-opus-4-6":              {"input": 15.00, "output": 75.00},
-    "claude-opus-4-6[1m]":          {"input": 15.00, "output": 75.00},
-    # OpenAI (typical 2025/2026 tiers)
-    "gpt-5-mini":                   {"input":  0.40, "output":  1.60},
-    "gpt-5":                        {"input":  2.00, "output": 10.00},
+    "claude-haiku-4-5-20251001":    {"input":  1.00, "output":  5.00},
+    "claude-haiku-4-5":             {"input":  1.00, "output":  5.00},
+    # ---- OpenAI ----
+    "gpt-5.6-sol":                  {"input":  4.00, "output": 20.00},  # promo through 2026-11-21 (list $5/$30)
+    "gpt-5.6-terra":                {"input":  2.00, "output": 12.00},
+    "gpt-5.6-luna":                 {"input":  0.20, "output":  1.20},
+    "gpt-5.5":                      {"input":  5.00, "output": 30.00},
+    "gpt-5.4":                      {"input":  2.50, "output": 15.00},
+    "gpt-5.4-mini":                 {"input":  0.75, "output":  4.50},
+    "gpt-5.4-nano":                 {"input":  0.20, "output":  1.25},
+    "gpt-5.2":                      {"input":  1.75, "output": 14.00},
+    "gpt-5.1":                      {"input":  1.25, "output": 10.00},
+    "gpt-5":                        {"input":  1.25, "output": 10.00},
+    "gpt-5-mini":                   {"input":  0.25, "output":  2.00},
+    "gpt-5-nano":                   {"input":  0.05, "output":  0.40},
+    "gpt-4.1":                      {"input":  2.00, "output":  8.00},
+    "gpt-4.1-mini":                 {"input":  0.40, "output":  1.60},
     "gpt-4.1-nano":                 {"input":  0.10, "output":  0.40},
     "gpt-4o-mini":                  {"input":  0.15, "output":  0.60},
     "gpt-4o":                       {"input":  2.50, "output": 10.00},
+    "o3":                           {"input":  2.00, "output":  8.00},
     "o3-mini":                      {"input":  1.10, "output":  4.40},
-    # Google
-    "gemini-2.0-flash":             {"input":  0.15, "output":  0.60},
-    "gemini-2.5-flash":             {"input":  0.35, "output":  0.70},
-    "gemini-2.5-flash-lite":        {"input":  0.10, "output":  0.40},
+    "o4-mini":                      {"input":  1.10, "output":  4.40},
+    # ---- Google Gemini ----
+    "gemini-3.7-flash":             {"input":  0.75, "output":  3.75},  # promo through 2026-12-31 (then $1.50/$7.50)
+    "gemini-3.6-flash":             {"input":  0.75, "output":  3.75},  # promo through 2026-12-31 (then $1.50/$7.50)
+    "gemini-3.5-flash":             {"input":  1.50, "output":  9.00},
+    "gemini-3.5-flash-lite":        {"input":  0.30, "output":  2.50},
     "gemini-3.1-flash-lite":        {"input":  0.25, "output":  1.50},
-    "gemini-2.5-pro":               {"input":  1.25, "output":  5.00},
-    "gemini-2.5-pro-preview-03-25": {"input":  1.25, "output":  5.00},
-    # DeepSeek
+    "gemini-3.1-pro-preview":       {"input":  2.00, "output": 12.00},  # <=200K-token prompts
+    "gemini-2.5-pro":               {"input":  1.25, "output": 10.00},  # <=200K-token prompts
+    "gemini-2.5-pro-preview-03-25": {"input":  1.25, "output": 10.00},
+    "gemini-2.5-flash":             {"input":  0.30, "output":  2.50},
+    "gemini-2.5-flash-lite":        {"input":  0.10, "output":  0.40},
+    "gemini-2.0-flash":             {"input":  0.15, "output":  0.60},  # shut down 2026-06-01
+    # ---- DeepSeek (unchanged; not re-verified 2026-08-23) ----
     "deepseek-chat":                {"input":  0.14, "output":  0.28},
     "deepseek-reasoner":            {"input":  0.55, "output":  2.19},
 }

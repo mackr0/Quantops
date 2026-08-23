@@ -580,9 +580,14 @@ def _run_one_shadow(
     primary_parsed: Any,
     model_label: Optional[str] = None,
     decision_id: Optional[str] = None,
+    schema: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Execute one shadow call and persist its row. Catches every
     exception — never propagates.
+
+    `schema` (2026-08-23): the structured-output schema the PRIMARY was
+    held to, passed through so every arm answers under the identical
+    contract (docs/25 item 1.2).
 
     `model` is the bare name sent to the provider API; `model_label` is
     what gets RECORDED (it carries any `@variant` tag). They differ only
@@ -645,6 +650,7 @@ def _run_one_shadow(
         # calls, zero journal lines). Both fixed.
         _res = _call_provider(
             provider, prompt, model, api_key, max_tokens,
+            **({"schema": schema} if schema is not None else {}),
         )
         response_text, in_tok, out_tok = _res[0], _res[1], _res[2]
         cached_tok = _res[3] if len(_res) > 3 else 0
@@ -700,6 +706,22 @@ def _run_one_shadow(
 # Public entrypoint — called from call_ai() after primary success
 # ---------------------------------------------------------------------------
 
+def purpose_is_shadowed(purpose: Optional[str]) -> bool:
+    """True when `purpose` falls inside the operator's shadow scope
+    (`config.SHADOW_PURPOSES`, a tuple of purpose prefixes; an empty
+    tuple means everything is shadowed — the pre-2026-08-23 behavior).
+    A None purpose is never shadowed under a non-empty scope: there is
+    nothing to match, and an unlabeled call is not an experiment
+    observation."""
+    import config as _cfg
+    prefixes = tuple(getattr(_cfg, "SHADOW_PURPOSES", ()) or ())
+    if not prefixes:
+        return True
+    if not purpose:
+        return False
+    return any(purpose.startswith(p) for p in prefixes)
+
+
 def dispatch_shadow_calls(
     *,
     db_path: Optional[str],
@@ -710,6 +732,7 @@ def dispatch_shadow_calls(
     primary_model: str,
     primary_response: str,
     decision_id: Optional[str] = None,
+    schema: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
     """Fire shadow model calls for this primary invocation. Returns the
     `call_id` minted for the primary call so the cost ledger row can be
@@ -718,9 +741,17 @@ def dispatch_shadow_calls(
 
     Never raises. The operational path treats a None return as "no
     shadow eval ran" and continues.
+
+    Purpose scoping (2026-08-23, docs/25 decision D5): only purposes
+    matching `config.SHADOW_PURPOSES` are shadowed. The apex
+    `batch_select` call is 78% of tokens and is compared through the
+    experiment's live replicates instead, so shadowing it would pay
+    twice for the same answer.
     """
     profile_id = _profile_id_from_db_path(db_path)
     if profile_id is None or not db_path:
+        return None
+    if not purpose_is_shadowed(purpose):
         return None
 
     # _load_shadow_config has its own per-step exception handling and
@@ -807,6 +838,7 @@ def dispatch_shadow_calls(
                 primary_response=primary_response,
                 primary_parsed=primary_parsed,
                 decision_id=decision_id,
+                schema=schema,
             )
         except RuntimeError as exc:
             # RuntimeError = ThreadPoolExecutor rejected the submission

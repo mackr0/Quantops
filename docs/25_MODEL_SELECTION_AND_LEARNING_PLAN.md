@@ -189,22 +189,18 @@ replicates can. The shadow layer stays on cross-wise so every arm is
 also scored on identical calls.
 
 Prerequisites (code):
-- [ ] 1.1 Update `ai_providers.PROVIDERS` and `ai_pricing.PRICING` with
-      the current model set and verified prices (gpt-5.6-luna/terra/sol,
-      gpt-5-nano/mini, gemini-3.5-flash-lite, gemini-3.7-flash,
-      claude-sonnet-5, claude-opus-5, claude-fable-5; fix opus-4-6 to
-      $5/$25; mark legacy ids). Pricing table carries a "verified on"
-      date. Settings picker must show them with availability badges.
-- [ ] 1.2 **Equalize the output path across vendors.** Today
-      `use_tools = (ai_provider == "anthropic")` gives Claude
-      schema-enforced structured output while OpenAI/Gemini get a
-      text parser. Use each vendor's native structured-output/JSON-schema
-      mode so the experiment measures models, not parsers. Pin with a
-      test that every provider path returns schema-validated verdicts.
-- [ ] 1.3 Make `batch_select` gradeable in shadow: record each arm's
-      selected trade set as per-symbol stances so the apex decision
-      joins to outcomes like any other purpose (today it is
-      "set-level / ungradable").
+- [x] 1.1 Update `ai_providers.PROVIDERS` and `ai_pricing.PRICING` with
+      the current model set and verified prices; fix opus-4-6 to
+      $5/$25; mark legacy ids; `PRICES_VERIFIED_ON`. Done 2026-08-23
+      (pinned: every registered model priced; defaults current).
+- [x] 1.2 **Equalize the output path across vendors.** One `schema`
+      through `call_ai` → each vendor's native structured mode; shadows
+      get the same schema; ensemble's Anthropic-only fork and the
+      text-parser branch removed. Done 2026-08-23
+      (`tests/test_structured_output_vendor_fair_2026_08_23.py`).
+- [x] 1.3 `batch_select` gradeable in shadow: trade sets exploded per
+      symbol and graded with the forecaster rules. Done 2026-08-23
+      (register: `calculation_verification/shadow.md`).
 - [ ] 1.4 Remove the dead `ai_model_auto_tune` toggle from Settings (or
       implement it — decision D3). A control that does nothing must not
       stay on the page.
@@ -232,16 +228,21 @@ Configuration (operator, with Claude driving):
       of input) applies; verify with `cache_read`/`cached_tokens` > 0 in
       the cost ledger. Largest single cost lever; re-evaluates the
       2026-07-02 "too volatile to cache" finding against the new prompt.
-- [ ] 1.12 **Virtual baselines (D6).** Buy-Hold-SPY and Random are
-      fire-once static portfolios, so they need no broker: a
-      `strategy_type` for virtual benchmarks whose holdings are
-      selected once (recorded seed), marked to market daily from Alpaca
-      bars (Alpaca-first data rule), with dividends credited from
-      corporate-action data so they stay comparable to broker-held
-      arms; `daily_snapshots` written by a daily task; no orders, no
-      reconcile, no conduit capital. Run Random as TEN replicas.
-      Remove the benchmark purchase steps from the reset script.
-      Register the mark-to-market in `calculation_verification/`.
+- [x] 1.12 **Virtual baselines (D6).** `virtual_benchmarks.py`: holdings
+      selected once (sha256 seed), marked to market daily from Alpaca
+      bars, dividends credited from corporate-action data, Random × 10,
+      series on the comparative chart, no orders / reconcile / conduit
+      capital; created by the reset script (step 4b), no purchase
+      steps. Done 2026-08-23 (register:
+      `calculation_verification/benchmarks.md`). Live verification
+      after the first daily mark: ____.
+- [x] 1.13 Reset tooling staged: `full_fresh_start_2026_08_24.py`
+      (keys from env only; per-provider AI + shadow keys; archives
+      Experiment 1's learning data before the wipe; creates the
+      virtual benchmarks) and the Experiment 2 manifest in
+      `create_experiment_profiles.py` (9 arm-profiles, verified
+      identical except model). Done 2026-08-23. Runs when the operator
+      supplies the three new paper accounts (1.6–1.9).
 - [x] 1.0 **Immediate, before any of the above:** remove
       `anthropic:claude-haiku-4-5-20251001` from every profile's shadow
       list (77% of spend; measured worse than primary). Done
@@ -261,17 +262,18 @@ the three replicates of each arm shown together.
 "Better model" must be one arm's lines above the others across all
 three replicates.
 
-- [ ] 2.1 Define the metric set and write its register entries FIRST
-      (`calculation_verification/learning.md`) so the page is auditable
-      from day one.
-- [ ] 2.2 Build the page from `ai_predictions` + `daily_snapshots`
-      (all data exists; no new pipeline). Weekly buckets by prediction
-      timestamp; outcomes only when resolved; never 0% for unmeasured.
-- [ ] 2.3 Add the self-tuner's own scorecard to it (changes → improved /
-      worsened / unchanged), shown against the tuning-OFF replicates
-      from Step 3.
-- [ ] 2.4 Smoke tests for every tile/table through the Flask client;
-      visible-options ↔ test-coverage static check.
+- [x] 2.1 Register written first: `calculation_verification/learning.md`.
+      Done 2026-08-23.
+- [x] 2.2 `/learning` (`learning_scoreboard.py`, `templates/learning.html`,
+      nav link): per arm × ISO week — hit rate, high/low-confidence hit
+      rate, Brier, HOLD quality, mean move, weekly equity return with
+      replicate min/max, SPY, excess; virtual-benchmark band; thin-week
+      flag; never 0% for unmeasured. Done 2026-08-23.
+- [x] 2.3 Tuner scorecard per arm (improved / worsened / unchanged /
+      pending, improved share of judged) on the page. Done 2026-08-23.
+      (Tuning-OFF replicates: decision D4 still pending.)
+- [x] 2.4 Engine fixtures + Flask-client smoke test + template empty-state
+      and route/nav structural tests. Done 2026-08-23.
 
 **Done when:** the page renders for the new cohort and the operator can
 answer "is arm X improving week over week" from it alone.
@@ -284,20 +286,25 @@ retired.
 **Why:** 429 changes produced no measurable improvement; most moved
 knobs that don't bind or reversed themselves by auto-expiry.
 
-- [ ] 3.1 Keep: signal-weight learning (thousands of samples per signal),
-      the confidence backstop (operator-owned floor), HTB/cooldown
-      learning.
-- [ ] 3.2 Retire: `max_total_positions` tuning (non-binding — document
-      the binding cap is `max_position_pct`), ATR-TP tighten/reverse
-      ping-pong, per-symbol overrides on n<30, drawdown-pause
-      tightening, `auto_expire_tightening` re-application loops.
+- [x] 3.1 Keep: `EVIDENCE_BACKED_OPTIMIZERS` (signal weights, meta
+      pre-gate, false-negative floor lowering, trade-count loosener,
+      auto-expiry, RSI thresholds, short/options toggles, upward sizing).
+      Done 2026-08-23 (`SELF_TUNER_MODE=evidence` default).
+- [x] 3.2 Retire: everything else — including `max_total_positions`
+      (refused at the apply choke point on every path), ATR-TP
+      ping-pong, per-symbol/regime overrides, drawdown tightening,
+      fast-lane retirement, and `_optimize_prompt_layout` (arms must see
+      identical prompts). Done 2026-08-23.
 - [ ] 3.3 One gate for every remaining adjustment: minimum sample n,
       minimum effect size, and a recorded expected-vs-observed outcome
-      that the Learning Scoreboard displays.
+      that the Learning Scoreboard displays. (Partially covered: the
+      allowlist keeps only large-sample levers; the explicit per-change
+      n/effect gate and the expected-vs-observed record are still to
+      build — with the Scoreboard, step 2.3.)
 - [ ] 3.4 Run one arm-replicate per model with tuning OFF? — decision D4
       (costs a replicate; alternative is the before/after scorecard).
-- [ ] 3.5 Update `docs/17_SELF_TUNER_GUARDRAILS_AND_RAG.md` and
-      SELF_TUNING.md to describe the reduced tuner.
+- [x] 3.5 `docs/17_SELF_TUNER_GUARDRAILS_AND_RAG.md` carries the
+      evidence-mode section. Done 2026-08-23.
 
 **Done when:** the tuner's change log shows only gated changes with
 expected outcomes, and the non-binding knobs no longer appear in it.
@@ -333,17 +340,23 @@ exists.
 **Why:** a frozen-weight model learns one way — by being shown what it
 got right and wrong. `learned_patterns` has never written a row.
 
-- [ ] 4.1 Diagnose why `learned_patterns` has produced zero rows in six
-      weeks (gate never fires? writer broken?) and fix it; pin with a
-      test that seeds losing trades and asserts a pattern is written.
-- [ ] 4.2 Add a per-profile calibration block to the prompt: win rate by
-      confidence band, by signal, by sector, by strategy; sample sizes
-      on every number; absent (not 0%) when unmeasured.
+- [x] 4.1 Diagnosed: the post-mortem (and three other weekly tasks) was
+      gated on `weekday() == 6`, but the fleet sleeps weekends, so it
+      never ran (prod marker: 2026-07-26). Weekly tasks now run by
+      marker age on any day (`_weekly_task_due`); structural test
+      forbids Sunday gates. Done 2026-08-23. (The post-mortem still
+      writes only on a bad week by design — the always-on learning is
+      4.2.)
+- [x] 4.2 `calibration_block.py` — the profile's own resolved record in
+      every batch prompt: win rate and mean move by confidence band,
+      call family, strategy, regime; n on every number; n<10 buckets
+      and <20-row profiles stated, never 0%. Done 2026-08-23 (register:
+      `calculation_verification/ai.md`).
 - [ ] 4.3 Keep the meta-model, judged by the Scoreboard against its own
       history (high-score half must beat low-score half on a sustained
       basis, or it is retired).
-- [ ] 4.4 Register every prompt-side number in
-      `calculation_verification/ai.md`.
+- [x] 4.4 Prompt-side numbers registered in
+      `calculation_verification/ai.md`. Done 2026-08-23.
 - [ ] 4.5 **Weight-level learning (docs/20 Phase 4b.1):** (a) verify the
       fine-tune corpus on prod — `predictions_archive/` after the 07-08
       reset plus the new cohort's resolved predictions — against the
@@ -421,7 +434,10 @@ the numbers that drove it.
 |---|---|---|---|
 | 2026-08-21 | — | Audit completed; plan opened; model landscape verified | this document |
 | 2026-08-23 | — | Budget ruling D0; Phase-1 design at ~$53/mo; arm set D1 approved; "what counts as learning" ladder added; fine-tune path (docs/20) folded in as 4.5 | cb22501, 3f8c328 |
-| 2026-08-23 | — | Experiments Register opened ([26](26_EXPERIMENTS.md)); Experiment 1 retired and tagged `exp1-system-stability-final`; virtual-baseline item 1.12 + D6 added | this commit |
+| 2026-08-23 | — | Experiments Register opened ([26](26_EXPERIMENTS.md)); Experiment 1 retired and tagged `exp1-system-stability-final`; virtual-baseline item 1.12 + D6 added | cb22501… |
+| 2026-08-23 | 1 | 1.0 haiku shadow pulled on prod; 1.1 registry/prices; 1.2 vendor-fair structured output; 1.3 apex call gradeable; D5 shadow scope; 1.12 virtual benchmarks; 1.13 manifest + reset script staged | this commit |
+| 2026-08-23 | 3, 4 | tuner evidence mode (3.1, 3.2, 3.5); weekly tasks fixed (4.1); track-record prompt block (4.2, 4.4) | this commit |
+| 2026-08-23 | 2 | Learning Scoreboard `/learning` (2.1–2.4) with register `learning.md` | this commit |
 
 ---
 

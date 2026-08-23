@@ -54,7 +54,8 @@ class TestScaleContract:
             assert lo <= v <= hi, (
                 f"{prof['name']}: seed {v} outside PARAM_BOUNDS "
                 f"({lo}, {hi})")
-        assert seeded >= 10, "expected all 10 AI profiles to carry a seed"
+        # 2026-08-23: Experiment 2 manifest carries nine AI arm-profiles.
+        assert seeded >= 9, "expected every AI profile to carry a seed"
 
     def test_update_trading_profile_refuses_fractions(self, monkeypatch):
         """The model-layer writer is the choke point every path crosses

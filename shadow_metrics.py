@@ -747,6 +747,31 @@ def collect_fleet_metrics(profile_dbs: List[str],
             m["disagree"] += 1
             pk["disagree"] += 1
             ak["disagree"] += 1
+            # 2026-08-23 (docs/25 item 1.3) — the apex batch_select
+            # call was "set-level / ungradable": its decision is a
+            # whole trade SET. Explode the two sets into per-symbol
+            # stances (a symbol one side picked and the other didn't
+            # is a directional call vs a HOLD) and score each symbol
+            # against its own outcome, so the most important decision
+            # in the system is finally compared.
+            if (purpose or "") == "batch_select":
+                n_scored = _score_batch_select_pair(
+                    primary_signal, parsed_signal, resolved,
+                    _parse_ts(ts), prof_label, (m, pk, ak))
+                if n_scored == 0:
+                    for b in (m, pk, ak):
+                        b["dis_pending"] += 1
+                recent_dis.append({
+                    "ts": str(ts)[:16], "profile": prof_label,
+                    "symbol": "(trade set)", "purpose": purpose,
+                    "model": mkey,
+                    "primary": primary_signal or "?",
+                    "shadow": parsed_signal or "?",
+                    "outcome_pct": None,
+                    "who_right": (f"{n_scored} symbols scored"
+                                  if n_scored else "pending"),
+                })
+                continue
             outcome, predicted_signal, match_method = resolved.match_for(
                 symbol, _parse_ts(ts), row_decision_id)
             s_st = stance(parsed_signal)
@@ -910,6 +935,81 @@ def collect_fleet_metrics(profile_dbs: List[str],
         "daily": dict(daily_out),
         "standings": _standings(per_model_out),
     }
+
+
+def _parse_trade_set(sig: Optional[str]) -> Dict[str, str]:
+    """'AAPL:BUY,MSFT:SELL' -> {'AAPL': 'BUY', 'MSFT': 'SELL'}; 'PASS' or
+    anything unparseable -> {} (an empty set is a deliberate
+    'no trades' decision)."""
+    out: Dict[str, str] = {}
+    if not sig or sig.strip().upper() == "PASS":
+        return out
+    for part in sig.split(","):
+        if ":" not in part:
+            continue
+        sym, _, act = part.partition(":")
+        sym = sym.strip().upper()
+        if sym and sym != "?":
+            out[sym] = act.strip().upper()
+    return out
+
+
+def _score_batch_select_pair(primary_signal: Optional[str],
+                             shadow_signal: Optional[str],
+                             resolved: "_ResolvedIndex",
+                             epoch: Optional[float],
+                             prof_label: str,
+                             buckets) -> int:
+    """Score an apex-call disagreement symbol by symbol. For every
+    symbol in the union of the two trade sets, each side's stance is
+    its action if it picked the symbol, else neutral (it chose NOT to
+    trade the name — a real decision, graded like a HOLD). Outcomes
+    come from the primary's own prediction rows by symbol and time
+    (batch_select spans many candidates, so it carries no single
+    decision id). Returns the number of symbols scored; unresolved
+    symbols are left for a later render."""
+    p_set = _parse_trade_set(primary_signal)
+    s_set = _parse_trade_set(shadow_signal)
+    scored = 0
+    for sym in sorted(set(p_set) | set(s_set)):
+        p_st = stance(p_set[sym]) if sym in p_set else "neutral"
+        s_st = stance(s_set[sym]) if sym in s_set else "neutral"
+        if p_st is None or s_st is None or p_st == s_st:
+            continue
+        outcome, _psig, match_method = resolved.match_for(sym, epoch, None)
+        if outcome is None:
+            continue
+        p_right = grade(p_st, outcome)
+        s_right = grade(s_st, outcome)
+        p_val = decision_value(p_st, outcome)
+        s_val = decision_value(s_st, outcome)
+        if p_right is None or s_right is None or p_val is None or s_val is None:
+            for b in buckets:
+                b["ungradable"] += 1
+            continue
+        scored += 1
+        key = (prof_label, sym)
+        for b in buckets:
+            b["dis_resolved"] += 1
+            b["_unit_keys"].add(key)
+            if match_method == "exact":
+                b["match_exact"] += 1
+            elif match_method == "window":
+                b["match_window"] += 1
+            if s_right:
+                b["shadow_right"] += 1
+            if p_right:
+                b["primary_right"] += 1
+            if s_right and p_right:
+                b["both_right"] += 1
+            elif s_right:
+                b["shadow_only"] += 1
+            elif p_right:
+                b["primary_only"] += 1
+            else:
+                b["neither_right"] += 1
+            b["_edge_by_unit"].setdefault(key, []).append(s_val - p_val)
+    return scored
 
 
 def _recent_selection(recent_dis: List[Dict],

@@ -1101,6 +1101,55 @@ def shadow_page():
     return render_template("shadow.html", m=metrics)
 
 
+@views_bp.route("/learning")
+@login_required
+def learning_page():
+    """Learning Scoreboard (docs/25 step 2, 2026-08-23): per arm, per
+    ISO week, out of sample — directional hit rate, calibration (high-
+    vs low-confidence hit rate and Brier), HOLD quality, mean move,
+    weekly equity return vs SPY with the replicate spread, the virtual-
+    benchmark band, and the tuner's own scorecard. Definitions in
+    calculation_verification/learning.md. No verdict is issued here —
+    the pre-registered decision rule does that at the horizon."""
+    from learning_scoreboard import collect_scoreboard
+    import sqlite3 as _sqlite3
+    profiles = get_user_profiles(current_user.effective_user_id)
+
+    def _db_for(pid):
+        return f"/opt/quantopsai/quantopsai_profile_{pid}.db"
+
+    bench = []
+    try:
+        from virtual_benchmarks import list_series
+        bench = list_series(current_user.effective_user_id)
+    except Exception as exc:
+        logger.warning("learning_page: benchmark series unavailable: %s: %s",
+                       type(exc).__name__, exc)
+    master = None
+    try:
+        from models import _get_conn
+        master = _get_conn()
+    except Exception as exc:
+        logger.warning("learning_page: master DB unavailable for the tuner "
+                       "scorecard: %s: %s", type(exc).__name__, exc)
+    try:
+        board = collect_scoreboard(profiles, _db_for, master_conn=master,
+                                   benchmark_series=bench)
+    except Exception as exc:
+        logger.error("learning_page: scoreboard failed: %s: %s",
+                     type(exc).__name__, exc)
+        board = {"arms": {}, "weeks": [], "spy": {}, "benchmarks": {},
+                 "thin_week_n": 10, "high_conf": 70, "hold_band": 1.5,
+                 "empty": True, "error": f"{type(exc).__name__}: {exc}"}
+    finally:
+        if master is not None:
+            try:
+                master.close()
+            except _sqlite3.Error:
+                pass
+    return render_template("learning.html", b=board)
+
+
 @views_bp.route("/api/issues-count")
 @login_required
 def api_issues_count():

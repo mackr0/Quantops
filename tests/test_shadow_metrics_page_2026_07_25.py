@@ -375,7 +375,9 @@ class TestDecisionIdPlumbing:
     def test_ensemble_mints_and_threads(self):
         src = open(os.path.join(REPO_DIR, "ensemble.py")).read()
         assert '_c["_decision_id"] = _uuid.uuid4().hex' in src
-        assert src.count("decision_id=_chunk_decision_id") == 2, (
+        # 2026-08-23: ONE structured path for every provider (docs/25
+        # item 1.2) — exactly one specialist call site carries the id.
+        assert src.count("decision_id=_chunk_decision_id") == 1, (
             "both the tool-use and plain-prompt specialist calls must "
             "carry the chunk's decision id")
 

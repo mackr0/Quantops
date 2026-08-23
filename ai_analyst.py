@@ -1547,6 +1547,14 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context,
         market_section += "\n  LEARNED PATTERNS (from your history):"
         for pattern in learned[:cap]:
             market_section += f"\n    - {pattern}"
+    # 2026-08-23 (docs/25 step 4.2) — the profile's own resolved track
+    # record (win rate and mean move by confidence band / call type /
+    # strategy / regime, n on every number). Rendered by
+    # calibration_block.render_track_record; identical for every shadow
+    # arm because they receive this same prompt.
+    _cal_block = market_context.get("calibration_block") or ""
+    if _cal_block:
+        market_section += _cal_block
 
     # Sector rotation
     _sector_display = {

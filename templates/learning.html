@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h2>Learning Scoreboard</h2>
+<p class="muted">
+    Is the system learning? Each arm (one model, three replicate
+    profiles) is scored per ISO week on its own resolved decisions:
+    directional hit rate, calibration (hit rate at stated confidence
+    &ge; {{ b.high_conf }} vs below, and the Brier score — lower is
+    better, 0.25 is a coin at 50% stated), HOLD quality (inside
+    &plusmn;{{ b.hold_band }}%), and weekly equity return against SPY with
+    the replicate spread. "Learning" is these lines sloping the right
+    way over weeks; "better model" is one arm above the others across
+    all of its replicates. This page issues no verdict &mdash; the
+    pre-registered decision rule in the plan does that at the horizon.
+    Every rate shows its sample size; weeks under {{ b.thin_week_n }}
+    directional decisions are marked thin.
+</p>
+
+{% if b.error %}
+<article>
+    <header><h3 style="margin:0;">Scoreboard unavailable</h3></header>
+    <p class="pnl-neg">The scoreboard could not be computed: {{ b.error }}</p>
+</article>
+{% endif %}
+
+{% if b.empty and not b.error %}
+<article>
+    <header><h3 style="margin:0;">No arms yet</h3></header>
+    <p class="muted">No enabled AI profiles were found. Arms appear here
+        once Experiment 2's profiles exist; weekly rows fill in as their
+        predictions resolve and daily snapshots accrue.</p>
+</article>
+{% endif %}
+
+{% for key, arm in b.arms.items() %}
+<article>
+    <header><h3 style="margin:0;"><code>{{ arm.label }}</code>
+        <span class="muted" style="font-size:0.7em;font-weight:normal;">
+            {{ arm.replicates|length }} replicate{{ "" if arm.replicates|length == 1 else "s" }}:
+            {% for r in arm.replicates %}{{ r.name }}{% if not loop.last %}, {% endif %}{% endfor %}
+        </span></h3></header>
+    {% if arm.tuner %}
+    <p class="muted" style="font-size:0.85em;">
+        Tuner scorecard for this arm: {{ arm.tuner.total }} changes &mdash;
+        improved {{ arm.tuner.improved }}, worsened {{ arm.tuner.worsened }},
+        unchanged {{ arm.tuner.unchanged }}, pending {{ arm.tuner.pending }}{% if arm.tuner.other %}, other {{ arm.tuner.other }}{% endif %};
+        improved share {% if arm.tuner.improved_share is not none %}{{ arm.tuner.improved_share }}% of {{ arm.tuner.judged }} judged{% else %}&mdash; (nothing judged yet){% endif %}.
+    </p>
+    {% endif %}
+    {% if arm.weeks %}
+    <div class="overflow-auto">
+    <table class="striped">
+        <thead><tr>
+            <th>Week</th>
+            <th title="resolved directional decisions">n</th>
+            <th title="hits / n">Hit rate</th>
+            <th title="hit rate at stated confidence at or above the high band">Conf &ge; {{ b.high_conf }}</th>
+            <th title="hit rate below the high band">Conf &lt; {{ b.high_conf }}</th>
+            <th title="mean squared (confidence/100 - hit); lower is better">Brier</th>
+            <th title="resolved HOLDs inside the noise band">HOLD quality</th>
+            <th title="mean raw price move of the directional set">Mean move</th>
+            <th title="mean weekly equity return across replicates (min .. max)">Equity wk</th>
+            <th>SPY wk</th>
+            <th title="arm equity return minus SPY">Excess</th>
+            {% for r in arm.replicates %}<th title="per-replicate hit rate (n)">{{ r.name }}</th>{% endfor %}
+        </tr></thead>
+        <tbody>
+        {% for wk in b.weeks %}
+            {% set w = arm.weeks.get(wk) %}
+            {% if w %}
+            <tr>
+                <td>{{ wk }}{% if w.thin %} <span class="muted">(thin)</span>{% endif %}</td>
+                <td>{{ w.n }}</td>
+                <td>{% if w.hit_rate is not none %}<strong>{{ w.hit_rate }}%</strong>{% else %}&mdash;{% endif %}</td>
+                <td>{% if w.hi_hit_rate is not none %}{{ w.hi_hit_rate }}% <span class="muted">({{ w.hi_n }})</span>{% else %}&mdash;{% endif %}</td>
+                <td>{% if w.lo_hit_rate is not none %}{{ w.lo_hit_rate }}% <span class="muted">({{ w.lo_n }})</span>{% else %}&mdash;{% endif %}</td>
+                <td>{% if w.brier is not none %}{{ w.brier }}{% else %}&mdash;{% endif %}</td>
+                <td>{% if w.hold_quality is not none %}{{ w.hold_quality }}% <span class="muted">({{ w.hold_n }})</span>{% else %}&mdash;{% endif %}</td>
+                <td>{% if w.mean_move is not none %}{{ "%+.2f"|format(w.mean_move) }}%{% else %}&mdash;{% endif %}</td>
+                <td class="{% if w.equity_ret is not none and w.equity_ret > 0 %}pnl-pos{% elif w.equity_ret is not none and w.equity_ret < 0 %}pnl-neg{% endif %}">{% if w.equity_ret is not none %}{{ "%+.2f"|format(w.equity_ret) }}% <span class="muted">({{ "%+.2f"|format(w.equity_ret_min) }} .. {{ "%+.2f"|format(w.equity_ret_max) }}, {{ w.equity_n }})</span>{% else %}&mdash;{% endif %}</td>
+                <td>{% if b.spy.get(wk) is not none %}{{ "%+.2f"|format(b.spy[wk]) }}%{% else %}&mdash;{% endif %}</td>
+                <td class="{% if w.excess is not none and w.excess > 0 %}pnl-pos{% elif w.excess is not none and w.excess < 0 %}pnl-neg{% endif %}">{% if w.excess is not none %}<strong>{{ "%+.2f"|format(w.excess) }}%</strong>{% else %}&mdash;{% endif %}</td>
+                {% for r in arm.replicates %}{% set rw = r.weeks.get(wk) %}<td>{% if rw and rw.hit_rate is not none %}{{ rw.hit_rate }}% <span class="muted">({{ rw.n }})</span>{% else %}&mdash;{% endif %}</td>{% endfor %}
+            </tr>
+            {% endif %}
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    {% else %}
+    <p class="muted">No resolved decisions or snapshots yet for this arm
+        &mdash; rows appear as the first week's predictions resolve.</p>
+    {% endif %}
+</article>
+{% endfor %}
+
+<article>
+    <header><h3 style="margin:0;">Benchmark band (virtual baselines)</h3></header>
+    {% if b.benchmarks %}
+    <div class="overflow-auto">
+    <table class="striped">
+        <thead><tr><th>Week</th><th>Buy-Hold-SPY</th>
+            <th title="Random-pick replicas: worst / median / best weekly return">Random min / median / max</th>
+            <th>SPY wk</th></tr></thead>
+        <tbody>
+        {% for wk in b.weeks %}{% set r = b.benchmarks.get(wk) %}{% if r %}
+        <tr>
+            <td>{{ wk }}</td>
+            <td>{% if r.buy_hold is not none %}{{ "%+.2f"|format(r.buy_hold) }}%{% else %}&mdash;{% endif %}</td>
+            <td>{% if r.random_n %}{{ "%+.2f"|format(r.random_min) }}% / {{ "%+.2f"|format(r.random_median) }}% / {{ "%+.2f"|format(r.random_max) }}% <span class="muted">({{ r.random_n }} replicas)</span>{% else %}&mdash;{% endif %}</td>
+            <td>{% if b.spy.get(wk) is not none %}{{ "%+.2f"|format(b.spy[wk]) }}%{% else %}&mdash;{% endif %}</td>
+        </tr>
+        {% endif %}{% endfor %}
+        </tbody>
+    </table>
+    </div>
+    {% else %}
+    <p class="muted">No virtual benchmark snapshots yet &mdash; they are
+        created by the Experiment 2 reset and marked to market daily.</p>
+    {% endif %}
+</article>
+{% endblock %}

@@ -45,6 +45,8 @@ a register entry.
 | /universe popup | [universe.md](universe.md) | **DONE** |
 | /admin | [admin.md](admin.md) | **DONE** |
 | Daily email digest | [email_digest.md](email_digest.md) | **DONE** |
+| Virtual benchmarks (comparative chart series) | [benchmarks.md](benchmarks.md) | **DONE** |
+| /learning (Learning Scoreboard) | [learning.md](learning.md) | **DONE** |
 
 ## Conventions the whole system shares
 
@@ -72,3 +74,11 @@ the per-page files:
 5. **Never 0% for unmeasured.** Rates derived from an empty sample
    render as absent ("—"), never as zero, which would read as
    "measured and found zero."
+6. **Vendor-fair structured output (2026-08-23).** Every AI call that
+   needs a shaped answer passes a JSON schema through `call_ai`, and
+   every vendor is held to it through its own native mechanism
+   (Anthropic forced tool_use, OpenAI strict json_schema, Gemini
+   response_json_schema); shadow arms receive the same schema. Any
+   number derived from model verdicts — agreement, win rates, edges —
+   therefore compares models, never parsers. Pinned by
+   `tests/test_structured_output_vendor_fair_2026_08_23.py`.
