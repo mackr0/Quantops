@@ -192,12 +192,15 @@ baselines for broker exposure and capacity; the budget ceiling for a
 bill dominated by a losing arm.
 
 ### Return points
-- Reset applied 2026-08-23 (re-run the same evening with the four-arm
-  manifest after the operator's incumbent ruling; no trades had
-  occurred); first trading session 2026-08-24. Twelve profiles on
-  Alpaca paper accounts `08-24-acct-1..3`, $250K each, one replicate of
-  every arm per account (decision D2). Experiment 1's learning data:
-  `predictions_archive/<pid>/` for pids 207–219 (170,536 rows).
+- Reset applied 2026-08-23 18:16 UTC (re-run the same evening with the
+  four-arm manifest after the operator's incumbent ruling; no trades
+  had occurred); first trading session 2026-08-24. Profiles 229–240 on
+  Alpaca paper accounts 61/62/63 (`08-24-acct-1..3`), $250K each, one
+  replicate of every arm per account (decision D2); certified clean.
+  Experiment 1's learning data (incl. shadow rows):
+  `backups/predictions_archive/<pid>/exp1_final_20260823/` for pids
+  207–219 (170,536 rows) plus the full pre-wipe DB copies in
+  `backups/pre-orphan-cleanup-20260823T174011Z/`.
 - Start tag: `exp2-learning-phase1-start` (the commit that recorded
   the reset).
 - Decision and progress logs: [25](25_MODEL_SELECTION_AND_LEARNING_PLAN.md) §4–5.

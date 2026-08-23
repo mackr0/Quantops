@@ -445,7 +445,7 @@ the numbers that drove it.
 | 2026-08-23 | 1 | 1.0 haiku shadow pulled on prod; 1.1 registry/prices; 1.2 vendor-fair structured output; 1.3 apex call gradeable; D5 shadow scope; 1.12 virtual benchmarks; 1.13 manifest + reset script staged | this commit |
 | 2026-08-23 | 3, 4 | tuner evidence mode (3.1, 3.2, 3.5); weekly tasks fixed (4.1); track-record prompt block (4.2, 4.4) | this commit |
 | 2026-08-23 | 2 | Learning Scoreboard `/learning` (2.1–2.4) with register `learning.md` | 878c493 |
-| 2026-08-23 | 1 | **Reset applied** (1.6–1.10): 170,536 learning rows archived; profiles 220–228 on accounts 58/59/60; keys installed; 11 benchmarks; certify: funding/drift/reconcile/decomposition PASS. Capital set to $333,333.33 per replicate (D2); benchmarks redrawn at the same capital with the $10 universe floor. Pre-registration (§3) filled. | this commit, tag `exp2-learning-phase1-start` |
+| 2026-08-23 | 1 | **Reset applied** (1.6–1.10), twice the same evening: first run archived Experiment 1 (170,536 rows; the archive was then deleted by a deploy and regenerated from the pre-wipe backups into `backups/predictions_archive/`); after the operator's incumbent ruling the reset was re-run with the four-arm manifest — profiles 229–240 on accounts 61/62/63 (`08-24-acct-1..3`), $250K each, keys installed, 11 benchmarks pending activation at the 2026-08-24 open, **CERTIFIED CLEAN** on all five checks. Pre-registration (§3) filled. | tag `exp2-learning-phase1-start` |
 
 ---
 
