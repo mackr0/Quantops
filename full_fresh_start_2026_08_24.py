@@ -460,8 +460,10 @@ def step1c_archive_learning_data(apply: bool) -> None:
         if not apply:
             print(f"  would archive pid{pid:>3} '{name}' from {db_path}")
             continue
-        counts = archive_predictions(db_path, pid,
-                                     archive_root=f"{REPO_ROOT}/predictions_archive")
+        # Under backups/ — the one tree sync.sh never deletes (the
+        # repo-root predictions_archive/ was wiped by the next deploy).
+        counts = archive_predictions(
+            db_path, pid, archive_root=f"{REPO_ROOT}/backups/predictions_archive")
         n = sum(counts.values())
         total += n
         print(f"  pid{pid:>3} '{name}': {counts}")
@@ -756,18 +758,32 @@ def step4b_create_virtual_benchmarks(apply: bool) -> int:
         return 0
     sys.path.insert(0, REPO_ROOT)
     try:
-        from virtual_benchmarks import create_standard_set, list_benchmarks
+        from virtual_benchmarks import (create_standard_set, list_benchmarks,
+                                        delete_benchmarks, standard_set_names)
+        from market_calendar import next_market_open
         with closing(sqlite3.connect(MAIN_DB)) as conn:
             user_id = conn.execute(
                 "SELECT id FROM users ORDER BY id LIMIT 1").fetchone()[0]
+        # A reset is day zero: any benchmarks from an earlier run of
+        # the same reset are redrawn, never kept (they'd carry a
+        # different start or capital).
+        removed = delete_benchmarks(standard_set_names(BENCHMARK_RANDOM_REPLICAS))
+        if removed:
+            print(f"  redrawing: removed {removed} benchmark(s) from an "
+                  "earlier run")
+        # Shares and entry prices are set at the OPEN of the first
+        # session — the moment the arms can first trade (operator
+        # ruling 2026-08-23); symbols are fixed now.
+        start = next_market_open().date().isoformat()
         ids = create_standard_set(user_id, BENCHMARK_CAPITAL,
-                                  random_replicas=BENCHMARK_RANDOM_REPLICAS)
+                                  random_replicas=BENCHMARK_RANDOM_REPLICAS,
+                                  start_date=start, activate_at_open=True)
         for b in list_benchmarks(user_id):
             if b["id"] in ids:
-                print(f"  {b['name']:20s} {b['kind']:9s} holdings="
-                      f"{[(h['symbol'], h['qty']) for h in b['holdings']]} "
-                      f"cash=${b['cash']:,.2f}")
-        print(f"  COMMITTED {len(ids)} benchmark(s)")
+                print(f"  {b['name']:20s} {b['kind']:9s} symbols="
+                      f"{[h['symbol'] for h in b['holdings']]} "
+                      f"pending activation at the {start} open")
+        print(f"  COMMITTED {len(ids)} benchmark(s); activation date {start}")
         return 0
     except Exception as exc:
         print(f"  FAILED: {type(exc).__name__}: {exc}")

@@ -1470,6 +1470,18 @@ def dashboard():
         logger.warning("dashboard: cost_status build failed: %s", _cs_exc)
         cost_status = None
 
+    # 2026-08-23 (docs/25 D6) — reference benchmarks are virtual (no
+    # broker account) but the operator tracks them like accounts: each
+    # one's holdings, start capital, latest value and return, marked
+    # with the profiles. A read failure is logged and shown as empty.
+    try:
+        from virtual_benchmarks import dashboard_rows
+        benchmark_rows = dashboard_rows(current_user.effective_user_id)
+    except Exception as exc:
+        logger.warning("dashboard: reference benchmarks unavailable: %s: %s",
+                       type(exc).__name__, exc)
+        benchmark_rows = []
+
     return render_template("dashboard.html",
                            profiles_data=profiles_data,
                            any_profile_active=any_profile_active,
@@ -1479,7 +1491,8 @@ def dashboard():
                            halted_profiles=halted_profiles,
                            cost_by_model=cost_by_model,
                            shadow_cost_by_model=shadow_cost_by_model,
-                           cost_status=cost_status)
+                           cost_status=cost_status,
+                           benchmark_rows=benchmark_rows)
 
 
 @views_bp.route("/settings")

@@ -78,8 +78,17 @@ def _dump_table_to_jsonl(conn: sqlite3.Connection, table: str,
     return n
 
 
+# 2026-08-23 — the archive lives under backups/, which sync.sh excludes
+# from its rsync --delete. The old root ("predictions_archive/" at the
+# repo root) was not excluded, and the first deploy after the
+# Experiment 1 reset deleted 170,536 archived rows (recovered from the
+# pre-wipe DB backups). Any non-repo data directory under /opt/quantopsai
+# must live in an excluded tree; sync.sh now excludes both names.
+DEFAULT_ARCHIVE_ROOT = "backups/predictions_archive"
+
+
 def archive_predictions(db_path: str, profile_id: int,
-                         archive_root: str = "predictions_archive",
+                         archive_root: str = DEFAULT_ARCHIVE_ROOT,
                          reset_timestamp: Optional[str] = None,
                          ) -> Dict[str, int]:
     """Archive ai_predictions + ai_cycles + specialist_outcomes +
@@ -125,6 +134,14 @@ def archive_predictions(db_path: str, profile_id: int,
                 conn, "option_proposal_outcomes",
                 out_dir / "option_proposal_outcomes.jsonl",
             )
+            # 2026-08-23 — shadow-model verdicts with the primary's
+            # response beside them: the evaluation record of every
+            # challenger model (Experiment 1's nano finding lives in
+            # these rows). Wiping them with the profile lost the
+            # challengers' history on every earlier reset.
+            counts["shadow_calls"] = _dump_table_to_jsonl(
+                conn, "ai_shadow_calls", out_dir / "shadow_calls.jsonl",
+            )
     except Exception as exc:
         logger.warning(
             "archive: profile %s archive failed (%s: %s) — "
@@ -139,7 +156,7 @@ def archive_predictions(db_path: str, profile_id: int,
     return counts
 
 
-def archive_all_active_profiles(archive_root: str = "predictions_archive",
+def archive_all_active_profiles(archive_root: str = DEFAULT_ARCHIVE_ROOT,
                                   reset_timestamp: Optional[str] = None,
                                   ) -> Dict[int, Dict[str, int]]:
     """Archive predictions for every active profile in one batch.

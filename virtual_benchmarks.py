@@ -105,6 +105,17 @@ def ensure_tables(conn: sqlite3.Connection) -> None:
             UNIQUE(benchmark_id, symbol, ex_date)
         );
     """)
+    # 2026-08-23 — activation at the first session's OPEN (operator:
+    # the comparable start is the moment the arms can first trade, not
+    # the prior close). Additive migration for tables created earlier
+    # the same day.
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(virtual_benchmarks)")}
+    if "activated" not in cols:
+        conn.execute("ALTER TABLE virtual_benchmarks ADD COLUMN activated "
+                     "INTEGER NOT NULL DEFAULT 1")
+    if "activation_date" not in cols:
+        conn.execute("ALTER TABLE virtual_benchmarks ADD COLUMN activation_date TEXT")
+    conn.commit()
 
 
 def _conn(db_path: Optional[str] = None) -> sqlite3.Connection:
@@ -169,6 +180,32 @@ def latest_close(symbol: str) -> Optional[float]:
         px = float(df["close"].iloc[-1])
         return px if px > 0 else None
     except (KeyError, TypeError, ValueError, IndexError) as exc:
+        logger.warning("virtual_benchmarks: unreadable bars for %s: %s",
+                       symbol, exc)
+        return None
+
+
+def day_open(symbol: str, date_str: str) -> Optional[float]:
+    """The OPEN of `symbol`'s daily bar dated `date_str`, or None when
+    that bar doesn't exist yet (logged). Used once, at activation."""
+    try:
+        from market_data import get_bars
+        df = get_bars(symbol, limit=5)
+    except Exception as exc:
+        logger.warning("virtual_benchmarks: bars failed for %s: %s: %s",
+                       symbol, type(exc).__name__, exc)
+        return None
+    try:
+        if df is None or len(df) == 0:
+            return None
+        for idx, row in df.iterrows():
+            d = idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else str(idx)[:10]
+            if d == date_str:
+                px = float(row["open"])
+                return px if px > 0 else None
+        logger.info("virtual_benchmarks: no %s bar dated %s yet", symbol, date_str)
+        return None
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
         logger.warning("virtual_benchmarks: unreadable bars for %s: %s",
                        symbol, exc)
         return None
@@ -263,11 +300,20 @@ def create_benchmark(user_id: int, name: str, kind: str,
                      universe: Optional[List[str]] = None,
                      price_fn=latest_close,
                      min_price: Optional[float] = None,
+                     activate_at_open: bool = False,
                      db_path: Optional[str] = None) -> int:
-    """Create one benchmark and choose its holdings ONCE at today's
-    closes. Idempotent on `name` (returns the existing id). Raises on
-    a kind it doesn't know or when no holding could be priced — a
-    benchmark with nothing in it would be a silent zero.
+    """Create one benchmark and choose its SYMBOLS once. Idempotent on
+    `name` (returns the existing id). Raises on a kind it doesn't know
+    or when no holding could be priced — a benchmark with nothing in
+    it would be a silent zero.
+
+    `activate_at_open=False`: shares and entry prices are set now, at
+    the latest closes (the series starts at the capital today).
+    `activate_at_open=True`: symbols are fixed now (eligibility by the
+    latest close), but shares and entry prices are set by
+    `mark_to_market` from the OPEN of the first session on/after
+    `start_date` — the same moment the arms can first trade — with the
+    whole capital held as cash until then. Operator ruling 2026-08-23.
 
     `min_price` (default: the operator's universe floor) excludes
     sub-floor names from the Random draw deterministically — the next
@@ -327,28 +373,41 @@ def create_benchmark(user_id: int, name: str, kind: str,
             for sym, px in priced.items():
                 holdings.append({"symbol": sym, "qty": int(per_pick // px),
                                  "entry_price": px})
-        spent = sum(h["qty"] * h["entry_price"] for h in holdings)
-        cash = round(initial_capital - spent, 2)
         start = start_date or _et_today()
+        if activate_at_open:
+            # Symbols fixed; shares/entry set at the first session's open.
+            for h in holdings:
+                h["qty"] = 0
+                h["entry_price"] = None
+            spent = 0.0
+            cash = float(initial_capital)
+        else:
+            spent = sum(h["qty"] * h["entry_price"] for h in holdings)
+            cash = round(initial_capital - spent, 2)
         cur = conn.execute(
             "INSERT INTO virtual_benchmarks (user_id, name, kind, seed, "
             "initial_capital, start_date, holdings_json, cash, "
-            "dividends_to_date, enabled, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,0,1,?)",
+            "dividends_to_date, enabled, created_at, activated, "
+            "activation_date) VALUES (?,?,?,?,?,?,?,?,0,1,?,?,?)",
             (user_id, name, kind, int(seed), float(initial_capital), start,
              json.dumps(holdings), cash,
-             _dt.datetime.now(_dt.timezone.utc).isoformat()))
+             _dt.datetime.now(_dt.timezone.utc).isoformat(),
+             0 if activate_at_open else 1,
+             None if activate_at_open else start))
         bid = int(cur.lastrowid)
-        # Day-zero snapshot so the series starts at exactly 0.00%.
-        conn.execute(
-            "INSERT OR REPLACE INTO virtual_benchmark_snapshots "
-            "(benchmark_id, date, equity, cash, positions_value, "
-            "dividends_to_date) VALUES (?,?,?,?,?,0)",
-            (bid, start, float(initial_capital), cash, spent))
+        if not activate_at_open:
+            # Day-zero snapshot so the series starts at exactly 0.00%.
+            conn.execute(
+                "INSERT OR REPLACE INTO virtual_benchmark_snapshots "
+                "(benchmark_id, date, equity, cash, positions_value, "
+                "dividends_to_date) VALUES (?,?,?,?,?,0)",
+                (bid, start, float(initial_capital), cash, spent))
         conn.commit()
         logger.info("virtual_benchmarks: created %s (%s) id=%d seed=%d "
-                    "holdings=%s cash=%.2f", name, kind, bid, seed,
-                    [(h["symbol"], h["qty"]) for h in holdings], cash)
+                    "holdings=%s cash=%.2f%s", name, kind, bid, seed,
+                    [(h["symbol"], h["qty"]) for h in holdings], cash,
+                    f" — pending activation at the {start} open"
+                    if activate_at_open else "")
         return bid
     finally:
         conn.close()
@@ -360,18 +419,61 @@ def create_standard_set(user_id: int, initial_capital: float, *,
                         price_fn=latest_close,
                         universe: Optional[List[str]] = None,
                         min_price: Optional[float] = None,
+                        activate_at_open: bool = False,
                         db_path: Optional[str] = None) -> List[int]:
     """Buy-Hold-SPY plus `random_replicas` Random-pick benchmarks, all at
     the same capital. Idempotent by name."""
     ids = [create_benchmark(user_id, BUY_HOLD_NAME, KIND_BUY_HOLD,
                             initial_capital, start_date=start_date,
-                            price_fn=price_fn, db_path=db_path)]
+                            price_fn=price_fn,
+                            activate_at_open=activate_at_open,
+                            db_path=db_path)]
     for i in range(1, random_replicas + 1):
         ids.append(create_benchmark(
             user_id, RANDOM_NAME_FMT.format(i), KIND_RANDOM,
             initial_capital, start_date=start_date, price_fn=price_fn,
-            universe=universe, min_price=min_price, db_path=db_path))
+            universe=universe, min_price=min_price,
+            activate_at_open=activate_at_open, db_path=db_path))
     return ids
+
+
+def standard_set_names(random_replicas: int = DEFAULT_RANDOM_REPLICAS) -> List[str]:
+    return [BUY_HOLD_NAME] + [RANDOM_NAME_FMT.format(i)
+                              for i in range(1, random_replicas + 1)]
+
+
+def _activate(conn: sqlite3.Connection, bench: sqlite3.Row,
+              holdings: List[Dict[str, Any]], as_of: str,
+              open_fn) -> Optional[List[Dict[str, Any]]]:
+    """Set shares and entry prices from `as_of`'s OPEN. Returns the
+    activated holdings, or None (nothing written) when any open is
+    missing — activation then retries on the next session, logged."""
+    opens: Dict[str, float] = {}
+    for h in holdings:
+        px = open_fn(h["symbol"], as_of)
+        if not px:
+            logger.error("virtual_benchmarks: %s: no %s open for %s — "
+                         "activation deferred to the next session",
+                         bench["name"], as_of, h["symbol"])
+            return None
+        opens[h["symbol"]] = px
+    capital = float(bench["initial_capital"])
+    investable = capital * (1.0 - CASH_BUFFER)
+    per = investable if bench["kind"] == KIND_BUY_HOLD else investable / len(holdings)
+    for h in holdings:
+        h["entry_price"] = opens[h["symbol"]]
+        h["qty"] = int(per // opens[h["symbol"]])
+    spent = sum(h["qty"] * h["entry_price"] for h in holdings)
+    cash = round(capital - spent, 2)
+    conn.execute(
+        "UPDATE virtual_benchmarks SET holdings_json=?, cash=?, activated=1, "
+        "activation_date=? WHERE id=?",
+        (json.dumps(holdings), cash, as_of, bench["id"]))
+    logger.info("virtual_benchmarks: %s ACTIVATED at the %s open: %s "
+                "cash=%.2f", bench["name"], as_of,
+                [(h["symbol"], h["qty"], h["entry_price"]) for h in holdings],
+                cash)
+    return holdings
 
 
 def delete_benchmarks(names: List[str], db_path: Optional[str] = None) -> int:
@@ -438,15 +540,21 @@ def mark_to_market(*, as_of: Optional[str] = None,
                    user_id: Optional[int] = None,
                    price_fn=latest_close,
                    dividend_fn=fetch_cash_dividends,
+                   open_fn=day_open,
                    db_path: Optional[str] = None) -> Dict[str, Any]:
     """Write today's equity snapshot for every enabled benchmark.
-    Returns {"marked": n, "failed": n, "details": [...]}. A benchmark
-    with an unpriceable holding is NOT written (a fabricated equity is
-    worse than a gap) and is counted as failed — loudly."""
+    Returns {"marked": n, "failed": n, "pending": n, "details": [...]}.
+    A benchmark with an unpriceable holding is NOT written (a
+    fabricated equity is worse than a gap) and is counted as failed —
+    loudly. A not-yet-activated benchmark is activated from today's
+    OPEN when today is on/after its start date (then marked at the
+    close like any other); before its start date it is counted as
+    pending and nothing is written."""
     as_of = as_of or _et_today()
     conn = _conn(db_path)
     conn.row_factory = sqlite3.Row
-    out: Dict[str, Any] = {"marked": 0, "failed": 0, "details": []}
+    out: Dict[str, Any] = {"marked": 0, "failed": 0, "pending": 0,
+                           "details": []}
     try:
         q = "SELECT * FROM virtual_benchmarks WHERE enabled=1"
         args: Tuple = ()
@@ -455,6 +563,21 @@ def mark_to_market(*, as_of: Optional[str] = None,
             args = (user_id,)
         for bench in conn.execute(q, args).fetchall():
             holdings = json.loads(bench["holdings_json"])
+            if not int(bench["activated"] or 0):
+                if as_of < str(bench["start_date"]):
+                    out["pending"] += 1
+                    out["details"].append({"name": bench["name"],
+                                           "ok": True, "pending": True})
+                    continue
+                activated = _activate(conn, bench, holdings, as_of, open_fn)
+                if activated is None:
+                    out["failed"] += 1
+                    out["details"].append({"name": bench["name"], "ok": False,
+                                           "reason": "open unavailable"})
+                    continue
+                holdings = activated
+                bench = conn.execute("SELECT * FROM virtual_benchmarks WHERE id=?",
+                                     (bench["id"],)).fetchone()
             prev = conn.execute(
                 "SELECT equity, positions_value FROM "
                 "virtual_benchmark_snapshots WHERE benchmark_id=? AND "
@@ -579,6 +702,39 @@ def equity_series(benchmark_id: int,
             "WHERE benchmark_id=? ORDER BY date", (benchmark_id,))]
     finally:
         conn.close()
+
+
+def dashboard_rows(user_id: Optional[int] = None,
+                   db_path: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Rows for the dashboard's Reference Benchmarks section: name,
+    kind, status, holdings, start capital, latest value, return, last
+    mark. Value/return are absent (None) until the first mark — never
+    a fabricated number."""
+    rows: List[Dict[str, Any]] = []
+    for b in list_benchmarks(user_id, db_path=db_path):
+        series = equity_series(b["id"], db_path=db_path)
+        latest = series[-1] if series else None
+        cap = float(b["initial_capital"])
+        activated = bool(b.get("activated", 1))
+        if activated:
+            status = f"Active since the {b.get('activation_date') or b['start_date']} open"
+            holdings = ", ".join(f"{h['symbol']} ×{h['qty']}" for h in b["holdings"])
+        else:
+            status = f"Pending — shares set at the {b['start_date']} open"
+            holdings = ", ".join(h["symbol"] for h in b["holdings"])
+        rows.append({
+            "name": b["name"],
+            "kind": "Buy & hold SPY" if b["kind"] == KIND_BUY_HOLD else "Random 5-pick",
+            "status": status,
+            "holdings": holdings,
+            "initial_capital": cap,
+            "value": latest[1] if latest else None,
+            "return_pct": (round((latest[1] / cap - 1.0) * 100, 2)
+                           if latest and cap > 0 else None),
+            "last_mark": latest[0] if latest else None,
+            "dividends_to_date": float(b.get("dividends_to_date") or 0.0),
+        })
+    return rows
 
 
 def list_series(user_id: Optional[int] = None,

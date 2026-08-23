@@ -149,7 +149,7 @@ class TestMarkToMarket:
         out = vb.mark_to_market(as_of="2026-08-25", user_id=1,
                                 price_fn=_prices({"SPY": 510.0}),
                                 dividend_fn=lambda *a: [], db_path=db)
-        assert out == {"marked": 1, "failed": 0,
+        assert out == {"marked": 1, "failed": 0, "pending": 0,
                        "details": [{"name": "BENCH-BuyHoldSPY", "ok": True,
                                     "equity": 12_500 + 475 * 510.0,
                                     "credited": 0.0}]}
@@ -216,6 +216,119 @@ class TestMarkToMarket:
                                      dividend_fn=lambda *a: [], db_path=db)
         assert first["marked"] == 1 and second is None
         assert calls == ["SPY"]
+
+
+class TestActivationAtOpen:
+    """Operator ruling 2026-08-23: the comparable start is the first
+    session's OPEN — the moment the arms can first trade — not the
+    prior close. Symbols are fixed at creation; shares and entry prices
+    come from that open; capital is cash until then."""
+
+    def test_pending_until_start_then_activated_from_open(self, db):
+        bid = vb.create_benchmark(1, "BENCH-BuyHoldSPY", "buy_hold", 250_000,
+                                  price_fn=_prices({"SPY": 500.0}),
+                                  start_date="2026-08-24",
+                                  activate_at_open=True, db_path=db)
+        b = vb.list_benchmarks(1, db_path=db)[0]
+        assert b["activated"] == 0 and b["cash"] == 250_000.0
+        assert b["holdings"] == [{"symbol": "SPY", "qty": 0, "entry_price": None}]
+        assert vb.equity_series(bid, db_path=db) == []   # nothing fabricated
+        # Sunday: before the start date → pending, nothing written.
+        out = vb.mark_to_market(as_of="2026-08-23", user_id=1,
+                                price_fn=_prices({"SPY": 500.0}),
+                                open_fn=lambda s, d: 500.0,
+                                dividend_fn=lambda *a: [], db_path=db)
+        assert out["pending"] == 1 and out["marked"] == 0
+        assert vb.equity_series(bid, db_path=db) == []
+        # Monday: activated at the OPEN (502), marked at the close (510).
+        out = vb.mark_to_market(as_of="2026-08-24", user_id=1,
+                                price_fn=_prices({"SPY": 510.0}),
+                                open_fn=lambda s, d: 502.0 if d == "2026-08-24" else None,
+                                dividend_fn=lambda *a: [], db_path=db)
+        assert out["marked"] == 1
+        b = vb.list_benchmarks(1, db_path=db)[0]
+        qty = int(250_000 * 0.95 // 502.0)
+        assert b["activated"] == 1 and b["activation_date"] == "2026-08-24"
+        assert b["holdings"] == [{"symbol": "SPY", "qty": qty, "entry_price": 502.0}]
+        assert b["cash"] == round(250_000 - qty * 502.0, 2)
+        assert vb.equity_series(bid, db_path=db) == [
+            ("2026-08-24", round(b["cash"] + qty * 510.0, 2))]
+
+    def test_missing_open_defers_activation_loudly(self, db, caplog):
+        bid = vb.create_benchmark(1, "BENCH-BuyHoldSPY", "buy_hold", 250_000,
+                                  price_fn=_prices({"SPY": 500.0}),
+                                  start_date="2026-08-24",
+                                  activate_at_open=True, db_path=db)
+        out = vb.mark_to_market(as_of="2026-08-24", user_id=1,
+                                price_fn=_prices({"SPY": 510.0}),
+                                open_fn=lambda s, d: None,
+                                dividend_fn=lambda *a: [], db_path=db)
+        assert out["failed"] == 1
+        assert vb.list_benchmarks(1, db_path=db)[0]["activated"] == 0
+        assert vb.equity_series(bid, db_path=db) == []
+        assert "activation deferred" in caplog.text
+
+    def test_random_activation_equal_weights_from_opens(self, db):
+        prices = {s: 20.0 for s in UNIVERSE}
+        bid = vb.create_benchmark(1, "BENCH-Random-01", "random", 100_000,
+                                  price_fn=_prices(prices), universe=UNIVERSE,
+                                  start_date="2026-08-24",
+                                  activate_at_open=True, db_path=db)
+        vb.mark_to_market(as_of="2026-08-24", user_id=1,
+                          price_fn=_prices(prices),
+                          open_fn=lambda s, d: 25.0,
+                          dividend_fn=lambda *a: [], db_path=db)
+        b = vb.list_benchmarks(1, db_path=db)[0]
+        per = 100_000 * 0.95 / 5
+        assert all(h["qty"] == int(per // 25.0) and h["entry_price"] == 25.0
+                   for h in b["holdings"])
+        assert vb.equity_series(bid, db_path=db)[0][1] == round(
+            b["cash"] + 5 * int(per // 25.0) * 20.0, 2)
+
+    def test_dashboard_rows_pending_and_active(self, db):
+        vb.create_benchmark(1, "BENCH-BuyHoldSPY", "buy_hold", 250_000,
+                            price_fn=_prices({"SPY": 500.0}),
+                            start_date="2026-08-24",
+                            activate_at_open=True, db_path=db)
+        rows = vb.dashboard_rows(1, db_path=db)
+        assert rows[0]["status"].startswith("Pending")
+        assert rows[0]["value"] is None and rows[0]["return_pct"] is None
+        assert rows[0]["holdings"] == "SPY"
+        vb.mark_to_market(as_of="2026-08-24", user_id=1,
+                          price_fn=_prices({"SPY": 510.0}),
+                          open_fn=lambda s, d: 500.0,
+                          dividend_fn=lambda *a: [], db_path=db)
+        rows = vb.dashboard_rows(1, db_path=db)
+        assert rows[0]["status"].startswith("Active since the 2026-08-24 open")
+        assert rows[0]["holdings"] == "SPY ×475"
+        assert rows[0]["value"] == round(12_500 + 475 * 510.0, 2)
+        assert rows[0]["return_pct"] == round((475 * 10.0) / 250_000 * 100, 2)
+        assert rows[0]["last_mark"] == "2026-08-24"
+
+    def test_dashboard_page_shows_reference_benchmarks(self, tmp_main_db,
+                                                       tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        import config
+        config.DB_PATH = str(tmp_main_db)
+        from models import create_user
+        from app import create_app
+        app = create_app()
+        app.config["TESTING"] = True
+        app.config["WTF_CSRF_ENABLED"] = False
+        create_user("t@t.com", "password123", "T", is_admin=True)
+        vb.create_benchmark(1, "BENCH-BuyHoldSPY", "buy_hold", 250_000,
+                            price_fn=_prices({"SPY": 500.0}),
+                            start_date="2026-08-24", activate_at_open=True)
+        client = app.test_client()
+        client.post("/login", data={"email": "t@t.com",
+                                    "password": "password123"},
+                    follow_redirects=True)
+        r = client.get("/dashboard", follow_redirects=True)
+        assert r.status_code == 200
+        html = r.data.decode()
+        assert "Reference Benchmarks" in html
+        assert "BENCH-BuyHoldSPY" in html
+        assert "Pending" in html and "2026-08-24 open" in html
 
 
 class TestSeries:

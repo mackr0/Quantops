@@ -155,10 +155,13 @@ decisions and no more knowledge. Everything it built carries forward.
 - **Shadowing of specialist purposes only**, cross-wise (D5): each
   arm-profile shadows the other three arms on specialist calls; trade
   selection is compared through the replicates' real trades.
-- **Baselines move off the broker** (D6, proposed): Buy-Hold-SPY and
+- **Baselines move off the broker** (D6): Buy-Hold-SPY and
   Random are static portfolios, so they are tracked virtually —
-  selected once with a recorded seed, marked to market daily from
-  Alpaca price data, dividends credited from corporate-action data.
+  symbols selected once with a recorded seed, shares and entry set at
+  the first session's OPEN (the same moment the arms can first trade),
+  marked to market daily from Alpaca price data, dividends credited
+  from corporate-action data, shown on the dashboard as Reference
+  Benchmarks.
   This frees the reset procedure of the benchmark purchase steps,
   frees paper-account capacity for real arms, removes the baselines
   from broker-wipe exposure, and — because virtual replicas are free —

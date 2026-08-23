@@ -83,6 +83,7 @@ CHANGED=$(rsync -az --delete --dry-run --itemize-changes \
     --exclude '.DS_Store' \
     --exclude 'logs/' \
     --exclude 'backups/' \
+    --exclude 'predictions_archive/' \
     --exclude 'exports/' \
     --exclude '*.pkl' \
     --exclude 'cycle_data_*.json' \
@@ -139,6 +140,7 @@ if ! $SKIP_RSYNC; then
         --exclude '.DS_Store' \
         --exclude 'logs/' \
         --exclude 'backups/' \
+        --exclude 'predictions_archive/' \
         --exclude 'exports/' \
         --exclude '*.pkl' \
         --exclude 'cycle_data_*.json' \

@@ -119,6 +119,14 @@ Own-order-filtered broker open orders (journal order-id allowlist —
 never a sibling profile's); price cell precedence limit → stop
 (+trail % or $) → trail-only → "market". **VERIFIED**
 
+## Reference benchmarks table (2026-08-23)
+
+**Every cell** — see [benchmarks.md](benchmarks.md): status
+(pending/active with date), holdings, start capital, latest-snapshot
+value, `return = value / capital − 1`, dividends credited, last mark.
+Virtual — no broker account; Value/Return absent until the first
+mark. **VERIFIED** (fixture + Flask-client smoke test).
+
 ## Comparative returns chart
 
 Per profile: `((equity / first_snapshot_equity) − 1) × 100` per day;

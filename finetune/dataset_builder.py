@@ -336,7 +336,7 @@ def build_dataset(
     profile_dbs: List[str],
     out_dir: str,
     *,
-    archive_root: Optional[str] = "predictions_archive",
+    archive_root: Optional[str] = "backups/predictions_archive",
     allow_short: bool = True,
     eval_holdout: int = 200,
     val_fraction: float = 0.10,

@@ -20,6 +20,23 @@ old seed was only stable because a fire-once guard never let it
 re-run). **VERIFIED** (fixture: SPY 500 → 475 shares, $12,500 cash,
 day-zero equity exactly the capital).
 
+**Activation at the first session's open (2026-08-23, operator
+ruling)** — the reset creates each benchmark PENDING: symbols fixed
+(eligibility by the latest close and the $10 floor), `qty = 0`, all
+capital as cash, no snapshot. On the first daily mark on/after
+`start_date` (the next market open per `market_calendar`), shares are
+set from that day's OPEN: buy-hold `qty = floor(capital × 0.95 /
+open_SPY)`; random `qty = floor((capital × 0.95 / 5) / open)` per
+name; `cash = capital − Σ qty × open`; `activation_date` recorded; the
+day is then marked at the close like any other. *Why:* the arms can
+first trade at that open, so that is the comparable start — a
+Friday-close entry would give the benchmark a different starting
+print than the arms. If any holding's open is unavailable, activation
+is deferred to the next session with an ERROR log (nothing fabricated).
+**VERIFIED** (fixture: pending → nothing written before start;
+Monday open 502 / close 510 → qty 473, cash 12,554, equity cash +
+473 × 510; missing open → deferred, nothing written).
+
 **Daily equity** — `equity = cash + Σ qty × latest_close`, one row per
 ET date (`INSERT OR REPLACE` on benchmark/date). A holding without a
 price means NO row for that benchmark that day and an ERROR log — a
@@ -52,6 +69,14 @@ enabled benchmark lacks today's row; it is hooked into the per-profile
 daily-snapshot task, so the first profile's snapshot triggers it and
 the rest find nothing due. **VERIFIED** (fixture: second call returns
 None, prices fetched once).
+
+**Dashboard "Reference Benchmarks" table** — one row per benchmark:
+status (pending with its activation date, or active since its
+activation open), holdings (symbols; with share counts once active),
+start capital, latest snapshot equity as Value, `return = latest /
+capital − 1`, dividends credited to date, last-marked date. Value and
+return are absent until the first mark — never a fabricated number.
+**VERIFIED** (fixture + Flask-client smoke test).
 
 ## Open items for this page
 

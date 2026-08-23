@@ -6,6 +6,19 @@ Status: IN PROGRESS — foundation shipped 2026-05-21; **corpus clock reset 2026
 Owner: TBD.
 Created: 2026-05-19.
 
+**2026-08-23 update — archive location and contents.** The archive root is
+now `backups/predictions_archive/` (`predictions_archive.DEFAULT_ARCHIVE_ROOT`;
+`dataset_builder.build_dataset` defaults to the same). The repo-root
+`predictions_archive/` was not excluded from `sync.sh`'s rsync `--delete`,
+and the first deploy after the Experiment 1 reset deleted the
+170,536-row archive the reset had just written; it was regenerated from
+the pre-wipe DB backups into the new root, and `sync.sh` now excludes
+both names (pinned by `tests/test_archive_survives_deploy_2026_08_23.py`).
+The archive now also carries `shadow_calls.jsonl` (every challenger
+model's verdict beside the primary's) — the evaluation record behind
+Experiment 1's nano finding. Experiment 1's corpus: 13 profiles (pids
+207–219) under `backups/predictions_archive/<pid>/exp1_final_20260823/`.
+
 **2026-06-04 update:** The EXP-A* experiment was fully reset because the
 post-2026-05-20 data was contaminated by the trailing-stop orphan class
 (10-day cohort outage halted pid15–24 across ~40 orphan fills; see
