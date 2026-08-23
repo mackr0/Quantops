@@ -290,10 +290,34 @@ knobs that don't bind or reversed themselves by auto-expiry.
 **Done when:** the tuner's change log shows only gated changes with
 expected outcomes, and the non-binding knobs no longer appear in it.
 
-### Step 4 — Turn on the learning an LLM can actually do (in-context)
+### What counts as "learning" in this system (and what does not)
+
+Operator question 2026-08-23: "are you fixing this so that the system
+is actually learning instead of just moving levers and knobs?" The
+test for learning is a **closed loop on the decider**: the thing that
+makes the decision receives its own past outcomes, its decisions
+measurably change, and the Learning Scoreboard shows the curve moving
+in the right direction. Three mechanisms pass that test; one does not.
+
+| Level | Mechanism | Changes what? | Status 2026-08-23 | Plan |
+|---|---|---|---|---|
+| 0 — knobs | self-tuner parameter moves | thresholds/caps around the model | 429 changes, no improvement, non-binding knobs | **Step 3 retires all but evidence-backed levers.** Not learning. |
+| 1 — statistical | meta-model: a gradient-boosted classifier fit per profile on prediction features → outcomes (`meta_model.py`) | the confidence the gate sees | real learning, but not yet discriminative (high-score half won 1 of 3 weeks) | kept, judged by the Scoreboard (4.3); retired if it never separates |
+| 2 — in-context | the prompt carries the profile's own track record (calibration by band/signal/sector/strategy; `learned_patterns`) | the model's decisions, every cycle | `learned_patterns` = 0 rows ever; calibration block absent | **Step 4.1–4.2 builds it.** This is the learning a frozen-weight model can do. |
+| 3 — weights | fine-tuning on the system's own resolved predictions (`docs/20_FINETUNE_PHASE_4B1_INCREMENTAL.md`; `finetune/dataset_builder.py` + `model_registry.py` shipped 2026-05-21) | the model itself | designed and foundation shipped; NEVER activated — gated on corpus accumulation, which the 07-08 reset restarted | **Step 4.5 activates it** once the corpus threshold is met and the chosen arm's vendor supports tuning |
+
+Level 3 is the only mechanism that changes the model; Level 2 is the
+only one that changes decisions immediately; Level 1 is honest
+statistics; Level 0 is what the operator rightly called "moving levers
+and knobs." The plan keeps 1–3 and cuts 0 to the few levers with real
+sample sizes.
+
+### Step 4 — Turn on the learning an LLM can actually do (in-context, then weights)
 
 **Goal:** every cycle's prompt carries the profile's own track record,
-and the machinery that was supposed to do this actually runs.
+the machinery that was supposed to do this actually runs, and the
+fine-tune path that was designed in May is activated when its corpus
+exists.
 **Why:** a frozen-weight model learns one way — by being shown what it
 got right and wrong. `learned_patterns` has never written a row.
 
@@ -308,10 +332,23 @@ got right and wrong. `learned_patterns` has never written a row.
       basis, or it is retired).
 - [ ] 4.4 Register every prompt-side number in
       `calculation_verification/ai.md`.
+- [ ] 4.5 **Weight-level learning (docs/20 Phase 4b.1):** (a) verify the
+      fine-tune corpus on prod — `predictions_archive/` after the 07-08
+      reset plus the new cohort's resolved predictions — against the
+      docs/20 §17 activation threshold; (b) verify which of the chosen
+      arms' vendors support supervised fine-tuning of that model
+      (`gpt-5.6-luna`, `gemini-3.5-flash-lite`, `gemini-3.7-flash`) —
+      the May design assumed `gpt-4o-mini`; (c) build the still-missing
+      `training_runner` / `evaluator` / `inference` pieces; (d) run the
+      fine-tuned model as a FOURTH arm on replicates (never a silent
+      swap), scored by the same Scoreboard and decision rule.
+      Sub-items are tracked in docs/20; this item is done when a
+      fine-tuned arm is trading on replicates.
 
 **Done when:** the prompt diff shows the calibration block populated
-from live data, and `learned_patterns` has rows on every active
-profile.
+from live data, `learned_patterns` has rows on every active profile,
+and the fine-tune path is either running as an arm or has a dated
+reason in the Decision Log why not yet.
 
 ### Step 5 — Decide by a rule set now, not a feeling later
 
@@ -356,7 +393,7 @@ the numbers that drove it.
 | ID | Date | Decision | Rationale | By |
 |---|---|---|---|---|
 | D0 | 2026-08-21 | Budget ceiling: Phase 1 must cost less than today's ~$175/month | operator constraint; the $675 full-cross-shadow design was rejected on cost | MS |
-| D1 | pending | Arm set: ____ (proposed: luna / gemini-3.5-flash-lite / gemini-3.7-flash; alt mid = sonnet-5 at ~$91/mo) | see §1.5 | MS |
+| D1 | 2026-08-23 | **Arm set: `gpt-5.6-luna` / `gemini-3.5-flash-lite` / `gemini-3.7-flash`**, 3 replicates each | operator approved the §1.5 Phase-1 design (~$53/mo) | MS |
 | D2 | pending | Capital per replicate: ____ | equal across all 12 | MS |
 | D3 | pending | `ai_model_auto_tune`: remove vs implement | dead control today | MS |
 | D4 | pending | Tuning-OFF replicate per arm: yes/no | costs a profile per arm | MS |
@@ -369,6 +406,7 @@ the numbers that drove it.
 | Date | Step | What was done | Commit / action |
 |---|---|---|---|
 | 2026-08-21 | — | Audit completed; plan opened; model landscape verified | this document |
+| 2026-08-23 | — | Budget ruling D0; Phase-1 design at ~$53/mo; arm set D1 approved; "what counts as learning" ladder added; fine-tune path (docs/20) folded in as 4.5 | cb22501 + this commit |
 
 ---
 
