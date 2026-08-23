@@ -1,6 +1,7 @@
 # 25 — Model Selection & Learning Plan (living document)
 
-**Status:** ACTIVE · opened 2026-08-21 · owner MacKenzie Smith
+**Status:** ACTIVE · opened 2026-08-21 · owner MacKenzie Smith ·
+history and rationale in [26 — Experiments Register](26_EXPERIMENTS.md)
 **Rule for this document:** it is the single place the plan lives. Every
 step has a checklist; items are checked off (`[x]`) with a date and the
 commit or action that closed them. Decisions are recorded in the
@@ -231,9 +232,20 @@ Configuration (operator, with Claude driving):
       of input) applies; verify with `cache_read`/`cached_tokens` > 0 in
       the cost ledger. Largest single cost lever; re-evaluates the
       2026-07-02 "too volatile to cache" finding against the new prompt.
-- [ ] 1.0 **Immediate, before any of the above:** remove
+- [ ] 1.12 **Virtual baselines (D6).** Buy-Hold-SPY and Random are
+      fire-once static portfolios, so they need no broker: a
+      `strategy_type` for virtual benchmarks whose holdings are
+      selected once (recorded seed), marked to market daily from Alpaca
+      bars (Alpaca-first data rule), with dividends credited from
+      corporate-action data so they stay comparable to broker-held
+      arms; `daily_snapshots` written by a daily task; no orders, no
+      reconcile, no conduit capital. Run Random as TEN replicas.
+      Remove the benchmark purchase steps from the reset script.
+      Register the mark-to-market in `calculation_verification/`.
+- [x] 1.0 **Immediate, before any of the above:** remove
       `anthropic:claude-haiku-4-5-20251001` from every profile's shadow
-      list (77% of spend; measured worse than primary). Date done: ____.
+      list (77% of spend; measured worse than primary). Done
+      2026-08-23 on prod, profiles 207–219 (operator decision).
 
 **Done when:** 12 profiles trading from equal capital on the same day;
 /shadow shows three arms with every purpose including batch_select
@@ -398,6 +410,8 @@ the numbers that drove it.
 | D3 | pending | `ai_model_auto_tune`: remove vs implement | dead control today | MS |
 | D4 | pending | Tuning-OFF replicate per arm: yes/no | costs a profile per arm | MS |
 | D5 | 2026-08-21 | Cross-shadowing: **specialist purposes only**, not `batch_select` | the replicates ARE the apex-call A/B; shadowing it pays twice (§1.5) | MS (proposed by Claude, pending confirmation) |
+| D6 | 2026-08-23 | **Baselines tracked virtually (no broker), Random × 10 replicas** | static portfolios; removes wipe exposure, reset steps, $750K conduit use; free replicas give a real null band (item 1.12) | MS |
+| D7 | 2026-08-23 | Target: Experiment 2 implemented before the 2026-08-24 open; the reset itself waits on new Alpaca paper accounts from the operator (or approval to reuse 55/56/57 in place) | operator directive | MS |
 
 ---
 
@@ -406,7 +420,8 @@ the numbers that drove it.
 | Date | Step | What was done | Commit / action |
 |---|---|---|---|
 | 2026-08-21 | — | Audit completed; plan opened; model landscape verified | this document |
-| 2026-08-23 | — | Budget ruling D0; Phase-1 design at ~$53/mo; arm set D1 approved; "what counts as learning" ladder added; fine-tune path (docs/20) folded in as 4.5 | cb22501 + this commit |
+| 2026-08-23 | — | Budget ruling D0; Phase-1 design at ~$53/mo; arm set D1 approved; "what counts as learning" ladder added; fine-tune path (docs/20) folded in as 4.5 | cb22501, 3f8c328 |
+| 2026-08-23 | — | Experiments Register opened ([26](26_EXPERIMENTS.md)); Experiment 1 retired and tagged `exp1-system-stability-final`; virtual-baseline item 1.12 + D6 added | this commit |
 
 ---
 
