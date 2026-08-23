@@ -41,14 +41,23 @@ _BASE_WHERE = (
     "status='resolved' AND actual_outcome IN ('win','loss') "
     "AND (data_quality IS NULL OR data_quality='')"
 )
+# The headline, the confidence bands, strategy and regime lines are
+# DIRECTIONAL only — the /ai page's definition. HOLD rows are stored
+# at confidence 0, so without this filter they flood the 0–25 band and
+# the all-time line (live check 2026-08-23: 2,579 HOLDs in a "3,700
+# resolved" headline). HOLD gets its own line under "By call".
+_DIRECTIONAL_WHERE = (
+    "UPPER(predicted_signal) IN ('BUY','STRONG_BUY','SELL','STRONG_SELL','SHORT')"
+)
 
 
 def _bucket(conn: sqlite3.Connection, where: str, params: Tuple = ()
             ) -> Tuple[int, int, Optional[float]]:
-    """(n, wins, mean_return) for rows matching `where`."""
+    """(n, wins, mean_return) for DIRECTIONAL rows matching `where`."""
     row = conn.execute(
         f"SELECT COUNT(*), SUM(actual_outcome='win'), AVG(actual_return_pct) "
-        f"FROM ai_predictions WHERE {_BASE_WHERE} AND ({where})", params,
+        f"FROM ai_predictions WHERE {_BASE_WHERE} AND {_DIRECTIONAL_WHERE} "
+        f"AND ({where})", params,
     ).fetchone()
     n = int(row[0] or 0)
     wins = int(row[1] or 0)
@@ -99,7 +108,7 @@ def compute_track_record(db_path: str) -> Dict[str, Any]:
             for s, n_, w_, m_ in conn.execute(
                 f"SELECT COALESCE(strategy_type, '?'), COUNT(*), "
                 f"SUM(actual_outcome='win'), AVG(actual_return_pct) "
-                f"FROM ai_predictions WHERE {_BASE_WHERE} "
+                f"FROM ai_predictions WHERE {_BASE_WHERE} AND {_DIRECTIONAL_WHERE} "
                 f"GROUP BY strategy_type ORDER BY COUNT(*) DESC LIMIT 6")
         ]
         out["by_regime"] = [
@@ -108,7 +117,7 @@ def compute_track_record(db_path: str) -> Dict[str, Any]:
             for r, n_, w_, m_ in conn.execute(
                 f"SELECT COALESCE(regime_at_prediction, '?'), COUNT(*), "
                 f"SUM(actual_outcome='win'), AVG(actual_return_pct) "
-                f"FROM ai_predictions WHERE {_BASE_WHERE} "
+                f"FROM ai_predictions WHERE {_BASE_WHERE} AND {_DIRECTIONAL_WHERE} "
                 f"GROUP BY regime_at_prediction ORDER BY COUNT(*) DESC LIMIT 4")
         ]
     return out
@@ -135,14 +144,16 @@ def render_track_record(db_path: str) -> str:
     if total < MIN_TOTAL_FOR_BLOCK:
         return (
             "\n  YOUR TRACK RECORD (this profile): only "
-            f"{total} resolved predictions so far — too few to calibrate "
-            "on. Rate confidence honestly; every prediction is scored."
+            f"{total} resolved directional predictions so far — too few "
+            "to calibrate on. Rate confidence honestly; every prediction "
+            "is scored."
         )
     n, w, m = rec["overall"]
     rn, rw, rm = rec["recent"]
     lines = [
-        "\n  YOUR TRACK RECORD (this profile's own resolved predictions; "
-        "wins/(wins+losses), n on every number — small n means little):",
+        "\n  YOUR TRACK RECORD (this profile's own resolved DIRECTIONAL "
+        "predictions; wins/(wins+losses), n on every number — small n "
+        "means little; HOLDs are scored separately under 'By call'):",
         "    " + _fmt("All-time", n, w, m),
         "    " + _fmt(f"Last {RECENT_DAYS} days", rn, rw, rm),
         "    By stated confidence: " + "; ".join(

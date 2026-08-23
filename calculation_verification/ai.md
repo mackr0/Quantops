@@ -92,9 +92,14 @@ same prompt, so the block is identical across arms.
 **Resolved set** — `status='resolved' AND actual_outcome IN
 ('win','loss')`, `data_quality`-tagged rows excluded; scratch outcomes
 are outside the denominator — the same definition as the /ai Brain
-tab's directional win rate (S12's chosen definition). **VERIFIED**
-(fixture: 15W/5L with 10 scratch + 10 tagged + 10 pending rows → 20
-resolved, 15 wins).
+tab's directional win rate (S12's chosen definition). The headline,
+confidence bands, strategy and regime lines are **directional only**
+(`predicted_signal` ∈ BUY/STRONG_BUY/SELL/STRONG_SELL/SHORT); HOLD
+rows — stored at confidence 0, and 2,579 of p210's 3,700 resolved rows
+on the first live render — appear only on their own "By call" line.
+**VERIFIED** (fixtures: 15W/5L with scratch/tagged/pending rows → 20
+resolved, 15 wins; 30 HOLDs leave the 0–25 band at 0 and the headline
+at the 20 directional rows).
 
 **Per bucket** — `win rate = wins / n`, `mean move = AVG(actual_return_pct)`
 over the bucket; buckets: all-time, last 30 days (by `resolved_at`),
