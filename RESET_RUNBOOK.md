@@ -129,8 +129,18 @@ venv/bin/python full_fresh_start_<date>.py
       drift, fold anything intentional into `create_experiment_profiles.PROFILES`
       first (this is how the 999 position caps were lost on 06-09; SPY=1 and
       Randoms=5 and the caps now live in the manifest and survive automatically).
-- [ ] **STEP 4** — `manifest verified: 13 profiles totaling $3,000,000` with the
-      expected splits (A1 4×$250K, A2 5×$200K, A3 $25K/$25K/$250K/$700K).
+- [ ] **STEP 4** — Experiment 2: `manifest verified: 9 profiles totaling
+      $2,250,000; arms=[...]` (A1/A2/A3 each 3 × $250K). (Experiment 1
+      printed `13 profiles totaling $3,000,000` — that manifest lives at
+      tag `exp1-system-stability-final`.)
+- [ ] **STEP 1c** — every enabled profile's learning data archived
+      (`ARCHIVED <n> rows across <k> profile(s)`); the run aborts before
+      any write if this fails.
+- [ ] **STEP 4b** — `COMMITTED 11 benchmark(s)` (Buy-Hold-SPY + Random-01..10)
+      with holdings listed; a failure here leaves the arms built and tells
+      you to create the benchmarks by hand before the open.
+- [ ] **STEP 5c** — every profile lists `primary=<provider> shadow_keys=[...]`
+      with no `MISSING` lines.
 
 ---
 
