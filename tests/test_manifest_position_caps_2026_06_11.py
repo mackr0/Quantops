@@ -39,8 +39,8 @@ def test_manifest_caps_match_operator_contract():
     # docs/25 D6), so only the AI-profile half of the contract remains.
     from create_experiment_profiles import PROFILES
     ai_profiles = [p for p in PROFILES if p.get("strategy_type") == "ai"]
-    assert len(ai_profiles) == 9, (
-        f"Expected 9 AI-driven profiles in the manifest, found "
+    assert len(ai_profiles) == 12, (
+        f"Expected 12 AI-driven profiles in the manifest, found "
         f"{len(ai_profiles)} — update this test alongside any "
         "experiment redesign."
     )

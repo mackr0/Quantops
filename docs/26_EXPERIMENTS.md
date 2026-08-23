@@ -130,26 +130,31 @@ decisions and no more knowledge. Everything it built carries forward.
 
 ---
 
-## Experiment 2 — Learning & Model Selection, Phase 1 — PLANNED (start: ____)
+## Experiment 2 — Learning & Model Selection, Phase 1 — RUNNING (start: 2026-08-24)
 
 ### What it is designed to answer
-1. Does a current-generation small model from another vendor beat
-   Google's small model on real trades? (the nano question, re-asked
-   with `gpt-5.6-luna` vs `gemini-3.5-flash-lite`)
-2. **Does stepping up a tier buy returns?** (`gemini-3.7-flash` vs
+1. **Does anything beat the incumbent on real trades?** `gpt-4.1-nano`
+   is Experiment 1's measured winner (specialist verdicts, p=0.001;
+   head-to-head vs haiku p=0.0005) — it runs as a full arm, and a new
+   model is only "better" if it beats nano.
+2. Does nano's successor generation (`gpt-5.6-luna`) keep the edge?
+   Does a current-generation Google small model (`gemini-3.5-flash-lite`)
+   match it at equal tier?
+3. **Does stepping up a tier buy returns?** (`gemini-3.7-flash` vs
    `gemini-3.5-flash-lite`, same vendor, so the comparison isolates tier)
-3. **Can the system be made to learn** — can its decision quality be
+4. **Can the system be made to learn** — can its decision quality be
    shown to improve from its own outcomes, on a chart, over weeks?
 
 ### Design (details and checklists in [25](25_MODEL_SELECTION_AND_LEARNING_PLAN.md))
-- **Three arms × three replicates**, identical capital and settings;
+- **Four arms × three replicates**, identical capital and settings;
   only `ai_provider`/`ai_model` differ. Arms (Decision D1, 2026-08-23):
-  `gpt-5.6-luna` · `gemini-3.5-flash-lite` · `gemini-3.7-flash`.
+  `gpt-4.1-nano` (incumbent) · `gpt-5.6-luna` · `gemini-3.5-flash-lite`
+  · `gemini-3.7-flash`. Replicate i of every arm lives on paper
+  account i ($250K × 4 = the whole account), so a broker-account event
+  hits all arms equally.
 - **Shadowing of specialist purposes only**, cross-wise (D5): each
-  arm-profile shadows the other two arms on specialist calls; trade
+  arm-profile shadows the other three arms on specialist calls; trade
   selection is compared through the replicates' real trades.
-  `gpt-4.1-nano` runs as an extra specialist-only shadow on the Luna
-  profiles to bridge Experiment 1's one real finding.
 - **Baselines move off the broker** (D6, proposed): Buy-Hold-SPY and
   Random are static portfolios, so they are tracked virtually —
   selected once with a recorded seed, marked to market daily from
@@ -159,7 +164,7 @@ decisions and no more knowledge. Everything it built carries forward.
   from broker-wipe exposure, and — because virtual replicas are free —
   lets the Random null run as **ten replicas**, a real variance band
   instead of two draws.
-- **Budget:** ≈ $53/month all-in, versus ~$175/month for Experiment 1
+- **Budget:** ≈ $68/month all-in, versus ~$175/month for Experiment 1
   (D0: must stay under Experiment 1's cost).
 - **Learning, built and measured, not assumed:** the tuner cut to
   evidence-backed levers; the in-context track record in every prompt;
@@ -184,6 +189,12 @@ baselines for broker exposure and capacity; the budget ceiling for a
 bill dominated by a losing arm.
 
 ### Return points
-- Start tag: `exp2-learning-phase1-start` (created at the first
-  trading cycle; date recorded here: ____).
+- Reset applied 2026-08-23 (re-run the same evening with the four-arm
+  manifest after the operator's incumbent ruling; no trades had
+  occurred); first trading session 2026-08-24. Twelve profiles on
+  Alpaca paper accounts `08-24-acct-1..3`, $250K each, one replicate of
+  every arm per account (decision D2). Experiment 1's learning data:
+  `predictions_archive/<pid>/` for pids 207–219 (170,536 rows).
+- Start tag: `exp2-learning-phase1-start` (the commit that recorded
+  the reset).
 - Decision and progress logs: [25](25_MODEL_SELECTION_AND_LEARNING_PLAN.md) §4–5.

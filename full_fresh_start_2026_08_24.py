@@ -8,12 +8,14 @@ FOURTEENTH reset, and the first that is not a recovery: Experiment 1
 capital on fresh paper accounts. Cloned from full_fresh_start_2026_07_08.py
 with the full lineage retained below; what changed for Experiment 2:
 
-  * MANIFEST — `create_experiment_profiles.PROFILES` is now nine
-    arm-profiles (3 models × 3 replicates, $250K each, identical except
-    ai_provider / ai_model / shadow_models): EXP-A1-LUNA-{1,2,3}
-    (openai:gpt-5.6-luna), EXP-A2-G35LITE-{1,2,3}
-    (google:gemini-3.5-flash-lite), EXP-A3-G37FLASH-{1,2,3}
-    (google:gemini-3.7-flash). $750K per $1M paper account.
+  * MANIFEST — `create_experiment_profiles.PROFILES` is twelve
+    arm-profiles (4 models × 3 replicates, $250K each, identical except
+    ai_provider / ai_model / shadow_models): NANO (openai:gpt-4.1-nano,
+    Experiment 1's measured winner — the incumbent to beat), LUNA
+    (openai:gpt-5.6-luna), G35LITE (google:gemini-3.5-flash-lite),
+    G37FLASH (google:gemini-3.7-flash). Replicate i of every arm lives
+    on account i (EXP-A{i}-<STEM>-{i}), so each $1M account is fully
+    allocated and a broker-account event hits all arms equally.
   * BASELINES are no longer profiles (decision D6): step4b creates the
     virtual benchmarks — Buy-Hold-SPY + Random × 10 at $250K, marked to
     market daily from Alpaca bars with dividends credited — so the
@@ -292,7 +294,8 @@ NEW_GOOGLE_AI_KEY = os.environ.get("RESET_NEW_GOOGLE_AI_KEY", "")
 NEW_OPENAI_AI_KEY = os.environ.get("RESET_NEW_OPENAI_AI_KEY", "")
 NEW_AI_KEYS = {"google": NEW_GOOGLE_AI_KEY, "openai": NEW_OPENAI_AI_KEY}
 # Virtual benchmarks (docs/25 D6): Buy-Hold-SPY + Random x10, same
-# capital as each arm replicate.
+# capital as each arm replicate (one third of a fully allocated $1M
+# account — see create_experiment_profiles.CAPITAL_PER_REPLICATE).
 BENCHMARK_CAPITAL = 250_000.0
 BENCHMARK_RANDOM_REPLICAS = 10
 
@@ -713,10 +716,10 @@ def step3_install_new_keys(apply: bool) -> None:
 
 
 def step4_build_profiles(apply: bool) -> int:
-    """Invoke create_experiment_profiles.py — builds the 9 Experiment 2
+    """Invoke create_experiment_profiles.py — builds the 12 Experiment 2
     arm-profiles from the manifest. Idempotent: after step 2 there are
     no existing rows, so this is pure INSERT."""
-    print("\n=== STEP 4: build 9 EXP-A* arm-profiles from manifest ===")
+    print("\n=== STEP 4: build 12 EXP-A* arm-profiles from manifest ===")
     cmd = [VENV_PYTHON,
            f"{REPO_ROOT}/create_experiment_profiles.py"]
     if apply:

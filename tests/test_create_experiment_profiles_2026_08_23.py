@@ -24,20 +24,31 @@ def manifest():
 
 
 class TestManifestStructure:
-    def test_nine_profiles_three_per_arm(self, manifest):
+    def test_twelve_profiles_three_per_arm(self, manifest):
         from create_experiment_profiles import ARMS, REPLICATES_PER_ARM
-        assert len(manifest) == len(ARMS) * REPLICATES_PER_ARM == 9
+        assert len(manifest) == len(ARMS) * REPLICATES_PER_ARM == 12
 
-    def test_equal_capital_and_account_fit(self, manifest):
+    def test_equal_capital_and_full_account_allocation(self, manifest):
         caps = {p["initial_capital"] for p in manifest}
         assert caps == {250_000.0}
-        # Three per $1M paper account → $750K, under Alpaca's cap.
+        # Four per $1M paper account → the account is FULLY allocated:
+        # Σ profile cash == broker cash, or the cash-parity audit flags
+        # the remainder as orphan cash every cycle.
         by_group = {}
         for p in manifest:
             g = p["name"].split("-")[1]
             by_group[g] = by_group.get(g, 0) + p["initial_capital"]
-        assert by_group == {"A1": 750_000.0, "A2": 750_000.0,
-                            "A3": 750_000.0}
+        assert by_group == {"A1": 1_000_000.0, "A2": 1_000_000.0,
+                            "A3": 1_000_000.0}
+
+    def test_each_account_hosts_one_replicate_of_every_arm(self, manifest):
+        """A broker-account event must hit every arm equally."""
+        per_group = {}
+        for p in manifest:
+            g = p["name"].split("-")[1]
+            per_group.setdefault(g, set()).add((p["ai_provider"], p["ai_model"]))
+        arms = {(p["ai_provider"], p["ai_model"]) for p in manifest}
+        assert all(v == arms for v in per_group.values()), per_group
 
     def test_arms_differ_only_in_model_fields(self, manifest):
         varying = {"name", "ai_provider", "ai_model", "shadow_models"}
@@ -49,8 +60,8 @@ class TestManifestStructure:
     def test_replicates_within_an_arm_are_identical_except_name(self, manifest):
         by_arm = {}
         for p in manifest:
-            by_arm.setdefault(p["name"].rsplit("-", 1)[0], []).append(p)
-        assert len(by_arm) == 3
+            by_arm.setdefault((p["ai_provider"], p["ai_model"]), []).append(p)
+        assert len(by_arm) == 4
         for stem, reps in by_arm.items():
             assert len(reps) == 3, stem
             ref = {k: v for k, v in reps[0].items() if k != "name"}
@@ -61,13 +72,21 @@ class TestManifestStructure:
         arms = sorted({(p["ai_provider"], p["ai_model"]) for p in manifest})
         assert arms == [("google", "gemini-3.5-flash-lite"),
                         ("google", "gemini-3.7-flash"),
+                        ("openai", "gpt-4.1-nano"),
                         ("openai", "gpt-5.6-luna")]
+
+    def test_the_incumbent_is_an_arm(self, manifest):
+        """gpt-4.1-nano is Experiment 1's measured winner; a new model is
+        only better if it beats nano on real trades, so nano must be a
+        full arm, never just a shadow (operator, 2026-08-23)."""
+        nano = [p for p in manifest if p["ai_model"] == "gpt-4.1-nano"]
+        assert len(nano) == 3 and all(p["strategy_type"] == "ai" for p in nano)
 
     def test_every_model_and_shadow_is_registered(self):
         from create_experiment_profiles import _verify_manifest_totals
         _verify_manifest_totals()   # raises on an unregistered model
 
-    def test_cross_shadowing_covers_the_other_two_arms(self, manifest):
+    def test_cross_shadowing_covers_every_other_arm(self, manifest):
         import json
         arms = {(p["ai_provider"], p["ai_model"]) for p in manifest}
         for p in manifest:
@@ -75,14 +94,8 @@ class TestManifestStructure:
             shadows = json.loads(p["shadow_models"])
             assert own not in shadows, "an arm must not shadow itself"
             others = {f"{a}:{m}" for a, m in arms} - {own}
-            assert others <= set(shadows), p["name"]
+            assert set(shadows) == others, p["name"]
             assert p["enable_shadow_eval"] == 1
-
-    def test_luna_arm_bridges_experiment_one_evidence(self, manifest):
-        import json
-        luna = [p for p in manifest if p["ai_model"] == "gpt-5.6-luna"]
-        for p in luna:
-            assert "openai:gpt-4.1-nano" in json.loads(p["shadow_models"])
 
     def test_no_baseline_profiles_in_manifest(self, manifest):
         """Baselines are virtual benchmarks now (decision D6)."""
@@ -107,7 +120,7 @@ class TestApplyFlow:
         fake_create.assert_not_called()
         fake_update.assert_not_called()
 
-    def test_apply_creates_nine_profiles_when_none_exist(self):
+    def test_apply_creates_twelve_profiles_when_none_exist(self):
         import create_experiment_profiles
         with patch("create_experiment_profiles._existing_profile_by_name",
                    return_value=None), \
@@ -118,8 +131,8 @@ class TestApplyFlow:
                           ["create_experiment_profiles.py", "--apply"]):
             rc = create_experiment_profiles.main()
         assert rc == 0
-        assert fake_create.call_count == 9
-        assert fake_update.call_count == 9
+        assert fake_create.call_count == 12
+        assert fake_update.call_count == 12
         # The model fields and shadow list reach the writer.
         kw = fake_update.call_args_list[0].kwargs
         assert {"ai_provider", "ai_model", "shadow_models",
@@ -136,7 +149,7 @@ class TestApplyFlow:
             rc = create_experiment_profiles.main()
         assert rc == 0
         fake_create.assert_not_called()
-        assert fake_update.call_count == 9
+        assert fake_update.call_count == 12
 
 
 class TestResetScript:

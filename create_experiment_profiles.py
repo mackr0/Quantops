@@ -1,5 +1,6 @@
 """Create the Experiment 2 profiles per docs/25 (Model Selection &
-Learning Plan) — nine arm-profiles: three models × three replicates.
+Learning Plan) — twelve arm-profiles: four models × three replicates,
+one replicate of every arm on each of the three paper accounts.
 
 Experiment 1's thirteen-profile manifest (docs/15 v2.1: baselines,
 ablations, scale arms) lives at git tag `exp1-system-stability-final`;
@@ -46,31 +47,41 @@ log = logging.getLogger(__name__)
 # decision D5). The Luna arm also shadows gpt-4.1-nano — Experiment 1's
 # one real finding — to bridge old evidence to new.
 
+#
+# 2026-08-23 (operator): the INCUMBENT must be an arm. gpt-4.1-nano is
+# the one model with measured evidence from Experiment 1 (beat the
+# primary on specialist verdicts p=0.001; beat haiku head-to-head
+# p=0.0005). A new model is only "better" if it beats nano on real
+# trades, so nano runs as a full arm; Luna (its successor) runs beside
+# it as the hedge against nano's deprecation.
+#
+# Each arm cross-shadows every OTHER arm on specialist calls.
+
+_ARM_DEFS: List[Dict[str, str]] = [
+    {"stem": "NANO", "ai_provider": "openai", "ai_model": "gpt-4.1-nano"},
+    {"stem": "LUNA", "ai_provider": "openai", "ai_model": "gpt-5.6-luna"},
+    {"stem": "G35LITE", "ai_provider": "google", "ai_model": "gemini-3.5-flash-lite"},
+    {"stem": "G37FLASH", "ai_provider": "google", "ai_model": "gemini-3.7-flash"},
+]
+
 ARMS: List[Dict[str, Any]] = [
     {
-        "stem": "LUNA", "group": "A1",
-        "ai_provider": "openai", "ai_model": "gpt-5.6-luna",
-        "shadow_models": ["google:gemini-3.5-flash-lite",
-                          "google:gemini-3.7-flash",
-                          "openai:gpt-4.1-nano"],
-    },
-    {
-        "stem": "G35LITE", "group": "A2",
-        "ai_provider": "google", "ai_model": "gemini-3.5-flash-lite",
-        "shadow_models": ["openai:gpt-5.6-luna",
-                          "google:gemini-3.7-flash"],
-    },
-    {
-        "stem": "G37FLASH", "group": "A3",
-        "ai_provider": "google", "ai_model": "gemini-3.7-flash",
-        "shadow_models": ["openai:gpt-5.6-luna",
-                          "google:gemini-3.5-flash-lite"],
-    },
+        **arm,
+        "shadow_models": [f"{o['ai_provider']}:{o['ai_model']}"
+                          for o in _ARM_DEFS if o is not arm],
+    }
+    for arm in _ARM_DEFS
 ]
 
 REPLICATES_PER_ARM = 3
-# Decision D2 (operator): capital per replicate. Three per $1M paper
-# account → $750K per account, under Alpaca's $1M cap with headroom.
+ACCOUNT_GROUPS = ["A1", "A2", "A3"]
+# Decision D2 (2026-08-23): $250K per replicate, FOUR arms per $1M
+# paper account — replicate i of every arm lives on account i. Two
+# properties fall out: each account is fully allocated (the cash-
+# parity audit requires Σ profile cash == broker cash; a partial
+# allocation was flagged as orphan cash every cycle on the first
+# reset), and a broker-account event (the 07-07 wipe class) hits every
+# arm equally instead of wiping out one arm.
 CAPITAL_PER_REPLICATE = 250_000.0
 
 # The settings every replicate shares — the Experiment 1 "FullSystem"
@@ -99,8 +110,9 @@ def _build_profiles() -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for arm in ARMS:
         for i in range(1, REPLICATES_PER_ARM + 1):
+            group = ACCOUNT_GROUPS[(i - 1) % len(ACCOUNT_GROUPS)]
             spec = dict(_COMMON)
-            spec["name"] = f"EXP-{arm['group']}-{arm['stem']}-{i}"
+            spec["name"] = f"EXP-{group}-{arm['stem']}-{i}"
             spec["ai_provider"] = arm["ai_provider"]
             spec["ai_model"] = arm["ai_model"]
             spec["shadow_models"] = json.dumps(arm["shadow_models"])
@@ -111,7 +123,8 @@ def _build_profiles() -> List[Dict[str, Any]]:
 PROFILES: List[Dict[str, Any]] = _build_profiles()
 
 EXPECTED_TOTAL = CAPITAL_PER_REPLICATE * REPLICATES_PER_ARM * len(ARMS)
-EXPECTED_COUNTS = {arm["group"]: REPLICATES_PER_ARM for arm in ARMS}
+EXPECTED_COUNTS = {g: len(ARMS) * (REPLICATES_PER_ARM // len(ACCOUNT_GROUPS))
+                   for g in ACCOUNT_GROUPS}
 
 
 def _verify_manifest_totals() -> None:

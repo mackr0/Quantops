@@ -92,6 +92,33 @@ class TestCreate:
         for item in h:
             assert item["qty"] == int(per_pick // prices[item["symbol"]])
 
+    def test_random_draw_respects_the_universe_price_floor(self, db):
+        """The AI arms may only trade names at/above the operator's
+        price floor; the null must sample the same population. Sub-floor
+        names are skipped deterministically (next of the same seeded
+        sequence is taken)."""
+        prices = {s: 50.0 for s in UNIVERSE}
+        cheap = vb.pick_random_symbols(vb.stable_seed("BENCH-Random-01"),
+                                       UNIVERSE, 2)
+        for s in cheap:
+            prices[s] = 3.0                       # below a $10 floor
+        vb.create_benchmark(1, "BENCH-Random-01", "random", 100_000,
+                            price_fn=_prices(prices), universe=UNIVERSE,
+                            min_price=10.0, start_date="2026-08-24",
+                            db_path=db)
+        held = {h["symbol"] for h in vb.list_benchmarks(1, db_path=db)[0]["holdings"]}
+        assert not (held & set(cheap))
+        assert len(held) == vb.RANDOM_PICK_COUNT
+
+    def test_delete_benchmarks_removes_rows_and_snapshots(self, db):
+        bid = vb.create_benchmark(1, "BENCH-BuyHoldSPY", "buy_hold", 1000,
+                                  price_fn=_prices({"SPY": 5.0}),
+                                  start_date="2026-08-24", db_path=db)
+        assert vb.equity_series(bid, db_path=db)
+        assert vb.delete_benchmarks(["BENCH-BuyHoldSPY"], db_path=db) == 1
+        assert vb.list_benchmarks(1, db_path=db) == []
+        assert vb.equity_series(bid, db_path=db) == []
+
     def test_unpriceable_spy_refuses_to_create(self, db):
         with pytest.raises(RuntimeError):
             vb.create_benchmark(1, "BENCH-BuyHoldSPY", "buy_hold", 1000,

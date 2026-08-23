@@ -147,14 +147,17 @@ Two levers make a replicated 3-arm design affordable:
    replicates regardless of design. It waits for Phase 2, funded by
    what a mid-tier arm shows.
 
-| Arm | Model | Primary (3 profiles) | Specialist-only shadow on the other 6 | Question it answers |
+| Arm | Model | Primary (3 profiles) | Specialist-only shadow on the other 9 | Question it answers |
 |---|---|---|---|---|
-| Small, OpenAI | `gpt-5.6-luna` | $5.10 | $3.66 | the nano result, with a current-gen model |
-| Small, Google | `gemini-3.5-flash-lite` | $8.55 | $5.04 | vendor vs vendor at equal tier |
-| Mid, Google | `gemini-3.7-flash` | $18.12 | $12.48 | **does a higher tier buy returns** — same vendor, so it isolates tier |
-| Baselines: BuyHold, Random ×2 | none | $0 | — | skill vs luck |
-| `gpt-4.1-nano` specialist-only shadow on the Luna profiles | | | $0.75 | bridges old evidence to new |
-| **Total** | | | | **≈ $53/month** (vs ~$175 today) |
+| **Incumbent**, OpenAI | `gpt-4.1-nano` | $2.28 | $2.25 | Experiment 1's measured winner — the bar every other arm must clear on real trades |
+| Small, OpenAI | `gpt-5.6-luna` | $5.10 | $5.49 | nano's successor: does the new generation keep the edge (and hedge nano's deprecation) |
+| Small, Google | `gemini-3.5-flash-lite` | $8.55 | $7.56 | vendor vs vendor at equal tier |
+| Mid, Google | `gemini-3.7-flash` | $18.12 | $18.72 | **does a higher tier buy returns** — same vendor as 3.5-lite, so it isolates tier |
+| Baselines: BuyHold, Random ×10 (virtual) | none | $0 | — | skill vs luck |
+| **Total** | | | | **≈ $68/month** (vs ~$175 before) |
+
+(Revised 2026-08-23 from a three-arm draft after the operator's
+ruling that the incumbent must be an arm, not a shadow.)
 
 Specialist-only shadow cost per profile-month at measured specialist
 volume (1.27M in / 0.30M out): luna $0.61 · 3.5-flash-lite $0.84 ·
@@ -209,19 +212,18 @@ Prerequisites (code):
       verify the Settings save path round-trips three arms).
 
 Configuration (operator, with Claude driving):
-- [ ] 1.6 Enter OpenAI and Anthropic API keys at the user level so any
-      profile can run them as primary (today only Google has a working
-      operator-level key; Anthropic/OpenAI shadow keys are per profile).
-- [ ] 1.7 Decide the arm set (D1) and the capital per replicate (D2).
-- [ ] 1.8 Fresh-start the cohort per `reference_fresh_start_reset`:
-      load `/opt/quantopsai/.env` first; archive the 07-08 cohort's
-      learning data (`archive_predictions` is manual); certify books.
-- [ ] 1.9 Configure 9 arm-profiles + 3 baselines: same capital, same
-      universe floors, same risk settings, same specialist set; only
-      `ai_provider`/`ai_model` differ; `shadow_models` = the other two
-      arms on every arm-profile.
-- [ ] 1.10 Pre-register the decision rule (Section 3) before the first
-      cycle runs. Record the start date here: ____.
+- [x] 1.6 Provider keys installed per profile by the reset script
+      (primary key + shadow-key map for the other vendors). Done
+      2026-08-23.
+- [x] 1.7 D1 (arms) and D2 (capital) decided. Done 2026-08-23.
+- [x] 1.8 Fresh start applied 2026-08-23 17:40 UTC
+      (`full_fresh_start_2026_08_24.py --apply`): learning data archived
+      first (170,536 rows), certify PASS on funding/drift/reconcile/
+      decomposition.
+- [x] 1.9 Profiles 220–228 configured from the manifest (identical
+      except model; cross-shadow lists verified in the DB); baselines
+      are the 11 virtual benchmarks. Done 2026-08-23.
+- [x] 1.10 Pre-registered (Section 3). Start date: 2026-08-24.
 - [ ] 1.11 Cache-stable prompt prefix for `batch_select`: move volatile
       content (timestamps, per-cycle ids, book state) AFTER a frozen
       system/instruction prefix so every vendor's cache-read rate (10%
@@ -402,7 +404,12 @@ the numbers that drove it.
 
 ## 3. Pre-registered decision rule (fill in before the first cycle)
 
-- Start date: ____  · Horizon: ____ weeks · Arms: ____ / ____ / ____
+- Start date: **2026-08-24** (first trading session after the
+  2026-08-23 reset; tag `exp2-learning-phase1-start`) · Horizon: **12
+  weeks** (read 2026-11-16; minimum read 8 weeks, 2026-10-19) · Arms:
+  **gpt-4.1-nano (incumbent) / gpt-5.6-luna / gemini-3.5-flash-lite /
+  gemini-3.7-flash**, 3 replicates each at $250,000, one replicate of
+  every arm per paper account
 - Primary metric: mean weekly excess return vs SPY per arm (3 replicates)
 - Significance: bootstrap p < 0.05 on pooled weekly excess returns
 - Guard: an arm whose three replicates disagree in sign is "undecided"
@@ -418,8 +425,8 @@ the numbers that drove it.
 | ID | Date | Decision | Rationale | By |
 |---|---|---|---|---|
 | D0 | 2026-08-21 | Budget ceiling: Phase 1 must cost less than today's ~$175/month | operator constraint; the $675 full-cross-shadow design was rejected on cost | MS |
-| D1 | 2026-08-23 | **Arm set: `gpt-5.6-luna` / `gemini-3.5-flash-lite` / `gemini-3.7-flash`**, 3 replicates each | operator approved the §1.5 Phase-1 design (~$53/mo) | MS |
-| D2 | pending | Capital per replicate: ____ | equal across all 12 | MS |
+| D1 | 2026-08-23 | **Arm set: `gpt-4.1-nano` / `gpt-5.6-luna` / `gemini-3.5-flash-lite` / `gemini-3.7-flash`**, 3 replicates each (~$68/mo) | operator: the incumbent must be an arm — nano is Experiment 1's measured winner, and a new model is only better if it beats nano on real trades; Luna stays as the hedge against nano's deprecation. (Superseded the three-arm draft that had nano as a shadow only.) | MS |
+| D2 | 2026-08-23 | Capital per replicate: **$250,000**, four arms per $1M account — replicate i of every arm on account i; benchmarks the same | each account fully allocated (the cash-parity audit requires Σ profile cash == broker cash; a three-arm $250K draft left $250K unowned per account and was flagged as orphan cash on every cycle), and a broker-account event hits all arms equally | MS |
 | D3 | pending | `ai_model_auto_tune`: remove vs implement | dead control today | MS |
 | D4 | pending | Tuning-OFF replicate per arm: yes/no | costs a profile per arm | MS |
 | D5 | 2026-08-21 | Cross-shadowing: **specialist purposes only**, not `batch_select` | the replicates ARE the apex-call A/B; shadowing it pays twice (§1.5) | MS (proposed by Claude, pending confirmation) |
@@ -437,7 +444,8 @@ the numbers that drove it.
 | 2026-08-23 | — | Experiments Register opened ([26](26_EXPERIMENTS.md)); Experiment 1 retired and tagged `exp1-system-stability-final`; virtual-baseline item 1.12 + D6 added | cb22501… |
 | 2026-08-23 | 1 | 1.0 haiku shadow pulled on prod; 1.1 registry/prices; 1.2 vendor-fair structured output; 1.3 apex call gradeable; D5 shadow scope; 1.12 virtual benchmarks; 1.13 manifest + reset script staged | this commit |
 | 2026-08-23 | 3, 4 | tuner evidence mode (3.1, 3.2, 3.5); weekly tasks fixed (4.1); track-record prompt block (4.2, 4.4) | this commit |
-| 2026-08-23 | 2 | Learning Scoreboard `/learning` (2.1–2.4) with register `learning.md` | this commit |
+| 2026-08-23 | 2 | Learning Scoreboard `/learning` (2.1–2.4) with register `learning.md` | 878c493 |
+| 2026-08-23 | 1 | **Reset applied** (1.6–1.10): 170,536 learning rows archived; profiles 220–228 on accounts 58/59/60; keys installed; 11 benchmarks; certify: funding/drift/reconcile/decomposition PASS. Capital set to $333,333.33 per replicate (D2); benchmarks redrawn at the same capital with the $10 universe floor. Pre-registration (§3) filled. | this commit, tag `exp2-learning-phase1-start` |
 
 ---
 

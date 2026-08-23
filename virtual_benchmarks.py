@@ -241,17 +241,37 @@ def _et_today() -> str:
     return _dt.datetime.now(_ET).date().isoformat()
 
 
+def _min_price_floor() -> float:
+    """The operator's universe price floor (config.SCREEN_MIN_PRICE).
+    The AI arms can only trade names at or above it, so the Random
+    null must sample the same eligible population — a null drawn from
+    sub-floor names (the first live draw on 2026-08-23 picked CGC at
+    ~$1, LCID, PARA) measures a different universe than the arms."""
+    try:
+        import config
+        return float(getattr(config, "SCREEN_MIN_PRICE", 0.0) or 0.0)
+    except Exception as exc:
+        logger.warning("virtual_benchmarks: price floor unavailable (%s) — "
+                       "no floor applied", exc)
+        return 0.0
+
+
 def create_benchmark(user_id: int, name: str, kind: str,
                      initial_capital: float, *,
                      seed: Optional[int] = None,
                      start_date: Optional[str] = None,
                      universe: Optional[List[str]] = None,
                      price_fn=latest_close,
+                     min_price: Optional[float] = None,
                      db_path: Optional[str] = None) -> int:
     """Create one benchmark and choose its holdings ONCE at today's
     closes. Idempotent on `name` (returns the existing id). Raises on
     a kind it doesn't know or when no holding could be priced — a
-    benchmark with nothing in it would be a silent zero."""
+    benchmark with nothing in it would be a silent zero.
+
+    `min_price` (default: the operator's universe floor) excludes
+    sub-floor names from the Random draw deterministically — the next
+    symbols of the same seeded sequence are taken instead."""
     if kind not in VALID_KINDS:
         raise ValueError(f"unknown benchmark kind {kind!r}")
     if initial_capital <= 0:
@@ -282,6 +302,7 @@ def create_benchmark(user_id: int, name: str, kind: str,
                 universe = list(STOCK_UNIVERSE)
             # Price the seeded candidates in sequence; a symbol with no
             # bars is skipped deterministically (see pick_random_symbols).
+            floor = _min_price_floor() if min_price is None else float(min_price)
             rng = random.Random(seed)
             order = list(universe)
             rng.shuffle(order)
@@ -290,8 +311,14 @@ def create_benchmark(user_id: int, name: str, kind: str,
                 if len(priced) >= RANDOM_PICK_COUNT:
                     break
                 px = price_fn(sym)
-                if px:
-                    priced[sym] = px
+                if not px:
+                    continue
+                if px < floor:
+                    logger.info("virtual_benchmarks: %s skipped %s at %.2f "
+                                "(below the $%.2f universe floor)",
+                                name, sym, px, floor)
+                    continue
+                priced[sym] = px
             if len(priced) < RANDOM_PICK_COUNT:
                 raise RuntimeError(
                     f"only {len(priced)} of {RANDOM_PICK_COUNT} random "
@@ -332,6 +359,7 @@ def create_standard_set(user_id: int, initial_capital: float, *,
                         start_date: Optional[str] = None,
                         price_fn=latest_close,
                         universe: Optional[List[str]] = None,
+                        min_price: Optional[float] = None,
                         db_path: Optional[str] = None) -> List[int]:
     """Buy-Hold-SPY plus `random_replicas` Random-pick benchmarks, all at
     the same capital. Idempotent by name."""
@@ -342,8 +370,32 @@ def create_standard_set(user_id: int, initial_capital: float, *,
         ids.append(create_benchmark(
             user_id, RANDOM_NAME_FMT.format(i), KIND_RANDOM,
             initial_capital, start_date=start_date, price_fn=price_fn,
-            universe=universe, db_path=db_path))
+            universe=universe, min_price=min_price, db_path=db_path))
     return ids
+
+
+def delete_benchmarks(names: List[str], db_path: Optional[str] = None) -> int:
+    """Remove benchmarks (and their snapshots / dividend rows) by name.
+    Used only on day zero to redraw a flawed set; returns rows removed."""
+    if not names:
+        return 0
+    conn = _conn(db_path)
+    try:
+        ids = [r[0] for r in conn.execute(
+            "SELECT id FROM virtual_benchmarks WHERE name IN (%s)"
+            % ",".join("?" * len(names)), names)]
+        if not ids:
+            return 0
+        q = ",".join("?" * len(ids))
+        conn.execute(f"DELETE FROM virtual_benchmark_snapshots WHERE benchmark_id IN ({q})", ids)
+        conn.execute(f"DELETE FROM virtual_benchmark_dividends WHERE benchmark_id IN ({q})", ids)
+        conn.execute(f"DELETE FROM virtual_benchmarks WHERE id IN ({q})", ids)
+        conn.commit()
+        logger.warning("virtual_benchmarks: deleted %d benchmark(s): %s",
+                       len(ids), names)
+        return len(ids)
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
