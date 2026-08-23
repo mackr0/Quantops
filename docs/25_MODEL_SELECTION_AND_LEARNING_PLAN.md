@@ -1,0 +1,383 @@
+# 25 — Model Selection & Learning Plan (living document)
+
+**Status:** ACTIVE · opened 2026-08-21 · owner MacKenzie Smith
+**Rule for this document:** it is the single place the plan lives. Every
+step has a checklist; items are checked off (`[x]`) with a date and the
+commit or action that closed them. Decisions are recorded in the
+Decision Log, never re-litigated silently. When something is learned
+that changes the plan, the plan is edited here, with a dated note.
+
+---
+
+## 0. Why this plan exists (the finding, dated 2026-08-21)
+
+After six weeks of the 2026-07-08 cohort, an audit of the learning and
+model-comparison machinery found:
+
+1. **No model learns.** No LLM weights change. What adapts is the
+   scaffolding around the model (self-tuner parameters, the meta-model's
+   confidence re-scoring, prompt context). Shadow arms receive the
+   identical prompt, so prompt-borne learning is shared; the *feedback*
+   loops are driven only by the primary's outputs.
+2. **The model comparison could not decide anything.** The shadow
+   evaluation grades specialist verdicts only — the apex trade-selection
+   call (`batch_select`) returns a trade-set string the grader cannot
+   score — so the most important decision has never been compared. And
+   the cohort ran one profile per arm, which can never reach
+   statistical significance.
+3. **The learning loops were mostly churn.** 429 self-tuner changes with
+   no measurable improvement (win rate 37.0% → 37.9% around changes);
+   many moved non-binding knobs (`max_total_positions` oscillating
+   999→749→562→976 while `max_position_pct` actually caps positions).
+   `learned_patterns` produced zero rows in six weeks. The
+   `ai_model_auto_tune` toggle on the Settings page is stored but never
+   read. Confidence ≥70 beat <70 in only 2 of 6 weeks. The meta-model's
+   high-score half beat its low-score half in 1 of 3 weeks.
+4. **What was real:** nano (`gpt-4.1-nano`) beat the primary on
+   specialist verdicts (+1.27 pts/decision, n=406, p=0.001; direct
+   head-to-head vs haiku +2.76 pts/unit, p=0.0005) — but the edge is
+   concentrated where the primary was bearish/blocking, during an
+   up-month (SPY +3.7%). Better judgment vs bullish tilt is not yet
+   separable.
+
+The platform itself (execution, reconciliation, measurement) is sound;
+the experiment design and the learning loops are what change.
+
+---
+
+## 1. Model landscape (verified 2026-08-21 against provider pricing pages)
+
+### 1.1 Measured volume per profile per month (30 days to 2026-08-21)
+
+| Purpose | Calls | Input tokens | Output tokens |
+|---|---|---|---|
+| `batch_select` (apex trade selection) | ~530 | ~4.6M (78%) | ~123K |
+| ensemble specialists (7) | ~1,330 | ~1.2M | ~300K |
+| other (transcripts, SEC diffs, proposals) | ~30 | ~22K | ~2K |
+| **Total per profile-month** | **~1,900** | **~5.9M** | **~0.43M** |
+
+Fleet primary spend (13 profiles, gemini-3.1-flash-lite): **$27.5 / 30d**.
+Shadow spend: $147 / 30d (haiku $134 of it).
+
+### 1.2 Candidate models — price and cost *at our measured volume*
+
+Prices are standard (non-batch, uncached) per 1M tokens from each
+provider's official pricing page. "Cost / profile-month" applies our
+measured 5.9M in / 0.43M out. Claude 4.7+ models use a tokenizer that
+produces ~30% more tokens for the same text — their effective column
+reflects that.
+
+| Model (API id) | Tier | In $/M | Out $/M | Cost / profile-month | Notes |
+|---|---|---|---|---|---|
+| **OpenAI** | | | | | |
+| `gpt-5-nano` | small | 0.05 | 0.40 | **$0.47** | cheapest modern option |
+| `gpt-4.1-nano` | small (legacy) | 0.10 | 0.40 | $0.76 | the only arm with measured evidence; absent from OpenAI's current-models page — deprecation risk |
+| `gpt-5.6-luna` | small | 0.20 | 1.20 | $1.70 | current-generation cost-optimized; 1.05M context |
+| `gpt-5-mini` | small+ | 0.25 | 2.00 | $2.34 | |
+| `gpt-5.4-mini` | mid− | 0.75 | 4.50 | $6.36 | |
+| `gpt-5.6-terra` | mid | 2.00 | 12.00 | $16.96 | "balances intelligence and cost" |
+| `gpt-5.6-sol` | frontier | 4.00* | 20.00* | $32.20* | *promo through 2026-11-21 (list $5/$30 → $40.40) |
+| **Google** | | | | | |
+| `gemini-3.1-flash-lite` | small | 0.25 | 1.50 | $2.12 | **current primary** |
+| `gemini-3.5-flash-lite` | small | 0.30 | 2.50 | $2.85 | "fastest, most budget-friendly" current gen |
+| `gemini-3.7-flash` | mid | 0.75† | 3.75† | $6.04† | †through 2026-12-31, then $1.50/$7.50 → $12.08; positioned for "agentic workflows" |
+| `gemini-3.1-pro-preview` | frontier | 2.00 | 12.00 | $16.96 | **preview** — can change mid-experiment; ≤200K prompts |
+| `gemini-2.5-flash-lite` | small (legacy) | 0.10 | 0.40 | $0.76 | reported retirement 2026-10-16 (third-party source; official page lists no date) |
+| **Anthropic** | | | | | |
+| `claude-haiku-4-5` | small+ | 1.00 | 5.00 | $8.05 | measured: WORSE than primary (p=0.031), most expensive small model |
+| `claude-sonnet-5` | mid | 2.00 | 10.00 | $16.10 → **~$20.9** w/ tokenizer | $2/$10 confirmed permanent (was intro) |
+| `claude-opus-5` | frontier | 5.00 | 25.00 | $40.25 → **~$52.3** w/ tokenizer | |
+| `claude-fable-5` | frontier+ | 10.00 | 50.00 | $80.50 → ~$104.7 w/ tokenizer | thinking always on; 30-day data retention required |
+
+Prompt caching (all three vendors bill cache reads at ~10% of input)
+could cut the batch-select input bill substantially **if** the prompt
+prefix is made stable; the 2026-07-02 evaluation found the current
+prompt too volatile to cache. Treat caching as upside, not baseline.
+
+### 1.3 How to read capability for THIS workload
+
+The job is structured judgment over numeric/market context with JSON
+output, ~1,900 calls per profile per month, latency-tolerant (5-minute
+cycles). What matters, in order:
+
+1. **Reasoning depth on ambiguous evidence** — the apex call weighs
+   dozens of candidates against a book; this is where tiers separate.
+2. **Calibration honesty** — the confidence number feeds the gate and
+   the meta-model; a model that inflates confidence poisons its own
+   profile's learning.
+3. **Instruction following / schema reliability** — specialist verdicts
+   must parse; a parser failure is a silent HOLD.
+4. **Stability for 12 weeks** — no preview models, no deprecation-risk
+   models as primaries.
+5. Cost is last: on a $250K virtual book, $50/month is 0.02%.
+
+The experiment so far compared three **small-tier** models against each
+other. It has never tested whether a mid or frontier tier buys returns.
+That is the question the new design must answer.
+
+### 1.4 Where today's spend goes (30 days to 2026-08-21)
+
+| Line | $/30d | Comment |
+|---|---|---|
+| Primary, 13 profiles (gemini-3.1-flash-lite) | $27.5 | ~$2/profile |
+| Shadow: claude-haiku-4-5 | **$134** | measured WORSE than primary (p=0.031) |
+| Shadow: gpt-4.1-nano | $9 | the informative arm |
+| Shadow: adversarial_v2 variant | $3 | |
+
+Haiku is 77% of the bill and lost. **Immediate action (operator):
+remove haiku from every profile's shadow list** → ~$40/month before
+any redesign.
+
+### 1.5 Recommended arms — Phase 1 (decision pending, D1)
+
+Budget constraint (operator, 2026-08-21): must cost **less than
+today's ~$175/month**. A first draft with Sonnet 5 / Opus 5 arms and
+full cross-shadowing came to ~$675/month and was rejected on cost.
+
+Two levers make a replicated 3-arm design affordable:
+
+1. **Cross-shadow the specialist purposes only.** Trade selection
+   (`batch_select`) is 78% of tokens, but each arm makes REAL
+   trade-selection decisions on its own three profiles — that is the
+   live A/B. Shadowing it as well pays twice for the same answer.
+   Specialist verdicts (22% of tokens) are where same-call shadowing
+   earns its keep (the nano finding came from there).
+2. **No frontier arm in Phase 1.** A frontier primary is ≥$52 × 3
+   replicates regardless of design. It waits for Phase 2, funded by
+   what a mid-tier arm shows.
+
+| Arm | Model | Primary (3 profiles) | Specialist-only shadow on the other 6 | Question it answers |
+|---|---|---|---|---|
+| Small, OpenAI | `gpt-5.6-luna` | $5.10 | $3.66 | the nano result, with a current-gen model |
+| Small, Google | `gemini-3.5-flash-lite` | $8.55 | $5.04 | vendor vs vendor at equal tier |
+| Mid, Google | `gemini-3.7-flash` | $18.12 | $12.48 | **does a higher tier buy returns** — same vendor, so it isolates tier |
+| Baselines: BuyHold, Random ×2 | none | $0 | — | skill vs luck |
+| `gpt-4.1-nano` specialist-only shadow on the Luna profiles | | | $0.75 | bridges old evidence to new |
+| **Total** | | | | **≈ $53/month** (vs ~$175 today) |
+
+Specialist-only shadow cost per profile-month at measured specialist
+volume (1.27M in / 0.30M out): luna $0.61 · 3.5-flash-lite $0.84 ·
+3.7-flash $2.08 · sonnet-5 ~$7.2 · opus-5 ~$18.
+
+Caveats: `gemini-3.7-flash` doubles in price on 2027-01-01 (total
+→ ~$80/month if the run extends past December — still under today).
+Alternative mid arm `claude-sonnet-5` (stronger calibration, permanent
+price, different vendor): same design ≈ $91/month.
+
+**Phase 2 (after Phase 1 decides):** add one frontier arm
+(`claude-opus-5` or `gpt-5.6-sol`) only if the mid arm beat the small
+arms — otherwise the frontier question is moot.
+
+**Uncounted upside:** trade-selection prompts are ~8,700 tokens, mostly
+stable context; every vendor bills cache reads at 10% of input. A
+cache-stable prompt prefix (Step 1.11) could cut the largest line item
+by more than half on every arm.
+
+---
+
+## 2. The five steps
+
+Each step: goal → why → checklist → done-when. Check items off here.
+
+### Step 1 — Make the model test real (replicates; only the model differs)
+
+**Goal:** three arms × three profiles, identical capital and settings,
+fresh-started together, plus the BuyHold and two Random baselines.
+**Why:** one profile per arm can never reach significance; matched
+replicates can. The shadow layer stays on cross-wise so every arm is
+also scored on identical calls.
+
+Prerequisites (code):
+- [ ] 1.1 Update `ai_providers.PROVIDERS` and `ai_pricing.PRICING` with
+      the current model set and verified prices (gpt-5.6-luna/terra/sol,
+      gpt-5-nano/mini, gemini-3.5-flash-lite, gemini-3.7-flash,
+      claude-sonnet-5, claude-opus-5, claude-fable-5; fix opus-4-6 to
+      $5/$25; mark legacy ids). Pricing table carries a "verified on"
+      date. Settings picker must show them with availability badges.
+- [ ] 1.2 **Equalize the output path across vendors.** Today
+      `use_tools = (ai_provider == "anthropic")` gives Claude
+      schema-enforced structured output while OpenAI/Gemini get a
+      text parser. Use each vendor's native structured-output/JSON-schema
+      mode so the experiment measures models, not parsers. Pin with a
+      test that every provider path returns schema-validated verdicts.
+- [ ] 1.3 Make `batch_select` gradeable in shadow: record each arm's
+      selected trade set as per-symbol stances so the apex decision
+      joins to outcomes like any other purpose (today it is
+      "set-level / ungradable").
+- [ ] 1.4 Remove the dead `ai_model_auto_tune` toggle from Settings (or
+      implement it — decision D3). A control that does nothing must not
+      stay on the page.
+- [ ] 1.5 Per-profile shadow config: confirm each arm-profile can carry
+      its own `shadow_models` list and provider keys (it can today —
+      verify the Settings save path round-trips three arms).
+
+Configuration (operator, with Claude driving):
+- [ ] 1.6 Enter OpenAI and Anthropic API keys at the user level so any
+      profile can run them as primary (today only Google has a working
+      operator-level key; Anthropic/OpenAI shadow keys are per profile).
+- [ ] 1.7 Decide the arm set (D1) and the capital per replicate (D2).
+- [ ] 1.8 Fresh-start the cohort per `reference_fresh_start_reset`:
+      load `/opt/quantopsai/.env` first; archive the 07-08 cohort's
+      learning data (`archive_predictions` is manual); certify books.
+- [ ] 1.9 Configure 9 arm-profiles + 3 baselines: same capital, same
+      universe floors, same risk settings, same specialist set; only
+      `ai_provider`/`ai_model` differ; `shadow_models` = the other two
+      arms on every arm-profile.
+- [ ] 1.10 Pre-register the decision rule (Section 3) before the first
+      cycle runs. Record the start date here: ____.
+- [ ] 1.11 Cache-stable prompt prefix for `batch_select`: move volatile
+      content (timestamps, per-cycle ids, book state) AFTER a frozen
+      system/instruction prefix so every vendor's cache-read rate (10%
+      of input) applies; verify with `cache_read`/`cached_tokens` > 0 in
+      the cost ledger. Largest single cost lever; re-evaluates the
+      2026-07-02 "too volatile to cache" finding against the new prompt.
+- [ ] 1.0 **Immediate, before any of the above:** remove
+      `anthropic:claude-haiku-4-5-20251001` from every profile's shadow
+      list (77% of spend; measured worse than primary). Date done: ____.
+
+**Done when:** 12 profiles trading from equal capital on the same day;
+/shadow shows three arms with every purpose including batch_select
+graded; the register (`calculation_verification/shadow.md`) updated.
+
+### Step 2 — Define "learning" as a curve you can see
+
+**Goal:** a Learning Scoreboard page: per arm, per week, out of sample —
+calibration (confidence ≥70 vs <70 hit rate, and a Brier score),
+directional hit rate, HOLD quality, and return in excess of SPY — with
+the three replicates of each arm shown together.
+**Why:** "is it learning" must be a slope on a chart, not a feeling.
+"Better model" must be one arm's lines above the others across all
+three replicates.
+
+- [ ] 2.1 Define the metric set and write its register entries FIRST
+      (`calculation_verification/learning.md`) so the page is auditable
+      from day one.
+- [ ] 2.2 Build the page from `ai_predictions` + `daily_snapshots`
+      (all data exists; no new pipeline). Weekly buckets by prediction
+      timestamp; outcomes only when resolved; never 0% for unmeasured.
+- [ ] 2.3 Add the self-tuner's own scorecard to it (changes → improved /
+      worsened / unchanged), shown against the tuning-OFF replicates
+      from Step 3.
+- [ ] 2.4 Smoke tests for every tile/table through the Flask client;
+      visible-options ↔ test-coverage static check.
+
+**Done when:** the page renders for the new cohort and the operator can
+answer "is arm X improving week over week" from it alone.
+
+### Step 3 — Shrink the tuner to levers with real sample sizes
+
+**Goal:** the self-tuner changes only knobs that have a measured
+relationship to outcomes at a minimum sample size; everything else is
+retired.
+**Why:** 429 changes produced no measurable improvement; most moved
+knobs that don't bind or reversed themselves by auto-expiry.
+
+- [ ] 3.1 Keep: signal-weight learning (thousands of samples per signal),
+      the confidence backstop (operator-owned floor), HTB/cooldown
+      learning.
+- [ ] 3.2 Retire: `max_total_positions` tuning (non-binding — document
+      the binding cap is `max_position_pct`), ATR-TP tighten/reverse
+      ping-pong, per-symbol overrides on n<30, drawdown-pause
+      tightening, `auto_expire_tightening` re-application loops.
+- [ ] 3.3 One gate for every remaining adjustment: minimum sample n,
+      minimum effect size, and a recorded expected-vs-observed outcome
+      that the Learning Scoreboard displays.
+- [ ] 3.4 Run one arm-replicate per model with tuning OFF? — decision D4
+      (costs a replicate; alternative is the before/after scorecard).
+- [ ] 3.5 Update `docs/17_SELF_TUNER_GUARDRAILS_AND_RAG.md` and
+      SELF_TUNING.md to describe the reduced tuner.
+
+**Done when:** the tuner's change log shows only gated changes with
+expected outcomes, and the non-binding knobs no longer appear in it.
+
+### Step 4 — Turn on the learning an LLM can actually do (in-context)
+
+**Goal:** every cycle's prompt carries the profile's own track record,
+and the machinery that was supposed to do this actually runs.
+**Why:** a frozen-weight model learns one way — by being shown what it
+got right and wrong. `learned_patterns` has never written a row.
+
+- [ ] 4.1 Diagnose why `learned_patterns` has produced zero rows in six
+      weeks (gate never fires? writer broken?) and fix it; pin with a
+      test that seeds losing trades and asserts a pattern is written.
+- [ ] 4.2 Add a per-profile calibration block to the prompt: win rate by
+      confidence band, by signal, by sector, by strategy; sample sizes
+      on every number; absent (not 0%) when unmeasured.
+- [ ] 4.3 Keep the meta-model, judged by the Scoreboard against its own
+      history (high-score half must beat low-score half on a sustained
+      basis, or it is retired).
+- [ ] 4.4 Register every prompt-side number in
+      `calculation_verification/ai.md`.
+
+**Done when:** the prompt diff shows the calibration block populated
+from live data, and `learned_patterns` has rows on every active
+profile.
+
+### Step 5 — Decide by a rule set now, not a feeling later
+
+**Goal:** at the pre-registered horizon, promote the winning arm as the
+primary everywhere; the others stay as shadow challengers; /shadow
+becomes a standing leaderboard and "promote the challenger" a
+procedure.
+
+- [ ] 5.1 Horizon: ____ weeks from start (recommend 12; minimum 8).
+- [ ] 5.2 Primary metric: mean excess return vs SPY across the arm's
+      three replicates, with the replicate spread shown. Tie-breakers:
+      calibration (Brier), then cost.
+- [ ] 5.3 Significance: bootstrap on weekly excess returns pooled across
+      replicates, p < 0.05; if no arm clears it, extend 4 weeks and
+      re-read — never pick from noise.
+- [ ] 5.4 Promotion procedure written down (Settings changes, shadow
+      list rotation, register updates) and rehearsed once on a
+      baseline profile.
+- [ ] 5.5 Post-decision: the losing arms remain shadows on the winner's
+      profiles so the leaderboard keeps running.
+
+**Done when:** a dated decision entry exists in the Decision Log with
+the numbers that drove it.
+
+---
+
+## 3. Pre-registered decision rule (fill in before the first cycle)
+
+- Start date: ____  · Horizon: ____ weeks · Arms: ____ / ____ / ____
+- Primary metric: mean weekly excess return vs SPY per arm (3 replicates)
+- Significance: bootstrap p < 0.05 on pooled weekly excess returns
+- Guard: an arm whose three replicates disagree in sign is "undecided"
+  regardless of the pooled mean
+- Secondary: Brier calibration; directional hit rate; cost
+- Nothing in this section changes after the start date except by a
+  dated Decision Log entry explaining why.
+
+---
+
+## 4. Decision Log
+
+| ID | Date | Decision | Rationale | By |
+|---|---|---|---|---|
+| D0 | 2026-08-21 | Budget ceiling: Phase 1 must cost less than today's ~$175/month | operator constraint; the $675 full-cross-shadow design was rejected on cost | MS |
+| D1 | pending | Arm set: ____ (proposed: luna / gemini-3.5-flash-lite / gemini-3.7-flash; alt mid = sonnet-5 at ~$91/mo) | see §1.5 | MS |
+| D2 | pending | Capital per replicate: ____ | equal across all 12 | MS |
+| D3 | pending | `ai_model_auto_tune`: remove vs implement | dead control today | MS |
+| D4 | pending | Tuning-OFF replicate per arm: yes/no | costs a profile per arm | MS |
+| D5 | 2026-08-21 | Cross-shadowing: **specialist purposes only**, not `batch_select` | the replicates ARE the apex-call A/B; shadowing it pays twice (§1.5) | MS (proposed by Claude, pending confirmation) |
+
+---
+
+## 5. Progress Log
+
+| Date | Step | What was done | Commit / action |
+|---|---|---|---|
+| 2026-08-21 | — | Audit completed; plan opened; model landscape verified | this document |
+
+---
+
+## 6. Constraints that do not move
+
+- Profiles are virtual accounts; what belongs to a profile belongs only
+  to that profile. No cross-profile concentration, no shared pool.
+- Learning data physically separated from real-trade truth.
+- Universe floors are operator-only; the tuner never touches them.
+- Every displayed number has a register entry before it ships.
+- Deploys only via `sync.sh`; CHANGELOG with every change; full gate
+  before any claim of done.
