@@ -2915,75 +2915,15 @@ def _safe_change_guarded(profile_id, param_name):
 
 def _optimize_max_total_positions(conn, ctx, profile_id, user_id,
                                    overall_wr, resolved):
-    """Concentration risk: reduce position count cap when avg loss is large
-    AND the cap is being hit often. Increase when WR is strong AND the cap
-    is constraining capacity."""
-    if not _safe_change_guarded(profile_id, "max_total_positions"):
-        return None
-
-    table_check = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='trades'"
-    ).fetchone()
-    if not table_check:
-        return None
-
-    # 2026-05-13 — exclude data_quality-tagged trades from
-    # avg-loss / avg-win calc; phantom-stop pollution would
-    # extreme-distort these.
-    from journal import data_quality_clause
-    _trades_dq = data_quality_clause(conn, table="trades")
-    # Average loss size on closed losers
-    row = conn.execute(
-        f"SELECT AVG(pnl) as avg_loss FROM trades "
-        f"WHERE pnl IS NOT NULL AND pnl < 0{_trades_dq}"
-    ).fetchone()
-    avg_loss = row["avg_loss"] if row and row["avg_loss"] is not None else 0
-
-    current = getattr(ctx, "max_total_positions", 10)
-    if not isinstance(current, int):
-        current = int(current)
-
-    # Reduce when losses are deep AND we're losing broadly.
-    # Thresholds are book-scaled (2026-07-26): −$200 on a 200K book
-    # ≡ −$25 on 25K ≡ −$700 on 700K — the same economic trigger.
-    if overall_wr < 40 and avg_loss < -_book_scaled_dollars(ctx, 200):
-        new_val = _bound("max_total_positions", current - 1)
-        if new_val == current:
-            return None
-        reason = (
-            f"Concentration risk — avg loss ${avg_loss:.0f} on {overall_wr:.0f}% WR "
-            f"— reduce concurrent positions"
-        )
-        applied, _, suffix = _apply_param_change(
-            profile_id, user_id, "concentration_reduce",
-            "max_total_positions", current, new_val, reason,
-            win_rate_at_change=overall_wr, predictions_resolved=resolved,
-        )
-        return f"Reduced max concurrent positions from {current} to {applied}{suffix} ({reason})"
-
-    # Increase when strong WR AND average winner is meaningful.
-    # _trades_dq already in scope from the avg_loss block above.
-    row = conn.execute(
-        f"SELECT AVG(pnl) as avg_win FROM trades "
-        f"WHERE pnl IS NOT NULL AND pnl > 0{_trades_dq}"
-    ).fetchone()
-    avg_win = row["avg_win"] if row and row["avg_win"] is not None else 0
-
-    if overall_wr >= 60 and avg_win > _book_scaled_dollars(ctx, 100):
-        new_val = _bound("max_total_positions", current + 1)
-        if new_val == current:
-            return None
-        reason = (
-            f"Strong edge — {overall_wr:.0f}% WR, avg winner ${avg_win:.0f} "
-            f"— allow more concurrent positions"
-        )
-        applied, _, suffix = _apply_param_change(
-            profile_id, user_id, "concentration_increase",
-            "max_total_positions", current, new_val, reason,
-            win_rate_at_change=overall_wr, predictions_resolved=resolved,
-        )
-        return f"Raised max concurrent positions from {current} to {applied}{suffix} ({reason})"
-
+    """RETIRED (docs/25 step 3, 2026-08-23): max_total_positions is a
+    non-binding lever — books never hit the cap, so every change to it
+    is tuning-history noise. Returns None unconditionally so no
+    proposal (or phantom "changed X to X [refused]" message) can enter
+    tuning summaries. The RETIRED_PARAMS firewall in _apply_param_change
+    remains the class-wide backstop for every other path (insight
+    propagation, auto-reversal, manual dispatch). The function stays
+    registered so legacy-mode dispatch order and the evidence-mode
+    filter keep a stable shape."""
     return None
 
 

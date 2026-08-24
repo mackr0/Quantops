@@ -302,21 +302,27 @@ class TestApplyParamChangeWrapper:
         monkeypatch.setattr("models.update_trading_profile", utp)
         monkeypatch.setattr("models.log_tuning_change", ltc)
         from self_tuning import _apply_param_change
-        # the live optimizer's own _bound() proposes 25 from 999; the
-        # delta clamp bounds the step to -25% → 749 — the pre-existing
-        # behavior — and the absolute clamp must NOT drag it to 25.
-        applied, was_clamped, _ = _apply_param_change(
+        # RETIRED 2026-08-23 (docs/25 step 3): max_total_positions is a
+        # non-binding lever; the funnel now refuses ANY change at the
+        # choke point, so the operator seed (999, "the AI decides") can
+        # never be dragged anywhere — which supersedes the old
+        # delta-clamp expectation of 749 and closes the 999→25 cap
+        # collapse for good.
+        applied, was_clamped, suffix = _apply_param_change(
             profile_id=987654, user_id=1,
             adjustment_type="test_adjustment",
             param_name="max_total_positions",
             old_value=999, proposed_new_value=25,
             reason="test reason",
         )
-        assert applied == 749, (
-            f"operator seed outside PARAM_BOUNDS must not be dragged "
-            f"into range by the funnel; got {applied}"
+        assert applied == 999, (
+            f"retired param must be left exactly at the operator seed; "
+            f"got {applied}"
         )
-        utp.assert_called_once_with(987654, max_total_positions=749)
+        assert was_clamped is False
+        assert "refused: retired" in suffix
+        utp.assert_not_called()
+        ltc.assert_not_called()
 
     def test_wrapper_clamps_and_writes_clamped_value(self, monkeypatch):
         """50% proposed cut → wrapper clamps to 25% and writes the

@@ -57,6 +57,17 @@ INFRASTRUCTURE_TASKS = {
                                         # working overtime, regardless of
                                         # the profile's other settings.
     "_task_cross_account_reconcile",   # virtual account ledger sync
+    "_task_activate_benchmarks",       # 2026-08-24: virtual reference
+                                         # benchmarks (master-level, not a
+                                         # per-profile feature) must take
+                                         # their shares at the first
+                                         # session's open, every cycle
+                                         # until activated. A toggle would
+                                         # recreate the day-one incident
+                                         # where benchmarks sat "Pending"
+                                         # while the arms traded — the
+                                         # comparison baseline is
+                                         # experiment infrastructure.
     "_task_self_tune",                 # autonomous parameter tuning
     "_task_retrain_meta_model",        # daily GBM + SGD bootstrap
     "_task_calibrate_specialists",     # Platt-scaling per specialist

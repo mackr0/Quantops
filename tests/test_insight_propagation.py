@@ -89,9 +89,59 @@ class TestPropagateInsight:
                                         "max_total_positions")
             assert result == []
 
-    def test_propagates_to_peer_when_detection_triggers(self, tmp_path):
-        """End-to-end: peer profile has its own data that triggers the
-        detection rule, gets the change applied."""
+    def test_propagation_mechanism_applies_per_peer_detection(self, tmp_path):
+        """End-to-end mechanism: propagation runs the DETECTOR against
+        each peer's own DB/context and collects its message — never
+        copies the source value. Uses a stub detector because the
+        historical vehicle (_optimize_max_total_positions) was retired
+        2026-08-23 (docs/25 step 3) and now returns None by design;
+        the retired-type behavior is pinned by
+        test_retired_concentration_types_do_not_propagate below."""
+        from insight_propagation import propagate_insight
+        from unittest.mock import MagicMock
+        stub = MagicMock(return_value="Adjusted something on own data")
+        peer = {
+            "id": 2, "user_id": 1, "name": "Peer",
+            "enable_self_tuning": 1,
+        }
+        peer_db = str(tmp_path / "quantopsai_profile_2.db")
+        conn = sqlite3.connect(peer_db)
+        conn.execute(
+            "CREATE TABLE ai_predictions (id INTEGER PRIMARY KEY, "
+            "status TEXT, actual_outcome TEXT)")
+        conn.executemany(
+            "INSERT INTO ai_predictions (status, actual_outcome) "
+            "VALUES ('resolved', ?)",
+            [("win",) if i < 9 else ("loss",) for i in range(30)])
+        conn.commit()
+        conn.close()
+
+        import os
+        original_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            with patch("insight_propagation._detector_for",
+                       return_value=stub):
+                with patch("insight_propagation._peer_profiles",
+                           return_value=[peer]):
+                    result = propagate_insight(
+                        1, "stub_change_type", "stub_param")
+        finally:
+            os.chdir(original_cwd)
+        assert result == ["[Peer] Adjusted something on own data"]
+        # The detector ran against the PEER's identifiers/context —
+        # the no-value-copying guarantee.
+        args = stub.call_args[0]
+        assert args[2] == 2          # peer profile_id, not the source's
+        assert args[1].db_path == "quantopsai_profile_2.db"
+        assert args[4] == 30.0       # WR computed from the peer's OWN rows
+
+    def test_retired_concentration_types_do_not_propagate(self, tmp_path):
+        """Re-contracted 2026-08-24: max_total_positions was retired
+        (docs/25 step 3), its optimizer returns None unconditionally,
+        so a concentration insight propagates to NO peer and writes
+        nothing — even when the peer's data would have triggered the
+        old detection rule (deep losses + low WR)."""
         from insight_propagation import propagate_insight
         # Create a peer profile DB with predictions that would trigger
         # _optimize_max_total_positions (deep losses + low WR)
@@ -155,10 +205,10 @@ class TestPropagateInsight:
                                 result = propagate_insight(
                                     1, "concentration_reduce",
                                     "max_total_positions")
-                                # Detection should have triggered on peer
-                                assert len(result) == 1
-                                assert "Peer" in result[0]
-                                mock_up.assert_called()
+                                # Retired lever: nothing propagates,
+                                # nothing is written.
+                                assert result == []
+                                mock_up.assert_not_called()
         finally:
             os.chdir(original_cwd)
 

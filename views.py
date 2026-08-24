@@ -1145,8 +1145,9 @@ def learning_page():
         if master is not None:
             try:
                 master.close()
-            except _sqlite3.Error:
-                pass
+            except _sqlite3.Error as close_exc:
+                logger.warning(
+                    "learning_page: master DB close failed: %s", close_exc)
     return render_template("learning.html", b=board)
 
 

@@ -49,6 +49,14 @@ MANUAL_PARAMETERS = {
     # walks the backstop back into the binding range.
     "max_net_options_delta_pct": "Retired to an operator-set runaway backstop (2026-07-01); superseded by the auto-tuned max_options_risk_pct budget",
 
+    # 2026-08-23 — RETIRED non-binding lever (docs/25 step 3): books
+    # never hit the cap, so every change to it was tuning-history noise
+    # (999→749→562→976 churn). The optimizer returns None
+    # unconditionally and self_tuning.RETIRED_PARAMS refuses any write
+    # at the _apply_param_change choke point; operator seed (999,
+    # "the AI decides") stays untouched.
+    "max_total_positions": "Retired non-binding lever (2026-08-23, docs/25 step 3); RETIRED_PARAMS firewall refuses every tuner path",
+
     # Identity / metadata — not "parameters" at all
     "id":              "PRIMARY KEY",
     "user_id":         "Foreign key to users",

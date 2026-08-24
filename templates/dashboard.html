@@ -244,15 +244,22 @@
                 {# Equity/P&L/cash/position totals intentionally omitted —
                    not additive across heterogeneous strategies (2026-05-22).
                    AI cost is the one book-wide number that IS meaningful. #}
+                {# All-in headline (2026-08-24): the shadow-eval ledger is
+                   kept separate from trading cost by design, but the
+                   HEADLINE is what the operator reads as "my AI bill" —
+                   so it must be trading + shadow, with the split shown. #}
+                {% set shadow_ns = namespace(total=0.0) %}
+                {% for m in shadow_cost_by_model %}{% set shadow_ns.total = shadow_ns.total + (m.usd or 0) %}{% endfor %}
                 <tr style="font-weight:bold;">
-                    <td>AI Cost Total ({{ profiles_data|length }} profiles) <small id="totals-updated" class="muted" style="font-weight:normal;">— live</small></td>
+                    <td>AI Cost Total ({{ profiles_data|length }} profiles) <small id="totals-updated" class="muted" style="font-weight:normal;">— live</small>
+                        <small id="totals-cost-split" class="muted" style="font-weight:normal; display:block;" title="Trading = calls that drive the profiles' decisions. Shadow eval = the same prompts replayed against the rival models for comparison. Each side has its own daily spending cap.">trading ${{ "{:.2f}".format(ns.total_cost) }} · shadow eval ${{ "{:.2f}".format(shadow_ns.total) }}</small></td>
                     <td></td>
                     <td></td>
                     <td></td>
                     <td></td>
                     <td></td>
                     <td></td>
-                    <td class="muted" id="totals-book-cost">${{ "{:.2f}".format(ns.total_cost) }}</td>
+                    <td class="muted" id="totals-book-cost">${{ "{:.2f}".format(ns.total_cost + shadow_ns.total) }}</td>
                 </tr>
                 <tr id="ai-cost-by-model-row" style="font-weight:normal;">
                     <td colspan="8" class="muted" style="padding-top:4px; font-size:0.9em;">
@@ -337,7 +344,15 @@
                     // totals were removed (not additive across strategies).
                     var bk = document.getElementById('totals-book-cost');
                     var u = document.getElementById('totals-updated');
-                    if (bk) bk.textContent = QF.dollars2(d.total_cost || 0);
+                    // All-in headline: trading spend + shadow-eval spend
+                    // (separate ledgers, one bill). Split shown beneath.
+                    var shadowTotal = 0;
+                    (d.shadow_cost_by_model || []).forEach(function(m) {
+                        shadowTotal += (m.usd || 0);
+                    });
+                    if (bk) bk.textContent = QF.dollars2((d.total_cost || 0) + shadowTotal);
+                    var splitEl = document.getElementById('totals-cost-split');
+                    if (splitEl) splitEl.textContent = 'trading ' + QF.dollars2(d.total_cost || 0) + ' · shadow eval ' + QF.dollars2(shadowTotal);
                     if (u) u.textContent = '— live · updated ' + new Date().toLocaleTimeString('en-US', {timeZone: 'America/New_York'}) + ' ET';
                     // Cost-per-LLM breakdown (today) — primary vs fallback spend.
                     var bm = document.getElementById('ai-cost-by-model');
@@ -648,7 +663,8 @@
         <thead><tr>
             <th>Benchmark</th><th>Type</th><th>Status</th>
             <th title="symbols, with share counts once activated">Holdings</th>
-            <th>Start</th><th>Value</th><th>Return</th>
+            <th>Start</th><th>Value</th>
+            <th title="Benchmark P&amp;L on starting capital — same convention as the profile table's P&amp;L %">P&amp;L %</th>
             <th title="cash dividends credited so far">Dividends</th>
             <th>Last marked</th>
         </tr></thead>

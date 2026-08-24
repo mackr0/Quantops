@@ -78,7 +78,8 @@ None, prices fetched once).
 **Dashboard "Reference Benchmarks" table** — one row per benchmark:
 status (pending with its activation date, or active since its
 activation open), holdings (symbols; with share counts once active),
-start capital, Value, `return = value / capital − 1`, dividends
+start capital, Value, **P&L %** = `value / capital − 1` (labeled
+"P&L %" to match the profile table — 2026-08-24 naming fix), dividends
 credited to date, last-marked date. **Value (2026-08-24)** is a LIVE
 mark during the session — `cash + Σ qty × latest bar close`, one bulk
 quote call, labeled "live" — so benchmarks move on the dashboard the

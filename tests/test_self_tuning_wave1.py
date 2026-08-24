@@ -125,9 +125,14 @@ class TestClamp:
 # ─────────────────────────────────────────────────────────────────────
 
 class TestMaxTotalPositions:
-    def test_reduces_on_deep_losses_and_low_wr(self, tmp_path):
+    def test_retired_param_never_proposes_or_writes(self, tmp_path):
+        """RETIRED 2026-08-23 (docs/25 step 3): max_total_positions is
+        a non-binding lever, so the optimizer must return None and
+        write NOTHING even under conditions that used to trigger a
+        reduce (deep losses + low WR). The RETIRED_PARAMS firewall in
+        _apply_param_change pins the same contract for every other
+        path — see test_self_tuner_guardrails_2026_05_18."""
         db = _make_db(tmp_path)
-        # 10 deep losses
         _seed_trades(db, [{"pnl": -300, "price": 10} for _ in range(10)])
         ctx = _ctx(db, max_total_positions=10)
         from self_tuning import _optimize_max_total_positions, _get_conn
@@ -135,53 +140,11 @@ class TestMaxTotalPositions:
         with patch("self_tuning._get_recent_adjustment", return_value=None):
             with patch("self_tuning._was_adjustment_effective", return_value=None):
                 with patch("models.update_trading_profile") as mock_up:
-                    with patch("models.log_tuning_change"):
+                    with patch("models.log_tuning_change") as mock_ltc:
                         msg = _optimize_max_total_positions(
                             conn, ctx, 1, 1, overall_wr=30.0, resolved=30)
-                        mock_up.assert_called_with(1, max_total_positions=9)
-        conn.close()
-        assert msg is not None
-        assert "9" in msg
-
-    def test_increases_on_strong_edge(self, tmp_path):
-        db = _make_db(tmp_path)
-        _seed_trades(db, [{"pnl": 200, "price": 10} for _ in range(10)])
-        ctx = _ctx(db, max_total_positions=10)
-        from self_tuning import _optimize_max_total_positions, _get_conn
-        conn = _get_conn(db)
-        with patch("self_tuning._get_recent_adjustment", return_value=None):
-            with patch("self_tuning._was_adjustment_effective", return_value=None):
-                with patch("models.update_trading_profile") as mock_up:
-                    with patch("models.log_tuning_change"):
-                        msg = _optimize_max_total_positions(
-                            conn, ctx, 1, 1, overall_wr=65.0, resolved=30)
-                        mock_up.assert_called_with(1, max_total_positions=11)
-        conn.close()
-        assert "11" in msg
-
-    def test_respects_lower_bound(self, tmp_path):
-        db = _make_db(tmp_path)
-        _seed_trades(db, [{"pnl": -300} for _ in range(10)])
-        ctx = _ctx(db, max_total_positions=3)  # already at floor
-        from self_tuning import _optimize_max_total_positions, _get_conn
-        conn = _get_conn(db)
-        with patch("self_tuning._get_recent_adjustment", return_value=None):
-            with patch("self_tuning._was_adjustment_effective", return_value=None):
-                msg = _optimize_max_total_positions(
-                    conn, ctx, 1, 1, overall_wr=30.0, resolved=30)
-        conn.close()
-        assert msg is None  # Can't go below 3
-
-    def test_respects_cooldown(self, tmp_path):
-        db = _make_db(tmp_path)
-        _seed_trades(db, [{"pnl": -300} for _ in range(10)])
-        ctx = _ctx(db, max_total_positions=10)
-        from self_tuning import _optimize_max_total_positions, _get_conn
-        conn = _get_conn(db)
-        with patch("self_tuning._get_recent_adjustment",
-                   return_value={"id": 1}):
-            msg = _optimize_max_total_positions(
-                conn, ctx, 1, 1, overall_wr=30.0, resolved=30)
+                        mock_up.assert_not_called()
+                        mock_ltc.assert_not_called()
         conn.close()
         assert msg is None
 

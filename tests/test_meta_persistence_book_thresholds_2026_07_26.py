@@ -152,10 +152,15 @@ class TestOptimizerFiresOnSmallBooks:
         conn.row_factory = sqlite3.Row
         return conn
 
-    def test_25k_book_small_losses_now_trigger(self, tmp_path):
-        """The A3-25K shape: 30% WR, avg loss −$40. Pre-fix the −$200
-        constant silenced the reducer; book-scaled (−$25 on 25K) it
-        fires."""
+    def test_retired_reducer_never_fires_on_any_book(self, tmp_path):
+        """Re-contracted 2026-08-24. The concentration reducer was the
+        original consumer of _book_scaled_dollars (the 25K/200K
+        threshold tests lived here), but max_total_positions was
+        RETIRED (docs/25 step 3) — the optimizer returns None
+        unconditionally, so even the strongest small-book trigger shape
+        (25K book, deep scaled losses, 30% WR) must produce no call.
+        The book-scaling MATH itself stays pinned by
+        TestBookScaledDollars above for future consumers."""
         import self_tuning as st
         conn = self._db_with_losses(tmp_path, -40.0)
         ctx = SimpleNamespace(initial_capital=25_000,
@@ -168,29 +173,8 @@ class TestOptimizerFiresOnSmallBooks:
                           (calls.append(a), (749, True, " [g]"))[1]):
             out = st._optimize_max_total_positions(
                 conn, ctx, 216, 1, overall_wr=30.0, resolved=300)
-        assert calls, (
-            "the concentration reducer did not fire on the 25K book "
-            "with −$40 avg losses — the small-book threshold gap is "
-            "back."
-        )
-        assert out is not None
-
-    def test_200k_book_behavior_unchanged(self, tmp_path):
-        """Backward compat: −$150 avg loss on a 200K book must NOT
-        fire (threshold −$200, exactly as before the change)."""
-        import self_tuning as st
-        conn = self._db_with_losses(tmp_path, -150.0)
-        ctx = SimpleNamespace(initial_capital=200_000,
-                              max_total_positions=999)
-        calls = []
-        with patch.object(st, "_safe_change_guarded",
-                          return_value=True), \
-             patch.object(st, "_apply_param_change",
-                          side_effect=lambda *a, **k:
-                          (calls.append(a), (749, True, " [g]"))[1]):
-            st._optimize_max_total_positions(
-                conn, ctx, 218, 1, overall_wr=30.0, resolved=300)
+        assert out is None
         assert not calls, (
-            "a −$150 avg loss fired the reducer on a 200K book — the "
-            "200K threshold must remain exactly −$200."
+            "the retired concentration reducer proposed a change — "
+            "max_total_positions must never be tuned (docs/25 step 3)"
         )

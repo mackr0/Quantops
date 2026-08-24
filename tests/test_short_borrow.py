@@ -153,21 +153,22 @@ def test_accrue_returns_zero_with_no_db_path():
 # trader.check_exits source-level integration guard
 # ---------------------------------------------------------------------------
 
-def test_check_exits_subtracts_borrow_cost_on_cover():
-    """The cover path MUST call accrue_for_cover and subtract the
-    result from pnl. Otherwise overnight-short P&L is over-reported
-    and meta-model labels are biased. Body lives in
-    _process_exit_trigger after the 2026-04-30 resilience refactor."""
+def test_check_exits_does_not_stamp_borrow_adjusted_pnl():
+    """Re-contracted 2026-08-24. The old contract (subtract
+    accrue_for_cover from pnl at submit time) was doubly wrong under
+    the current doctrine: (1) pnl is NULL until fill-derived — no
+    submit-time estimates of any kind (test_no_estimated_pnl_at_submit
+    _2026_08_24 pins the class); (2) Alpaca paper never charges borrow
+    fees, so a borrow-adjusted realized without a matching cash entry
+    would break the leg-derived equity identity (cash + mv == init +
+    realized + unrealized) that integrity_audit enforces to the penny.
+    The accrual engine (short_borrow.accrue_for_cover, unit-tested
+    above) is retained for the open analytics item in docs/25
+    (borrow cost as a REPORTED adjustment, never a books entry)."""
     import trader
     src = (inspect.getsource(trader.check_exits)
            + inspect.getsource(trader._process_exit_trigger))
-    assert "accrue_for_cover" in src, (
-        "REGRESSION: cover path no longer references accrue_for_cover. "
-        "Overnight-short P&L will over-report by the full borrow "
-        "accrual. See TECHNICAL_DOCUMENTATION.md §15."
-    )
-    assert "borrow_cost" in src, (
-        "REGRESSION: cover path no longer subtracts borrow cost. "
-        "The integration was the whole point — without it, the helper "
-        "exists but is unused."
+    assert "accrue_for_cover" not in src, (
+        "cover path must not fold borrow accrual into pnl — it breaks "
+        "the fill-true equity identity (see docstring)"
     )

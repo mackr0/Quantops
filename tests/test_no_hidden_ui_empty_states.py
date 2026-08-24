@@ -233,6 +233,12 @@ ALLOWLIST = {
     # only renders for profiles that DO have data. The user always sees
     # the section header.
     ("ai.html", "r.risk_budget"),
+    # 2026-08-24 — Learning Scoreboard failure banner. Same class as
+    # halted_profiles: an ALERT that must be loud when the scoreboard
+    # computation failed and absent when healthy. The page's normal
+    # empty state ("No arms yet") always renders when there are no
+    # arms and no error, so the section's existence is never hidden.
+    ("learning.html", "b.error"),
 }
 
 

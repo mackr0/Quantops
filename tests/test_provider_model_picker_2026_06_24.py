@@ -81,8 +81,8 @@ class TestCatalogIsPricedAndCurrent:
 class TestCostLabels:
     def test_cost_label_format(self):
         from ai_pricing import cost_label
-        # gemini-2.5-flash = $0.35 / $0.70
-        assert cost_label("gemini-2.5-flash") == "$0.35 in / $0.7 out per 1M"
+        # gemini-2.5-flash = $0.30 / $2.50 (2026-08-23 pricing refresh)
+        assert cost_label("gemini-2.5-flash") == "$0.3 in / $2.5 out per 1M"
         assert cost_label("claude-haiku-4-5-20251001") == "$1 in / $5 out per 1M"
 
     def test_cost_label_none_for_unknown(self):

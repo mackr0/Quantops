@@ -388,8 +388,9 @@ class TestDecisionIdPlumbing:
 
     def test_record_prediction_persists_it(self):
         src = open(os.path.join(REPO_DIR, "ai_tracker.py")).read()
-        assert "rule_votes_json, decision_id)" in src, (
-            "ai_predictions INSERT lost the decision_id column")
+        assert "rule_votes_json, decision_id, ai_provider, ai_model)" in src, (
+            "ai_predictions INSERT lost the decision_id column (or the "
+            "2026-08-23 model-attribution columns)")
         src2 = open(os.path.join(REPO_DIR, "trade_pipeline.py")).read()
         assert 'decision_id=c.get("_decision_id")' in src2
 
