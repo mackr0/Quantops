@@ -492,9 +492,11 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             # measurement.
             ("users", "intraday_risk_blocks_trades",
              "INTEGER NOT NULL DEFAULT 0"),
-            # Per-profile opt-in: lets the tuner A/B test ai_provider/ai_model
-            # within the cost guard. Default OFF so cost-conscious users
-            # aren't surprised by Sonnet/Opus calls.
+            # RETIRED 2026-08-24 (docs/25 D3): was to let the tuner A/B
+            # test ai_provider/ai_model — never implemented; no code ever
+            # read the value. The column stays (migrations are append-
+            # only) but the UI toggle, form handling and ctx field are
+            # gone. Model changes go through model_promotion.promote().
             ("trading_profiles", "ai_model_auto_tune", "INTEGER NOT NULL DEFAULT 0"),
             # Layer 9 — recommended capital scale per profile (1.0 = baseline,
             # 0.5 = halved, 2.0 = doubled). The auto-allocator updates this;
@@ -1484,11 +1486,8 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         "long_vol_hedge_premium_pct",
         # OPEN_ITEMS #4 — wheel automation symbol opt-in list.
         "wheel_symbols",
-        # 2026-05-15 — per-profile opt-in for the tuner to A/B
-        # ai_provider/ai_model. Column is defined in the migration
-        # and set by views.py form handler; was missing here, so
-        # the form save silently dropped the value.
-        "ai_model_auto_tune",
+        # ai_model_auto_tune removed from the allowlist 2026-08-24
+        # (docs/25 D3): dead toggle retired; nothing writes it anymore.
         # OPEN_ITEMS #10 — options roll-window knobs.
         "options_roll_window_days",
         "options_auto_close_profit_pct",
@@ -1886,8 +1885,6 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
         if profile.get("capital_scale") is not None else 1.0,
         # Multi-account linkage
         alpaca_account_id=profile.get("alpaca_account_id"),
-        # AI-model auto-tune toggle
-        ai_model_auto_tune=bool(profile.get("ai_model_auto_tune", 0)),
         # Item 2b — intraday risk monitor auto-halt (default ON)
         enable_intraday_risk_halt=bool(
             profile.get("enable_intraday_risk_halt", 1)),

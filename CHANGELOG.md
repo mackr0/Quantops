@@ -5,6 +5,10 @@ at the top.
 
 ---
 
+## 2026-08-24 — Dead "AI Model Auto-Tune" toggle removed (decision D3). Severity: LOW (a Settings control that silently did nothing).
+
+The per-profile checkbox added 2026-04-25 ("lets the tuner A/B test AI models") stored a value no code ever read. Operator decision: remove it — model changes are evidence-based operator actions via `model_promotion.promote()`, never a tuner behavior. Removed: the Settings toggle, the form handling, the profile-field pass-through, and the `UserContext` field; the DB column stays (migrations are append-only) with a retirement note. The parameter self-tuner (`enable_self_tuning` — "Self-Tuning" on the same page) is unrelated and stays ON in evidence mode. Lever-justification tests updated: `ai_provider`/`ai_model` are now justified by the promote() path.
+
 ## 2026-08-23 — Promotion without a reset: model attribution on every prediction, learned state scoped to the current model, an audited promote operation. Severity: MEDIUM (the production scenario — switch primaries without halting — would have blended models' brains).
 
 Operator requirement: in production one primary trades while challengers shadow; when one proves itself it becomes the primary with no halt and no starting over. Switching a profile's model was already a setting (book, positions, history and tuner state all stay), but the learned state was not attributed to the model that produced it — a promoted model would have been shown the old model's track record as its own and scored by a meta-model calibrated to the old model's confidence.

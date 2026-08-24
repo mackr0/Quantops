@@ -281,10 +281,6 @@ class UserContext:
     # Multi-Alpaca-account linkage. Read by multi_scheduler:877.
     alpaca_account_id: Optional[int] = None
 
-    # Per-profile opt-in for AI model auto-tuning (off by default to
-    # prevent surprise Sonnet/Opus calls under cost guard).
-    ai_model_auto_tune: bool = False
-
     # Item 2b — intraday risk monitor auto-halt. When alerts fire
     # (drawdown acceleration, vol spike, sector swing, halted held
     # positions), trade pipeline blocks new entries until the halt

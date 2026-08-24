@@ -52,11 +52,8 @@ KNOWN_OFF_BY_DESIGN = {
         "Political-volatility flag; operator decides whether to "
         "trade politically-sensitive symbols. Not derivable from "
         "outcome data.",
-    # Cost-controlled features — opt-in to bound API spend
-    "ai_model_auto_tune":
-        "Auto-picks Sonnet/Opus models. Cost-gated via opt-in; "
-        "the cost guard exists but operator must enable to allow "
-        "the more expensive models.",
+    # ai_model_auto_tune removed 2026-08-24 (docs/25 D3): the field was
+    # a dead toggle; model changes go through model_promotion.promote().
     "enable_consensus":
         "Second-opinion AI on borderline trades. Costs 2x AI "
         "calls per trade. Could become tunable in a future wave "

@@ -1955,7 +1955,8 @@ def save_profile(profile_id):
         **({"target_book_beta": float(form["target_book_beta"])}
            if form.get("target_book_beta", "").strip() != "" else {}),
         "enable_self_tuning": 1 if form.get("enable_self_tuning") else 0,
-        "ai_model_auto_tune": 1 if form.get("ai_model_auto_tune") else 0,
+        # ai_model_auto_tune removed 2026-08-24 (docs/25 D3): dead toggle;
+        # model changes go through model_promotion.promote().
         # Drawdown protection
         "drawdown_reduce_pct": float(form.get("drawdown_reduce_pct", 0.10)),
         "drawdown_pause_pct": float(form.get("drawdown_pause_pct", 0.20)),

@@ -64,10 +64,10 @@ MANUAL_PARAMETERS = {
     "consensus_api_key_enc":  "Secret",
     "alpaca_account_id":      "Foreign key to alpaca_accounts (set by user)",
 
-    # AI provider/model — explicit per-profile opt-in needed
-    "ai_provider":         "Strategic AI choice — opt-in via ai_model_auto_tune (cost concern)",
-    "ai_model":            "Strategic AI choice — opt-in via ai_model_auto_tune (cost concern)",
-    "ai_model_auto_tune":  "Per-profile opt-in toggle (user-set; not autonomously tuned)",
+    # AI provider/model — evidence-based operator action, never tuned
+    "ai_provider":         "Model changes via model_promotion.promote() on shadow/arm evidence (docs/25 5.4)",
+    "ai_model":            "Model changes via model_promotion.promote() on shadow/arm evidence (docs/25 5.4)",
+    "ai_model_auto_tune":  "RETIRED dead toggle (2026-08-24, docs/25 D3); column kept append-only, never read",
 
     # Architectural — multi-model setup is intentional
     "enable_consensus": "Architectural choice (multi-model)",
