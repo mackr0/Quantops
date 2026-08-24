@@ -450,6 +450,7 @@ the numbers that drove it.
 |---|---|---|---|
 | 2026-08-21 | — | Audit completed; plan opened; model landscape verified | this document |
 | 2026-08-23 | — | Budget ruling D0; Phase-1 design at ~$53/mo; arm set D1 approved; "what counts as learning" ladder added; fine-tune path (docs/20) folded in as 4.5 | cb22501, 3f8c328 |
+| 2026-08-24 | — | First-session hardening: benchmark activation per cycle; submit-time pnl estimates removed from every stock exit writer; equity identity leg-derived (holds through fill windows); pnl-column corruption is its own finding. **New open items:** short-borrow cost accounting (the cover-time subtraction was already lost at recompute; needs a first-class cash treatment) and the option-close pnl estimate (kept as the fill machine's discriminator by the 07-22 design — the leg-derived identity is immune to it, but the discriminator role should eventually move off pnl). | this commit |
 | 2026-08-23 | — | Experiments Register opened ([26](26_EXPERIMENTS.md)); Experiment 1 retired and tagged `exp1-system-stability-final`; virtual-baseline item 1.12 + D6 added | cb22501… |
 | 2026-08-23 | 1 | 1.0 haiku shadow pulled on prod; 1.1 registry/prices; 1.2 vendor-fair structured output; 1.3 apex call gradeable; D5 shadow scope; 1.12 virtual benchmarks; 1.13 manifest + reset script staged | this commit |
 | 2026-08-23 | 3, 4 | tuner evidence mode (3.1, 3.2, 3.5); weekly tasks fixed (4.1); track-record prompt block (4.2, 4.4) | this commit |

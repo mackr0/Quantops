@@ -87,33 +87,52 @@ def audit_equity_identity(profile_id: int) -> Dict[str, Any]:
     initial_capital = float(getattr(ctx, "initial_capital", 0) or 0)
     out["initial_capital"] = initial_capital
 
+    # 2026-08-24 — realized comes from LEG-DERIVED fill-true FIFO
+    # (journal.compute_leg_realized), the same COALESCE(fill_price,
+    # price) basis the cash math uses, computed in the same pass. With
+    # realized read from the pnl column, the identity was broken by
+    # construction during every fill-confirmation window: first by
+    # submit-time estimates (p230, Experiment 2's first session,
+    # "drift" +$89.38 on a penny-exact book), and, with estimates
+    # removed, by the decision-vs-fill spread of a pending exit that
+    # cash already counts while the pnl column is correctly still
+    # NULL. Leg-derived realized shares cash's basis at every instant,
+    # so a nonzero drift is ALWAYS a real bookkeeping error again.
+    # The pnl COLUMN is still audited — separately, below — so column
+    # corruption surfaces without masquerading as equity drift.
+    try:
+        from journal import compute_leg_realized
+        leg = compute_leg_realized(ctx.db_path)
+    except Exception as exc:
+        out["errored"] = f"leg realized failed: {type(exc).__name__}: {exc}"
+        return out
+    if leg is None:
+        out["errored"] = "realized pnl read failed: journal unreadable"
+        return out
+    realized_total = sum(leg.values())
+    out["realized_total"] = round(realized_total, 2)
+
+    # pnl-column consistency (separate finding, not equity drift): on
+    # SETTLED rows (fill known → status closed), the stored pnl must
+    # equal the leg-derived value. Pending rows are expected to be
+    # NULL and are not flagged.
+    pnl_column_mismatch = 0.0
     try:
         with sqlite3.connect(ctx.db_path) as conn:
-            # Status filter (2026-07-25): dead rows (canceled/expired/
-            # rejected/...) carry no realized pnl by house convention,
-            # but a stale estimate CAN survive on one (p211 #353: an
-            # expired sell kept its +35 estimate and broke the identity
-            # by exactly that amount). The healer now clears pnl when
-            # marking terminal-unfilled; this filter is the defense in
-            # depth — the identity must be immune to any stray stamp on
-            # a row every other lens already excludes.
-            row = conn.execute(
-                "SELECT COALESCE(SUM(pnl), 0) FROM trades "
-                "WHERE pnl IS NOT NULL "
-                "AND COALESCE(status, 'open') NOT IN "
-                "('pending_protective', 'canceled', 'expired', "
-                " 'rejected', 'done_for_day', "
-                " 'auto_reconciled_phantom_close', "
-                " 'auto_closed_external')"
-            ).fetchone()
-            realized_total = float(row[0] or 0)
+            for tid, realized in leg.items():
+                row = conn.execute(
+                    "SELECT pnl, COALESCE(status, 'open') FROM trades "
+                    "WHERE id = ?", (tid,)).fetchone()
+                if row is None or row[1] != "closed":
+                    continue
+                stored = float(row[0]) if row[0] is not None else None
+                if stored is None or abs(stored - realized) > 0.01:
+                    pnl_column_mismatch += realized - (stored or 0.0)
     except sqlite3.OperationalError as exc:
-        if "no such table" in str(exc).lower():
-            realized_total = 0.0
-        else:
-            out["errored"] = f"realized pnl read failed: {exc}"
+        if "no such table" not in str(exc).lower():
+            out["errored"] = f"pnl column read failed: {exc}"
             return out
-    out["realized_total"] = round(realized_total, 2)
+    out["pnl_column_mismatch"] = round(pnl_column_mismatch, 2)
 
     try:
         from journal import get_virtual_positions
@@ -185,11 +204,14 @@ def audit_equity_identity_all(profile_ids: Iterable[int]) -> Dict[str, Any]:
         'profiles': [per-profile dict, ...],
         'drift': [profiles where has_drift is True],
         'errored': [profile_ids that errored],
+        'pnl_mismatch': [profiles whose stored pnl column disagrees
+                         with leg-derived realized on closed rows],
       }
     """
     profiles: List[Dict[str, Any]] = []
     drift: List[Dict[str, Any]] = []
     errored: List[int] = []
+    pnl_mismatch: List[Dict[str, Any]] = []
     for pid in profile_ids:
         row = audit_equity_identity(pid)
         profiles.append(row)
@@ -198,7 +220,10 @@ def audit_equity_identity_all(profile_ids: Iterable[int]) -> Dict[str, Any]:
             continue
         if row["has_drift"]:
             drift.append(row)
-    return {"profiles": profiles, "drift": drift, "errored": errored}
+        if abs(row.get("pnl_column_mismatch", 0.0) or 0.0) > _EQUITY_TOLERANCE:
+            pnl_mismatch.append(row)
+    return {"profiles": profiles, "drift": drift, "errored": errored,
+            "pnl_mismatch": pnl_mismatch}
 
 
 # ─────────────────────────────────────────────────────────────────────

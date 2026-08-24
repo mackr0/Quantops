@@ -660,10 +660,10 @@
             <td class="muted">{{ r.status }}</td>
             <td style="font-size:0.85em;">{{ r.holdings }}</td>
             <td>${{ "{:,.0f}".format(r.initial_capital) }}</td>
-            <td>{% if r.value is not none %}${{ "{:,.2f}".format(r.value) }}{% else %}&mdash;{% endif %}</td>
+            <td>{% if r.value is not none %}${{ "{:,.2f}".format(r.value) }} <span class="muted" style="font-size:0.8em;">{{ "live" if r.value_kind == "live" else "close" }}</span>{% else %}&mdash;{% endif %}</td>
             <td class="{% if r.return_pct is not none and r.return_pct > 0 %}pnl-pos{% elif r.return_pct is not none and r.return_pct < 0 %}pnl-neg{% endif %}">{% if r.return_pct is not none %}{{ "%+.2f"|format(r.return_pct) }}%{% else %}&mdash;{% endif %}</td>
             <td>{% if r.dividends_to_date %}${{ "{:,.2f}".format(r.dividends_to_date) }}{% else %}&mdash;{% endif %}</td>
-            <td>{{ r.last_mark or "not yet marked" }}</td>
+            <td>{{ r.last_mark or "close mark tonight" }}</td>
         </tr>
         {% endfor %}
         </tbody>

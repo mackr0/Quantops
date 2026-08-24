@@ -646,6 +646,38 @@ def mark_to_market(*, as_of: Optional[str] = None,
     return out
 
 
+def activate_pending(user_id: Optional[int] = None, *,
+                     as_of: Optional[str] = None,
+                     open_fn=day_open,
+                     db_path: Optional[str] = None) -> int:
+    """Activate pending benchmarks whose start date has arrived, WITHOUT
+    writing a snapshot (2026-08-24): activation belongs minutes after
+    the open — the shares come from the opening print — while the daily
+    equity row belongs to the end-of-day snapshot task. Hooking both
+    into the snapshot task left benchmarks 'Pending' all session on day
+    one. Cheap no-op when nothing is pending; returns the number
+    activated."""
+    as_of = as_of or _et_today()
+    conn = _conn(db_path)
+    conn.row_factory = sqlite3.Row
+    activated = 0
+    try:
+        q = ("SELECT * FROM virtual_benchmarks WHERE enabled=1 AND "
+             "activated=0 AND start_date <= ?")
+        args: Tuple = (as_of,)
+        if user_id is not None:
+            q += " AND user_id=?"
+            args = (as_of, user_id)
+        for bench in conn.execute(q, args).fetchall():
+            holdings = json.loads(bench["holdings_json"])
+            if _activate(conn, bench, holdings, as_of, open_fn) is not None:
+                activated += 1
+        conn.commit()
+    finally:
+        conn.close()
+    return activated
+
+
 def run_daily_if_due(user_id: Optional[int] = None, *,
                      as_of: Optional[str] = None,
                      db_path: Optional[str] = None, **kw) -> Optional[Dict[str, Any]]:
@@ -704,14 +736,72 @@ def equity_series(benchmark_id: int,
         conn.close()
 
 
+# Live-price cache: one bulk market-data read at most every TTL
+# seconds regardless of how often the dashboard refreshes. This is
+# pure display plumbing — Alpaca market data, the same feed every
+# profile mark uses; no AI call is ever involved in benchmark values.
+_LIVE_PRICE_TTL_SECONDS = 60
+_live_price_cache: Dict[str, Any] = {"at": 0.0, "key": None, "prices": {}}
+
+
+def live_prices(symbols: List[str]) -> Dict[str, float]:
+    """Latest bar close per symbol in ONE bulk market-data read (minute
+    bars — fresh enough for a display mark), cached for
+    _LIVE_PRICE_TTL_SECONDS. {} on any failure, logged — the caller
+    renders absence, never a fabricated number."""
+    import time as _time
+    symbols = sorted({s for s in symbols if s})
+    if not symbols:
+        return {}
+    key = ",".join(symbols)
+    now = _time.time()
+    if (_live_price_cache["key"] == key
+            and now - _live_price_cache["at"] < _LIVE_PRICE_TTL_SECONDS
+            and _live_price_cache["prices"]):
+        return dict(_live_price_cache["prices"])
+    try:
+        from market_data import _resolve_alpaca_credentials
+        import alpaca_trade_api as tradeapi
+        k, s, base = _resolve_alpaca_credentials()
+        if not k or not s:
+            logger.warning("virtual_benchmarks: no data credentials for "
+                           "live prices")
+            return {}
+        api = tradeapi.REST(k, s, base, api_version="v2")
+        bars = api.get_latest_bars(symbols)
+        prices = {sym: float(bar.c) for sym, bar in bars.items()
+                  if getattr(bar, "c", None)}
+        _live_price_cache.update({"at": now, "key": key, "prices": prices})
+        return dict(prices)
+    except Exception as exc:
+        logger.warning("virtual_benchmarks: live prices failed for %d "
+                       "symbols: %s: %s", len(symbols),
+                       type(exc).__name__, exc)
+        return {}
+
+
 def dashboard_rows(user_id: Optional[int] = None,
-                   db_path: Optional[str] = None) -> List[Dict[str, Any]]:
+                   db_path: Optional[str] = None,
+                   price_map: Optional[Dict[str, float]] = None
+                   ) -> List[Dict[str, Any]]:
     """Rows for the dashboard's Reference Benchmarks section: name,
-    kind, status, holdings, start capital, latest value, return, last
-    mark. Value/return are absent (None) until the first mark — never
-    a fabricated number."""
+    kind, status, holdings, start capital, value, return, last mark.
+
+    Value (2026-08-24): a LIVE mark — cash + Σ qty × latest bar close,
+    one bulk quote call — so the benchmarks move on the dashboard the
+    way profile equity does (`value_kind: "live"`); when live prices
+    are unavailable, the latest end-of-day snapshot is shown
+    (`value_kind: "close"`); with neither, absent — never fabricated.
+    The persisted daily series is untouched (the evening mark stays
+    the close). `price_map` injects prices for tests."""
+    benches = list_benchmarks(user_id, db_path=db_path)
+    if price_map is None:
+        price_map = live_prices([
+            h["symbol"] for b in benches if b.get("activated", 1)
+            for h in b["holdings"]
+        ])
     rows: List[Dict[str, Any]] = []
-    for b in list_benchmarks(user_id, db_path=db_path):
+    for b in benches:
         series = equity_series(b["id"], db_path=db_path)
         latest = series[-1] if series else None
         cap = float(b["initial_capital"])
@@ -722,15 +812,27 @@ def dashboard_rows(user_id: Optional[int] = None,
         else:
             status = f"Pending — shares set at the {b['start_date']} open"
             holdings = ", ".join(h["symbol"] for h in b["holdings"])
+        value = None
+        value_kind = None
+        if activated and b["holdings"] and all(
+                price_map.get(h["symbol"]) for h in b["holdings"]):
+            value = round(float(b["cash"]) + sum(
+                float(h["qty"]) * price_map[h["symbol"]]
+                for h in b["holdings"]), 2)
+            value_kind = "live"
+        elif latest:
+            value = latest[1]
+            value_kind = "close"
         rows.append({
             "name": b["name"],
             "kind": "Buy & hold SPY" if b["kind"] == KIND_BUY_HOLD else "Random 5-pick",
             "status": status,
             "holdings": holdings,
             "initial_capital": cap,
-            "value": latest[1] if latest else None,
-            "return_pct": (round((latest[1] / cap - 1.0) * 100, 2)
-                           if latest and cap > 0 else None),
+            "value": value,
+            "value_kind": value_kind,
+            "return_pct": (round((value / cap - 1.0) * 100, 2)
+                           if value is not None and cap > 0 else None),
             "last_mark": latest[0] if latest else None,
             "dividends_to_date": float(b.get("dividends_to_date") or 0.0),
         })

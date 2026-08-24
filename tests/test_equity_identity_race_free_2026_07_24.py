@@ -92,21 +92,20 @@ class TestRaceFree:
         )
         assert d["has_drift"] is False
 
-    def test_real_bookkeeping_error_still_bites_exactly(self, tmp_path):
-        """Tamper the stamped pnl by +$5: the audit must report drift
-        of exactly -$5.00 regardless of mark volatility — the check is
-        now a pure books identity."""
+    def test_pnl_column_error_bites_exactly_as_its_own_finding(self, tmp_path):
+        """Tamper the stamped pnl by +$5. 2026-08-24: the identity's
+        realized side is LEG-derived (same fill-true basis as cash), so
+        the books identity stays exactly 0 — and the corrupted COLUMN is
+        caught by the separate pnl_column_mismatch finding, off by
+        exactly the injected -$5.00 (leg truth 200 vs stored 205)."""
         db = _mk_profile_db(tmp_path / "p2.db")
         conn = sqlite3.connect(db)
         conn.execute("UPDATE trades SET pnl = 205.0 WHERE side='sell'")
         conn.commit(); conn.close()
         d = _run_audit(db)
         assert d["errored"] is None, d["errored"]
-        assert d["drift"] == -5.0, (
-            f"expected exactly -5.00 (the injected pnl error), "
-            f"got {d['drift']:+.2f}"
-        )
-        assert d["has_drift"] is True
+        assert d["drift"] == 0.0 and d["has_drift"] is False
+        assert d["pnl_column_mismatch"] == -5.0, d
 
 
 class TestStructural:

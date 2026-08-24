@@ -384,6 +384,17 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_scan_and_trade(ctx),
             db_path=ctx.db_path,
         )
+        # Virtual-benchmark activation (2026-08-24): shares come from the
+        # OPEN, so activation must run during the session, not at the
+        # end-of-day snapshot task — on day one the benchmarks sat
+        # "Pending" all session while the arms traded. Cheap no-op when
+        # nothing is pending; the daily equity row still comes from the
+        # snapshot task only.
+        run_task(
+            f"[{seg_label}] Benchmark Activation",
+            lambda: _task_activate_benchmarks(ctx),
+            db_path=ctx.db_path,
+        )
         # Crisis monitoring (Phase 10) — BEFORE event tick so the event
         # bus picks up crisis_state_change transitions in the same cycle
         run_task(
@@ -1037,6 +1048,21 @@ def _get_shared_candidates(ctx, seg, is_crypto):
     if int(_time.time() / 1800) == now_bucket:
         _screener_cache[cache_key] = result
     return list(result)
+
+
+def _task_activate_benchmarks(ctx):
+    """Activate any pending virtual benchmarks from today's opening
+    prints (docs/25 D6). Idempotent and cheap: a no-op the moment
+    nothing is pending. Failures are logged loudly and retried next
+    cycle — never silent, never fabricated."""
+    try:
+        from virtual_benchmarks import activate_pending
+        n = activate_pending(getattr(ctx, "user_id", None))
+        if n:
+            logging.info("Virtual benchmarks activated from the open: %d", n)
+    except Exception as exc:
+        logging.error("virtual benchmark activation failed: %s: %s",
+                      type(exc).__name__, exc)
 
 
 def _task_scan_and_trade(ctx):

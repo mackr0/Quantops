@@ -32,7 +32,12 @@ day is then marked at the close like any other. *Why:* the arms can
 first trade at that open, so that is the comparable start — a
 Friday-close entry would give the benchmark a different starting
 print than the arms. If any holding's open is unavailable, activation
-is deferred to the next session with an ERROR log (nothing fabricated).
+is deferred with an ERROR log (nothing fabricated). Activation runs
+per scheduler cycle during the session (`activate_pending` — shares
+set minutes after the open, no snapshot written); the daily equity
+row comes only from the end-of-day snapshot task (2026-08-24 fix:
+hooking both into the evening task left benchmarks pending all of
+day one).
 **VERIFIED** (fixture: pending → nothing written before start;
 Monday open 502 / close 510 → qty 473, cash 12,554, equity cash +
 473 × 510; missing open → deferred, nothing written).
@@ -73,10 +78,16 @@ None, prices fetched once).
 **Dashboard "Reference Benchmarks" table** — one row per benchmark:
 status (pending with its activation date, or active since its
 activation open), holdings (symbols; with share counts once active),
-start capital, latest snapshot equity as Value, `return = latest /
-capital − 1`, dividends credited to date, last-marked date. Value and
-return are absent until the first mark — never a fabricated number.
-**VERIFIED** (fixture + Flask-client smoke test).
+start capital, Value, `return = value / capital − 1`, dividends
+credited to date, last-marked date. **Value (2026-08-24)** is a LIVE
+mark during the session — `cash + Σ qty × latest bar close`, one bulk
+quote call, labeled "live" — so benchmarks move on the dashboard the
+way profile equity does; when live prices are unavailable it falls
+back to the latest end-of-day snapshot (labeled "close"); with
+neither, absent — never fabricated. The live mark is display-only:
+the persisted daily series is written solely by the evening snapshot
+task. **VERIFIED** (fixtures: live mark math + nothing persisted +
+fallback labeling; Flask-client smoke test).
 
 ## Open items for this page
 

@@ -2096,9 +2096,16 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
         result["position_closed"] = (int(sell_qty) >= int(qty))
 
         if log:
-            pnl = position.get("unrealized_pl")
-            if pnl is not None and qty > 0:
-                pnl = float(pnl) * (sell_qty / qty)
+            # 2026-08-24 — NEVER write an estimated pnl. The old code
+            # stamped position.unrealized_pl × (sold/held) — a MARK at
+            # decision time — into the pnl column at submit; until
+            # _task_update_fills rewrote it from fills, the equity
+            # identity was broken by construction (p230, first session
+            # of Experiment 2: estimate −$109.88 vs fill-true +$21.32,
+            # +$89.38 "drift" on a penny-exact book). pnl is NULL until
+            # it is known from fills; the identity holds at every
+            # instant because cash and realized then share one basis.
+            is_exit_of_held = qty > 0
             # Item 5c — capture predicted slippage + ADV on the exit
             predicted_slip_sell = None
             adv_at_sell = None
@@ -2152,8 +2159,8 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                 reason=signal.get("reason"),
                 ai_reasoning=ai_reasoning,
                 ai_confidence=ai_confidence,
-                pnl=pnl,
-                status="pending_fill" if pnl is not None else "open",
+                pnl=None,   # fill-derived only — see 2026-08-24 note above
+                status="pending_fill" if is_exit_of_held else "open",
                 decision_price=price,
                 predicted_slippage_bps=predicted_slip_sell,
                 adv_at_decision=adv_at_sell,

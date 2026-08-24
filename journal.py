@@ -3021,7 +3021,39 @@ def recompute_realized_pnl(db_path=None):
 
     Returns the number of rows updated.
     """
+    leg = compute_leg_realized(db_path)
+    if leg is None:
+        return None
     updated = 0
+    with closing(_get_conn(db_path)) as conn:
+        for tid, realized in leg.items():
+            row = conn.execute(
+                "SELECT pnl FROM trades WHERE id = ?", (tid,)).fetchone()
+            old = (float(row[0]) if row and row[0] is not None else None)
+            if old is None or abs(old - realized) > 0.005:
+                conn.execute(
+                    "UPDATE trades SET pnl = ? WHERE id = ?",
+                    (round(realized, 2), tid),
+                )
+                updated += 1
+        conn.commit()
+    return updated
+
+
+def compute_leg_realized(db_path=None):
+    """PURE (no writes): {exit_trade_id: leg-derived realized P&L} from
+    fill-true FIFO lot matching — the exact math recompute_realized_pnl
+    stamps into the pnl column, exposed read-only so the equity-identity
+    audit can use the SAME basis as the cash math at the SAME instant
+    (2026-08-24: with realized read from the pnl column, the identity
+    was broken by construction during every fill-confirmation window —
+    first as a submit-time estimate, then, with estimates removed, by
+    the decision-vs-fill spread of a pending exit that cash already
+    counts but the pnl column correctly does not yet).
+
+    Returns None when the journal is unreadable (fail-closed — the
+    caller must not treat that as "zero realized").
+    """
     with closing(_get_conn(db_path)) as conn:
         try:
             cols = {r[1] for r in conn.execute(
@@ -3030,7 +3062,7 @@ def recompute_realized_pnl(db_path=None):
             # 2026-07-27 fail-closed sweep: 0 conflated "nothing to
             # re-true" with "couldn't read". None = repair did not run.
             logging.warning(
-                "recompute_realized_pnl UNVERIFIABLE for %s: %s",
+                "compute_leg_realized UNVERIFIABLE for %s: %s",
                 db_path, exc)
             return None
         px_expr = ("COALESCE(NULLIF(fill_price, 0), price)"
@@ -3065,9 +3097,10 @@ def recompute_realized_pnl(db_path=None):
             # 2026-07-27 fail-closed sweep: None = the repair did not
             # run (see the cols read above).
             logging.warning(
-                "recompute_realized_pnl UNVERIFIABLE for %s: %s",
+                "compute_leg_realized UNVERIFIABLE for %s: %s",
                 db_path, exc)
             return None
+        out: Dict[int, float] = {}
         long_lots: Dict[str, list] = {}
         short_lots: Dict[str, list] = {}
         for tid, symbol, side, qty, pxv, occ, old_pnl in rows:
@@ -3138,16 +3171,8 @@ def recompute_realized_pnl(db_path=None):
                     realized = amt
             # 'dividend' and anything else: no lot interaction.
             if realized is not None:
-                old = (float(old_pnl)
-                       if old_pnl is not None else None)
-                if old is None or abs(old - realized) > 0.005:
-                    conn.execute(
-                        "UPDATE trades SET pnl = ? WHERE id = ?",
-                        (round(realized, 2), tid),
-                    )
-                    updated += 1
-        conn.commit()
-    return updated
+                out[tid] = realized
+    return out
 
 
 def reconcile_trade_statuses(db_path=None, open_symbols=None):

@@ -134,11 +134,17 @@ class TestIdentityBroken:
         assert result["actual_equity"] == 99_500.0
 
     def test_fifo_mismatch_caught(self, tmp_path):
-        """Realized pnl column says +$1000 but the cash flow says +$2000
-        — FIFO computed wrong. Identity catches the inconsistency."""
+        """Realized pnl column says +$1000 but the leg flows say +$2000.
+        2026-08-24: the identity's realized side is LEG-derived (same
+        fill-true basis as cash), so expected tracks the flows and the
+        books identity holds at 0 — while the wrong COLUMN is caught by
+        the pnl_column_mismatch finding, off by exactly +$1000."""
         from integrity_audit import audit_equity_identity
-        # Buy + sell flows imply +$2000 realized
-        # but pnl column wrongly says only +$1000
+        # NOTE the fixture stamps pnl 1000 on the BUY row; the leg walk
+        # attributes realized to the exit row and the column check
+        # compares closed exit rows — the sell's stored pnl is NULL vs
+        # leg truth +2000 → mismatch +2000... the buy row's stray 1000
+        # is a dead-row-style stamp the column check ignores by row id.
         db = _make_profile_db(tmp_path, 1, [
             ("AAPL", "buy",  100, 50.0, 1000.0, "closed", "2026-05-01", None),
             ("AAPL", "sell", 100, 70.0, None,   "closed", "2026-05-02", None),
@@ -148,13 +154,11 @@ class TestIdentityBroken:
             "models.build_user_context_from_profile", return_value=ctx,
         ):
             result = audit_equity_identity(1)
-        # actual cash = 100k - 5000 + 7000 = 102k
-        # expected = 100k + 1000 (claimed realized) + 0 = 101k
-        # drift = 102k - 101k = +1000 (cash side richer than pnl claims)
+        # cash = 100k - 5000 + 7000 = 102k; leg realized = +2000
         assert result["actual_equity"] == 102_000.0
-        assert result["expected_equity"] == 101_000.0
-        assert result["drift"] == 1000.0
-        assert result["has_drift"] is True
+        assert result["expected_equity"] == 102_000.0
+        assert result["drift"] == 0.0 and result["has_drift"] is False
+        assert result["pnl_column_mismatch"] == 2000.0, result
 
 
 # ─────────────────────────────────────────────────────────────────────

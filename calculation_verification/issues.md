@@ -30,6 +30,18 @@ live (see [trades.md](trades.md)/[README](README.md) conventions and
 the aggregate-audit code). The issues page renders them verbatim.
 **VERIFIED (pass-through)**
 
+**Equity identity (2026-08-24 revision)** — `drift = (cash + Σ mv) −
+(init + leg-derived realized + unrealized)`, where realized comes from
+`journal.compute_leg_realized` (fill-true FIFO, the same
+`COALESCE(fill_price, price)` basis as cash, same instant) — NOT the
+pnl column. This makes the identity hold through fill-confirmation
+windows (the p230 first-session false ERROR: a submit-time estimate,
+then the decision-vs-fill spread of a pending exit). A wrong pnl
+COLUMN surfaces as its own `pnl_column.profile_N` ERROR row (stored vs
+leg-derived on closed rows), never as equity drift. **VERIFIED**
+(regression fixtures: the p230 window at drift 0; injected column
+errors caught to the cent by the new finding).
+
 **Nav badge** — same collector at a FIXED 24h window regardless of
 the page's window; badge shows errors else warnings. Documented as an
 intentional page-vs-badge window difference. **VERIFIED**

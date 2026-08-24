@@ -285,12 +285,46 @@ class TestActivationAtOpen:
         assert vb.equity_series(bid, db_path=db)[0][1] == round(
             b["cash"] + 5 * int(per // 25.0) * 20.0, 2)
 
+    def test_activate_pending_sets_shares_without_a_snapshot(self, db):
+        """2026-08-24 day-one gap: activation was hooked only into the
+        end-of-day snapshot task, so benchmarks sat Pending all session.
+        activate_pending runs per cycle: shares from the open, NO
+        snapshot row (the close mark belongs to the evening task)."""
+        bid = vb.create_benchmark(1, "BENCH-BuyHoldSPY", "buy_hold", 250_000,
+                                  price_fn=_prices({"SPY": 500.0}),
+                                  start_date="2026-08-24",
+                                  activate_at_open=True, db_path=db)
+        # Before the start date: nothing happens.
+        assert vb.activate_pending(1, as_of="2026-08-23",
+                                   open_fn=lambda s, d: 500.0,
+                                   db_path=db) == 0
+        assert vb.activate_pending(1, as_of="2026-08-24",
+                                   open_fn=lambda s, d: 502.0,
+                                   db_path=db) == 1
+        b = vb.list_benchmarks(1, db_path=db)[0]
+        assert b["activated"] == 1
+        assert b["holdings"][0]["entry_price"] == 502.0
+        assert vb.equity_series(bid, db_path=db) == []   # no snapshot yet
+        # Idempotent: nothing pending on the second call.
+        assert vb.activate_pending(1, as_of="2026-08-24",
+                                   open_fn=lambda s, d: 999.0,
+                                   db_path=db) == 0
+
+    def test_scheduler_runs_activation_in_the_scan_block(self):
+        import inspect
+        import multi_scheduler as ms
+        assert "activate_pending" in inspect.getsource(ms._task_activate_benchmarks)
+        src = inspect.getsource(ms.run_segment_cycle)
+        assert "_task_activate_benchmarks" in src, (
+            "benchmark activation must run during the session, not only "
+            "at the end-of-day snapshot task")
+
     def test_dashboard_rows_pending_and_active(self, db):
         vb.create_benchmark(1, "BENCH-BuyHoldSPY", "buy_hold", 250_000,
                             price_fn=_prices({"SPY": 500.0}),
                             start_date="2026-08-24",
                             activate_at_open=True, db_path=db)
-        rows = vb.dashboard_rows(1, db_path=db)
+        rows = vb.dashboard_rows(1, db_path=db, price_map={})
         assert rows[0]["status"].startswith("Pending")
         assert rows[0]["value"] is None and rows[0]["return_pct"] is None
         assert rows[0]["holdings"] == "SPY"
@@ -298,12 +332,35 @@ class TestActivationAtOpen:
                           price_fn=_prices({"SPY": 510.0}),
                           open_fn=lambda s, d: 500.0,
                           dividend_fn=lambda *a: [], db_path=db)
-        rows = vb.dashboard_rows(1, db_path=db)
+        # No live prices → the close snapshot renders, labeled so.
+        rows = vb.dashboard_rows(1, db_path=db, price_map={})
         assert rows[0]["status"].startswith("Active since the 2026-08-24 open")
         assert rows[0]["holdings"] == "SPY ×475"
         assert rows[0]["value"] == round(12_500 + 475 * 510.0, 2)
+        assert rows[0]["value_kind"] == "close"
         assert rows[0]["return_pct"] == round((475 * 10.0) / 250_000 * 100, 2)
         assert rows[0]["last_mark"] == "2026-08-24"
+
+    def test_dashboard_rows_live_intraday_value(self, db):
+        """2026-08-24 (operator): the dashboard must show benchmark
+        value moving DURING the session, like profile equity — a live
+        bulk-quote mark, display-only; the persisted series stays
+        end-of-day."""
+        bid = vb.create_benchmark(1, "BENCH-BuyHoldSPY", "buy_hold", 250_000,
+                                  price_fn=_prices({"SPY": 500.0}),
+                                  start_date="2026-08-24",
+                                  activate_at_open=True, db_path=db)
+        vb.activate_pending(1, as_of="2026-08-24",
+                            open_fn=lambda s, d: 500.0, db_path=db)
+        rows = vb.dashboard_rows(1, db_path=db, price_map={"SPY": 507.5})
+        assert rows[0]["value"] == round(12_500 + 475 * 507.5, 2)
+        assert rows[0]["value_kind"] == "live"
+        assert rows[0]["return_pct"] == round((475 * 7.5) / 250_000 * 100, 2)
+        # Display mark writes NOTHING: still no snapshot rows.
+        assert vb.equity_series(bid, db_path=db) == []
+        # A missing price for any holding → fall back (here: nothing).
+        rows = vb.dashboard_rows(1, db_path=db, price_map={"SPY": None})
+        assert rows[0]["value"] is None and rows[0]["value_kind"] is None
 
     def test_dashboard_page_shows_reference_benchmarks(self, tmp_main_db,
                                                        tmp_path, monkeypatch):
@@ -360,6 +417,32 @@ class TestSeries:
         payload = cr.build_payload(1)
         assert payload["empty_state"] is False
         assert payload["series"][0]["profile_id"] == -1
+
+
+class TestLivePriceCache:
+    def test_one_bulk_read_per_ttl_window(self, monkeypatch):
+        """No AI calls, and at most one market-data read per TTL window
+        no matter how often the dashboard refreshes."""
+        import types
+        calls = []
+
+        class _API:
+            def __init__(self, *a, **k):
+                pass
+
+            def get_latest_bars(self, symbols):
+                calls.append(list(symbols))
+                return {s: types.SimpleNamespace(c=100.0) for s in symbols}
+
+        monkeypatch.setattr("market_data._resolve_alpaca_credentials",
+                            lambda: ("k", "s", "https://x"))
+        import alpaca_trade_api as tradeapi
+        monkeypatch.setattr(tradeapi, "REST", _API)
+        vb._live_price_cache.update({"at": 0.0, "key": None, "prices": {}})
+        a = vb.live_prices(["SPY", "MSFT"])
+        b = vb.live_prices(["MSFT", "SPY"])   # same set, any order
+        assert a == b == {"SPY": 100.0, "MSFT": 100.0}
+        assert len(calls) == 1, "second render must hit the cache"
 
 
 class TestFetchParsing:

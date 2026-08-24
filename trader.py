@@ -170,7 +170,9 @@ def execute_trade(symbol, signal, ctx=None, strategy_name="combined", log=True):
         result["order_id"] = order.id
 
         if log:
-            pnl = position["unrealized_pl"] * (sell_qty / qty) if qty > 0 else None
+            # 2026-08-24 — pnl is NULL until known from fills (the
+            # submit-time value was a mark-based estimate; see the
+            # equity-identity note in trade_pipeline's exit path).
             log_trade(
                 symbol=symbol,
                 side="sell",
@@ -182,7 +184,7 @@ def execute_trade(symbol, signal, ctx=None, strategy_name="combined", log=True):
                 reason=signal.get("reason"),
                 ai_reasoning=signal.get("ai_raw_reasoning"),
                 ai_confidence=signal.get("confidence"),
-                pnl=pnl,
+                pnl=None,   # fill-derived only (2026-08-24)
                 decision_price=price,
                 db_path=db_path,
             )
@@ -1016,23 +1018,17 @@ def _process_exit_trigger(trigger_signal, api, ctx, db_path, positions,
         side_label = "sell"
         action_label = "SELL"
 
-    pnl = pnl_by_symbol.get(symbol)
-    # Subtract accrued short-borrow cost on covers (overnight
-    # shorts pay a daily borrow fee that Alpaca's unrealized_pl
-    # doesn't reflect). Sub-1-day shorts get 0.0 — same-day cover
-    # has no overnight borrow charge.
-    if is_short and pnl is not None:
-        try:
-            from short_borrow import accrue_for_cover
-            borrow_cost = accrue_for_cover(db_path, symbol, qty)
-            if borrow_cost > 0:
-                pnl = pnl - borrow_cost
-                logging.info(
-                    "Short borrow cost on %s: $%.4f (subtracted from "
-                    "cover pnl)", symbol, borrow_cost,
-                )
-        except Exception as _exc:
-            logging.debug("Borrow accrual failed for %s: %s", symbol, _exc)
+    # 2026-08-24 — pnl is NULL until known from fills. The old code
+    # stamped the position's unrealized MARK (± borrow accrual) into
+    # the pnl column at submit time; until recompute_realized_pnl
+    # trued it from fills, the equity identity was broken by
+    # construction (p230, Experiment 2's first session: −$109.88
+    # estimate vs +$21.32 fill truth). NOTE the borrow-cost
+    # subtraction this replaced was ALREADY being discarded when
+    # recompute overwrote pnl with pure leg math — short borrow
+    # accounting is a recorded open item (docs/25), not something
+    # this change loses.
+    pnl = None
 
     # Inherit the entry trade's AI confidence + reasoning so this
     # protective close row carries the AI's original conviction
@@ -1064,7 +1060,11 @@ def _process_exit_trigger(trigger_signal, api, ctx, db_path, positions,
     # minimal INSERT of the load-bearing order_id, and only halt if
     # even that fails. See PROFILE_ORDER_ISOLATION.md (A0) and
     # feedback_no_orphan_broker_fills.
-    _exit_status = "pending_fill" if pnl is not None else "open"
+    # This path always closes a held position (an exit trigger fired on
+    # it), so the row is a pending exit unconditionally — the old
+    # condition keyed on the pnl ESTIMATE being available, which was
+    # never the right discriminator (2026-08-24).
+    _exit_status = "pending_fill"
     # 2026-07-20 — read the trigger price ONCE, None-safe. A trigger
     # dict without "price" (the time-stop class) must degrade to a
     # NULL price (update_fills backfills from the broker), never to a

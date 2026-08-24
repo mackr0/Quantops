@@ -453,6 +453,26 @@ def _collect_aggregate_drift(
                 "timestamp": "",
                 "is_live_snapshot": True,
             })
+        # 2026-08-24 — pnl-column corruption is its own finding: the
+        # equity identity is leg-derived and stays 0 through fill
+        # windows, so a wrong stored pnl must surface HERE, never as
+        # phantom equity drift.
+        for d in i_audit.get("pnl_mismatch", []):
+            pid = d.get("profile_id", "?")
+            rows.append({
+                "source": f"pnl_column.profile_{pid}",
+                "level": "ERROR",
+                "message": (
+                    f"pnl column disagrees with fill-true leg math on "
+                    f"closed rows by ${d.get('pnl_column_mismatch', 0):+,.2f} "
+                    f"(leg-derived realized="
+                    f"${d.get('realized_total', 0):+,.2f}) — run "
+                    "the realized-P&L truing pass and investigate the "
+                    "writer that stamped it"
+                ),
+                "timestamp": "",
+                "is_live_snapshot": True,
+            })
     except ImportError as exc:
         ie = f"equity_identity audit unavailable: {exc}"
         err = ie if not err else (err + " | " + ie)
