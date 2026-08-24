@@ -54,11 +54,23 @@ per broker position; spread grouping stamps, never collapses), API
 refresh counts the raw position list — same cardinality by
 construction. **VERIFIED (code)**
 
-**AI cost today (per profile / total)** — per-profile ledger sum
-(deliberately un-rounded so the total never drifts from the parts by
-rounding), summed client- and server-side identically; "by model"
-and "shadow eval" breakdowns are `GROUP BY provider, model` sums over
-the two ledgers. **VERIFIED**
+**AI cost today (per profile / total)** — per-profile column = the
+profile's TRADING ledger sum (deliberately un-rounded so totals never
+drift from parts by rounding). The **headline "AI Cost Total" is
+ALL-IN** (2026-08-24, operator catch): trading + shadow-eval spend,
+with the split shown beneath it — before the fix the headline showed
+trading only while the shadow lines under it summed to more than the
+"total". Client- and server-side use the same sum; "by model" and
+"shadow eval" breakdowns are `GROUP BY provider, model` sums over the
+two ledgers (kept separate so shadow spend never contaminates
+per-profile trading cost; each side has its own daily cap —
+`daily_cost_ceiling_usd` and `shadow_daily_cost_cap_usd`).
+Expected shapes, so they aren't re-reported as anomalies: shadow
+calls ≈ 2× primary calls (only specialist purposes are shadowed,
+each fanning to the 3 rival arms), and primary $/call runs higher
+than shadow $/call (the unshadowed batch-selection prompts are the
+largest). **VERIFIED** (2026-08-24 live figures: trading $4.29 +
+shadow $5.66; by-model row summed exactly to the trading total).
 
 ## Schedule bar / scan status
 

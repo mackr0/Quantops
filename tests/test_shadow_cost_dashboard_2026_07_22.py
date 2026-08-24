@@ -81,6 +81,25 @@ class TestDashboardWiring:
             "the live refresh")
         assert "shadow_breakdowns.append(" in src
 
+    def test_headline_total_is_all_in_with_split(self):
+        """2026-08-24 — the operator caught the headline: 'AI Cost
+        Total' showed only the trading ledger while the shadow lines
+        beneath it summed to MORE than the 'total'. The headline must
+        be trading + shadow (the actual bill), with the split shown,
+        in both the server render and the 30s poll refresh."""
+        tpl = open(os.path.join(REPO, "templates",
+                                "dashboard.html")).read()
+        # Server render: headline cell sums both ledgers.
+        assert "ns.total_cost + shadow_ns.total" in tpl, (
+            "totals-book-cost must render trading + shadow, not "
+            "trading alone")
+        assert 'id="totals-cost-split"' in tpl
+        # Poll refresh: same all-in math and the split line.
+        assert "(d.total_cost || 0) + shadowTotal" in tpl, (
+            "the 30s poll must keep the headline all-in")
+        assert "totals-cost-split" in tpl.split("shadowTotal", 1)[1], (
+            "the poll must also refresh the trading/shadow split")
+
     def test_template_renders_and_refreshes_shadow_line(self):
         tpl = open(os.path.join(REPO, "templates",
                                 "dashboard.html")).read()
