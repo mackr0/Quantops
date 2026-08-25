@@ -62,12 +62,23 @@ the per-page files:
 2. **Option contract multiplier.** Every option notional is
    `premium × qty × 100`. Omitting the multiplier understates basis
    100× and produced the −4360% CVaR (2026-08-12).
-3. **Dead-status exclusion.** Money and position lenses exclude rows in
+3. **Dead-status exclusion, bounded by the FILL-TRUTH INVARIANT
+   (2026-08-25).** Money and position lenses exclude rows in
    `('canceled','expired','rejected','done_for_day',
-   'pending_protective','auto_reconciled_phantom_close',
-   'auto_closed_external')` — statuses that mean "no money moved via
-   this row." The exit-side and entry-side sets are aligned by
-   structural test.
+   'pending_protective','auto_reconciled_phantom_close')` — statuses
+   that mean "no money moved via this row" — plus
+   `'auto_closed_external'` **only when the row bears no fill**. A row
+   whose order actually filled (`fill_price` stamped) NEVER leaves the
+   cash algebra or the realized FIFO, no matter what status a
+   reconcile path later writes on it: an externally-closed position
+   leaves the POSITION lens, but its real money stays booked. (The
+   old wholesale exclusion assumed "cash booked by the activities
+   pass," which books broker events, never ordinary fills — that
+   assumption was the five-premium hole of 2026-08-25: mislabeled own
+   round-trips drifted equity by +$185…+$4,550 and cash parity by the
+   exact premiums.) The exit-side and entry-side sets are aligned by
+   structural test; the invariant is pinned by
+   `tests/test_option_own_close_not_external_2026_08_25.py`.
 4. **Degraded-book contract.** If a profile's journal is unreadable,
    money displays must render "unavailable" — never a fabricated $0 or
    the initial-capital fallback presented as live.

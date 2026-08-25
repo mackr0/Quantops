@@ -2928,8 +2928,13 @@ def get_virtual_account_info(db_path=None, initial_capital=100000.0,
       preferred over the decision price (WCT $497 on one trade).
     - 2026-06-23: data_quality-tagged rows excluded identically to
       get_virtual_positions.
-    - 2026-07-14: 'auto_closed_external' excluded (cash booked by the
-      broker-activities pass, never by the leg row).
+    - 2026-07-14: 'auto_closed_external' excluded (assumed cash booked
+      by the broker-activities pass).
+    - 2026-08-25: FILL-TRUTH INVARIANT — that assumption was the five-
+      premium hole (the activities pass books broker events, never
+      ordinary fills). 'auto_closed_external' is now excluded only for
+      FILL-LESS rows; a row whose order actually filled stays in the
+      cash algebra no matter what status any reconcile path writes.
     """
     cash_val = get_virtual_cash(db_path=db_path,
                                 initial_capital=initial_capital)

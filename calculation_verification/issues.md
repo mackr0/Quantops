@@ -42,6 +42,19 @@ leg-derived on closed rows), never as equity drift. **VERIFIED**
 (regression fixtures: the p230 window at drift 0; injected column
 errors caught to the cent by the new finding).
 
+**Equity identity + cash parity under the fill-truth invariant
+(2026-08-25 revision)** — both money lenses (`get_virtual_cash`,
+`compute_leg_realized`) keep every fill-bearing row regardless of
+status (README convention 3), so a mislabeled
+`auto_closed_external` row can no longer surface as equity drift or a
+journal-cash phantom — the pair completes in the FIFO from its own
+rows. A GENUINE external close (assignment/exercise/foreign fill) may
+show a transient sub-cycle identity blip between the status flip and
+the activities-captured close row landing (≤1 cycle, self-healing);
+a PERSISTENT drift is always real. **VERIFIED** (books-level fixtures:
+the 08-25 incident shape — mislabeled entry + own closed exit — yields
+exact cash and realized with the mislabel in place).
+
 **Nav badge** — same collector at a FIXED 24h window regardless of
 the page's window; badge shows errors else warnings. Documented as an
 intentional page-vs-badge window difference. **VERIFIED**
