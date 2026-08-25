@@ -1241,7 +1241,7 @@ _CLOSE_EVIDENCE_ACTIVITY_TYPES = ("OPASN", "OPEXC", "OPXRC", "FILL")
 _CLOSE_EVIDENCE_LOOKBACK_DAYS = 7
 
 
-def _external_close_evidence(api, occ_symbol):
+def _external_close_evidence(api, occ_symbol, own_order_ids=None):
     """Return {'activity_type', 'id'} for the most recent broker
     activity that proves `occ_symbol` was actually closed by an
     external event, or None when no such evidence exists (which
@@ -1251,13 +1251,24 @@ def _external_close_evidence(api, occ_symbol):
     treated as proof of an external close; the positions feed's
     known visibility lag made that write off a LIVE position
     (p211 XOM put, +$335 basis-less gap). Activities are ID'd
-    broker events — the same trust class as orders."""
+    broker events — the same trust class as orders.
+
+    2026-08-25 (the five Exp2 premium holes): a FILL activity is
+    external evidence ONLY when the fill is NOT ours. This profile's
+    own exit fill used to satisfy the FILL check, so an ordinary own
+    round-trip whose exit row had already flipped 'closed' (making it
+    invisible to the live-rows own-close guard) was written off as
+    external — the entry premium vanished from the cash algebra.
+    Callers pass the profile's own order_ids for this OCC; a FILL
+    whose order_id is ours, or that carries NO order_id (unverifiable
+    is not proof), never counts as evidence."""
     from datetime import datetime, timedelta, timezone
     after = (datetime.now(timezone.utc)
              - timedelta(days=_CLOSE_EVIDENCE_LOOKBACK_DAYS)).isoformat()
     occ_norm = (occ_symbol or "").replace(" ", "").upper()
     if not occ_norm:
         return None
+    _own = {str(o) for o in (own_order_ids or []) if o}
     for a_type in _CLOSE_EVIDENCE_ACTIVITY_TYPES:
         try:
             batch = api.get_activities(activity_types=a_type,
@@ -1271,19 +1282,25 @@ def _external_close_evidence(api, occ_symbol):
             continue
         for act in (batch or []):
             a_sym = (getattr(act, "symbol", "") or "").replace(" ", "").upper()
-            if a_sym == occ_norm:
-                return {
-                    "activity_type": getattr(act, "activity_type", a_type),
-                    "id": getattr(act, "id", None),
-                }
+            if a_sym != occ_norm:
+                continue
+            if a_type == "FILL":
+                act_oid = getattr(act, "order_id", None)
+                if not act_oid or str(act_oid) in _own:
+                    continue  # our own fill (or unattributable) ≠ external
+            return {
+                "activity_type": getattr(act, "activity_type", a_type),
+                "id": getattr(act, "id", None),
+            }
     return None
 
 
 def _own_occ_roundtrip(api, conn, occ: str):
-    """Row ids of this profile's LIVE rows for `occ` when they form a
-    complete OWN round-trip: two or more rows whose signed quantities
-    net to flat and whose OWN order_ids are all broker-verified
-    FILLED at their journaled quantities. None otherwise.
+    """Row ids of this profile's rows for `occ` that need flipping to
+    'closed' when the profile's OWN broker-verified fills fully explain
+    the flat OCC: two or more fill-bearing rows whose signed quantities
+    net to flat and whose OWN order_ids are all broker-verified FILLED
+    at their journaled quantities. None otherwise.
 
     2026-08-10 (the p211 AMGN/PM/KO cash holes): an ordinary own
     short-then-buy-back pair went account-flat before the fill state
@@ -1294,12 +1311,28 @@ def _own_occ_roundtrip(api, conn, occ: str):
     (+$142 cash-parity residual on account 56). External means NOT
     OURS: when our own journaled orders fully explain the flatness,
     it is an OWN close and must be booked as one.
+
+    2026-08-25 (the five Exp2 premium holes, $185–$4,550 identity
+    drift on four profiles): the 08-10 guard read only LIVE rows
+    ('open'/'pending_fill'), so the moment the fill machine flipped
+    the exit row 'closed' the round-trip became invisible (one live
+    row → None) and the entry fell through to the external path.
+    The net is now computed over EVERY fill-bearing row for the OCC —
+    open, pending_fill, closed, and previously mislabeled
+    auto_closed_external rows alike (their fills are real) — so
+    own-close detection is race-proof against state-machine ordering.
+    Returned ids are the rows still needing the flip (live rows plus
+    any mislabeled auto_closed_external siblings, which self-heal);
+    already-'closed' rows are left untouched.
     """
     try:
         rows = conn.execute(
-            "SELECT id, side, qty, order_id FROM trades "
+            "SELECT id, side, qty, order_id, "
+            "       COALESCE(status, 'open') AS status FROM trades "
             "WHERE occ_symbol = ? "
-            "AND COALESCE(status, 'open') IN ('open', 'pending_fill')",
+            "AND COALESCE(status, 'open') NOT IN "
+            "    ('canceled', 'expired', 'rejected', 'done_for_day', "
+            "     'pending_protective', 'auto_reconciled_phantom_close')",
             (occ,),
         ).fetchall()
     except sqlite3.Error:
@@ -1314,7 +1347,7 @@ def _own_occ_roundtrip(api, conn, occ: str):
         oid = r["order_id"]
         if qty <= 0 or not oid:
             return None
-        net += qty if side == "buy" else -qty
+        net += qty if side in ("buy", "cover") else -qty
         try:
             from order_status_cache import get_order_cached
             order = get_order_cached(api, oid)
@@ -1330,10 +1363,11 @@ def _own_occ_roundtrip(api, conn, occ: str):
                 return None
         except (TypeError, ValueError):
             return None
-        ids.append(r["id"])
+        if r["status"] != "closed":
+            ids.append(r["id"])
     if abs(net) > 0.001:
         return None
-    return ids
+    return ids or None
 
 
 def reconcile_option_orphans(api, conn, positions, today,
@@ -1462,6 +1496,7 @@ def reconcile_option_orphans(api, conn, positions, today,
                   "assignment / exercise) — option leg auto-closed; "
                   "realized cash via activities capture")
         oid = _g(leg, "order_id")
+        entry_order = None
         if oid:
             entry_order, _exc = _retrying_call(api.get_order, oid)
             if entry_order is not None:
@@ -1540,7 +1575,14 @@ def reconcile_option_orphans(api, conn, positions, today,
                     "new_status": "closed",
                 })
                 continue
-            _ev = _external_close_evidence(api, occ)
+            try:
+                _own_oids = [r[0] for r in conn.execute(
+                    "SELECT order_id FROM trades WHERE occ_symbol = ? "
+                    "AND order_id IS NOT NULL", (occ,)).fetchall()]
+            except sqlite3.Error:
+                _own_oids = []
+            _ev = _external_close_evidence(api, occ,
+                                           own_order_ids=_own_oids)
             if _ev is None:
                 logger.warning(
                     "Reconcile: option leg #%s %s is account-flat in "
@@ -1560,14 +1602,38 @@ def reconcile_option_orphans(api, conn, positions, today,
             "qty": float(_g(leg, "qty") or 0), "kind": kind,
             "new_status": new_status,
         }
+        # 2026-08-25 — FILL-TRUTH INVARIANT support: before writing a
+        # filled entry off as externally closed, stamp its broker fill
+        # price if the fill machine hadn't yet. The cash algebra and
+        # the realized FIFO keep fill-bearing auto_closed_external rows,
+        # so the stamp is what guarantees this row's real money can
+        # never vanish with the label.
+        _fill_stamp = None
+        if kind == "auto_closed" and entry_order is not None:
+            try:
+                _fill_stamp = float(
+                    getattr(entry_order, "filled_avg_price", 0) or 0
+                ) or None
+            except (TypeError, ValueError):
+                _fill_stamp = None
         if apply_changes:
             try:
-                conn.execute(
-                    "UPDATE trades SET status = ?, pnl = ?, "
-                    "reason = COALESCE(reason || ' | ', '') || ? "
-                    "WHERE id = ?",
-                    (new_status, new_pnl, reason, _g(leg, "id")),
-                )
+                if "fill_price" in _cols and _fill_stamp is not None:
+                    conn.execute(
+                        "UPDATE trades SET status = ?, pnl = ?, "
+                        "fill_price = COALESCE(NULLIF(fill_price, 0), ?), "
+                        "reason = COALESCE(reason || ' | ', '') || ? "
+                        "WHERE id = ?",
+                        (new_status, new_pnl, _fill_stamp, reason,
+                         _g(leg, "id")),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE trades SET status = ?, pnl = ?, "
+                        "reason = COALESCE(reason || ' | ', '') || ? "
+                        "WHERE id = ?",
+                        (new_status, new_pnl, reason, _g(leg, "id")),
+                    )
                 conn.commit()
             except sqlite3.Error as exc:
                 logger.warning(

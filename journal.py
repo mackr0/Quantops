@@ -2763,12 +2763,29 @@ def get_virtual_cash(db_path=None, initial_capital=100000.0):
             has_fill = False
             has_dq = False
         try:
+            # 2026-08-25 — FILL-TRUTH INVARIANT (the five Exp2 premium
+            # holes): a row whose order actually FILLED (fill_price
+            # stamped by the fill machine or the orphan pass) NEVER
+            # leaves the cash algebra, no matter what status any
+            # reconcile path later writes on it. 'auto_closed_external'
+            # drops out of cash only when the row bears no fill — a
+            # future mislabel is then a cosmetic status error, not a
+            # vanished premium. (Legacy schema without fill_price keeps
+            # the old wholesale exclusion.)
             _cash_excluded = (
                 "'pending_protective', 'canceled', 'expired', "
                 "'rejected', 'done_for_day', "
-                "'auto_reconciled_phantom_close', "
-                "'auto_closed_external'"
+                "'auto_reconciled_phantom_close'"
             )
+            if has_fill:
+                _ace_guard = (
+                    " AND (COALESCE(status, 'open') != "
+                    "'auto_closed_external' "
+                    "OR COALESCE(fill_price, 0) > 0)"
+                )
+            else:
+                _cash_excluded += ", 'auto_closed_external'"
+                _ace_guard = ""
             _price_expr = (
                 "COALESCE(NULLIF(fill_price, 0), price)"
                 if has_fill else "price"
@@ -2779,7 +2796,7 @@ def get_virtual_cash(db_path=None, initial_capital=100000.0):
                     f"SELECT side, qty, {_price_expr}, occ_symbol "
                     "FROM trades "
                     "WHERE COALESCE(status, 'open') NOT IN "
-                    f"({_cash_excluded}){_dq}"
+                    f"({_cash_excluded}){_ace_guard}{_dq}"
                 ).fetchall()
             else:
                 rows = [
@@ -2787,7 +2804,7 @@ def get_virtual_cash(db_path=None, initial_capital=100000.0):
                     for r in conn.execute(
                         f"SELECT side, qty, {_price_expr} FROM trades "
                         "WHERE COALESCE(status, 'open') NOT IN "
-                        f"({_cash_excluded}){_dq}"
+                        f"({_cash_excluded}){_ace_guard}{_dq}"
                     ).fetchall()
                 ]
         except Exception:
@@ -3082,14 +3099,32 @@ def compute_leg_realized(db_path=None):
         # on a pending_fill close and the decomposition transiently breaks. An
         # earlier pending_fill guard caused exactly that and was reverted.
         dq_guard = " AND data_quality IS NULL" if "data_quality" in cols else ""
+        # 2026-08-25 — FILL-TRUTH INVARIANT (mirrors get_virtual_cash):
+        # a fill-bearing 'auto_closed_external' row stays in the FIFO
+        # stream so its pair completes (own exit row, or the
+        # activities-captured close row) and the pair's realized P&L is
+        # booked — a mislabeled entry can no longer erase real money
+        # from the realized side. Fill-less ace rows stay excluded.
+        if "fill_price" in cols:
+            ace_guard = (
+                " AND (COALESCE(status, 'open') != "
+                "'auto_closed_external' "
+                "OR COALESCE(fill_price, 0) > 0)")
+            dead_list = ("('pending_protective', 'canceled', 'expired', "
+                         " 'rejected', 'done_for_day', "
+                         " 'auto_reconciled_phantom_close')")
+        else:
+            ace_guard = ""
+            dead_list = ("('pending_protective', 'canceled', 'expired', "
+                         " 'rejected', 'done_for_day', "
+                         " 'auto_reconciled_phantom_close', "
+                         " 'auto_closed_external')")
         try:
             rows = conn.execute(
                 f"SELECT id, symbol, side, qty, {px_expr}, "
                 f"{occ_expr}, pnl FROM trades "
                 "WHERE COALESCE(status, 'open') NOT IN "
-                "('pending_protective', 'canceled', 'expired', "
-                " 'rejected', 'done_for_day', "
-                " 'auto_reconciled_phantom_close', 'auto_closed_external') "
+                f"{dead_list}{ace_guard} "
                 f"{dq_guard} "
                 "ORDER BY timestamp ASC, id ASC"
             ).fetchall()

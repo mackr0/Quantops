@@ -60,7 +60,10 @@ def profile_db(tmp_path):
         # phantom-close — broker never filled: no money moved
         ("MSFT", None, "buy", 3, 200.0, 0, "auto_reconciled_phantom_close",
          None),
-        # externally-closed option leg: cash booked by activities pass
+        # externally-closed option leg WITH a real fill: counts in cash
+        # (fill-truth invariant 2026-08-25 — the old "cash booked by
+        # activities pass" assumption was the five-premium hole; the
+        # activities pass never books ordinary entry fills) → -122
         ("CVX", "CVX260717P00170000", "buy", 1, 1.22, 1.22,
          "auto_closed_external", None),
         # option leg: 100x multiplier — sell-to-open credit +122
@@ -86,8 +89,11 @@ class TestGetVirtualCash:
         cash = get_virtual_cash(profile_db, initial_capital=10_000.0)
         info = get_virtual_account_info(profile_db,
                                         initial_capital=10_000.0)
+        # -1010 open buy, +550 closed sell, -122 fill-bearing
+        # externally-closed option entry (fill-truth invariant),
+        # +122 open sell-to-open credit.
         assert cash == pytest.approx(
-            10_000.0 - 1010.0 + 550.0 + 122.0)
+            10_000.0 - 1010.0 + 550.0 - 122.0 + 122.0)
         assert round(cash, 2) == info["cash"]
 
     def test_negative_cash_logs_error(self, profile_db, caplog):
