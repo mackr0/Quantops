@@ -55,6 +55,22 @@ a PERSISTENT drift is always real. **VERIFIED** (books-level fixtures:
 the 08-25 incident shape — mislabeled entry + own closed exit — yields
 exact cash and realized with the mislabel in place).
 
+**In-flight own-order attribution on cash/value parity (2026-08-26)**
+— the journal books an order at submit; the broker books it at the
+fill, seconds-to-minutes later; a snapshot mid-handshake is latency,
+not desync. Before flagging, both parity audits now attribute the gap
+to the account's specific in-flight OWN orders (journal rows younger
+than 30 minutes lacking a fill stamp or in the pending_fill exit
+window, valued against their own broker order's actual fills — cash
+side `broker − journal` per order; value side the negative, stock-only
+to match value parity's option exclusion). A gap fully explained is
+reported as `in_flight` with the order ids and never ERRORs; only the
+residual no own order explains alarms. Fail-closed: an unverifiable
+order attributes nothing, and a row older than the window never
+qualifies — a stuck fill machine still alarms. **VERIFIED** (fixtures:
+the BMNR cover shape suppressed on both audits; stale row, partial
+attribution, and unverifiable order all still alarm).
+
 **Nav badge** — same collector at a FIXED 24h window regardless of
 the page's window; badge shows errors else warnings. Documented as an
 intentional page-vs-badge window difference. **VERIFIED**

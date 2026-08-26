@@ -137,6 +137,11 @@ def test_working_tree_has_changelog_update_when_modifying_production_source():
 # emergency rollbacks). Keep this list SHORT — each entry should
 # have a one-line justification.
 CHANGELOG_PARITY_EXEMPT_SHAS = {
+    # 2026-08-25 — docs-only pass: the journal.py hunk is a DOCSTRING
+    # correction (cash-history note inside get_virtual_account_info);
+    # the substantive change and its CHANGELOG entry shipped in the
+    # preceding commit 141e69c (fill-truth invariant).
+    "39e28ab0179470fe6b2ff65cc5ad6ae196c49e5b",
     # 2026-07-25 — pre-existing uncommitted backup-rotation changes
     # (predating the session) surfaced by droplet-sync.sh's pre-flight
     # gate and committed with provenance; the CHANGELOG entry ships in

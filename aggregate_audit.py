@@ -700,6 +700,7 @@ def audit_account_value_parity(
             continue
         by_account[acct]["journal_value"] += v
         by_account[acct]["profile_ids"].append(p_id)
+        by_account[acct].setdefault("db_paths", []).append(ctx.db_path)
 
     accounts: Dict[int, Dict] = {}
     drift: List[Dict] = []
@@ -736,12 +737,28 @@ def audit_account_value_parity(
         }
         accounts[acct] = row
         if abs(d) > tol:
-            # broker_orphan: broker holds more dollars than profiles claim
-            # journal_phantom: profiles claim more dollars than broker holds
-            row["kind"] = (
-                "broker_value_orphan" if d > 0 else "journal_value_phantom"
-            )
-            drift.append(row)
+            # In-flight attribution (2026-08-26): a mid-handshake fill
+            # moves value opposite to cash (position gained = cash
+            # paid), so the value residual is drift PLUS the cash-side
+            # attribution. Stock-only here — value parity excludes
+            # option marks on both sides.
+            att = _inflight_cash_attribution(
+                api, info.get("db_paths") or [], include_options=False)
+            residual = round(d + att["total"], 2)
+            row["in_flight"] = att["orders"]
+            row["attributed"] = round(-att["total"], 2)
+            row["residual"] = residual
+            if att["orders"] and abs(residual) <= tol:
+                row["kind"] = "in_flight"
+            else:
+                # broker_orphan: broker holds more dollars than
+                # profiles claim; journal_phantom: profiles claim more
+                # dollars than broker holds
+                row["kind"] = (
+                    "broker_value_orphan" if d > 0
+                    else "journal_value_phantom"
+                )
+                drift.append(row)
 
     return {"accounts": accounts, "drift": drift, "errored": errored,
             "unverifiable": unverifiable}
@@ -874,6 +891,119 @@ def _account_fee_net(api) -> float:
     return total
 
 
+# ─────────────────────────────────────────────────────────────────────
+# In-flight own-order attribution (2026-08-26)
+#
+# The parity audits compare two ledgers that legitimately describe
+# different INSTANTS during a fill handshake: the journal books an
+# order at submit (decision price, or nothing until the price lands)
+# while the broker books it at the fill, seconds-to-minutes later. A
+# snapshot taken mid-handshake used to report that latency as drift
+# (the TSM $1.9K/$16.8K and BMNR $6.4K "phantoms" of 08-25/26 — all
+# zero one cycle later). The operator's standing concept is that every
+# money movement is attributable to an OWN order id — so the audits now
+# USE that: before flagging, the gap is attributed to the account's
+# specific in-flight orders (journal rows younger than 30 minutes that
+# lack a fill stamp or sit in the pending_fill exit window, valued
+# against their OWN broker order's actual fills). Only the residual no
+# own order explains can alarm. Fail-closed at every edge: an
+# unverifiable order attributes nothing, and a row older than the
+# window is a REAL desync and never qualifies — a stuck fill machine
+# still screams.
+# ─────────────────────────────────────────────────────────────────────
+_INFLIGHT_WINDOW_MIN = 30
+_INFLIGHT_ROW_CAP = 40  # per profile — bounds broker order lookups
+
+
+def _inflight_cash_attribution(api, db_paths,
+                               include_options: bool = True) -> Dict:
+    """Expected (broker − journal) cash discrepancy contributed by
+    rows currently mid fill-handshake across `db_paths`, each valued
+    against its OWN broker order's actual fills.
+
+    Returns {"total": float, "orders": [{order_id, symbol, side,
+    amount}]}. Rows whose order can't be verified contribute nothing
+    (the gap then stays unexplained and alarms)."""
+    import sqlite3 as _sqlite3
+    from order_status_cache import get_order_cached
+    out: Dict = {"total": 0.0, "orders": []}
+    for db_path in db_paths:
+        try:
+            conn = _sqlite3.connect(db_path)
+            conn.row_factory = _sqlite3.Row
+        except Exception as exc:
+            logger.warning(
+                "inflight attribution: cannot open %s: %s — its rows "
+                "stay unattributed (gap will alarm)", db_path, exc)
+            continue
+        try:
+            rows = conn.execute(
+                "SELECT id, symbol, side, qty, price, fill_price, "
+                "       occ_symbol, order_id, "
+                "       COALESCE(status, 'open') AS status "
+                "FROM trades "
+                "WHERE COALESCE(status, 'open') IN "
+                "      ('open', 'pending_fill') "
+                "  AND order_id IS NOT NULL "
+                "  AND (COALESCE(fill_price, 0) <= 0 "
+                "       OR COALESCE(status, '') = 'pending_fill') "
+                # trades.timestamp is ISO-with-'T'; datetime('now') is
+                # space-separated — normalize before comparing or every
+                # same-day 'T' row sorts after the cutoff.
+                "  AND REPLACE(timestamp, 'T', ' ') >= "
+                "      datetime('now', ?) "
+                "LIMIT ?",
+                ("-%d minutes" % _INFLIGHT_WINDOW_MIN,
+                 _INFLIGHT_ROW_CAP),
+            ).fetchall()
+        except _sqlite3.Error as exc:
+            logger.warning(
+                "inflight attribution: query failed on %s: %s — its "
+                "rows stay unattributed (gap will alarm)", db_path, exc)
+            conn.close()
+            continue
+        conn.close()
+        for r in rows:
+            if r["occ_symbol"] and not include_options:
+                continue
+            qty_j = float(r["qty"] or 0)
+            if qty_j <= 0:
+                continue
+            mult = 100.0 if r["occ_symbol"] else 1.0
+            side = (r["side"] or "").lower()
+            sign = -1.0 if side in ("buy", "cover") else 1.0
+            pxv = float(r["fill_price"] or 0) or float(r["price"] or 0)
+            c_journal = sign * qty_j * pxv * mult if pxv > 0 else 0.0
+            try:
+                order = get_order_cached(api, r["order_id"])
+            except Exception as exc:
+                logger.warning(
+                    "inflight attribution: order %s lookup failed: %s "
+                    "— unverifiable, not attributed", r["order_id"], exc)
+                order = None
+            if order is None:
+                continue  # unverifiable is not an explanation
+            try:
+                fq = float(getattr(order, "filled_qty", 0) or 0)
+                fav = float(getattr(order, "filled_avg_price", 0) or 0)
+            except (TypeError, ValueError) as exc:
+                logger.warning(
+                    "inflight attribution: order %s fill fields "
+                    "unparseable (%s) — not attributed",
+                    r["order_id"], exc)
+                continue
+            c_broker = sign * fq * fav * mult
+            amount = round(c_broker - c_journal, 2)
+            if abs(amount) < 0.01:
+                continue
+            out["total"] = round(out["total"] + amount, 2)
+            out["orders"].append({
+                "order_id": r["order_id"], "symbol": r["symbol"],
+                "side": side, "amount": amount,
+            })
+    return out
+
+
 def audit_account_cash_parity(
     profile_ids: Iterable[int],
     tolerance_abs: float = _CASH_TOLERANCE_ABS,
@@ -932,6 +1062,7 @@ def audit_account_cash_parity(
             continue
         by_account[acct]["journal_cash"] += cash
         by_account[acct]["profile_ids"].append(p_id)
+        by_account[acct].setdefault("db_paths", []).append(ctx.db_path)
 
     accounts: Dict[int, Dict] = {}
     drift: List[Dict] = []
@@ -980,10 +1111,22 @@ def audit_account_cash_parity(
         }
         accounts[acct] = row
         if abs(d) > tol:
-            row["kind"] = (
-                "broker_cash_orphan" if d > 0 else "journal_cash_phantom"
-            )
-            drift.append(row)
+            # In-flight attribution (2026-08-26): explain the gap by
+            # the account's own mid-handshake orders before alarming.
+            att = _inflight_cash_attribution(
+                api, info.get("db_paths") or [])
+            residual = round(d - att["total"], 2)
+            row["in_flight"] = att["orders"]
+            row["attributed"] = att["total"]
+            row["residual"] = residual
+            if att["orders"] and abs(residual) <= tol:
+                row["kind"] = "in_flight"
+            else:
+                row["kind"] = (
+                    "broker_cash_orphan" if d > 0
+                    else "journal_cash_phantom"
+                )
+                drift.append(row)
 
     return {"accounts": accounts, "drift": drift, "errored": errored,
             "unverifiable": unverifiable}
