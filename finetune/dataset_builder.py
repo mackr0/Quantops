@@ -294,29 +294,85 @@ def build_example(row: Dict[str, Any], *,
     }
 
 
+def _fill_from_cycle(row: Dict[str, Any], prompt: Optional[str],
+                     raw: Optional[str]) -> Dict[str, Any]:
+    """2026-08-26 — cycle-join enrichment. Since 2026-07-02 the prompt
+    and raw response live ONCE on the ai_cycles row (per-prediction
+    storage duplicated the same bytes onto every candidate of the
+    cycle, 6.15x bloat) and the prediction row carries only cycle_id.
+    This builder was written against the pre-07-02 shape and rejected
+    100% of post-move rows as "stub" (the zero-example corpus of
+    2026-08-26). Row-level values, when present (pre-07-02 rows),
+    always win — enrichment only fills gaps."""
+    if not row.get("prompt_text") and prompt:
+        row["prompt_text"] = prompt
+    if not row.get("raw_response_json") and raw:
+        row["raw_response_json"] = raw
+    return row
+
+
 def _iter_live_rows(profile_db: str) -> Iterable[Dict[str, Any]]:
-    """Yield resolved ai_predictions rows from a profile journal."""
+    """Yield resolved ai_predictions rows from a profile journal,
+    joined to their cycle's prompt/raw response (see _fill_from_cycle)."""
     import sqlite3
     try:
         with closing(sqlite3.connect(profile_db)) as conn:
             conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT * FROM ai_predictions WHERE status = 'resolved'"
-            ).fetchall()
+            try:
+                rows = conn.execute(
+                    "SELECT p.*, c.prompt_text AS _cycle_prompt, "
+                    "       c.raw_response_json AS _cycle_raw "
+                    "FROM ai_predictions p "
+                    "LEFT JOIN ai_cycles c ON c.cycle_id = p.cycle_id "
+                    "WHERE p.status = 'resolved'"
+                ).fetchall()
+            except sqlite3.OperationalError:
+                # Pre-07-02 journal without ai_cycles — row-level
+                # prompt storage; no join needed.
+                rows = conn.execute(
+                    "SELECT * FROM ai_predictions WHERE status = 'resolved'"
+                ).fetchall()
     except sqlite3.Error as exc:
         logger.warning("dataset_builder: read %s failed: %s",
                        profile_db, exc)
         return
     for r in rows:
-        yield dict(r)
+        d = dict(r)
+        yield _fill_from_cycle(d, d.pop("_cycle_prompt", None),
+                               d.pop("_cycle_raw", None))
 
 
 def _iter_archive_rows(archive_root: str) -> Iterable[Dict[str, Any]]:
-    """Yield resolved rows from predictions_archive/*/*/predictions.jsonl."""
+    """Yield resolved rows from predictions_archive/*/*/predictions.jsonl,
+    each joined to its cycle's prompt/raw response from the dump's own
+    cycles.jsonl (see _fill_from_cycle — post-2026-07-02 rows carry
+    only cycle_id). Per-dump maps: cycle ids never cross dumps."""
     root = Path(archive_root)
     if not root.exists():
         return
     for jsonl in root.glob("*/*/predictions.jsonl"):
+        cyc: Dict[str, Tuple[Optional[str], Optional[str]]] = {}
+        cpath = jsonl.parent / "cycles.jsonl"
+        if cpath.exists():
+            try:
+                with open(cpath) as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            c = json.loads(line)
+                        except (ValueError, TypeError):
+                            continue
+                        cid = c.get("cycle_id")
+                        if cid:
+                            cyc[cid] = (c.get("prompt_text"),
+                                        c.get("raw_response_json"))
+            except OSError as exc:
+                logger.warning(
+                    "dataset_builder: cycles read %s failed: %s — this "
+                    "dump's post-07-02 rows will lack prompts and be "
+                    "filtered", cpath, exc)
         try:
             with open(jsonl) as fh:
                 for line in fh:
@@ -324,9 +380,12 @@ def _iter_archive_rows(archive_root: str) -> Iterable[Dict[str, Any]]:
                     if not line:
                         continue
                     try:
-                        yield json.loads(line)
+                        row = json.loads(line)
                     except (ValueError, TypeError):
                         continue
+                    prompt, raw = cyc.get(row.get("cycle_id"),
+                                          (None, None))
+                    yield _fill_from_cycle(row, prompt, raw)
         except OSError as exc:
             logger.warning("dataset_builder: archive read %s failed: %s",
                            jsonl, exc)

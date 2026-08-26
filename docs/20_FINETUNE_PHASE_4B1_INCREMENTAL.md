@@ -43,7 +43,9 @@ Depends on: B1 (archive-before-reset) ✅ shipped 2026-05-19; B2 (multi-horizon 
 
 **Shipped so far (2026-05-21):** `finetune/dataset_builder.py` (hindsight relabel + look-ahead guard + OpenAI JSONL + train/val/eval split, pooling live journals + `predictions_archive/`) and `finetune/model_registry.py` (`finetune_models` / `finetune_evaluations` tables + lifecycle CRUD). Tests: `test_finetune_dataset_builder.py` (24), `test_finetune_no_lookahead_bias.py` (3). NOT wired to live trading — no flag, no scheduler task yet.
 
-**Still to build:** `training_runner` / `job_monitor` / `evaluator` / `inference`, scheduler wiring, `/finetune` dashboard — deferred until the vendor path is chosen (4b.1 OpenAI §6 vs 4b.2 local M2 Max LoRA §16.1). Both consume the same dataset_builder corpus.
+**Shipped 2026-08-26 (docs/25 step 4.5 activation):** the path is **4b.2 local M2 Max LoRA (§16.1)**. `finetune/local_train.py` is the training runner + evaluator (build-corpus / train / eval; mlx-lm LoRA, batch-incremental via adapter resume, max-seq-length 8192 for the ~9-10K-token production prompts; eval = adapter vs bare base on held-out production prompts). The dataset builder was fixed the same day to JOIN predictions to their cycle's prompt/raw response (per-row storage ended 2026-07-02; the never-activated builder had been rejecting 100% of post-move rows as stubs). First real corpus: 4,120 examples from 46,583 archived resolved predictions (100.0% prompt-joinable). Default base: ungated Qwen2.5-7B-Instruct (Llama-3.1-8B one flag away behind its HF license gate).
+
+**Still to build:** `inference` (`_call_custom` OpenAI-compatible provider in ai_providers) + hosting pick + shadow-arm wiring — gated on the first adapter BEATING the bare base on the held-out eval; `/finetune` dashboard visibility.
 Targets the docs/17 Phase 4b workstream; supersedes the "big-batch" implicit assumption with an incremental architecture that's ~50× cheaper.
 
 ---
