@@ -137,6 +137,12 @@ def test_working_tree_has_changelog_update_when_modifying_production_source():
 # emergency rollbacks). Keep this list SHORT — each entry should
 # have a one-line justification.
 CHANGELOG_PARITY_EXEMPT_SHAS = {
+    # 2026-08-27 — batch-1 fine-tune iteration pair (eval-scorer fix,
+    # then cycle-grouped corpus); their consolidated CHANGELOG entry
+    # ships in the immediately following commit ("Batch-1 verdict"
+    # entry, 2026-08-27) — same pattern as the 06-04 series below.
+    "d4eac56ec8b7d37d999c51e69534b1877d2c200c",
+    "2e7d7bb12383c60f9d209306a217f3be60aca3cf",
     # 2026-08-25 — docs-only pass: the journal.py hunk is a DOCSTRING
     # correction (cash-history note inside get_virtual_account_info);
     # the substantive change and its CHANGELOG entry shipped in the
