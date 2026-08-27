@@ -137,6 +137,11 @@ def test_working_tree_has_changelog_update_when_modifying_production_source():
 # emergency rollbacks). Keep this list SHORT — each entry should
 # have a one-line justification.
 CHANGELOG_PARITY_EXEMPT_SHAS = {
+    # 2026-08-27 — mid-incident emergency ship (frozen-scheduler day):
+    # the db_integrity sweep cap went out alone to restore trading;
+    # its CHANGELOG entry ships in the immediately following commit
+    # (the consolidated "frozen-scheduler incident" entry).
+    "6925a913c0c1b3aa2d6a6969cd01323927ea3c8a",
     # 2026-08-27 — batch-1 fine-tune iteration pair (eval-scorer fix,
     # then cycle-grouped corpus); their consolidated CHANGELOG entry
     # ships in the immediately following commit ("Batch-1 verdict"

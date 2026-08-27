@@ -2262,6 +2262,14 @@ def get_virtual_positions(db_path=None, price_fetcher=None,
                 "COALESCE(NULLIF(fill_price, 0), price)"
                 if "fill_price" in _vp_cols else "price"
             )
+            # Fill evidence per row (2026-08-27): gates whether a
+            # CLOSED buy may consume short lots (cover-first). Schemas
+            # without fill_price treat every row as fill-less — closed
+            # rows there never consume, matching their legacy netting.
+            _vp_hasfill = (
+                "COALESCE(fill_price, 0) > 0"
+                if "fill_price" in _vp_cols else "0"
+            )
             # Exclude rows tagged with a known data-corruption marker
             # (e.g. 'phantom_stop_2026_05_11'). The reconciler and the
             # decomposition check already filter these; position truth —
@@ -2275,7 +2283,8 @@ def get_virtual_positions(db_path=None, price_fetcher=None,
             try:
                 rows = conn.execute(
                     f"SELECT symbol, side, qty, {_vp_price} AS price, "
-                    "timestamp, occ_symbol, status "
+                    "timestamp, occ_symbol, status, "
+                    f"{_vp_hasfill} AS has_fill "
                     "FROM trades "
                     # Status-aware filter. Pre-2026-05-16 only
                     # 'canceled' was excluded, which left two leaks:
@@ -2320,10 +2329,21 @@ def get_virtual_positions(db_path=None, price_fetcher=None,
                     # and left ~$187K of phantom equity. Unconsumed
                     # closed-buy lots are removed right after this FIFO
                     # pass, so a status-flip close with no sell can't show
-                    # as a phantom long. Closed shorts and closed OPTION
-                    # buys stay excluded (resolved positions).
+                    # as a phantom long.
+                    # 2026-08-27 — closed STOCK shorts join the stream too
+                    # (the CRCL/BABA phantom-long class): short protective
+                    # buy-backs are journaled side='buy', so with the
+                    # closed short EXCLUDED its closed buy-back had no
+                    # short to consume and masqueraded as a long entry
+                    # lot; the next same-symbol sell then consumed the
+                    # phantom lot instead of its own entry (+106/+139/
+                    # +156/+187 journal-phantom longs, kill switch).
+                    # This makes the stream congruent with
+                    # compute_leg_realized. Closed OPTION entries stay
+                    # excluded (resolved positions; option close
+                    # semantics live in the occ-guarded branches).
                     "     AND (COALESCE(status, 'open') != 'closed' "
-                    "          OR (side = 'buy' AND occ_symbol IS NULL)))"
+                    "          OR occ_symbol IS NULL))"
                     "    OR "
                     "    (side IN ('sell', 'cover') AND "
                     # 2026-07-14 — 'auto_reconciled_phantom_close'
@@ -2479,6 +2499,7 @@ def get_virtual_positions(db_path=None, price_fetcher=None,
         row_ts = row[4] if len(row) > 4 else None
         occ_symbol = row[5] if len(row) > 5 else None
         row_status = (row[6] if len(row) > 6 else None) or "open"
+        has_fill = bool(row[7]) if len(row) > 7 else False
         if qty <= 0 or price <= 0:
             # A NEGATIVE price is unambiguously bad data (the combo-net-
             # as-per-leg-price artifact) — never a pending leg, which
@@ -2519,16 +2540,44 @@ def get_virtual_positions(db_path=None, price_fetcher=None,
             pos_meta[key] = {"symbol": symbol, "occ_symbol": occ_symbol}
 
         if side == "buy":
-            # 3rd element tags a CLOSED stock buy (now included in the
-            # FIFO timeline, 2026-06-18). It still consumes sells in order
-            # (so a round-trip nets flat and a real oversell surfaces as a
-            # short), but any UNCONSUMED remainder is dropped before the
-            # positions are built — a closed buy is gone, never a held
-            # long. Open buys carry False and stay as normal lots.
-            long_lots.setdefault(key, []).append(
-                [qty, price, row_status == "closed"])
+            # 2026-08-27 — COVER-FIRST, mirroring compute_leg_realized:
+            # short protective buy-backs are journaled side='buy', so a
+            # buy must consume open short lots before any remainder
+            # opens a long. Without this, a completed short round-trip's
+            # buy-back masqueraded as a long entry lot and shielded the
+            # next same-symbol entry from its own sell (the CRCL/BABA
+            # phantom-long class). A CLOSED buy consumes only when it
+            # bears a FILL — a status-flipped closed row with no fill
+            # moved no shares and must never eat a live short (the
+            # 07-02 flipped-protective contract; such rows still enter
+            # as tagged long lots and are dropped post-pass).
+            remaining = qty
+            if row_status != "closed" or has_fill:
+                sl = short_lots.setdefault(key, [])
+                while remaining > 0 and sl:
+                    consumed = min(sl[0][0], remaining)
+                    sl[0][0] -= consumed
+                    remaining -= consumed
+                    if sl[0][0] <= 0.001:
+                        sl.pop(0)
+            # 3rd element tags a CLOSED stock buy (included in the
+            # FIFO timeline, 2026-06-18). It still consumes sells in
+            # order (so a round-trip nets flat and a real oversell
+            # surfaces as a short), but any UNCONSUMED remainder is
+            # dropped before the positions are built — a closed buy is
+            # gone, never a held long. Open buys carry False.
+            if remaining > 0:
+                long_lots.setdefault(key, []).append(
+                    [remaining, price, row_status == "closed"])
         elif side == "short":
-            short_lots.setdefault(key, []).append([qty, price])
+            # 3rd element mirrors the closed-buy tag (2026-08-27):
+            # closed stock shorts are in the stream so their buy-backs
+            # consume them; an UNCONSUMED closed-short remainder (a
+            # status-flip close with no cover row) is dropped before
+            # positions are built — a closed short is resolved, never a
+            # held short.
+            short_lots.setdefault(key, []).append(
+                [qty, price, row_status == "closed"])
         elif side == "sell":
             # Closes a long. FIFO-consume from OPEN long lots first.
             remaining = qty
@@ -2599,6 +2648,14 @@ def get_virtual_positions(db_path=None, price_fetcher=None,
         if any(len(lot) > 2 and lot[2] for lot in lots):
             long_lots[_k] = [lot for lot in lots
                              if not (len(lot) > 2 and lot[2])]
+    # 2026-08-27 — symmetric drop for UNCONSUMED closed-origin SHORT
+    # lots (see the side=='short' tag above). Oversell-spawned short
+    # lots from the sell branch carry no tag and are never dropped.
+    for _k in short_lots:
+        lots = short_lots[_k]
+        if any(len(lot) > 2 and lot[2] for lot in lots):
+            short_lots[_k] = [lot for lot in lots
+                              if not (len(lot) > 2 and lot[2])]
 
     # Build position dicts. A position-key can have BOTH a long and
     # a short open (rare for stock; common for option spreads where

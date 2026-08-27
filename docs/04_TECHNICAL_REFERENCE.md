@@ -392,7 +392,7 @@ Run: `venv/bin/python -m pytest tests/ -q`.
 
 Test discipline:
 
-- 6,277 tests, zero skipped (runtime `pytest.skip()` guards were systematically removed 2026-06-24; a structural guard now blocks broad-`except`→`skip`).
+- 6,985 tests, zero skipped (runtime `pytest.skip()` guards were systematically removed 2026-06-24; a structural guard now blocks broad-`except`→`skip`).
 - pytest-randomly for order-independence.
 - 30s default timeout per test.
 - Mocked external APIs (no network calls).
