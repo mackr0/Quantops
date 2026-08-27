@@ -163,6 +163,57 @@ class TestCycleGroupedExamples:
         assert m["total_examples"] == 2
 
 
+class TestOptionLabeling:
+    """2026-08-27 (operator: options are half the system — they train
+    too, as the NEXT task, not future work). Option decisions label by
+    PREMIUM return, never stock-%: clear win keeps the action, clear
+    loss becomes HOLD (omission), the ambiguous band skips."""
+
+    def test_premium_win_kept_loss_omitted_gray_skipped(self, tmp_path):
+        preds = [
+            dict(_pred_row(pid=1), symbol="CVX",
+                 predicted_signal="OPTIONS",
+                 occ_symbol="CVX260821P00190000",
+                 actual_outcome="win",
+                 actual_return_pct=64.0, actual_return_pct_net=61.0),
+            dict(_pred_row(pid=2), symbol="TGT",
+                 predicted_signal="MULTILEG_OPEN",
+                 occ_symbol="TGT260918C00165000",
+                 actual_outcome="loss",
+                 actual_return_pct=-95.0, actual_return_pct_net=-95.4),
+            dict(_pred_row(pid=3), symbol="JPM",
+                 predicted_signal="OPTIONS",
+                 occ_symbol="JPM261002C00375000",
+                 actual_outcome="neutral",
+                 actual_return_pct=5.0, actual_return_pct_net=4.0),
+        ]
+        root = _archive(
+            tmp_path, preds,
+            [{"cycle_id": "cyc-1", "prompt_text": _PROMPT,
+              "raw_response_json": _RAW}])
+        out = tmp_path / "out"
+        m = build_dataset([], str(out), archive_root=root,
+                          eval_holdout=0)
+        assert m["labeled_rows"] == 2  # gray-zone JPM skipped
+        assert m["label_distribution"] == {"OPTIONS": 1, "HOLD": 1}
+        line = json.loads(
+            (out / "train.jsonl").read_text().splitlines()[0])
+        target = json.loads(line["messages"][-1]["content"])
+        by_sym = {t["symbol"]: t["action"] for t in target["trades"]}
+        assert by_sym == {"CVX": "OPTIONS"}, (
+            "the premium winner keeps its action; the premium loser "
+            "is OMITTED (hindsight HOLD)")
+
+    def test_option_label_units(self):
+        from finetune.dataset_builder import option_hindsight_label
+        assert option_hindsight_label("MULTILEG_OPEN", 108.0) == \
+            "MULTILEG_OPEN"
+        assert option_hindsight_label("OPTIONS", -95.4) == "HOLD"
+        assert option_hindsight_label("OPTIONS", 5.0) is None
+        assert option_hindsight_label("OPTIONS", 20.0) == "OPTIONS"
+        assert option_hindsight_label("OPTIONS", -20.0) == "HOLD"
+
+
 class TestLiveCycleJoin:
     def _db(self, tmp_path, with_cycles=True):
         path = str(tmp_path / "quantopsai_profile_5.db")

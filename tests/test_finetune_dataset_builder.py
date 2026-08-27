@@ -311,9 +311,13 @@ class TestBuildDataset:
         """A prediction id present in BOTH a live DB and the archive
         is counted once."""
         from finetune.dataset_builder import build_dataset
-        db = str(tmp_path / "p.db")
+        # 2026-08-27 — dedup is namespaced by PROFILE (bare-id dedup
+        # swallowed 88% of the corpus across profiles), so the live DB
+        # must carry the production name for the same profile as the
+        # archive dump.
+        db = str(tmp_path / "quantopsai_profile_16.db")
         self._make_profile_db(db, [_quality_row(id=1, symbol="AAPL")])
-        # Archive with the SAME id=1
+        # Archive with the SAME profile and id=1
         arch = tmp_path / "archive" / "16" / "20260519_000000"
         arch.mkdir(parents=True)
         with open(arch / "predictions.jsonl", "w") as fh:

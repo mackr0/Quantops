@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import random
+import re
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
@@ -163,9 +164,9 @@ def assert_no_lookahead(row: Dict[str, Any]) -> None:
     )
 
 
-def _is_training_quality(row: Dict[str, Any]) -> bool:
-    """Filter (docs/20 §5.2). Only rows we can build a clean,
-    non-leaking, unambiguous training example from."""
+def _base_quality(row: Dict[str, Any]) -> bool:
+    """Shared quality checks (docs/20 §5.2): resolved, real prompt,
+    real response, real outcome, untainted."""
     if (row.get("status") or "").lower() != "resolved":
         return False
     prompt = row.get("prompt_text") or ""
@@ -182,13 +183,46 @@ def _is_training_quality(row: Dict[str, Any]) -> bool:
     # data_quality tagged → corruption (e.g. tainted_equity); exclude.
     if row.get("data_quality"):
         return False
-    # Option/multileg rows: premium P&L, not stock-% — out of scope
-    # for this builder.
-    if (row.get("predicted_signal") or "").upper() in _OPTION_ACTIONS:
+    return True
+
+
+def _is_option_row(row: Dict[str, Any]) -> bool:
+    return bool(row.get("occ_symbol")) or (
+        (row.get("predicted_signal") or "").upper() in _OPTION_ACTIONS)
+
+
+def _is_training_quality(row: Dict[str, Any]) -> bool:
+    """Stock-path filter. Option/multileg rows are labeled by the
+    PREMIUM-based option labeler (2026-08-27), never by stock-% logic."""
+    if not _base_quality(row):
         return False
-    if row.get("occ_symbol"):
+    if _is_option_row(row):
         return False
     return True
+
+
+# Option hindsight thresholds (2026-08-27) — PREMIUM-based, grounded
+# in the archive's measured outcome distribution (p50 −95.4%, p75
+# +28.7%, p90 +108%): a decision that kept ≥ +20% of premium was
+# right (keep the action); one that lost ≥ 20% of premium should not
+# have been taken (label HOLD → omitted from the cycle target); the
+# band between is ambiguous and skipped. actual_return_pct on option
+# rows IS the premium return (verified: CVX put −97.1% while the
+# underlying moved −2.5%), so no stock-% contamination is possible.
+_OPT_WIN_PCT = 20.0
+_OPT_LOSS_PCT = -20.0
+
+
+def option_hindsight_label(predicted_signal: str,
+                           premium_return_pct: float) -> Optional[str]:
+    """Hindsight label for an option/multileg decision from its
+    premium return: keep the original action on a clear win, HOLD on a
+    clear loss, None (skip) in the ambiguous band."""
+    if premium_return_pct >= _OPT_WIN_PCT:
+        return (predicted_signal or "OPTIONS").upper()
+    if premium_return_pct <= _OPT_LOSS_PCT:
+        return "HOLD"
+    return None
 
 
 def _split_prompt(prompt_text: str,
@@ -307,18 +341,24 @@ def _label_and_return(row: Dict[str, Any], *, allow_short: bool = True
                       ) -> Optional[Tuple[str, float]]:
     """Quality-filter + hindsight-label one row: (label, net-preferred
     return) or None to skip. Shared by the per-row and cycle-grouped
-    example builders."""
-    if not _is_training_quality(row):
+    example builders. Stock rows label by underlying-% (hindsight_label);
+    option rows by PREMIUM return (option_hindsight_label, 2026-08-27 —
+    operator: options are half the system, they train too)."""
+    if not _base_quality(row):
         return None
     ret = row.get("actual_return_pct_net")
     if ret is None:
         ret = row.get("actual_return_pct")
-    label = hindsight_label(
-        row.get("predicted_signal"),
-        row.get("actual_outcome"),
-        ret,
-        allow_short=allow_short,
-    )
+    if _is_option_row(row):
+        label = option_hindsight_label(
+            row.get("predicted_signal"), float(ret))
+    else:
+        label = hindsight_label(
+            row.get("predicted_signal"),
+            row.get("actual_outcome"),
+            ret,
+            allow_short=allow_short,
+        )
     if label is None:
         return None
     return label, ret
@@ -407,15 +447,28 @@ def _iter_live_rows(profile_db: str) -> Iterable[Dict[str, Any]]:
                                d.pop("_cycle_raw", None))
 
 
-def _iter_archive_rows(archive_root: str) -> Iterable[Dict[str, Any]]:
-    """Yield resolved rows from predictions_archive/*/*/predictions.jsonl,
-    each joined to its cycle's prompt/raw response from the dump's own
-    cycles.jsonl (see _fill_from_cycle — post-2026-07-02 rows carry
-    only cycle_id). Per-dump maps: cycle ids never cross dumps."""
-    root = Path(archive_root)
-    if not root.exists():
-        return
-    for jsonl in root.glob("*/*/predictions.jsonl"):
+def _profile_key(path: str) -> str:
+    """Stable per-profile dedup namespace from a live DB path
+    (quantopsai_profile_<pid>.db) or an archive dump directory
+    (…/predictions_archive/<pid>/<stamp>). The same profile's live
+    journal and archived dumps share one namespace, so live/archive
+    copies of a row still dedup — while different profiles' identical
+    autoincrement ids never collide (the 2026-08-27 swallowed-rows
+    bug)."""
+    p = Path(path)
+    m = re.search(r"quantopsai_profile_(\d+)", p.name)
+    if m:
+        return m.group(1)
+    return p.parent.name or p.name
+
+
+def _iter_archive_rows_for_dump(dump: Path) -> Iterable[Dict[str, Any]]:
+    """Yield rows from ONE archive dump directory, each joined to its
+    cycle's prompt/raw response from the dump's own cycles.jsonl (see
+    _fill_from_cycle — post-2026-07-02 rows carry only cycle_id)."""
+    for jsonl in [dump / "predictions.jsonl"]:
+        if not jsonl.exists():
+            continue
         cyc: Dict[str, Tuple[Optional[str], Optional[str]]] = {}
         cpath = jsonl.parent / "cycles.jsonl"
         if cpath.exists():
@@ -456,6 +509,17 @@ def _iter_archive_rows(archive_root: str) -> Iterable[Dict[str, Any]]:
                            jsonl, exc)
 
 
+def _iter_archive_rows(archive_root: str) -> Iterable[Dict[str, Any]]:
+    """All dumps under predictions_archive/*/* (kept for callers that
+    don't need per-profile dedup namespaces; build_dataset iterates
+    per dump so the (profile, id) key can be applied)."""
+    root = Path(archive_root)
+    if not root.exists():
+        return
+    for jsonl in root.glob("*/*/predictions.jsonl"):
+        yield from _iter_archive_rows_for_dump(jsonl.parent)
+
+
 def build_dataset(
     profile_dbs: List[str],
     out_dir: str,
@@ -485,11 +549,19 @@ def build_dataset(
     groups: Dict[Tuple[Any, int], List[Tuple[Dict[str, Any], str, float]]] = {}
     labeled_rows = 0
 
-    def _ingest(rows: Iterable[Dict[str, Any]]):
+    def _ingest(rows: Iterable[Dict[str, Any]], source_key: str = ""):
         nonlocal labeled_rows
         for row in rows:
             rid = row.get("id")
-            key = rid if rid is not None else id(row)
+            # 2026-08-27 — dedup by (PROFILE, id), never bare id: every
+            # profile journal autoincrements from 1, so bare-id dedup
+            # silently swallowed later profiles' rows as "duplicates"
+            # across the 22 archive dumps (it ate all 14 option
+            # premium-winners and an unknown slice of the stock corpus).
+            # The key still collapses the same profile's live row with
+            # its archived copy — the overlap dedup was built for.
+            key = ((source_key, rid) if rid is not None
+                   else ("", id(row)))
             if key in seen_ids:
                 continue
             seen_ids.add(key)
@@ -504,9 +576,13 @@ def build_dataset(
                 (row, label, ret))
 
     for db in profile_dbs:
-        _ingest(_iter_live_rows(db))
+        _ingest(_iter_live_rows(db), source_key=_profile_key(db))
     if archive_root:
-        _ingest(_iter_archive_rows(archive_root))
+        for dump in sorted(Path(archive_root).glob("*/*")):
+            if not (dump / "predictions.jsonl").exists():
+                continue
+            _ingest(_iter_archive_rows_for_dump(dump),
+                    source_key=_profile_key(str(dump)))
 
     # 2026-08-27 — CYCLE-GROUPED examples (production output shape):
     # one example per cycle; target = corrected actions for every

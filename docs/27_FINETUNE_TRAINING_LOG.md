@@ -127,12 +127,30 @@ rented arms scored our own, and said "not yet."
 5. Validation loss bottoms mid-run in both batches — evaluate the
    best checkpoint, not only the final step, starting batch 3.
 
-## Batch 3 — queued
+## Batch 3 — 2026-08-27 · "The corpus was 8× bigger than we knew"
 
-**Trigger:** corpus roughly doubles (~3–4 weeks; all four
-Experiment-2 arms now feed it, so it grows ~4× faster than the
-Experiment-1 era). **Planned levers:** label-balance weighting so
-caution isn't over-rewarded; 2–3 epochs over the full corpus;
-evaluate the mid-run checkpoint alongside the final. **The bar is
-unchanged:** beat the base clearly, then the hosting question — and a
-seat at the table — reopens.
+Launched the same day as batch 2's verdict, because two discoveries
+made waiting absurd:
+
+- **Options train now** (operator ruling: half the system doesn't sit
+  out). A premium-based labeler grades each option decision by what
+  its PREMIUM did — kept ≥ +20% → the action was right; lost ≥ 20% →
+  the correct answer was no trade; ambiguous band skipped. Grounded in
+  the measured distribution: the median archived option decision lost
+  95.4% of premium, so the option corpus's first lesson is the
+  expensive one — most of those setups deserved a pass.
+- **The dedup bug.** The corpus builder deduplicated rows by bare row
+  id — but every profile's journal counts 1, 2, 3 … so across 22
+  archive dumps, later profiles' rows were silently swallowed as
+  "duplicates." Fixing the key to (profile, id) recovered **34,157
+  labeled decisions where batches 1–2 saw 4,120.** Batch 2's model
+  learned from 12% of the data the system owns. (Found because the 14
+  option premium-winners went missing from a rebuild — pulling that
+  thread unraveled the whole thing. Every miscount is a gift.)
+
+**Corpus:** 34,157 labeled decisions → 10,699 cycle-grouped examples
+(BUY 8,246 / SHORT 8,430 / HOLD 17,467 / option 14), 200 cycles held
+out. **Run:** 2,000 LoRA steps on the full corpus — an overnight run.
+**Exam and verdict:** pending. **The bar is unchanged:** beat the
+base clearly, then the hosting question — and a seat at the table —
+reopens.

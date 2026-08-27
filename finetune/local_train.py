@@ -54,6 +54,11 @@ DEFAULT_WORKDIR = os.path.expanduser("~/Quantops-finetune")
 DEFAULT_MODEL = "Qwen/Qwen2.5-7B-Instruct"  # ungated; see module doc
 _BULLISH = frozenset({"BUY", "STRONG_BUY", "WEAK_BUY"})
 _BEARISH = frozenset({"SHORT", "STRONG_SELL", "SELL"})
+# Option decisions (2026-08-27): labeled by premium outcome; graded as
+# their own bucket — proposing ANY option structure on the labeled
+# symbol counts as the option call.
+_OPTION = frozenset({"OPTIONS", "MULTILEG_OPEN", "OPTION_EXERCISE",
+                     "PAIR_TRADE"})
 
 
 def _stamp() -> str:
@@ -206,8 +211,8 @@ def parse_decision(text: str, symbol: Optional[str] = None
                                   ).upper().strip()
                         return act or None
                     return "HOLD" if trades == [] else None
-    for token in ("STRONG_BUY", "WEAK_BUY", "STRONG_SELL", "BUY",
-                  "SELL", "SHORT", "HOLD"):
+    for token in ("MULTILEG_OPEN", "OPTIONS", "STRONG_BUY", "WEAK_BUY",
+                  "STRONG_SELL", "BUY", "SELL", "SHORT", "HOLD"):
         if token in s.upper():
             return token
     return None
@@ -218,6 +223,8 @@ def direction_bucket(action: Optional[str]) -> str:
         return "bullish"
     if action in _BEARISH:
         return "bearish"
+    if action in _OPTION:
+        return "option"
     if action == "HOLD":
         return "hold"
     return "unparseable"
