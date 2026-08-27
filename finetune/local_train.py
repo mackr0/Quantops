@@ -158,11 +158,20 @@ def cmd_train(args) -> int:
 # eval — self-scored, adapter vs bare base
 # ---------------------------------------------------------------------------
 
-def parse_decision(text: str) -> Optional[str]:
-    """Extract the decision action from a generated completion, using
-    the production expectation (a JSON object with trades[0].action).
-    Falls back to a bare action token scan. None = unparseable (scored
-    as wrong — an unparseable answer is a wrong answer live too)."""
+def parse_decision(text: str, symbol: Optional[str] = None
+                   ) -> Optional[str]:
+    """Extract the decision for `symbol` from a generated completion,
+    using PRODUCTION semantics (2026-08-27 scorer fix): the prompt asks
+    for a batch of candidates and non-actionable names are OMITTED, so
+    a parsed trades list that doesn't mention the labeled symbol IS a
+    HOLD on it — and the labeled symbol's own entry is what gets
+    graded, never trades[0] (which is an arbitrary other candidate).
+    The first eval scored 0/15 on every HOLD and graded the base on
+    random candidates because of exactly those two errors.
+
+    Falls back to a bare action token scan when no JSON object parses.
+    None = unparseable (scored as wrong — it would be wrong live too).
+    """
     if not text:
         return None
     s = text.strip()
@@ -177,15 +186,26 @@ def parse_decision(text: str) -> Optional[str]:
                 if depth == 0:
                     try:
                         obj = json.loads(s[start:i + 1])
-                        trades = obj.get("trades") or []
-                        if trades and isinstance(trades, list):
-                            act = str(
-                                (trades[0] or {}).get("action", "")
-                            ).upper().strip()
-                            return act or None
-                        return None
                     except (json.JSONDecodeError, AttributeError):
                         break
+                    trades = obj.get("trades") if isinstance(
+                        obj, dict) else None
+                    if not isinstance(trades, list):
+                        return None
+                    if symbol:
+                        for t in trades:
+                            if (isinstance(t, dict)
+                                    and str(t.get("symbol", "")
+                                            ).upper() == symbol.upper()):
+                                act = str(t.get("action", "")
+                                          ).upper().strip()
+                                return act or None
+                        return "HOLD"  # omitted from the batch = no action
+                    if trades and isinstance(trades[0], dict):
+                        act = str(trades[0].get("action", "")
+                                  ).upper().strip()
+                        return act or None
+                    return "HOLD" if trades == [] else None
     for token in ("STRONG_BUY", "WEAK_BUY", "STRONG_SELL", "BUY",
                   "SELL", "SHORT", "HOLD"):
         if token in s.upper():
@@ -231,20 +251,24 @@ def score_examples(labels: List[str], answers: List[Optional[str]]
 
 def _generate_answers(model_path: str, adapter: Optional[str],
                       eval_rows: List[Dict[str, Any]],
-                      max_tokens: int) -> List[Optional[str]]:
+                      max_tokens: int) -> List[str]:
+    """Raw completions, one per eval row — parsing/scoring happens in
+    the caller so the report can keep the generations for forensics
+    (the first eval discarded them and 7 'unparseable' answers could
+    not be diagnosed)."""
     from mlx_lm import load, generate
     model, tokenizer = load(model_path, adapter_path=adapter)
-    answers: List[Optional[str]] = []
+    texts: List[str] = []
     for i, row in enumerate(eval_rows):
         msgs = [m for m in row["messages"] if m.get("role") != "assistant"]
         prompt = tokenizer.apply_chat_template(
             msgs, add_generation_prompt=True, tokenize=False)
         text = generate(model, tokenizer, prompt=prompt,
                         max_tokens=max_tokens, verbose=False)
-        answers.append(parse_decision(text))
+        texts.append(text)
         if (i + 1) % 25 == 0:
             print(f"  {i + 1}/{len(eval_rows)} generated")
-    return answers
+    return texts
 
 
 def cmd_eval(args) -> int:
@@ -270,10 +294,13 @@ def cmd_eval(args) -> int:
         return rows
 
     eval_rows = _load_jsonl(eval_path)
-    labels = [r.get("label", "?") for r in _load_jsonl(meta_path)]
+    metas = _load_jsonl(meta_path)
+    labels = [m.get("label", "?") for m in metas]
+    symbols = [m.get("symbol") for m in metas]
     if args.limit:
         eval_rows = eval_rows[:args.limit]
         labels = labels[:args.limit]
+        symbols = symbols[:args.limit]
     report: Dict[str, Any] = {
         "model": args.model, "adapter": args.adapter,
         "data": str(data_dir), "limit": args.limit,
@@ -282,10 +309,18 @@ def cmd_eval(args) -> int:
         if name == "adapter" and not args.adapter:
             continue
         print(f"generating with {name} …")
-        answers = _generate_answers(args.model, adapter, eval_rows,
-                                    args.max_tokens)
+        texts = _generate_answers(args.model, adapter, eval_rows,
+                                  args.max_tokens)
+        answers = [parse_decision(t, sym)
+                   for t, sym in zip(texts, symbols)]
         report[name] = score_examples(labels, answers)
-        print(name, json.dumps(report[name], indent=2))
+        report[name]["generations"] = [
+            {"symbol": sym, "label": lbl, "parsed": ans, "text": t}
+            for sym, lbl, ans, t in zip(symbols, labels, answers, texts)
+        ]
+        print(name, json.dumps(
+            {k: v for k, v in report[name].items()
+             if k != "generations"}, indent=2))
     out = data_dir / f"eval_report_{_stamp()}.json"
     out.write_text(json.dumps(report, indent=2))
     print(f"report: {out}")

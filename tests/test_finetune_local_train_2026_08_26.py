@@ -60,8 +60,25 @@ class TestParseDecision:
         assert parse_decision("") is None
         assert parse_decision("no decision at all 42") is None
 
-    def test_empty_trades_is_none(self):
-        assert parse_decision('{"trades": []}') is None
+    def test_symbol_selects_its_own_trade_never_first(self):
+        """2026-08-27 scorer fix: production answers are BATCHES;
+        grading trades[0] scored the base model on arbitrary other
+        candidates."""
+        text = ('{"trades":[{"symbol":"NVDA","action":"BUY"},'
+                '{"symbol":"TGT","action":"SHORT"}]}')
+        assert parse_decision(text, symbol="TGT") == "SHORT"
+        assert parse_decision(text, symbol="nvda") == "BUY"
+
+    def test_symbol_omitted_from_batch_is_hold(self):
+        """Production semantics: non-actionable names are OMITTED from
+        the trades list — absence IS the HOLD signal. The first eval
+        scored 0/15 on every HOLD by treating omission as a miss."""
+        text = '{"trades":[{"symbol":"NVDA","action":"BUY"}]}'
+        assert parse_decision(text, symbol="TGT") == "HOLD"
+        assert parse_decision('{"trades": []}', symbol="TGT") == "HOLD"
+
+    def test_empty_trades_without_symbol_is_hold(self):
+        assert parse_decision('{"trades": []}') == "HOLD"
 
 
 class TestScoring:
