@@ -96,6 +96,73 @@ class TestArchiveCycleJoin:
         assert "CYCLE-AAPL" not in line
 
 
+class TestCycleGroupedExamples:
+    """2026-08-27 — production-shape targets: one example per cycle,
+    all labeled candidates in one answer, HOLDs by omission. Batch 1
+    taught a one-pick convention with per-row targets; this pins the
+    refinement that fixes it."""
+
+    def test_three_candidates_one_example_holds_omitted(self, tmp_path):
+        preds = [
+            _pred_row(pid=1),  # BUY winner → labeled BUY
+            dict(_pred_row(pid=2), symbol="TGT",
+                 predicted_signal="SHORT", actual_outcome="win",
+                 actual_return_pct=-6.0, actual_return_pct_net=-6.2),
+            dict(_pred_row(pid=3), symbol="VLO",
+                 predicted_signal="BUY", actual_outcome="loss",
+                 actual_return_pct=-4.0, actual_return_pct_net=-4.2),
+        ]
+        root = _archive(
+            tmp_path, preds,
+            [{"cycle_id": "cyc-1", "prompt_text": _PROMPT,
+              "raw_response_json": _RAW}])
+        out = tmp_path / "out"
+        m = build_dataset([], str(out), archive_root=root,
+                          eval_holdout=0)
+        assert m["total_examples"] == 1          # one CYCLE example
+        assert m["labeled_rows"] == 3
+        assert m["label_distribution"] == {
+            "BUY": 1, "SHORT": 1, "HOLD": 1}
+        line = json.loads(
+            (out / "train.jsonl").read_text().splitlines()[0])
+        target = json.loads(line["messages"][-1]["content"])
+        by_sym = {t["symbol"]: t["action"] for t in target["trades"]}
+        assert by_sym == {"AAPL": "BUY", "TGT": "SHORT"}, (
+            "the losing BUY relabels to HOLD and must be OMITTED "
+            "from the trades list (production semantics)")
+
+    def test_eval_meta_carries_labels_map(self, tmp_path):
+        preds = [_pred_row(pid=1),
+                 dict(_pred_row(pid=2), symbol="TGT",
+                      predicted_signal="SHORT", actual_outcome="win",
+                      actual_return_pct=-6.0,
+                      actual_return_pct_net=-6.2)]
+        root = _archive(
+            tmp_path, preds,
+            [{"cycle_id": "cyc-1", "prompt_text": _PROMPT,
+              "raw_response_json": _RAW}])
+        out = tmp_path / "out"
+        build_dataset([], str(out), archive_root=root, eval_holdout=1)
+        meta = json.loads(
+            (out / "eval_meta.jsonl").read_text().splitlines()[0])
+        assert meta["labels"] == {"AAPL": "BUY", "TGT": "SHORT"}
+
+    def test_same_cycle_id_different_prompts_never_merge(self, tmp_path):
+        """Two profiles can mint the same cycle_id string; the prompt
+        identity sub-key keeps their rows apart."""
+        preds = [_pred_row(pid=1, prompt=_PROMPT + " variant-A",
+                           raw=_RAW),
+                 dict(_pred_row(pid=2, prompt=_PROMPT + " variant-B",
+                                raw=_RAW), symbol="TGT",
+                      predicted_signal="SHORT", actual_outcome="win",
+                      actual_return_pct=-6.0,
+                      actual_return_pct_net=-6.2)]
+        root = _archive(tmp_path, preds, [])
+        m = build_dataset([], str(tmp_path / "out"), archive_root=root,
+                          eval_holdout=0)
+        assert m["total_examples"] == 2
+
+
 class TestLiveCycleJoin:
     def _db(self, tmp_path, with_cycles=True):
         path = str(tmp_path / "quantopsai_profile_5.db")

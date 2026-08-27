@@ -214,18 +214,14 @@ def _split_prompt(prompt_text: str,
     return prompt_text[:idx].rstrip(), prompt_text[idx:]
 
 
-def _corrected_assistant_message(
+def _corrected_trade_dict(
     row: Dict[str, Any], label: str,
-) -> str:
-    """Build the assistant (target) message: the hindsight-correct
-    decision for this candidate, in the production trade-dict shape so
-    the live parser stays unchanged (docs/20 open decision #6).
-
-    Starts from the candidate's own trade dict in raw_response_json
-    when present (to preserve sizing/target shape), overrides `action`
-    to the hindsight label, and — when the label is HOLD — zeroes the
-    sizing/targets since a HOLD takes no position.
-    """
+) -> Dict[str, Any]:
+    """The hindsight-correct trade dict for one candidate, in the
+    production shape (docs/20 open decision #6). Starts from the
+    candidate's own dict in raw_response_json when present (to
+    preserve sizing/target shape) and overrides `action` to the
+    hindsight label."""
     symbol = row.get("symbol")
     base: Dict[str, Any] = {"symbol": symbol, "action": label}
     # Try to recover the original per-candidate dict for shape.
@@ -247,18 +243,71 @@ def _corrected_assistant_message(
                   "strategy_name", "strikes", "expiry", "contracts"):
             base.pop(k, None)
         base["size_pct"] = 0
-    return json.dumps({"trades": [base]}, separators=(",", ":"))
+    return base
 
 
-def build_example(row: Dict[str, Any], *,
-                  allow_short: bool = True) -> Optional[Dict[str, Any]]:
-    """Transform one resolved prediction into an OpenAI chat example,
-    or None to skip. Asserts no-look-ahead on every emitted row.
+def _corrected_assistant_message(
+    row: Dict[str, Any], label: str,
+) -> str:
+    """Single-candidate assistant target (the original per-prediction
+    granularity — kept as a primitive; production-shape training uses
+    the cycle-grouped variant below)."""
+    return json.dumps({"trades": [_corrected_trade_dict(row, label)]},
+                      separators=(",", ":"))
 
-    Prefers the cost-adjusted net return (#186) for the outcome
-    magnitude when present — the label should reflect what actually
-    made money after costs, not the gross price move.
-    """
+
+def build_cycle_example(
+    group: List[Tuple[Dict[str, Any], str, float]],
+) -> Optional[Dict[str, Any]]:
+    """One example per CYCLE (2026-08-27, docs/20 §5's "noted
+    refinement", forced by batch-1 evidence): the production prompt
+    asks for a BATCH of candidates and omits non-actionable names, so
+    the target must be the corrected action set for ALL of the cycle's
+    labeled candidates — non-HOLD labels as trade dicts, HOLD labels
+    via omission. Per-prediction targets taught the adapter a
+    degenerate one-pick convention (batch-1 eval: 44/50 answers were a
+    single trade or nothing).
+
+    `group` is [(row, label, ret), ...] sharing one prompt. Every row
+    re-passes the look-ahead guard here (load-bearing)."""
+    if not group:
+        return None
+    for row, _label, _ret in group:
+        assert_no_lookahead(row)
+    first = group[0][0]
+    system_msg, user_msg = _split_prompt(first.get("prompt_text") or "")
+    trades = [
+        _corrected_trade_dict(row, label)
+        for row, label, _ret in sorted(
+            group, key=lambda g: str(g[0].get("symbol") or ""))
+        if label != "HOLD"
+    ]
+    labels = {str(row.get("symbol")): label for row, label, _ret in group}
+    returns = {str(row.get("symbol")): ret for row, _label, ret in group}
+    return {
+        "messages": [
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_msg},
+            {"role": "assistant",
+             "content": json.dumps({"trades": trades},
+                                   separators=(",", ":"))},
+        ],
+        "_meta": {
+            "cycle_id": first.get("cycle_id"),
+            "ids": [row.get("id") for row, _l, _r in group],
+            "timestamp": max((row.get("timestamp") or ""
+                              ) for row, _l, _r in group),
+            "labels": labels,
+            "returns": returns,
+        },
+    }
+
+
+def _label_and_return(row: Dict[str, Any], *, allow_short: bool = True
+                      ) -> Optional[Tuple[str, float]]:
+    """Quality-filter + hindsight-label one row: (label, net-preferred
+    return) or None to skip. Shared by the per-row and cycle-grouped
+    example builders."""
     if not _is_training_quality(row):
         return None
     ret = row.get("actual_return_pct_net")
@@ -272,6 +321,22 @@ def build_example(row: Dict[str, Any], *,
     )
     if label is None:
         return None
+    return label, ret
+
+
+def build_example(row: Dict[str, Any], *,
+                  allow_short: bool = True) -> Optional[Dict[str, Any]]:
+    """Transform one resolved prediction into an OpenAI chat example,
+    or None to skip. Asserts no-look-ahead on every emitted row.
+
+    Prefers the cost-adjusted net return (#186) for the outcome
+    magnitude when present — the label should reflect what actually
+    made money after costs, not the gross price move.
+    """
+    labeled = _label_and_return(row, allow_short=allow_short)
+    if labeled is None:
+        return None
+    label, ret = labeled
     # Load-bearing safety check — refuse leaking rows.
     assert_no_lookahead(row)
     system_msg, user_msg = _split_prompt(row.get("prompt_text") or "")
@@ -413,23 +478,44 @@ def build_dataset(
     Returns a manifest dict: counts + file paths.
     """
     seen_ids = set()
-    examples: List[Dict[str, Any]] = []
+    # (cycle_key, prompt-identity) → [(row, label, ret), ...]. The
+    # prompt hash sub-key is a safety guard: two profiles can mint the
+    # same cycle_id string, but their prompts differ — rows only group
+    # when they truly answered the SAME prompt.
+    groups: Dict[Tuple[Any, int], List[Tuple[Dict[str, Any], str, float]]] = {}
+    labeled_rows = 0
 
     def _ingest(rows: Iterable[Dict[str, Any]]):
+        nonlocal labeled_rows
         for row in rows:
             rid = row.get("id")
             key = rid if rid is not None else id(row)
             if key in seen_ids:
                 continue
             seen_ids.add(key)
-            ex = build_example(row, allow_short=allow_short)
-            if ex is not None:
-                examples.append(ex)
+            labeled = _label_and_return(row, allow_short=allow_short)
+            if labeled is None:
+                continue
+            label, ret = labeled
+            labeled_rows += 1
+            cycle_key = row.get("cycle_id") or f"__row_{key}"
+            pkey = hash(row.get("prompt_text") or "")
+            groups.setdefault((cycle_key, pkey), []).append(
+                (row, label, ret))
 
     for db in profile_dbs:
         _ingest(_iter_live_rows(db))
     if archive_root:
         _ingest(_iter_archive_rows(archive_root))
+
+    # 2026-08-27 — CYCLE-GROUPED examples (production output shape):
+    # one example per cycle; target = corrected actions for every
+    # labeled candidate, HOLDs by omission. See build_cycle_example.
+    examples: List[Dict[str, Any]] = []
+    for group in groups.values():
+        ex = build_cycle_example(group)
+        if ex is not None:
+            examples.append(ex)
 
     # Most-recent-first by prediction timestamp for the eval holdout.
     examples.sort(
@@ -465,6 +551,7 @@ def build_dataset(
 
     manifest = {
         "total_examples": len(examples),
+        "labeled_rows": labeled_rows,
         "train": len(train_set),
         "val": len(val_set),
         "eval": len(eval_set),
@@ -478,6 +565,11 @@ def build_dataset(
 def _label_dist(examples: List[Dict[str, Any]]) -> Dict[str, int]:
     dist: Dict[str, int] = {}
     for e in examples:
-        lbl = e["_meta"].get("label", "?")
-        dist[lbl] = dist.get(lbl, 0) + 1
+        labels = e["_meta"].get("labels")
+        if isinstance(labels, dict):
+            for lbl in labels.values():
+                dist[lbl] = dist.get(lbl, 0) + 1
+        else:
+            lbl = e["_meta"].get("label", "?")
+            dist[lbl] = dist.get(lbl, 0) + 1
     return dist

@@ -295,15 +295,23 @@ def cmd_eval(args) -> int:
 
     eval_rows = _load_jsonl(eval_path)
     metas = _load_jsonl(meta_path)
-    labels = [m.get("label", "?") for m in metas]
-    symbols = [m.get("symbol") for m in metas]
+    # Cycle-grouped metas carry a {symbol: label} map (2026-08-27);
+    # legacy per-row metas carry a single symbol/label pair.
+    label_maps: List[Dict[str, str]] = []
+    for m in metas:
+        if isinstance(m.get("labels"), dict):
+            label_maps.append(m["labels"])
+        else:
+            label_maps.append({str(m.get("symbol")): m.get("label", "?")})
     if args.limit:
         eval_rows = eval_rows[:args.limit]
-        labels = labels[:args.limit]
-        symbols = symbols[:args.limit]
+        label_maps = label_maps[:args.limit]
+    n_graded = sum(len(lm) for lm in label_maps)
+    print(f"{len(eval_rows)} eval prompts, {n_graded} graded decisions")
     report: Dict[str, Any] = {
         "model": args.model, "adapter": args.adapter,
         "data": str(data_dir), "limit": args.limit,
+        "eval_prompts": len(eval_rows), "graded_decisions": n_graded,
     }
     for name, adapter in (("base", None), ("adapter", args.adapter)):
         if name == "adapter" and not args.adapter:
@@ -311,13 +319,16 @@ def cmd_eval(args) -> int:
         print(f"generating with {name} …")
         texts = _generate_answers(args.model, adapter, eval_rows,
                                   args.max_tokens)
-        answers = [parse_decision(t, sym)
-                   for t, sym in zip(texts, symbols)]
-        report[name] = score_examples(labels, answers)
-        report[name]["generations"] = [
-            {"symbol": sym, "label": lbl, "parsed": ans, "text": t}
-            for sym, lbl, ans, t in zip(symbols, labels, answers, texts)
-        ]
+        flat_labels: List[str] = []
+        flat_answers: List[Optional[str]] = []
+        gens: List[Dict[str, Any]] = []
+        for text, lmap in zip(texts, label_maps):
+            parsed = {sym: parse_decision(text, sym) for sym in lmap}
+            flat_labels.extend(lmap.values())
+            flat_answers.extend(parsed.values())
+            gens.append({"labels": lmap, "parsed": parsed, "text": text})
+        report[name] = score_examples(flat_labels, flat_answers)
+        report[name]["generations"] = gens
         print(name, json.dumps(
             {k: v for k, v in report[name].items()
              if k != "generations"}, indent=2))
@@ -355,7 +366,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     e.add_argument("--model", default=DEFAULT_MODEL)
     e.add_argument("--adapter", default=None)
     e.add_argument("--limit", type=int, default=0)
-    e.add_argument("--max-tokens", type=int, default=300)
+    # Batch answers run long: ~40 candidates × ~40 tokens each. 300
+    # truncated the base model's JSON mid-list in batch 1 and degraded
+    # its parsing to token-scan noise.
+    e.add_argument("--max-tokens", type=int, default=2000)
     e.set_defaults(fn=cmd_eval)
 
     args = ap.parse_args(argv)
