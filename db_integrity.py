@@ -36,6 +36,10 @@ logger = logging.getLogger(__name__)
 
 _SQLITE_MAGIC = b"SQLite format 3\x00"
 
+# Alt-data caches above this size skip the startup quick_check
+# entirely (2026-08-27 — the 910MB edgar13f wedge; see _all_db_paths).
+_ALTDATA_QUICKCHECK_MAX_BYTES = 128 * 2**20
+
 
 # Pattern for matching a per-profile DB filename and extracting the
 # profile id, e.g. `quantopsai_profile_25.db` → 25.
@@ -207,10 +211,30 @@ def _all_db_paths(repo_root: Optional[str] = None) -> List[str]:
                 "file, not blocking scheduler startup)",
                 path, pid,
             )
-    # Alt-data project DBs (post-merge: altdata/<p>/data/*.db)
-    paths.extend(glob.glob(os.path.join(
-        repo_root, "altdata", "*", "data", "*.db",
-    )))
+    # Alt-data project DBs (post-merge: altdata/<p>/data/*.db).
+    # 2026-08-27 — SIZE-CAPPED: a `PRAGMA quick_check` of the 910MB
+    # edgar13f cache wedged scheduler startup for 90+ minutes after a
+    # mid-cycle SIGKILL restart, freezing the whole fleet during
+    # market hours while the broker kept moving (the frozen-journal
+    # phantom burst). Alt-data DBs are REBUILDABLE caches, not book
+    # truth: corruption in one degrades a signal, it must never hold
+    # trading hostage. Files over the cap get a header-only check via
+    # the normal check_db fast paths being skipped entirely here;
+    # book-truth DBs (master, profiles) are never size-capped.
+    for p in glob.glob(os.path.join(
+            repo_root, "altdata", "*", "data", "*.db")):
+        try:
+            too_big = os.path.getsize(p) > _ALTDATA_QUICKCHECK_MAX_BYTES
+        except OSError:
+            too_big = False
+        if too_big:
+            logger.warning(
+                "db_integrity: skipping deep quick_check of alt-data "
+                "cache %s (>%dMB) — rebuildable cache, never blocks "
+                "startup", p, _ALTDATA_QUICKCHECK_MAX_BYTES // 2**20,
+            )
+            continue
+        paths.append(p)
     # Strategy validation DB
     strat = os.path.join(repo_root, "strategy_validations.db")
     if os.path.exists(strat):
