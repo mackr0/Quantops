@@ -113,7 +113,19 @@ def run_task(name, func, db_path=None):
 
     If db_path is provided, records start/end in the per-profile
     task_runs table so the watchdog can detect stalled runs.
+
+    2026-08-28 — SHUTDOWN-AWARE: when SIGTERM has been received, every
+    not-yet-started task is skipped so the graceful stop converges in
+    roughly one task-length instead of one full cycle. The 600s systemd
+    stop-grace alone wasn't enough (14:14 SIGKILL: a full cycle can
+    exceed 10 minutes; the flag was only honored between cycles).
+    Skipping BETWEEN tasks is safe by design — each task is atomic and
+    the freshness invariant re-reconciles every (profile, symbol)
+    before the next cycle acts on it.
     """
+    if _shutdown:
+        logging.info(f"[TASK SKIP — shutting down gracefully] {name}")
+        return
     logging.info(f"[TASK START] {name}")
     start = time.time()
 
