@@ -150,7 +150,38 @@ made waiting absurd:
 
 **Corpus:** 34,157 labeled decisions → 10,699 cycle-grouped examples
 (BUY 8,246 / SHORT 8,430 / HOLD 17,467 / option 14), 200 cycles held
-out. **Run:** 2,000 LoRA steps on the full corpus — an overnight run.
-**Exam and verdict:** pending. **The bar is unchanged:** beat the
-base clearly, then the hosting question — and a seat at the table —
-reopens.
+out. **Run:** 2,000 LoRA steps planned; stopped at ~1,070.
+
+**What happened:** the fastest learning of any batch (val 2.078 →
+0.822 by step 400 — best-ever), a plateau, then a genuine training
+COLLAPSE: validation exploded to 7.3 by step 1,000 and train loss
+followed — the constant 1e-5 learning rate that was fine for
+600-step batches destabilizes long runs. Stopped early; every
+100-step checkpoint was on disk, so nothing was lost but time.
+
+**Exam (134 graded decisions, both surviving checkpoints):**
+
+| | Base | Step-600 | Step-400 |
+|---|---|---|---|
+| Accuracy | **31.3%** | 27.6% | 26.1% |
+| HOLD answers | 43/134 | 88/134 | 100/134 |
+| Bearish hits | 11/50 | 0/50 | 2/50 |
+
+**Verdict: not promotable — both checkpoints LOSE to the base.** And
+with three batches on the board, the recurring failure mode is now
+diagnosed, not guessed: hindsight relabeling turns every losing trade
+into HOLD, so HOLD dominates the corpus (~51%) and imitation training
+rewards blanket silence over discrimination — each batch has drifted
+further into it, and batch 3's LR instability amplified the collapse
+(its outputs even ramble after the JSON — weight degradation was
+visible by step 600). The model keeps learning the corpus's loudest
+lesson perfectly; the loudest lesson is "don't trade," and that alone
+can't beat a base that actually discriminates.
+
+**Batch 4 recipe (mandatory, from evidence):** rebalance the label
+mix so HOLD can't dominate (weight or downsample toward
+~⅓/⅓/⅓); learning-rate decay (cosine or step) for any run past ~600
+steps; evaluate mid-run checkpoints as first-class candidates; report
+frequency-matched-random (~33% here) alongside the base in every
+exam so "beats base" can't hide behind class priors; pre-split the
+few >8K-token prompts the truncation warning flagged.
