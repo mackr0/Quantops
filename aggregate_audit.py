@@ -188,6 +188,62 @@ def _broker_qty_per_symbol(api):
     return out
 
 
+def _fresh_symbol_recheck(api, db_paths, symbol):
+    """Same-instant re-read of ONE symbol's (journal, broker) qty for
+    the account. Returns (journal_qty, broker_qty) or None when either
+    side is unverifiable (caller then falls through to a real flag —
+    unverifiable is never a suppression)."""
+    j = 0.0
+    for db in db_paths:
+        per = _journal_open_qty_per_symbol(db)
+        if per is None:
+            return None
+        j += per.get(symbol, 0.0)
+    b_map = _broker_qty_per_symbol(api)
+    if b_map is None:
+        return None
+    return round(j, 4), round(b_map.get(symbol, 0.0), 4)
+
+
+def _missing_row_qty_attribution(api, db_paths, symbol) -> float:
+    """Signed broker qty explained by OWN orders recorded in the
+    durable submitted_orders ledger (written BEFORE broker submit)
+    that have no trades row yet — the only window where a fill is
+    provably ours but invisible to the journal aggregate. Recent
+    orders only; unverifiable orders attribute nothing."""
+    import sqlite3 as _sq
+    from contextlib import closing as _closing
+    from order_status_cache import get_order_cached
+    total = 0.0
+    for db in db_paths:
+        try:
+            with _closing(_sq.connect(db)) as conn:
+                conn.row_factory = _sq.Row
+                rows = conn.execute(
+                    "SELECT s.order_id, s.side FROM submitted_orders s "
+                    "LEFT JOIN trades t ON t.order_id = s.order_id "
+                    "WHERE (s.symbol = ? OR s.occ_symbol = ?) "
+                    "  AND t.order_id IS NULL "
+                    "  AND s.submitted_at >= datetime('now', '-30 minutes')",
+                    (symbol, symbol)).fetchall()
+        except _sq.Error:
+            continue
+        for r in rows:
+            try:
+                order = get_order_cached(api, r["order_id"])
+            except Exception:
+                order = None
+            if order is None:
+                continue
+            try:
+                fq = float(getattr(order, "filled_qty", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            side = (r["side"] or "").lower()
+            total += fq if side == "buy" else -fq
+    return round(total, 4)
+
+
 def audit_aggregate_drift(profile_ids: Iterable[int],
                           tolerance: float = _QTY_TOLERANCE) -> Dict:
     """Compare journal-aggregate vs broker-aggregate per Alpaca account.
@@ -204,6 +260,7 @@ def audit_aggregate_drift(profile_ids: Iterable[int],
     # Per-account aggregations
     journal_per_acct: Dict[int, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
     api_per_acct: Dict[int, object] = {}
+    db_paths_per_acct: Dict[int, List[str]] = {}
     errored: List[int] = []
     unverifiable_accts: set = set()
 
@@ -224,6 +281,7 @@ def audit_aggregate_drift(profile_ids: Iterable[int],
                 continue
         # Sum this profile's open virtual qty per symbol into the
         # per-account aggregate.
+        db_paths_per_acct.setdefault(acct, []).append(ctx.db_path)
         per_sym = _journal_open_qty_per_symbol(ctx.db_path)
         if per_sym is None:
             # 2026-07-27 fail-closed sweep: unreadable journal — the
@@ -268,6 +326,27 @@ def audit_aggregate_drift(profile_ids: Iterable[int],
             d = round(b - j, 4)
             accounts[acct][sym] = {"journal": j, "broker": b, "drift": d}
             if abs(d) > tolerance:
+                # 2026-08-31 — RE-CHECK before flagging (the PEP +93
+                # false broker_orphan): the sweep reads 12 journals
+                # then the broker over several seconds, so an entry
+                # that fills mid-sweep is counted broker-side but not
+                # journal-side. A fresh same-instant re-read of JUST
+                # this symbol separates read-skew from real drift;
+                # a residual gap is then attributed to OWN
+                # submitted-but-not-yet-journaled orders (the
+                # durable-journaling ledger) before anything alarms.
+                fresh = _fresh_symbol_recheck(
+                    api, db_paths_per_acct.get(acct) or [], sym)
+                if fresh is not None:
+                    j2, b2 = fresh
+                    if abs(b2 - j2) <= tolerance:
+                        accounts[acct][sym]["kind"] = "in_flight"
+                        continue
+                    att = _missing_row_qty_attribution(
+                        api, db_paths_per_acct.get(acct) or [], sym)
+                    if abs((b2 - j2) - att) <= tolerance and att:
+                        accounts[acct][sym]["kind"] = "in_flight"
+                        continue
                 # broker_orphan: broker holds positions no profile owns
                 #   (could be longs or shorts the journal doesn't track)
                 # journal_phantom: profiles claim positions the broker
