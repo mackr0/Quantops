@@ -679,6 +679,57 @@ def _collect_scrape_runs(
 # Top-level aggregator
 # ---------------------------------------------------------------------------
 
+def _collect_master_write_canary() -> List[Dict[str, Any]]:
+    """Probe whether the master DB accepts a WRITE right now.
+
+    2026-08-31 — the App Store snapshot task held the master's write
+    lock across a wedged network fetch for 32 HOURS: every master
+    write fleet-wide failed silently (activity log, caches, benchmark
+    snapshots) and the heavy pages timed out paying a 5s lock wait per
+    attempted cache write — and NOTHING surfaced it; the operator
+    found it as page timeouts. This canary makes an unwritable master
+    a loud ERROR finding within one issues refresh. The probe uses a
+    dedicated single-row table, a short timeout, and never leaves its
+    own transaction open.
+    """
+    import sqlite3 as _sq
+    import time as _time
+    from contextlib import closing
+    import config as _config
+    try:
+        with closing(_sq.connect(_config.DB_PATH, timeout=3)) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS master_write_canary "
+                "(id INTEGER PRIMARY KEY CHECK (id = 1), probed_at REAL)")
+            conn.execute(
+                "INSERT OR REPLACE INTO master_write_canary "
+                "(id, probed_at) VALUES (1, ?)", (_time.time(),))
+            conn.commit()
+        return []
+    except _sq.OperationalError as exc:
+        if "locked" not in str(exc).lower():
+            msg = (f"master DB write probe failed: {exc} — writes may "
+                   "be failing fleet-wide")
+        else:
+            msg = ("master DB is UNWRITABLE (write lock held elsewhere) "
+                   "— every activity/cache/benchmark write is failing "
+                   "silently and heavy pages will crawl; find the lock "
+                   "holder (a task holding a transaction across a "
+                   "network wait) and restart the scheduler")
+        return [{
+            "source": "master_writability", "level": "ERROR",
+            "message": msg, "timestamp": "",
+            "is_live_snapshot": True,
+        }]
+    except Exception as exc:
+        return [{
+            "source": "master_writability", "level": "ERROR",
+            "message": f"master DB write probe errored: "
+                       f"{type(exc).__name__}: {exc}",
+            "timestamp": "", "is_live_snapshot": True,
+        }]
+
+
 def collect_issues(
     since_hours: int = DEFAULT_WINDOW_HOURS,
     level_filter: Optional[str] = None,
@@ -706,8 +757,10 @@ def collect_issues(
     altdata_rows, a_err = _collect_altdata_logs(since_hours)
     scrape_rows, s_err = _collect_scrape_runs(since_hours)
     drift_rows, d_err = _collect_aggregate_drift(since_hours)
+    canary_rows = _collect_master_write_canary()
 
-    all_rows = journald_rows + altdata_rows + scrape_rows + drift_rows
+    all_rows = (journald_rows + altdata_rows + scrape_rows + drift_rows
+                + canary_rows)
     if level_filter:
         wanted = {x.upper() for x in level_filter.split(",")}
         all_rows = [r for r in all_rows if r["level"] in wanted]

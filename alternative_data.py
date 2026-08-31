@@ -2300,23 +2300,40 @@ def snapshot_app_store_rankings_for_all_tickers() -> int:
     _ensure_app_store_history_table()
     today = _dt.utcnow().date().isoformat()
     written = 0
+    # 2026-08-31 — FETCH-THEN-WRITE, never a write txn across network.
+    # The old shape opened ONE master connection and called the
+    # network fetcher per ticker INSIDE the transaction; on 08-28 one
+    # fetch wedged (urlopen's timeout does not cover DNS resolution)
+    # and the master write lock was held for 32 HOURS — every master
+    # write fleet-wide failed silently and /ai + /performance timed
+    # out paying 5s-per-blocked-write. Phase 1 gathers every row with
+    # NO connection open; phase 2 is one fast local-only transaction.
+    rows = []
+    for ticker in APP_STORE_TICKER_OVERRIDES.keys():
+        try:
+            r = get_app_store_ranking(ticker)
+        except Exception as _fr_exc:
+            logger.warning(
+                "app_store snapshot fetch failed for %s: %s: %s",
+                ticker, type(_fr_exc).__name__, _fr_exc,
+            )
+            continue
+        if not r.get("has_data"):
+            continue
+        primary = (r.get("apps") or [{}])[0].get("name", "")
+        rows.append((today, ticker.upper(),
+                     r.get("best_grossing_rank"),
+                     r.get("best_free_rank"), primary))
     try:
         with closing(sqlite3.connect(_DB_PATH, timeout=15)) as conn:
-            for ticker in APP_STORE_TICKER_OVERRIDES.keys():
-                r = get_app_store_ranking(ticker)
-                if not r.get("has_data"):
-                    continue
-                primary = (r.get("apps") or [{}])[0].get("name", "")
+            for row in rows:
                 try:
                     conn.execute(
                         """INSERT OR REPLACE INTO app_store_history
                            (snapshot_date, ticker, best_grossing_rank,
                             best_free_rank, primary_app)
                            VALUES (?, ?, ?, ?, ?)""",
-                        (today, ticker.upper(),
-                         r.get("best_grossing_rank"),
-                         r.get("best_free_rank"),
-                         primary),
+                        row,
                     )
                     written += 1
                 except (sqlite3.OperationalError, sqlite3.DatabaseError) as _sw_exc:
@@ -2324,7 +2341,7 @@ def snapshot_app_store_rankings_for_all_tickers() -> int:
                     # shouldn't kill the loop. Surface for follow-up.
                     logger.debug(
                         "app_store snapshot row write failed for %s: %s: %s",
-                        ticker, type(_sw_exc).__name__, _sw_exc,
+                        row[1], type(_sw_exc).__name__, _sw_exc,
                     )
                     continue
             conn.commit()
