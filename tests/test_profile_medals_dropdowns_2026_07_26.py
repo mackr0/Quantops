@@ -64,14 +64,27 @@ class TestCrossProcessFallback:
             "templates look up profile_medals by integer p.id"
         )
 
-    def test_stale_file_ignored(self, monkeypatch, tmp_path):
+    def test_ancient_file_ignored_but_hours_stale_served(
+            self, monkeypatch, tmp_path):
+        """2026-08-31 serve-stale-while-refreshing: minutes/hours-old
+        medals render (background warm refreshes them within a minute
+        of the first hit — the old 600s hard TTL made every
+        first-render-after-idle show bare dropdowns), while entries
+        older than the 24h hard cap never resurrect."""
         import json
+        import time
         import views
         f = tmp_path / "medals.json"
         monkeypatch.setattr(views, "_MEDALS_FILE", str(f))
         f.write_text(json.dumps(
             {"1": {"ts": 1000.0, "medals": {"218": "🥇"}}}))
-        assert views._read_medals_file(1) == {}
+        assert views._read_medals_file(1) == {}, "epoch-old must not serve"
+        f.write_text(json.dumps(
+            {"1": {"ts": time.time() - 2 * 3600,
+                   "medals": {"218": "🥇"}}}))
+        assert views._read_medals_file(1) == {218: "🥇"}, (
+            "hours-stale medals must render — bare first impressions "
+            "were the operator-reported bug")
 
     def test_missing_file_safe(self, monkeypatch, tmp_path):
         import views

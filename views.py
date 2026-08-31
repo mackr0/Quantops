@@ -6416,7 +6416,15 @@ def _dashboard_totals_payload(user_id):
 
 
 _MEDALS_FILE = "/opt/quantopsai/.medals_cache.json"
-_MEDALS_FILE_TTL = 600.0
+# 2026-08-31 — serve-stale-while-refreshing. The old 600s hard TTL
+# meant the FIRST render after any idle gap showed bare dropdowns (the
+# operator's "medals don't show up"): cache expired → {} this render,
+# background warm, medals next render. Rankings drift slowly and the
+# background warm refreshes within ~a minute of the first render, so
+# minutes-stale medals with an imminent refresh beat an empty first
+# impression. The hard cap keeps week-old standings from resurrecting
+# after downtime; the dashboard's own JS medals remain the live view.
+_MEDALS_FILE_TTL = 24 * 3600.0
 
 
 def _write_medals_file(user_id, payload) -> None:
