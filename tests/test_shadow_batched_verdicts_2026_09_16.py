@@ -261,3 +261,167 @@ class TestBackfillScript:
             "FROM ai_shadow_calls ORDER BY id").fetchall()
         conn.close()
         assert again == rows
+
+
+def _mk_scoring_db(tmp_path):
+    """One profile DB with four batched disagreements + the resolved
+    predictions they should score against (same-day follow-up: the
+    funnel reached 'graded' but died at '0 scored against real trade
+    outcomes' — batched rows carried no symbol and no decision id)."""
+    db = str(tmp_path / "quantopsai_profile_9903.db")
+    conn = sqlite3.connect(db)
+    conn.execute("""
+        CREATE TABLE ai_shadow_calls (
+            id INTEGER PRIMARY KEY, timestamp TEXT, purpose TEXT,
+            provider TEXT, model TEXT, parsed_signal TEXT,
+            agreement INTEGER, error TEXT, cost_usd REAL,
+            latency_ms INTEGER, primary_parsed TEXT, decision_id TEXT
+        )""")
+    conn.execute("""
+        CREATE TABLE ai_predictions (
+            id INTEGER PRIMARY KEY, symbol TEXT, timestamp TEXT,
+            status TEXT, actual_return_pct REAL,
+            predicted_signal TEXT, decision_id TEXT
+        )""")
+    ts = "2026-09-15 14:00:00"
+
+    def _shadow(purpose, verdicts, shadow_sig):
+        conn.execute(
+            "INSERT INTO ai_shadow_calls (timestamp, purpose, provider,"
+            " model, parsed_signal, agreement, error, cost_usd,"
+            " latency_ms, primary_parsed) VALUES (?,?,?,?,?,0,NULL,"
+            "0.001,500,?)",
+            (ts, purpose, "google", "gemini-test", shadow_sig,
+             json.dumps({"verdicts": verdicts})))
+
+    def _pred(symbol, ret, psig):
+        conn.execute(
+            "INSERT INTO ai_predictions (symbol, timestamp, status,"
+            " actual_return_pct, predicted_signal) VALUES "
+            "(?,?, 'resolved', ?, ?)", (symbol, ts, ret, psig))
+
+    # 1. Gate multi-set: disagree on AAA only (BBB agrees). Trade was
+    #    taken (BUY) and won +5% -> primary's VETO wrong, shadow's
+    #    HOLD (allow) right.
+    _shadow("ensemble:adversarial_reviewer",
+            [{"symbol": "AAA", "verdict": "VETO"},
+             {"symbol": "BBB", "verdict": "HOLD"}],
+            "AAA:HOLD,BBB:HOLD")
+    _pred("AAA", 5.0, "BUY")
+    # 2. Gate multi-set, no trade taken (predicted HOLD) -> moot.
+    _shadow("ensemble:risk_assessor",
+            [{"symbol": "HHH", "verdict": "VETO"},
+             {"symbol": "III", "verdict": "HOLD"}],
+            "HHH:HOLD,III:HOLD")
+    _pred("HHH", 4.0, "HOLD")
+    # 3. Forecast multi-set: CCC fell 3% -> shadow's SELL right,
+    #    primary's BUY wrong.
+    _shadow("ensemble:pattern_recognizer",
+            [{"symbol": "CCC", "verdict": "BUY"},
+             {"symbol": "DDD", "verdict": "HOLD"}],
+            "CCC:SELL,DDD:HOLD")
+    _pred("CCC", -3.0, "SHORT")
+    # 4. Single-candidate batched primary vs bare shadow verdict:
+    #    symbol must come from inside the verdicts array.
+    _shadow("ensemble:earnings_analyst",
+            [{"symbol": "EEE", "verdict": "BUY", "confidence": 70}],
+            "SELL")
+    _pred("EEE", -3.0, "HOLD")
+    conn.commit(); conn.close()
+    return db
+
+
+class TestPrimarySymbol:
+    def test_legacy_top_level(self):
+        from shadow_metrics import _primary_symbol
+        assert _primary_symbol({"symbol": "JNJ", "verdict": "X"}) == "JNJ"
+
+    def test_single_batched_entry(self):
+        from shadow_metrics import _primary_symbol
+        assert _primary_symbol(_INCIDENT_SINGLE) == "JNJ"
+
+    def test_multi_batched_has_no_single_symbol(self):
+        from shadow_metrics import _primary_symbol
+        assert _primary_symbol({"verdicts": [
+            {"symbol": "A", "verdict": "X"},
+            {"symbol": "B", "verdict": "Y"}]}) is None
+
+    def test_junk(self):
+        from shadow_metrics import _primary_symbol
+        assert _primary_symbol(None) is None
+        assert _primary_symbol({"verdicts": "nope"}) is None
+
+
+class TestEnsembleSetOutcomeScoring:
+    def test_batched_disagreements_score_against_outcomes(self, tmp_path):
+        from shadow_metrics import collect_fleet_metrics
+        db = _mk_scoring_db(tmp_path)
+        m = collect_fleet_metrics([db])
+        v = m["per_model"]["google:gemini-test"]
+        # AAA (gate), CCC (forecast), EEE (single-candidate) scored;
+        # HHH moot; BBB/DDD/III agreed so never candidates.
+        assert v["dis_resolved"] == 3
+        assert v["moot"] == 1
+        assert v["shadow_only"] == 3      # shadow right on all three
+        assert v["primary_right"] == 0
+        assert v["dis_units"] == 3        # AAA, CCC, EEE distinct
+        assert v["match_window"] == 3     # no decision ids -> window
+        # The funnel that read "0 scored" on 2026-09-16 must now
+        # produce a nonzero head-to-head.
+        assert v["h2h_n"] == 3
+        assert v["shadow_win_pct"] == 100.0
+
+    def test_verdict_set_rows_render_scored_counts(self, tmp_path):
+        from shadow_metrics import collect_fleet_metrics
+        db = _mk_scoring_db(tmp_path)
+        m = collect_fleet_metrics([db])
+        vs_rows = [d for d in m["recent_disagreements"]
+                   if d["symbol"] == "(verdict set)"]
+        assert len(vs_rows) == 3   # the three multi-set rows
+        assert {d["who_right"] for d in vs_rows} == {
+            "1 symbols scored", "pending"}
+
+    def test_dropped_symbol_is_never_graded(self, tmp_path):
+        """A symbol only ONE side verdicted (dropped by the other) is
+        schema disobedience, not a gradable decision — unlike
+        batch_select where omission is a deliberate pass."""
+        from shadow_metrics import collect_fleet_metrics
+        db = str(tmp_path / "quantopsai_profile_9904.db")
+        conn = sqlite3.connect(db)
+        conn.execute("""
+            CREATE TABLE ai_shadow_calls (
+                id INTEGER PRIMARY KEY, timestamp TEXT, purpose TEXT,
+                provider TEXT, model TEXT, parsed_signal TEXT,
+                agreement INTEGER, error TEXT, cost_usd REAL,
+                latency_ms INTEGER, primary_parsed TEXT,
+                decision_id TEXT
+            )""")
+        conn.execute("""
+            CREATE TABLE ai_predictions (
+                id INTEGER PRIMARY KEY, symbol TEXT, timestamp TEXT,
+                status TEXT, actual_return_pct REAL,
+                predicted_signal TEXT, decision_id TEXT
+            )""")
+        ts = "2026-09-15 14:00:00"
+        conn.execute(
+            "INSERT INTO ai_shadow_calls (timestamp, purpose, provider,"
+            " model, parsed_signal, agreement, error, cost_usd,"
+            " latency_ms, primary_parsed) VALUES (?,?,?,?,?,0,NULL,"
+            "0.001,500,?)",
+            (ts, "ensemble:pattern_recognizer", "google", "gemini-test",
+             "XXX:BUY,YYY:BUY",
+             json.dumps({"verdicts": [
+                 {"symbol": "XXX", "verdict": "BUY"},
+                 {"symbol": "YYY", "verdict": "BUY"},
+                 {"symbol": "ZZZ", "verdict": "SELL"}]})))
+        conn.execute(
+            "INSERT INTO ai_predictions (symbol, timestamp, status,"
+            " actual_return_pct, predicted_signal) VALUES "
+            "('ZZZ', ?, 'resolved', -5.0, 'SHORT')", (ts,))
+        conn.commit(); conn.close()
+        m = collect_fleet_metrics([db])
+        v = m["per_model"]["google:gemini-test"]
+        # ZZZ resolved and would score — but the shadow never answered
+        # it, so nothing may be graded (XXX/YYY agree).
+        assert v["dis_resolved"] == 0
+        assert v["ungradable"] == 0

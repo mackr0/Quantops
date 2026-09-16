@@ -697,8 +697,7 @@ def collect_fleet_metrics(profile_dbs: List[str],
                 pp = None
             from shadow_eval import _extract_signal
             primary_signal = _extract_signal(pp)
-            symbol = (pp.get("symbol") if isinstance(pp, dict)
-                      else None)
+            symbol = _primary_symbol(pp)
             pk = by_purpose[(purpose or "?", mkey)]
             pk["calls"] += 1
             pk["graded"] += 1
@@ -770,6 +769,31 @@ def collect_fleet_metrics(profile_dbs: List[str],
                 recent_dis.append({
                     "ts": str(ts)[:16], "profile": prof_label,
                     "symbol": "(trade set)", "purpose": purpose,
+                    "model": mkey,
+                    "primary": primary_signal or "?",
+                    "shadow": parsed_signal or "?",
+                    "outcome_pct": None,
+                    "who_right": (f"{n_scored} symbols scored"
+                                  if n_scored else "pending"),
+                })
+                continue
+            # 2026-09-16 — batched ensemble sets get the same
+            # per-symbol scoring as the apex call. Before this, a
+            # multi-candidate ensemble disagreement had no symbol and
+            # no decision id, so 100% of them sat "pending" forever
+            # and the money verdict starved at 0 scored.
+            if ((purpose or "").startswith("ensemble:")
+                    and len(_parse_trade_set(primary_signal)) > 1
+                    and len(_parse_trade_set(parsed_signal)) > 1):
+                n_scored = _score_ensemble_set_pair(
+                    purpose, primary_signal, parsed_signal, resolved,
+                    _parse_ts(ts), prof_label, (m, pk, ak))
+                if n_scored == 0:
+                    for b in (m, pk, ak):
+                        b["dis_pending"] += 1
+                recent_dis.append({
+                    "ts": str(ts)[:16], "profile": prof_label,
+                    "symbol": "(verdict set)", "purpose": purpose,
                     "model": mkey,
                     "primary": primary_signal or "?",
                     "shadow": parsed_signal or "?",
@@ -958,6 +982,110 @@ def _parse_trade_set(sig: Optional[str]) -> Dict[str, str]:
         if sym and sym != "?":
             out[sym] = act.strip().upper()
     return out
+
+
+def _primary_symbol(pp: Any) -> Optional[str]:
+    """The symbol a disagreement row's outcome should match on.
+    Top-level `symbol` (legacy singular shapes); else, for a batched
+    single-candidate response ({"verdicts": [one]}, 2026-09-16), the
+    lone verdict's symbol. Before this, batched rows carried no
+    symbol at all, so every one of their disagreements sat "pending"
+    forever and the money verdict starved at 0 scored."""
+    if not isinstance(pp, dict):
+        return None
+    sym = pp.get("symbol")
+    if isinstance(sym, str) and sym.strip():
+        return sym.strip()
+    verdicts = pp.get("verdicts")
+    if isinstance(verdicts, list):
+        entries = [v for v in verdicts if isinstance(v, dict)]
+        if len(entries) == 1:
+            s = entries[0].get("symbol")
+            if isinstance(s, str) and s.strip():
+                return s.strip()
+    return None
+
+
+def _score_ensemble_set_pair(purpose: Optional[str],
+                             primary_signal: Optional[str],
+                             shadow_signal: Optional[str],
+                             resolved: "_ResolvedIndex",
+                             epoch: Optional[float],
+                             prof_label: str,
+                             buckets) -> int:
+    """Score a batched ensemble disagreement symbol by symbol —
+    2026-09-16, the ensemble twin of _score_batch_select_pair (the
+    OPEN_ITEMS follow-up of the batched-verdicts incident).
+
+    Both sides verdict the SAME candidate batch, so only symbols BOTH
+    answered are compared (a symbol missing from one side is a dropped
+    verdict — schema disobedience — not a decision like batch_select's
+    deliberate pass, so it is never graded as one), and only where the
+    verdicts differ. Gate purposes score each symbol as a gate ruling
+    against the trade actually taken (grade_gate over trade_pnl; no
+    trade taken -> moot), forecast purposes by stance — the exact
+    semantics of the single-candidate path, per symbol. Outcomes come
+    from the primary's own prediction rows by symbol and time (a
+    multi-candidate call spans many decisions, so it carries no single
+    decision id). Returns the number of symbols scored; unresolved
+    symbols are left for a later render."""
+    p_set = _parse_trade_set(primary_signal)
+    s_set = _parse_trade_set(shadow_signal)
+    is_gate = (purpose or "") in _GATE_PURPOSES
+    scored = 0
+    for sym in sorted(set(p_set) & set(s_set)):
+        p_v, s_v = p_set[sym], s_set[sym]
+        if p_v == s_v:
+            continue
+        outcome, predicted_signal, match_method = resolved.match_for(
+            sym, epoch, None)
+        if outcome is None:
+            continue
+        if is_gate:
+            pnl = trade_pnl(predicted_signal, outcome)
+            if pnl is None:
+                for b in buckets:
+                    b["moot"] += 1
+                continue
+            p_right = grade_gate(gate_call(p_v), pnl)
+            s_right = grade_gate(gate_call(s_v), pnl)
+            p_val = gate_value(gate_call(p_v), pnl)
+            s_val = gate_value(gate_call(s_v), pnl)
+        else:
+            p_right = grade(stance(p_v), outcome)
+            s_right = grade(stance(s_v), outcome)
+            p_val = decision_value(stance(p_v), outcome)
+            s_val = decision_value(stance(s_v), outcome)
+        if (p_right is None or s_right is None
+                or p_val is None or s_val is None):
+            # Unmappable verdict on one side, or a noise-band move —
+            # never credit only the gradable side (2026-07-30 rule).
+            for b in buckets:
+                b["ungradable"] += 1
+            continue
+        scored += 1
+        key = (prof_label, sym)
+        for b in buckets:
+            b["dis_resolved"] += 1
+            b["_unit_keys"].add(key)
+            if match_method == "exact":
+                b["match_exact"] += 1
+            elif match_method == "window":
+                b["match_window"] += 1
+            if s_right:
+                b["shadow_right"] += 1
+            if p_right:
+                b["primary_right"] += 1
+            if s_right and p_right:
+                b["both_right"] += 1
+            elif s_right:
+                b["shadow_only"] += 1
+            elif p_right:
+                b["primary_only"] += 1
+            else:
+                b["neither_right"] += 1
+            b["_edge_by_unit"].setdefault(key, []).append(s_val - p_val)
+    return scored
 
 
 def _score_batch_select_pair(primary_signal: Optional[str],
