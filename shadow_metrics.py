@@ -730,6 +730,12 @@ def collect_fleet_metrics(profile_dbs: List[str],
                     # position — not a ruling on the candidate under
                     # review, so it never counts as a block on it.
                     action_key = "gate: exit advice"
+                elif ":" in (primary_signal or ""):
+                    # Batched multi-candidate gate review (2026-09-16,
+                    # "SYM:VERDICT,..." set string) — a SET of gate
+                    # rulings, graded at set level via `agreement`,
+                    # not a malformed verdict.
+                    action_key = "gate: set-level"
                 else:
                     action_key = "gate: unrecognised"
             else:

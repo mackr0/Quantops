@@ -86,6 +86,71 @@ def _dump_table_to_jsonl(conn: sqlite3.Connection, table: str,
 # must live in an excluded tree; sync.sh now excludes both names.
 DEFAULT_ARCHIVE_ROOT = "backups/predictions_archive"
 
+# Sidecar index of every strategy_type that has EVER produced an
+# archived prediction. 2026-09-16 — the 08-24 fresh start archived and
+# wiped the profile DBs, erasing the lifetime evidence the strategy-
+# zombie guardrail sums; six rare-trigger strategies with real
+# archived firings false-alarmed as zombies 14 days later. The dumps
+# themselves (834MB of JSONL) are too heavy to scan per test run, so
+# archiving maintains this tiny name set instead. Merge-only: names
+# accumulate across resets and are never removed, and a missing/stale
+# index can only produce MORE zombie alarms, never hide one.
+_STRATEGY_INDEX_NAME = "strategy_index.json"
+
+
+def archived_strategy_names(archive_root: str = DEFAULT_ARCHIVE_ROOT):
+    """Sorted strategy names with at least one archived prediction,
+    per the sidecar index. Empty when no index exists (CI, fresh
+    checkout) — fail-closed for the zombie guardrail."""
+    index_path = Path(archive_root) / _STRATEGY_INDEX_NAME
+    try:
+        data = json.loads(index_path.read_text())
+    except (OSError, json.JSONDecodeError, ValueError):
+        return []
+    names = data.get("strategies")
+    if not isinstance(names, list):
+        return []
+    return sorted(str(n) for n in names)
+
+
+def update_strategy_index(db_path: str,
+                          archive_root: str = DEFAULT_ARCHIVE_ROOT):
+    """Merge this DB's DISTINCT ai_predictions.strategy_type values
+    into the sidecar index. Called by archive_predictions so the same
+    operation that removes a profile DB records which strategies had
+    fired into it. Non-raising — the index is evidence, never a gate
+    on the archive itself. Returns the merged sorted list ([] on any
+    failure)."""
+    try:
+        with closing(sqlite3.connect(db_path)) as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT strategy_type FROM ai_predictions "
+                "WHERE strategy_type IS NOT NULL AND strategy_type != ''"
+            ).fetchall()
+        names = {str(r[0]) for r in rows}
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as exc:
+        logger.warning(
+            "archive: strategy-index read of %s failed: %s: %s — index "
+            "not updated (zombie guardrail may over-alarm, never under)",
+            db_path, type(exc).__name__, exc)
+        return []
+    merged = set(archived_strategy_names(archive_root)) | names
+    index_path = Path(archive_root) / _STRATEGY_INDEX_NAME
+    try:
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = index_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({
+            "updated": datetime.now(timezone.utc).isoformat(),
+            "strategies": sorted(merged),
+        }, indent=1))
+        os.replace(tmp, index_path)
+    except OSError as exc:
+        logger.warning(
+            "archive: strategy-index write failed: %s: %s",
+            type(exc).__name__, exc)
+        return []
+    return sorted(merged)
+
 
 def archive_predictions(db_path: str, profile_id: int,
                          archive_root: str = DEFAULT_ARCHIVE_ROOT,
@@ -149,6 +214,9 @@ def archive_predictions(db_path: str, profile_id: int,
             profile_id, type(exc).__name__, exc,
         )
         raise
+    # 2026-09-16 — record which strategies have EVER fired before a
+    # reset wipes the rows (the zombie guardrail's lifetime evidence).
+    update_strategy_index(db_path, archive_root)
     logger.info(
         "archive: profile %s → %s : %s",
         profile_id, out_dir, counts,
