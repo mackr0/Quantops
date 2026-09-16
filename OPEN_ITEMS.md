@@ -666,3 +666,45 @@ cancellation was DOWNSTREAM of the wrong close, not its cause. Root
 cause, fix, and the fleet-wide "bracket has NO live child" explanation
 are in the ✅ RESOLVED 2026-07-24 section above; this stub is kept only
 so the original suspect isn't re-investigated from scratch.
+
+---
+
+## INCIDENT FOLLOW-UP 2026-09-16 — shadow grading blind to the batched verdicts schema (fixed same day; two follow-ups OPEN)
+
+The fix + backfill shipped 2026-09-16 (see CHANGELOG): `_extract_signal`
+learned the Experiment-2 batched `{"verdicts": [...]}` shape, 31,733 of
+the restart cohort's 37,941 shadow calls gained an agreement verdict
+retroactively, and the extractor is now test-pinned to
+`ensemble._verdicts_schema` itself. Still open from the same
+investigation:
+
+- ⏳ **Per-symbol outcome scoring for ensemble set-string
+  disagreements.** `_score_batch_select_pair` (2026-08-23) explodes
+  apex `batch_select` trade sets into per-symbol stances and scores
+  each against its own outcome — but it fires only on
+  `purpose == 'batch_select'`. Multi-candidate `ensemble:*`
+  disagreements ("SYM:VERDICT,..." both sides) have no symbol, no
+  `decision_id` (the ensemble stamps it only on single-candidate
+  chunks — see `_chunk_decision_id` in ensemble.py), and therefore no
+  outcome match: they surface on /shadow as disagreements with
+  outcomes forever "pending". Options, not yet chosen: explode
+  ensemble set strings the way batch_select's are, and/or stamp a
+  per-symbol decision-id map on batched shadow rows.
+- 💰 **Gemini shadow-quota burn.** ~3,200 shadow calls on profiles
+  229–234 (the OpenAI-primary arms shadowing Gemini) died with
+  `429 RESOURCE_EXHAUSTED` account-quota errors between 2026-08-24 and
+  2026-09-15. The 3-strike stand-down works as designed (probes resume
+  each ET day), but the burn recurs daily while the Google account's
+  paid-tier quota stays where it is. Operator decision: raise the
+  Gemini quota/billing, or narrow the shadow scope so OpenAI-primary
+  arms stop shadowing the exhausted Gemini models.
+- ⏳ **Six-strategy zombie audit (2026-09-16).** `short_squeeze_setup`,
+  `news_sentiment_spike`, `volume_dryup_breakout`,
+  `parabolic_exhaustion`, `catalyst_filing_short`, `iv_regime_short`
+  have ZERO lifetime predictions across the current DBs AND the entire
+  4-month prediction archive — the exact 2026-05-15 bug class (API
+  contract drift, unreachable thresholds, broken dependencies).
+  Quarantined in `test_no_strategy_zombies._KNOWN_ZOMBIES_2026_09_16`
+  (shrink-only, self-checked). Work the STRATEGY_AUDIT_PLAN.md
+  playbook per strategy; remove each from the quarantine as it's
+  fixed or deliberately retired from the registry.

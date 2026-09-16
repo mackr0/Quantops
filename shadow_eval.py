@@ -432,6 +432,20 @@ def _extract_signal(parsed: Any) -> Optional[str]:
         (empty list -> "PASS"), so two models agree iff they picked the
         same trade set. Both sides run through THIS extractor, so the
         comparison is symmetric by construction.
+
+    2026-09-16 — same failure class, second occurrence: the Experiment-2
+    build (2026-08-23, vendor-fair structured output) moved every
+    ensemble specialist to the BATCHED shape
+    {"verdicts": [{symbol, verdict, confidence, ...}, ...]} and this
+    extractor never learned it, so agreement was None on 100% of the
+    37,941 shadow calls made since the 2026-08-24 restart. Handling:
+      - exactly one verdict entry -> the bare verdict ("VETO"),
+        byte-identical to the legacy singular shape, so the gate/stance
+        cuts in shadow_metrics keep working on single-candidate calls;
+      - multiple entries -> sorted "SYM:VERDICT,SYM:VERDICT" set string
+        (empty list -> "NONE"), graded at set level exactly like the
+        apex trade set. The symbol stays in the multi form so a model
+        that answers about the wrong symbols can never score agreement.
     """
     if not isinstance(parsed, dict):
         return None
@@ -444,6 +458,21 @@ def _extract_signal(parsed: Any) -> Optional[str]:
             for t in trades if isinstance(t, dict)
         )
         return ",".join(picks) if picks else "PASS"
+    # Batched ensemble shape (structured output, 2026-08-23+).
+    verdicts = parsed.get("verdicts")
+    if isinstance(verdicts, list):
+        entries = [v for v in verdicts if isinstance(v, dict)]
+        if len(entries) == 1:
+            v = entries[0].get("verdict")
+            if isinstance(v, str) and v.strip():
+                return v.strip().upper()
+            return None
+        calls = sorted(
+            f"{str(v.get('symbol', '?')).upper()}:"
+            f"{str(v.get('verdict', '?')).upper()}"
+            for v in entries
+        )
+        return ",".join(calls) if calls else "NONE"
     for key in _SIGNAL_FIELDS:
         v = parsed.get(key)
         if isinstance(v, str) and v.strip():
