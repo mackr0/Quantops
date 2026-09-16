@@ -678,18 +678,17 @@ retroactively, and the extractor is now test-pinned to
 `ensemble._verdicts_schema` itself. Still open from the same
 investigation:
 
-- ⏳ **Per-symbol outcome scoring for ensemble set-string
-  disagreements.** `_score_batch_select_pair` (2026-08-23) explodes
-  apex `batch_select` trade sets into per-symbol stances and scores
-  each against its own outcome — but it fires only on
-  `purpose == 'batch_select'`. Multi-candidate `ensemble:*`
-  disagreements ("SYM:VERDICT,..." both sides) have no symbol, no
-  `decision_id` (the ensemble stamps it only on single-candidate
-  chunks — see `_chunk_decision_id` in ensemble.py), and therefore no
-  outcome match: they surface on /shadow as disagreements with
-  outcomes forever "pending". Options, not yet chosen: explode
-  ensemble set strings the way batch_select's are, and/or stamp a
-  per-symbol decision-id map on batched shadow rows.
+- ✅ **Per-symbol outcome scoring for ensemble set-string
+  disagreements — DONE same day (2026-09-16, second commit).**
+  `_score_ensemble_set_pair` explodes multi-candidate `ensemble:*`
+  disagreements symbol-by-symbol with the single-path's exact
+  gate/forecast semantics, and `_primary_symbol` recovers the symbol
+  from single-candidate batched responses. Live: 0 scored →
+  1,958–2,670 resolved disagreements per arm, first money verdict
+  resolved. Remaining niche gap (deliberately unscored): a symbol
+  only one side verdicted is a dropped verdict, never graded; and a
+  per-symbol decision-id map on batched shadow rows would upgrade
+  window matches to exact joins — nice-to-have, not blocking.
 - 💰 **Gemini shadow-quota burn.** ~3,200 shadow calls on profiles
   229–234 (the OpenAI-primary arms shadowing Gemini) died with
   `429 RESOURCE_EXHAUSTED` account-quota errors between 2026-08-24 and
