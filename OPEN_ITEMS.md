@@ -707,3 +707,22 @@ investigation:
   (shrink-only, self-checked). Work the STRATEGY_AUDIT_PLAN.md
   playbook per strategy; remove each from the quarantine as it's
   fixed or deliberately retired from the registry.
+
+---
+
+## INCIDENT FOLLOW-UP 2026-09-19 — ✅ RESOLVED same day: equity-identity false ERROR on p229/230/231 after the 09-18 expiry
+
+Worthless-expiry `$0` closes (and, latently, `dividend`/`cash_debit`
+cash-only rows) never reached `journal.compute_leg_realized`, the
+identity audit's realized basis since 08-24 — drift = exactly the lost
+premium on penny-exact books. Fixed in the FIFO itself; no journal
+rows touched. See CHANGELOG 2026-09-19;
+`tests/test_leg_realized_zero_price_close_2026_09_19.py`.
+
+- **Nothing left open from this incident.** Standing rule it
+  surfaced: realized now has TWO readers of row conventions (the
+  stamped pnl column and the leg FIFO). Any NEW row convention a
+  writer introduces (a new side, a new priced-at-$0 event) must be
+  taught to `get_virtual_cash`, `get_virtual_positions` AND
+  `compute_leg_realized` together — the lockstep test pins sides;
+  it cannot pin conventions nobody has invented yet.
