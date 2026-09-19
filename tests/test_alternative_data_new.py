@@ -247,7 +247,12 @@ class TestFREDMacro:
 # ---------------------------------------------------------------------------
 
 class TestAggregators:
-    def test_get_all_alternative_data_includes_new_sources(self, tmp_db, monkeypatch):
+    # Integration-weight: builds several journal schemas and walks every
+    # route / every alt-data source. Sat at ~100% of the 30s unit-test
+    # budget on the droplet, so it flipped with any load (2026-09-19).
+    @pytest.mark.timeout(120)
+    def test_get_all_alternative_data_includes_new_sources(self, tmp_db, monkeypatch,
+                                                           no_network):
         """All 9 sources (5 existing + 4 new) must be in the aggregated dict."""
         from alternative_data import get_all_alternative_data
         # Mock all external calls to return defaults quickly

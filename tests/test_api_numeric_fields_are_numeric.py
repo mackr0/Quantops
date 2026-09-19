@@ -36,6 +36,10 @@ from unittest.mock import patch
 
 import pytest
 
+# Hermetic: these walkers hit every route; none may reach the real
+# network (see conftest.no_network, 2026-09-19).
+pytestmark = pytest.mark.usefixtures("no_network")
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
 
 
@@ -389,6 +393,10 @@ class TestApiNumericFieldsAreNumeric:
     variation and asserts numeric-looking fields are int/float (or
     None when allowlisted)."""
 
+    # Integration-weight: builds several journal schemas and walks every
+    # route / every alt-data source. Sat at ~100% of the 30s unit-test
+    # budget on the droplet, so it flipped with any load (2026-09-19).
+    @pytest.mark.timeout(120)
     def test_no_string_in_numeric_field(self, patched_user_with_profiles):
         client, app = _logged_in_client()
         routes = _discover_api_routes(app)
