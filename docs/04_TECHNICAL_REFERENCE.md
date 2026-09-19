@@ -19,7 +19,7 @@
                                               ↕
                     Multi-Scheduler (multi_scheduler.py · 24/7 process)
                     ────────────────────────────────────────────────
-                    37 scheduled tasks, per-profile + once-per-day
+                    50 scheduled tasks, per-profile + once-per-day
                                               ↕
         ┌─────────────────────  Per-profile DB (quantopsai_profile_<id>.db) ────┐
         │  trades · ai_predictions · ai_cycles · daily_snapshots · signals ·   │
@@ -53,7 +53,7 @@ The deployed system runs three processes:
 | Process | Module | Purpose |
 |---|---|---|
 | `quantopsai-web` | `app.py` (Flask + gunicorn) | User-facing web app. Settings, dashboards, API endpoints. |
-| `quantopsai-scheduler` | `multi_scheduler.py` | The trading loop. 5-15 minute cycles per profile + once-daily tasks. |
+| `quantopsai` (the systemd unit is named just `quantopsai`, not `quantopsai-scheduler`) | `multi_scheduler.py` | The trading loop. Cycles per profile at the fleet scan interval (default 15 min) + once-daily tasks + hourly closed-market housekeeping. |
 | `nginx` | (system) | TLS termination + reverse proxy → gunicorn:8000. |
 
 Scheduler and web run as systemd units. `sync.sh` deploys both (rsync + systemd reload).
@@ -65,8 +65,8 @@ Scheduler and web run as systemd units. `sync.sh` deploys both (rsync + systemd 
 |---|---|
 | `app.py` | Flask app factory. Registers blueprints (views, auth). |
 | `auth.py` | Login/logout, password hashing, session management. |
-| `views.py` | All HTTP routes (≈4,500 lines, the second-largest module). |
-| `multi_scheduler.py` | Scheduler entry point + the 37 `_task_*` functions. |
+| `views.py` | All HTTP routes (≈7,800 lines, the largest module). |
+| `multi_scheduler.py` | Scheduler entry point + the 50 `_task_*` functions. |
 | `main.py` | Legacy single-profile entry; deprecated. |
 
 ### 3b. Core trade pipeline
@@ -90,7 +90,7 @@ Scheduler and web run as systemd units. `sync.sh` deploys both (rsync + systemd 
 | `order_guard.py` | Schedule-window + duplicate-order checks before submit. |
 | `bracket_orders.py` | Broker-managed protective stops + take-profits. |
 | `trader.py` | Per-position exit logic; trailing-stop reconciliation. Exit-fired SELL/COVER rows write `status='pending_fill'` until broker confirms (deferred to `_task_update_fills`). |
-| `journal.py` | `trades` + journal-table CRUD + schema migrations. Status values: `open` (entry), `pending_fill` (close awaiting broker confirmation), `closed` (broker-confirmed close), `canceled` (entry never filled / phantom undo). FIFO `get_virtual_positions` keys each position by OCC symbol when set, otherwise by stock symbol, and applies the ×100 contract multiplier on dollar fields (`unrealized_pl`, `market_value`) for option positions. Includes everything except `status='canceled'`. |
+| `journal.py` | `trades` + journal-table CRUD + schema migrations. Status values: `open` (entry), `pending_fill` (close awaiting broker confirmation), `closed` (broker-confirmed close), `pending_protective` (a resting stop/target — a trigger price, not a cash flow), and the never-filled terminals `canceled` / `expired` / `rejected` / `done_for_day`, plus the reconciler labels `auto_reconciled_phantom_close` and `auto_closed_external`. Sides: `buy` / `sell` / `short` / `cover` for position rows, and the cash-only `dividend` / `cash_debit` (no share movement; written by broker-activity capture). FIFO `get_virtual_positions` keys each position by OCC symbol when set, otherwise by stock symbol, and applies the ×100 contract multiplier on dollar fields (`unrealized_pl`, `market_value`) for option positions. All three ledger lenses — positions (`get_virtual_positions`), cash (`get_virtual_cash`) and realized (`compute_leg_realized`) — exclude the same dead set (`pending_protective`, `canceled`, `expired`, `rejected`, `done_for_day`, `auto_reconciled_phantom_close`, and fill-less `auto_closed_external`), with one invariant (FILL-TRUTH, 2026-08-25): a row whose order actually filled never leaves the cash or realized algebra whatever status a reconcile path later writes on it. FIFO is cover-first (2026-08-27): a `buy` consumes open short lots before opening a long, because protective buy-backs are journaled as `buy`. Broker-activity closes (option expiry / assignment / exercise) are journaled at exactly $0 and are the one legitimate $0-priced row: they consume lots and realize the premium (2026-09-19). |
 
 ### 3c. Strategy engines
 | Module | Purpose |
@@ -295,7 +295,7 @@ When a profile submits a trade, it goes to the shared Alpaca account. The fill c
 
 Per-profile virtual position book is computed from `journal.get_virtual_positions(db_path)` — FIFO accounting over the trades table. This returns shape-identical output to `client.get_positions()` so downstream code (trade_pipeline, views, performance reporting) works without branching.
 
-Per-profile virtual equity: `initial_capital + sum(realized_pnl) + sum(unrealized_pnl from current price)`. Cash: `initial_capital - sum(open_position_market_value)`.
+Per-profile virtual equity: `initial_capital + sum(realized_pnl) + sum(unrealized_pnl from current price)`. Cash comes from `get_virtual_cash()` in `journal.py` — a status-filtered, fill-true walk of the profile's own trades ledger (`initial_capital − buys/covers/cash_debits + sells/shorts/dividends`, ×100 on option legs, `COALESCE(fill_price, price)`), the same function the buy-side cash door uses. It returns `None` when the ledger cannot be read, and every caller must fail closed on `None` (2026-07-27 sweep). The equity-identity audit checks `cash + Σ market_value == initial + realized + unrealized` using leg-derived realized (`compute_leg_realized()`) and ONE positions snapshot, so mark terms cancel and any nonzero drift is a real bookkeeping disagreement; stored-`pnl`-column corruption is reported as its own finding.
 
 ### 6d. Cross-account reconciliation
 
@@ -321,7 +321,8 @@ The same architecture, when extended to live trading, becomes the foundation for
 `multi_scheduler.run_scheduler()` is the main loop. Architecture:
 
 - One process; multiple profiles processed sequentially per cycle.
-- Cycle cadence: 5 minutes during market hours (configurable per profile via `schedule_type`).
+- Cycle cadence: the fleet scan interval, default 15 minutes during market hours (`users.scan_interval_minutes`: 15 / 10 / 5 / 3 / 2; `schedule_type` sets which sessions a profile trades).
+- Market closed: hourly housekeeping per profile — fill updates + broker-activity capture — so expiries, assignments and dividends book overnight and on weekends.
 - Each per-profile cycle invokes `run_segment_cycle(ctx, run_scan, run_exits, run_predictions, run_snapshot, run_summary)`.
 - Inside `run_segment_cycle`, individual `run_task(label, fn, db_path)` calls invoke each `_task_*` with full error isolation — one task failing doesn't break the cycle.
 - `_task_run_watchdog` self-heals stuck tasks (records start/end timestamps, kills tasks running longer than the cycle).
@@ -381,7 +382,7 @@ Multiple TTL-based caches across the system. Source of TTLs: `alternative_data._
 
 ## 10. Test suite
 
-Source: `tests/`. 521 test files covering:
+Source: `tests/`. 573 test files covering:
 
 - **Per-module unit tests** (~170 files): one per major module.
 - **Integration tests**: `test_today_integration.py` (scheduler wiring), `test_pipeline.py` (end-to-end cycle).
@@ -392,7 +393,7 @@ Run: `venv/bin/python -m pytest tests/ -q`.
 
 Test discipline:
 
-- 6,985 tests, zero skipped (runtime `pytest.skip()` guards were systematically removed 2026-06-24; a structural guard now blocks broad-`except`→`skip`).
+- 7,026 tests, zero skipped (runtime `pytest.skip()` guards were systematically removed 2026-06-24; a structural guard now blocks broad-`except`→`skip`).
 - pytest-randomly for order-independence.
 - 30s default timeout per test.
 - Mocked external APIs (no network calls).
@@ -402,7 +403,7 @@ Test discipline:
 Single droplet at `67.205.155.63`. Layout:
 
 - `/opt/quantopsai/` — code (rsynced via `sync.sh`).
-- `/opt/quantopsai/venv/` — Python 3.9 venv with all deps.
+- `/opt/quantopsai/venv/` — Python 3.12 venv with all deps.
 - `/opt/quantopsai/quantopsai.db` — master DB.
 - `/opt/quantopsai/quantopsai_profile_<id>.db` — per-profile DBs.
 - `/opt/quantopsai/.cache/` — disk caches (slippage K, Ken French CSVs).
@@ -412,7 +413,7 @@ Single droplet at `67.205.155.63`. Layout:
 
 1. rsync exclude `__pycache__`, `.cache/`, `*.db`.
 2. `git fetch && git reset --hard origin/main` on prod (keeps prod git in sync).
-3. systemd reload of `quantopsai-web` + `quantopsai-scheduler` when scheduler is idle.
+3. systemd restart of `quantopsai-web` + `quantopsai` (the scheduler unit) when the scheduler is idle.
 
 ## 12. AI provider integration
 
@@ -437,7 +438,7 @@ Flask + Jinja2. Templates in `templates/`. Major pages:
 - `/trades` — trade ledger.
 - `/settings` — per-profile settings.
 
-Major API endpoints in `views.py` (~69 routes). Documented inline; selected endpoints in `docs/06_USER_GUIDE.md`.
+Major API endpoints in `views.py` (~74 routes, plus 3 in `auth.py`). Documented inline; selected endpoints in `docs/06_USER_GUIDE.md`.
 
 ## 14. Adding a new module
 

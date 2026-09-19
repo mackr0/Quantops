@@ -2,7 +2,7 @@
 
 **Audience:** quants, engineers, anyone who needs the canonical name and definition of any column / signal / feature / knob.
 **Purpose:** the reference open while reading every other doc. If a name is mentioned anywhere else and you need to look it up, look here.
-**Last updated:** 2026-06-04 (audit reconciliation — see `docs/AUDIT_2026_06_04_DOC_RECONCILIATION.md`).
+**Last updated:** 2026-09-19 (trade sides/statuses reconciled to the live ledger; shadow columns, nine tables and thirteen scheduler tasks added). Previous full audit: 2026-06-04 — see `docs/AUDIT_2026_06_04_DOC_RECONCILIATION.md`.
 
 ## Table of contents
 
@@ -103,10 +103,10 @@ Every per-profile setting lives here. Source of truth: `models.py` `init_user_db
 
 | Column | Type | Default | Description |
 |---|---|---|---|
-| `ai_provider` | TEXT | `google` | `anthropic` / `openai` / `google`. Default targets `gemini-2.5-flash-lite` at roughly $0.30/day per 13-profile fleet — the cheapest tier the current ensemble synthesizes well on. |
-| `ai_model` | TEXT | `gemini-2.5-flash-lite` | Provider-specific model ID. |
+| `ai_provider` | TEXT | `anthropic` | `anthropic` / `openai` / `google`. The schema default is rarely what runs: experiment manifests set provider and model per arm (Experiment 2: `openai` × `gpt-4.1-nano` / `gpt-5.6-luna`, `google` × `gemini-3.5-flash-lite` / `gemini-3.7-flash`). Changed only through `promote()` in `model_promotion.py`. |
+| `ai_model` | TEXT | `claude-haiku-4-5-20251001` | Provider-specific model ID (schema default shown; see `ai_provider`). Stamped onto every `ai_predictions` row, and learned state is scoped to it. |
 | `ai_confidence_threshold` | INTEGER | 25 | Min AI confidence to act on. |
-| `ai_model_auto_tune` | INTEGER | 0 | Allow tuner to A/B-test models within cost guard. |
+| `ai_model_auto_tune` | INTEGER | 0 | **Dead column**, kept append-only for schema stability. The Settings toggle was removed 2026-08-24 (docs/25 decision D3) after it was found to do nothing; never read, not in the update allowlist. |
 
 ### Multi-model consensus
 
@@ -212,7 +212,17 @@ These columns gate the pipeline-dispatch cutover (per `docs/14` Phase 0 → `doc
 |---|---|---|---|
 | `use_pipeline_dispatch` | INTEGER | 0 | When 1, `multi_scheduler:957` routes through `pipelines.dispatch.run_via_pipelines` (calls `Pipeline.run_cycle` per pipeline) instead of legacy `trade_pipeline.run_trade_cycle`. Mutually exclusive per cycle. |
 | `enable_pipeline_shadow_eval` | INTEGER | 0 | When 1, `pipelines/shadow.py` runs StockPipeline + OptionPipeline in parallel with the legacy dispatcher (read-only — stops before `execute()`) and writes divergence rows to `pipeline_shadow_runs`. Cost: ~$0.01–0.02/cycle per shadow-enabled profile. |
-| `scan_interval_minutes` | INTEGER | 15 | Operator-tunable scan cadence (selectable: 15 / 10 / 5 / 3 / 2 min). Read by `multi_scheduler._scan_interval_seconds()` every loop iteration; a UI change takes effect on the next cycle (no restart required). Settings → AI Behavior dropdown. |
+| `scan_interval_minutes` *(a `users` column in the master DB — fleet-wide, not per-profile; listed here because it is set from the same Settings page)* | INTEGER | 15 | Operator-tunable scan cadence (selectable: 15 / 10 / 5 / 3 / 2 min). Read by `multi_scheduler._scan_interval_seconds()` every loop iteration; a UI change takes effect on the next cycle (no restart required). Settings → AI Behavior dropdown. |
+
+### Shadow evaluation (Experiment 2)
+
+| Column | Type | Default | Meaning |
+|---|---|---|---|
+| `enable_shadow_eval` | INTEGER | 0 | Replay this profile's matching AI calls to its shadow models. |
+| `shadow_models` | TEXT (JSON list) | `[]` | Challenger models as `provider:model` (optionally `@variant` for a prompt-variant arm). In Experiment 2 every arm lists the other three. |
+| `shadow_api_keys_enc` | TEXT (encrypted JSON) | `{}` | Per-provider API keys for the shadow calls, so a challenger on another vendor can be called at all. |
+
+(`enable_pipeline_shadow_eval` above is the retired pipeline-cutover shadow, unrelated to model A/B testing.)
 
 ### Trading halt (operator override)
 
@@ -275,7 +285,7 @@ Per-profile DB. Every order submitted lands here.
 | `id` | INTEGER PK | autoincrement |
 | `timestamp` | TEXT | UTC ISO 8601, default `now()`. |
 | `symbol` | TEXT | Underlying ticker. |
-| `side` | TEXT | `buy` / `sell` / `sell_short` / `buy_to_cover`. |
+| `side` | TEXT | Position rows: `buy` / `sell` / `short` / `cover` (protective buy-backs of shorts are journaled `buy`; the FIFO is cover-first). Cash-only rows with no share movement: `dividend` (a cash credit — dividends, and the credit half of an option-settlement pair) and `cash_debit` (the debit half; 2026-07-25). Both are written by broker-activity capture, counted by `get_virtual_cash()` and — since 2026-09-19 — by `compute_leg_realized()`. |
 | `qty` | REAL | Shares (or contracts × 100 for options). |
 | `price` | REAL | Decision-time price. |
 | `order_id` | TEXT | Alpaca order ID. |
@@ -286,7 +296,7 @@ Per-profile DB. Every order submitted lands here.
 | `ai_confidence` | REAL | AI confidence 0-100. |
 | `stop_loss` | REAL | Price level for stop. |
 | `take_profit` | REAL | Price level for TP. |
-| `status` | TEXT | `open` (entry, position held) / `pending_fill` (close submitted to broker, fill not yet confirmed) / `closed` (broker-confirmed close) / `canceled` (entry never filled at broker, phantom undo). FIFO virtual-position book filters only on `status != 'canceled'`. The `pending_fill` → `closed` transition is driven by `_task_update_fills` once Alpaca returns `filled_avg_price`. |
+| `status` | TEXT | `open` (entry, position held) / `pending_fill` (close submitted to broker, fill not yet confirmed) / `closed` (broker-confirmed close) / `pending_protective` (a resting stop or target — a trigger price, not a cash flow) / never-filled terminals `canceled`, `expired`, `rejected`, `done_for_day` / reconciler labels `auto_reconciled_phantom_close`, `auto_closed_external`. The positions, cash and realized lenses all exclude the same dead set (`pending_protective` + the never-filled terminals + `auto_reconciled_phantom_close` + *fill-less* `auto_closed_external`); a row that bears a fill never leaves the cash/realized algebra whatever its status (FILL-TRUTH invariant, 2026-08-25). A `closed` row priced at exactly $0 with `signal_type` OPEXP / OPASN / OPEXC is a broker-initiated option close (worthless expiry, assignment, exercise), not unpriced data. The `pending_fill` → `closed` transition is driven by `_task_update_fills` once Alpaca returns `filled_avg_price`. |
 | `pnl` | REAL | Realized P&L (only on closing rows). |
 | `decision_price` | REAL | Price the strategy/AI saw at decision. |
 | `fill_price` | REAL | Actual broker fill. Updated by fill updater. |
@@ -380,6 +390,21 @@ Audit log of scheduler task executions (when, duration, error if any).
 
 ### `recently_exited_symbols` (per-profile)
 Cooldown table — wash-trade flagged, recently sold, or otherwise blocked from re-entry.
+
+### `ai_cycles` (per-profile)
+One row per AI cycle holding the full prompt text once (per-cycle prompt storage since 2026-07-02, 6.15× dedup); `ai_predictions.cycle_id` joins to it. The fine-tune corpus builder depends on this join.
+
+### `ai_shadow_calls` (per-profile)
+The shadow-evaluation evidence base: for each replayed call, the challenger's provider/model, prompt hash, raw response, `parsed_signal`, tokens and `cost_usd`, beside the primary's provider/model/response and the graded `agreement`. See `docs/02_AI_SYSTEM.md` §16. Shadow spend lives here, not in `ai_cost_ledger`.
+
+### `option_proposal_outcomes` (per-profile)
+Would-be outcomes of *vetoed* option proposals, resolved intrinsically at expiry — physically separate from `ai_predictions` so hypothetical results can never contaminate real-trade statistics. Feeds the veto-feedback discount (`veto_feedback.py`).
+
+### `reconcile_state`, `submitted_orders` (per-profile)
+State behind the freshness invariant and order-id truth: what this profile has submitted, and when each symbol was last reconciled to the broker. Auto-created and empty after a reset.
+
+### `cycle_regime`, `broker_rejections`, `trade_drops`, `migration_markers` (per-profile)
+Respectively: the regime tag recorded for each cycle; broker order rejections (the source of learned hard-to-borrow cooldowns); candidates dropped between selection and submit, with the reason; and once-only migration/backfill markers.
 
 ### `ai_cost_ledger` (per-profile)
 Per-AI-call cost accounting. Daily roll-up via `ai_cost_ledger.spend_summary`.
@@ -518,7 +543,7 @@ The full list mirrors the schema columns above plus computed fields like `db_pat
 
 ## 9. Scheduler tasks
 
-Source: `multi_scheduler.py` `_task_*` functions. 47 tasks total. Each is either:
+Source: `multi_scheduler.py` `_task_*` functions. 50 tasks total. Each is either:
 
 - **Per-profile per-cycle** (gated on enable_X column or on INFRASTRUCTURE_TASKS allowlist with rationale), OR
 - **Once-per-day** (idempotent, master-DB marker).
@@ -562,6 +587,19 @@ Source: `multi_scheduler.py` `_task_*` functions. 47 tasks total. Each is either
 | `_task_pdufa_scrape` | once/day | PDUFA event scrape (Item 6). |
 | `_task_weekly_digest` | weekly | Sunday performance digest. |
 | `_task_daily_summary_email` | once/day | Email summary (no-op if no SMTP). |
+| `_task_freshen_to_broker` | per cycle, first | RECONCILE-FIRST: brings the profile's journal to broker truth and stamps every symbol fresh at the cycle epoch before any exit / protective / option logic reads positions. The eager half of the freshness invariant. |
+| `_task_capture_broker_activities` | per cycle + hourly while the market is closed | Pulls DIV / OPEXP / OPASN / OPEXC activities (and MISC option-settlement cash) and writes matching journal rows, behind an own-book ownership gate. Idempotent via activity id == `trades.order_id`. |
+| `_task_options_proactive_exits` | per cycle | Pre-expiry exits for single-leg options: premium stop, premium take-profit, DTE exit (`options_exits.py`). |
+| `_task_activate_benchmarks` | per cycle until done | Activates pending virtual benchmarks from the session's opening prints (docs/25 D6). Idempotent; a no-op once nothing is pending. |
+| `_task_check_book_loss_floor` | per cycle | Doomsday gate: book-wide day P&L below the configured floor auto-engages the master kill switch. |
+| `_task_check_stop_coverage` | per cycle | Doomsday: alerts when fewer than 80% of open longs have a broker protective stop; optional auto-kill on extended breach. |
+| `_task_check_position_runaway` | per cycle | Doomsday sentinel for duplicate-submit bugs and excessive single-trade quantity. Alerts only. |
+| `_task_check_ai_consistency` | per cycle | Doomsday: alerts when the recent-100-resolved win rate sits below the floor for N consecutive cycles — "the model is broken" before "the book is bleeding". |
+| `_task_data_source_health` | daily | Probes every critical data source against a known-liquid symbol; alerts on silent degradation (added after a silently revoked key, 2026-05-15). |
+| `_task_trade_rate_anomaly_check` | daily | Writes an `audit_alerts` row when this week's stock entries fall below 50% of last week's — catches a tuner or gate quietly strangling trading. |
+| `_task_auto_expire_gate_tightens` | daily | Auto-expires gate-tightening tuner changes ≥ 7 days old that the evidence has not vindicated. |
+| `_task_shadow_eval_daily_email` | daily | The shadow-evaluation digest, separate from the main daily summary so it can be muted independently. |
+| `_task_phase5c_backfill_nightly` | nightly | Backfills historical option predictions (docs/18 item 2). |
 
 ---
 

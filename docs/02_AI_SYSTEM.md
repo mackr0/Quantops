@@ -2,7 +2,7 @@
 
 **Audience:** quants, ML researchers, anyone who builds production prediction systems.
 **Prerequisites:** familiarity with gradient-boosted trees, online learning, calibration, ensemble methods.
-**Last updated:** 2026-06-04 (audit reconciliation — see `docs/AUDIT_2026_06_04_DOC_RECONCILIATION.md`).
+**Last updated:** 2026-09-19 (learning-layer reconciliation: six live specialists, derived veto set, evidence-mode tuner, shadow evaluation §16, structured-output contract, model attribution/promotion, zombie quarantine). Previous full audit: 2026-06-04 — see `docs/AUDIT_2026_06_04_DOC_RECONCILIATION.md`.
 
 ## Overview
 
@@ -51,7 +51,7 @@ max loss/gain, breakeven, DTE, spot, IV rank) and refuses — loudly, as an
 `OPTION_INPUT_INCOMPLETE` drop excluded from veto learning — any proposal
 whose economics can't be established.
 
-**This is the value-prop story.** The system scales the AI's accuracy without scaling its cost by putting hundreds of *deterministic* rule-checkers in front of the *narrative* LLM call. The 179 rule modules each cost zero API tokens — they're pure-Python pattern matchers — and they catch the structurally-checkable patterns (RSI overbought, insider clusters, gap into resistance, etc.) so the LLM only spends tokens on the synthesis work it's uniquely good at. Most decisions short-circuit cleanly through the rule layer; only the genuinely-contested candidates exercise the apex LLM. Result: ~$1–3/day of operational AI spend across the 13-profile fleet (trailing-7d avg $1.29/day at the 2026-07-27 measurement) at the current `gemini-2.5-flash-lite` rate; shadow-model evaluation adds spend up to the operator-set shadow cap on top.
+**This is the value-prop story.** The system scales the AI's accuracy without scaling its cost by putting hundreds of *deterministic* rule-checkers in front of the *narrative* LLM call. The 179 rule modules each cost zero API tokens — they're pure-Python pattern matchers — and they catch the structurally-checkable patterns (RSI overbought, insider clusters, gap into resistance, etc.) so the LLM only spends tokens on the synthesis work it's uniquely good at. Most decisions short-circuit cleanly through the rule layer; only the genuinely-contested candidates exercise the apex LLM. Result: operational AI spend of ≈ $1.86/day primary + ≈ $1.70/day shadow evaluation (≈ $3.56/day, a ~$107/month run-rate; measured 2026-09-12→18 across the twelve-profile, four-model Experiment-2 fleet). That is above the ≈ $68/month planning figure in `docs/25_MODEL_SELECTION_AND_LEARNING_PLAN.md` §1.5, and the gap is the shadow layer — every arm cross-shadows the other three. (Experiment 1, one model on 13 profiles, measured $1.29/day on 2026-07-27.)
 
 > **Full enumeration** of all 187 specialists (8 LLM + 179 deterministic) with per-rule purpose + severity + direction lives in `docs/24_SPECIALIST_CATALOG.md`. The catalog is auto-derivable from the source — each rule's `NAME`, `DESCRIPTION`, and `APPLIES_TO_SIGNALS` are read directly out of `deterministic_specialists/*.py` — so it stays in sync.
 
@@ -73,6 +73,8 @@ The platform ships **25 plugin strategies** in `strategies/`. Each is a pure fun
 
 - **Bullish (12):** gap_reversal, news_sentiment_spike, short_squeeze_setup (long side), earnings_drift, insider_cluster, fifty_two_week_breakout, macd_cross_confirmation, sector_momentum_rotation, analyst_upgrade_drift, short_term_reversal, volume_dryup_breakout, max_pain_pinning.
 - **Bearish (13):** breakdown_support, distribution_at_highs, failed_breakout, parabolic_exhaustion, relative_weakness_in_strong_sector, earnings_disaster_short, catalyst_filing_short, sector_rotation_short, iv_regime_short, relative_weakness_universe, insider_selling_cluster, high_iv_rank_fade, vol_regime.
+
+**Six of the 25 have never fired.** `short_squeeze_setup`, `news_sentiment_spike`, `volume_dryup_breakout`, `parabolic_exhaustion`, `catalyst_filing_short` and `iv_regime_short` produced **zero** predictions across the entire four-month prediction archive. They are quarantined in `tests/test_no_strategy_zombies.py` (`_KNOWN_ZOMBIES_2026_09_16`, shrink-only) pending a per-strategy audit (CHANGELOG 2026-09-16; OPEN_ITEMS). The zombie guardrail stays armed for the other 19, and since 2026-09-16 it also reads the archive's `strategy_index.json` sidecar, so a reset that wipes the live DBs can no longer make a strategy that did fire look dead.
 
 (The same four strategy names — `momentum_breakout`, `volume_spike`, `mean_reversion`, `gap_and_go` — also exist as standalone modules in `fallback_strategy.py` / `strategy_small.py`, gated by per-profile `strategy_*` toggle columns. Those files are dead-code paths that no live cycle invokes; the live versions are part of the 25 plugins above. The toggle columns remain in the schema for backward compatibility only.)
 
@@ -114,7 +116,7 @@ Non-directional strategies (`iron_condor`, `iron_butterfly`, `straddle`, `strang
 
 ### 4b. LLM specialist ensemble (`specialists/`)
 
-Eight LLM-narrative specialists, each instantiated with the same backend model but a differentiated system prompt and feature subset. Six of the eight read the deterministic panel's verdicts and **synthesize** a coherent narrative on top of them rather than re-derive the underlying facts; the other two cover territory the rule library structurally can't subsume and read raw candidate features directly. This division — facts on rails, narrative on judgment — is what keeps per-cycle cost flat as the rule library grows.
+Eight LLM-narrative specialists exist, **six run in production**: `sentiment_narrative` and `pattern_recognizer` are switched off fleet-wide for cost (`config.GLOBALLY_DISABLED_SPECIALISTS`, 2026-06-30 — both are advisory, non-veto, and largely redundant with the deterministic panel; disabling them cut ~22% of ensemble spend). Each specialist is instantiated with the profile's backend model but a differentiated system prompt and feature subset. Six of the eight read the deterministic panel's verdicts and **synthesize** a coherent narrative on top of them rather than re-derive the underlying facts; the other two cover territory the rule library structurally can't subsume and read raw candidate features directly. This division — facts on rails, narrative on judgment — is what keeps per-cycle cost flat as the rule library grows.
 
 **Re-scoped specialists** (consume the rules-suffix in the candidate render and pivot to synthesis):
 
@@ -159,11 +161,11 @@ Fail-soft: any retrieval error (missing DB, sklearn unavailable, malformed corpu
 Each specialist returns a verdict (BUY / SELL / HOLD / SHORT / VETO) and a 0-100 confidence. The synthesizer in `ensemble.run_ensemble`:
 
 1. **Calibrates each specialist's raw confidence** using its Platt-scaling layer (§5). The calibrator maps raw confidence to empirical P(correct) so that "raw=80" from a poorly-calibrated specialist doesn't dominate.
-2. **Applies veto authority.** If `risk_assessor` or `adversarial_reviewer` returns VETO, the candidate is dropped regardless of the other three.
+2. **Applies veto authority.** A VETO from any specialist declaring `HAS_VETO_AUTHORITY` — today `risk_assessor`, `adversarial_reviewer` and `option_spread_risk` — drops the candidate regardless of the other verdicts. The set is derived at run time (`veto_authorized_names()` in `ensemble.py`), never hardcoded: a hardcoded pair silently ignored `option_spread_risk`'s declared authority until 2026-07-02.
 3. **Aggregates remaining verdicts** via confidence-weighted voting. Ties break toward HOLD (more conservative).
 4. **Suppresses entries** when consensus is below a per-profile threshold.
 
-Specialists are gated by `disabled_specialists` (Lever 3) — a per-profile list of specialists whose API call is skipped. The auto-disable mechanism in `_task_specialist_health_check` removes specialists whose calibration slope flips inverse for ≥30 days, re-enables them when the slope recovers, and enforces a hard floor of two active specialists.
+Specialists are gated by `disabled_specialists` (Lever 3) — a per-profile list of specialists whose API call is skipped. The auto-disable mechanism in `_task_specialist_health_check` disables a specialist whose fitted calibrator maps raw=90 to below 35 on ≥50 resolved samples (its confidence has become anti-informative), re-enables it when that mapping recovers above 50, and enforces a hard floor of two active specialists.
 
 ## 5. Specialist Platt-scaling calibration
 
@@ -228,6 +230,7 @@ The prompt opens with two non-negotiable principles:
 - **Candidate block** for each of the (typically 5-15) survivors, including: technical indicators, options oracle summary (IV rank, term structure, skew, GEX, max pain, implied move), alternative data (insider, short interest, options flow, intraday patterns, congressional, 13F, biotech, StockTwits, Google Trends, Wikipedia views, App Store ranks), LLM specialist ensemble verdicts, the **deterministic rule panel** (§4a — typically 5-15 fired verdicts per candidate), the **RAG case-file block** (§4c — top-3 most-similar resolved past trades for this profile), per-stock track record by signal type, last prediction reasoning, earnings warning, SEC alerts, news headlines, slippage estimate, borrow rate (for shorts).
 - **Long/short balance target** and **book-beta target** with directives ("UNDERSHORTED — pick a SHORT this cycle"; "BETA TOO HIGH — DEFENSIVE picks long or LEVERED shorts").
 - **Learned patterns** from prior post-mortems and self-tuner findings.
+- **Profile track record** (`render_track_record()` in `calibration_block.py`, 2026-08-23) — the always-on in-context learning mechanism: this profile's own resolved record (win rate and mean move, all-time and last 30 days, cut by stated-confidence band, call family, strategy and regime) with n on every number. Buckets under n=10 say "not enough to judge"; HOLD rows are scored on their own line, never in the directional headline. Scoped to the profile's *current* model (§12) and rendered identically for every shadow arm.
 - **Track record** aggregated and split by signal type to prevent confabulation (e.g., the AI cannot claim "100% win rate on VALE shorts" when all 13 wins were HOLDs).
 - **RULES section**: max position size (longs and asymmetric shorts), independent stock/options evaluation, drawdown-aware sizing without artificial trade-count cap, and per-action notes (`stock_recs_note`, `options_note`, `pair_note`, `multileg_note`) describing required fields and how to use the pre-built recommendations. Each action type has parallel guidance — no implicit-default action that biases the AI.
 - **Allowed actions** dynamically scoped: BUY, HOLD; plus SHORT (when enabled), OPTIONS (when any candidate has tradeable options or the advisor surfaced an opportunity), PAIR_TRADE (when stat-arb book has actionable pairs), MULTILEG_OPEN (when multi-leg advisor has surfaced one).
@@ -276,7 +279,9 @@ After the LLM returns trades, hard rules in `_validate_ai_trades` filter them. E
 - **Duplicate / wash-trade guard:** orders blocked when Alpaca's wash-trade rule would trigger (30-day cooldown table).
 - **Cross-direction guard:** "cannot open a long buy while a short sell order is open" — recoverable, not error.
 
-## 9. Self-tuning stack (12 layers)
+## 9. Self-tuning stack (12 layers; ten evidence-backed levers live)
+
+> **Since 2026-08-23 the tuner runs in `SELF_TUNER_MODE=evidence` by default.** Only the optimizers listed in `EVIDENCE_BACKED_OPTIMIZERS` (`self_tuning.py`) dispatch; the rest of the registry is skipped. Of the layers in §9.1, per-regime overrides (3), per-time-of-day overrides (4), adaptive prompt structure (6 — off so every experiment arm sees an identical prompt), per-symbol overrides (7) and self-commissioned strategies (8) are retired for Experiment 2, and `max_total_positions` is refused at the write choke point on every path. `SELF_TUNER_MODE=full` restores the legacy registry. The sections below describe the full design; `docs/17_SELF_TUNER_GUARDRAILS_AND_RAG.md` and `docs/25_MODEL_SELECTION_AND_LEARNING_PLAN.md` step 3 record why it was cut back (most layers were adjusting parameters on evidence too thin to distinguish from noise).
 
 The self-tuner runs nightly per profile (`_task_self_tune`) and is the largest single source of long-term improvement. It is a rule-based system, not learned: each rule is a small, auditable piece of code that adjusts one parameter, signal weight, override, or enable/disable bit based on its own track record.
 
@@ -431,11 +436,14 @@ Honest limits documented in code:
 - `prediction_type` (`directional_long` / `directional_short` / `exit_long` / `exit_short`)
 - `price_at_prediction`, `price_targets` (stop, take_profit)
 - `created_at`, `status` (pending / resolved)
+- `ai_provider`, `ai_model` — which model made the call (2026-08-23); `decision_id` and `cycle_id` — the join keys to the cycle's stored prompt (`ai_cycles`, per-cycle prompt storage since 2026-07-02) and to shadow comparisons; `rule_votes_json` — the deterministic panel's verdicts as seen at decision time
 
 When resolved (`ai_tracker.resolve_predictions`), the row gets:
 
 - `actual_outcome` (`win` / `loss` / `neutral`)
 - `actual_return_pct`, `resolution_price`, `days_held`, `resolved_at`
+
+**Learned state is model-scoped.** Because every prediction is stamped with the model that made it, `build_training_set()` in `meta_model.py` trains only on rows the profile's *current* model produced, and the track-record block and Learning Scoreboard scope the same way — other-model history is stated as a count, never blended. That is what lets `promote()` (`model_promotion.py`) switch a profile's primary model without a reset.
 
 Resolution rules are per-direction (`_resolve_one`): a `directional_long` prediction is a win if price exceeded its take-profit target before its stop loss; a `directional_short` is the inverse; `exit_long` (a SELL on a held long) is a win if the post-exit return was favorable for the seller; etc.
 
@@ -443,7 +451,7 @@ The journal is the single source of truth for everything downstream: meta-model 
 
 ## 13. Cost discipline
 
-The system is engineered to operate on a **per-user daily AI ceiling** that defaults to `max($5, trailing_7d_avg × 1.5)` via `cost_guard.py` and is operator-overridable in Settings. Observed steady-state spend at the current `gemini-2.5-flash-lite` default model across the 13-profile experiment fleet runs at roughly $0.30/day. Three quality levers keep this number low:
+The system is engineered to operate on a **per-user daily AI ceiling** that defaults to `max($5, trailing_7d_avg × 1.5)` via `cost_guard.py` and is operator-overridable in Settings. Spend is priced per arm at each model's own rate: the Experiment-2 fleet is twelve profiles (229–240) on four models (`gpt-4.1-nano`, `gpt-5.6-luna`, `gemini-3.5-flash-lite`, `gemini-3.7-flash`), planned at ≈ $68/month all-in (`docs/25_MODEL_SELECTION_AND_LEARNING_PLAN.md` §1.5) and measured at a ~$107/month run-rate on 2026-09-12→18 (primary ≈ $1.86/day, shadow ≈ $1.70/day); shadow evaluation is capped separately (`SHADOW_DAILY_COST_CAP_USD`, §16). Earlier single-model figures in this doc's history (`gemini-2.5-flash-lite`, 13 profiles) describe Experiment 1. Three quality levers keep this number low:
 
 1. **Persistent shared cache** (`shared_ai_cache.py`) — ensemble + political-context responses cached in SQLite, surviving scheduler restarts.
 2. **Meta-model pre-gate** (§3) — drops low-prob candidates before specialist fan-out.
@@ -453,7 +461,9 @@ The cost guard (`cost_guard.py`) enforces a per-user daily AI-spend ceiling. Har
 
 ## 14. AI provider portability
 
-Three providers wired (`ai_providers.py`): Anthropic Claude (Haiku, Sonnet, Opus), OpenAI GPT, Google Gemini. Default model per profile is configurable; the per-profile `ai_model_auto_tune` toggle (off by default) lets the tuner A/B-test alternative models within the daily cost ceiling.
+Three providers wired (`ai_providers.py`): Anthropic Claude (Haiku, Sonnet, Opus), OpenAI GPT, Google Gemini. Default provider/model are per-profile settings. Model changes are evidence-based operator actions through `promote()` in `model_promotion.py`, which swaps the primary ↔ shadow model lists and keys in one audited write; the tuner never changes models (the dead `ai_model_auto_tune` toggle was removed 2026-08-24, decision D3 — the column survives append-only and is never read).
+
+**One structured-output contract for every vendor (2026-08-23).** A single JSON schema is threaded through `call_ai` to each vendor's native structured mode (Anthropic forced tool use, OpenAI strict `json_schema`, Gemini `response_json_schema`); `call_ai_structured()` is a thin wrapper for every provider, so cost capping, retries, failover, the ledger and shadow dispatch are vendor-identical. Ensemble specialists return the batched shape `{"verdicts": [{symbol, verdict, confidence, ...}]}` defined by `_verdicts_schema()` in `ensemble.py` (verdict enum BUY / SELL / HOLD / VETO) at one chunk size (`CHUNK_SIZE = 15`) for every arm, so no experiment arm ever sees a different batch shape. The per-vendor JSON coaxing described below is the legacy fallback layer.
 
 **Structured-output enforcement.** Every provider call is wrapped so the model is forced to return parseable JSON, not free-form prose:
 - Anthropic: tool-use schema in `call_ai_structured` (see §`_call_anthropic`).
@@ -463,8 +473,20 @@ Three providers wired (`ai_providers.py`): Anthropic Claude (Haiku, Sonnet, Opus
 ## 15. What's deliberately not in the AI system
 
 - **No reinforcement learning loop.** The system is a stacked prediction-and-decision pipeline, not an RL agent. The "feedback loop" is supervised: resolve labeled predictions, retrain models. This is a deliberate choice; see `docs/10_METHODOLOGY.md`.
-- **No prompt-learning / fine-tuning.** The LLM is used as a frozen-weights frontier policy; calibration happens externally via the meta-model and specialist Plat scaling.
+- **No fine-tuned model in production (yet).** Live decisions use frozen-weights vendor models; calibration happens externally via the meta-model and specialist Platt scaling. The weight-level path is active but unpromoted: three local LoRA batches (Qwen2.5-7B, hindsight-relabeled on the system's own resolved predictions) were trained 2026-08-26/27 and none beat its untrained base, so nothing is hosted or shadowed. `docs/27_FINETUNE_TRAINING_LOG.md` is the batch-by-batch record, including the mandatory batch-4 recipe.
 - **No latency optimization.** The system runs on an operator-tunable cycle (default 15 min; selectable 15 / 10 / 5 / 3 / 2 min via Settings → AI Behavior, persisted to `users.scan_interval_minutes`). Sub-second execution is out of scope; tighter cadence is for operator preference, not latency arbitrage.
+
+## 16. Shadow evaluation — the model A/B layer
+
+Shadow evaluation is how the system learns *which model* should be making its decisions, without risking money on the answer. It is the measurement layer of Experiment 2 (`docs/26_EXPERIMENTS.md`).
+
+- **What is shadowed.** When a primary model makes a call whose purpose matches `SHADOW_PURPOSES` (default `ensemble:` — every specialist call), `shadow_eval.py` replays the *identical* prompt to each of the profile's shadow models and stores both answers in `ai_shadow_calls`. Each Experiment-2 arm cross-shadows every other arm. The apex `batch_select` call is deliberately **not** shadowed by default (decision D5: it is the expensive call, and its picks are scored by real trades anyway). Shadow spend has its own daily cap (`SHADOW_DAILY_COST_CAP_USD`) and never touches the trading path — a shadow failure cannot block or alter a trade.
+- **Prompt-variant arms.** A shadow label of the form `model@variant` keeps the model fixed and rewrites the prompt instead (`prompt_variants.py`; first arm shipped 2026-07-30), so prompt changes are A/B-tested by the same machinery as model changes.
+- **Grading.** `_extract_signal()` reduces each response to a comparable signal and the pair is stamped `agreement` = agree / disagree. It understands every response shape in use: the legacy singular verdict, the apex trade set, and the batched `{"verdicts": [...]}` shape — one entry extracts the bare verdict (byte-identical to the legacy shape); several canonicalise to a sorted `SYM:VERDICT,...` set string, graded at set level (empty → `NONE`).
+- **Scoring disagreements.** Agreement says nothing about who was right. `collect_fleet_metrics()` in `shadow_metrics.py` joins each disagreement to the realized outcome of the position it concerned and awards the money to whichever model's call the outcome vindicated; multi-candidate set disagreements are exploded and scored per symbol (`_score_ensemble_set_pair()`). No verdict is shown for a model pair until `MIN_DECISIONS_FOR_VERDICT` (30) scored decisions exist, significance is a seeded bootstrap, and the `/shadow` page reports the whole experiment (all-time) with only cost windowed to 30 days.
+- **Acting on it.** A verdict never changes a model automatically. Promotion is an operator action through `promote()` (§14), and model-scoped learned state (§12) means it needs no reset.
+
+**The failure this layer has had twice — keep it in mind when changing any response schema.** On 2026-08-23 the ensemble moved to the batched verdicts schema and the extractor was not taught it: for 23 days every one of 37,941 shadow rows (~$45) was stored ungraded and `/shadow` was blank (CHANGELOG 2026-09-16; same class as 2026-07-24). The fix backfilled 31,733 comparisons, and `tests/test_shadow_batched_verdicts_2026_09_16.py` now ties the extractor to `_verdicts_schema()` itself — every verdict value the schema allows must extract — so a schema change the grader doesn't understand fails in the suite instead of silently in production.
 
 ## See also
 

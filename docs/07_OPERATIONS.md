@@ -2,7 +2,7 @@
 
 **Audience:** SRE, ops engineers, anyone responsible for keeping the platform up.
 **Purpose:** deploy, monitor, recover, audit. After reading this, an ops engineer can ship a change, diagnose a failure, and restore service.
-**Last updated:** 2026-06-04 (audit reconciliation — see `docs/AUDIT_2026_06_04_DOC_RECONCILIATION.md`).
+**Last updated:** 2026-09-19 (process model, on-droplet deploy, `/issues`, closed-market housekeeping, cron entries reconciled to the live host). Previous full audit: 2026-06-04 — see `docs/AUDIT_2026_06_04_DOC_RECONCILIATION.md`.
 
 ## 1. Production layout
 
@@ -10,14 +10,14 @@ Single droplet at `67.205.155.63`. Resources: ~$6-12/month standard tier (CPU + 
 
 ```
 /opt/quantopsai/
-├── *.py                            # source (rsynced from local via sync.sh)
+├── *.py                            # source (deployed via sync.sh from the Mac or droplet-sync.sh on the droplet)
 ├── templates/                      # Jinja templates
 ├── tests/                          # test suite (NOT run on prod)
 ├── strategies/                     # strategy plugins
 ├── docs/                           # documentation
-├── venv/                           # Python 3.9 venv
+├── venv/                           # Python 3.12 venv
 ├── quantopsai.db                   # master DB (users, profiles, audit logs)
-├── quantopsai_profile_<id>.db      # per-profile DB (1 per profile, 13 active)
+├── quantopsai_profile_<id>.db      # per-profile DB (1 per profile; 12 active — 229–240, Experiment 2)
 ├── .cache/                         # disk caches (slippage K, Ken French CSVs)
 ├── .env                            # env vars (DB_PATH, ALTDATA_BASE_PATH, etc.)
 ├── online_meta_model_p<id>.pkl     # SGD freshness layer (per profile)
@@ -47,16 +47,20 @@ Three running processes:
 | Service | Port | Purpose |
 |---|---|---|
 | `nginx` | 80, 443 | TLS termination + reverse proxy. |
-| `quantopsai-web` | localhost:8000 | Gunicorn + Flask app. 4 workers default. |
+| `quantopsai-web` | localhost:8000 | Gunicorn + Flask app (`app:create_app()`), 2 workers, 120s timeout — sized for the droplet's 1.9GB RAM. |
 | `quantopsai` | (no port) | The scheduler / trading loop. 24/7 process. |
 
-`quantopsai-web` and `quantopsai` both run from `/opt/quantopsai/venv/bin/python`. Both unit files use `Restart=always` with `RestartSec=5` so a crash auto-recovers.
+`quantopsai-web` and `quantopsai` both run from `/opt/quantopsai/venv/bin/python`. Both units use `Restart=on-failure` (`RestartSec=10` web, `RestartSec=30` scheduler), so a crash auto-recovers but a clean exit is *not* restarted; the scheduler also sets `TimeoutStopSec=600` so an in-flight cycle can drain before a restart kills it.
 
 ## 3. Deploy
 
-### sync.sh
+### droplet-sync.sh (deploying from the droplet)
 
-Local: `sync.sh` is the single deploy command. Steps:
+`./droplet-sync.sh` is `sync.sh` stage for stage, run on the droplet, with one structural difference: there is no rsync — the code is committed and pushed to `origin/main` from the droplet, and the "transfer" is `git reset --hard origin/main` in place. Pre-flight refuses a dirty tree or an unpushed HEAD; it then detects the changed set (previous deployed sha → HEAD), verifies HEAD, tracked-file drift and content sha, writes the deploy markers, decides which services to restart from the changed set (`--web` / `--scheduler` / `--all` override), waits for the scheduler's idle window, and re-verifies after restart. It self-detaches and logs to `deploy_logs/`. House rules before any deploy are in `DROPLET_DEV.md`: develop on a branch, zero-fail zero-skip full suite, dated CHANGELOG entry.
+
+### sync.sh (deploying from the Mac)
+
+Local: `sync.sh` is the deploy command from the operator's laptop. Steps:
 
 1. `rsync -avz --delete --exclude=...` from local to `/opt/quantopsai/`. Excludes `__pycache__`, `.cache/`, `*.db`, `tests/__pycache__`, etc.
 2. `ssh root@67.205.155.63 'cd /opt/quantopsai && git fetch && git reset --hard origin/main'` — sync prod's `.git/` to GitHub. Without this step prod git would drift since rsync skips `.git/`.
@@ -125,7 +129,21 @@ Log retention is journald's default (rotated by size + age). For longer retentio
 | `/api/portfolio/<profile_id>` | Equity + positions. |
 | `/api/cycle-data/<profile_id>` | Last cycle's candidate set + outcomes. |
 
-These should be sampled every 5 minutes by an external uptime checker (UptimeRobot, Healthchecks.io, or similar). The platform does NOT have a built-in alerting stack; that's external.
+These should be sampled every 5 minutes by an external uptime checker (UptimeRobot, Healthchecks.io, or similar) — *uptime* alerting is external.
+
+### The `/issues` page — check this first
+
+*Integrity* alerting is built in. `/issues` (`issues_collector.py`) is the single operator surface for anything wrong: deduplicated ERROR/WARNING lines from both services' journald streams, alt-data cron logs and failed scrape runs, plus **live-snapshot** rows recomputed on every page load from the integrity audits in `integrity_audit.py` — quantity parity and value parity against the broker, the equity identity (`equity == initial + realized + unrealized`, within $1), and stored-`pnl`-column consistency. A live-snapshot row disappears by itself the moment the condition clears; it has no history to resolve.
+
+What acts on its own versus what waits for you: the per-cycle book-integrity gate (`_run_integrity_gate` in `multi_scheduler.py`) **auto-engages the kill switch** — entries blocked, exits still run — on any share-count mismatch with the broker (zero tolerance) or a per-profile decomposition gap over $250, and aggregate journal-vs-broker drift emails the operator (`notify_error()` in `notifications.py`). The $1-tolerance equity-identity rows on `/issues` are deliberately more sensitive than the gate: they do not halt trading or email — they are there to be read.
+
+Reading an `equity_identity` row: since 2026-08-24 the audit's realized side is leg-derived (`compute_leg_realized()` — the same fill-true basis as cash) and both sides are read from one positions snapshot, so moving prices and pending fills cannot produce drift: a nonzero drift is a bookkeeping disagreement, and its size is the clue. A whole-dollar drift equal to an option premium means a close that one lens counted and another did not (the 2026-09-19 worthless-expiry case).
+
+### Daily and on-demand checks
+
+- `morning_health_check.sh` — the canonical daily once-over.
+- `certify_books.py --since-hours N` — the five-check `CERTIFIED CLEAN` gate; mandatory after a reset (`RESET_RUNBOOK.md`), useful after any accounting incident.
+- `premarket_smoke_test.py --strict --notify` — runs from cron at 13:00 UTC on weekdays (§7) and emails on failure.
 
 ### Database health checks
 
@@ -157,7 +175,7 @@ du -sh /opt/quantopsai/*.db
 
 ```bash
 # Spot check: what did we spend in the last 24h?
-sqlite3 /opt/quantopsai/quantopsai_profile_3.db \
+sqlite3 /opt/quantopsai/quantopsai_profile_229.db \
   "SELECT SUM(usd_cost) FROM ai_cost_ledger WHERE timestamp >= datetime('now', '-1 day')"
 ```
 
@@ -182,7 +200,9 @@ Restoring a backup is a one-command operation — see §9 "Restoring from backup
 
 ## 7. Cron / scheduled tasks
 
-The `quantopsai` systemd service IS the in-process scheduler — per-cycle and once-per-day trading tasks all dispatch inside `multi_scheduler.run_scheduler()`. There is no system cron for any trading-decision logic. The only system-cron entries are the daily backup (§6) and the alt-data refresher (below).
+The `quantopsai` systemd service IS the in-process scheduler — per-cycle and once-per-day trading tasks all dispatch inside `multi_scheduler.run_scheduler()`. There is no system cron for any trading-decision logic. The system-cron entries are the daily backup (05:00 UTC, §6), the alt-data refresher (06:00 UTC, below) and the pre-open smoke test (`premarket_smoke_test.py --strict --notify`, 13:00 UTC weekdays).
+
+**The scheduler is not idle when the market is closed.** Its sleep loop runs closed-market housekeeping (`_closed_market_housekeeping` in `multi_scheduler.py`) hourly for every profile: fill updates plus broker-activity capture (dividends, option expiry / assignment / exercise, settlement cash). Broker activities post around 01:00 UTC, so without this an expiry would sit unbooked all night or all weekend (it did, 2026-07-24). This is why expiry closes appear in journals at odd hours such as 07:30 UTC on a Saturday.
 
 The 4 alt-data scrapers bundled in `altdata/` are orchestrated by a single system cron entry that calls `altdata/run-altdata-daily.sh` (refreshes all 4 sequentially using the Quantops venv).
 
@@ -378,7 +398,7 @@ The watchdog (`_task_run_watchdog`) tries to do this automatically for tasks run
 
 1. Settings page → "Create new profile" → fill in name, market_type, Alpaca account.
 2. The schema migration auto-runs; new per-profile DB is created on first cycle.
-3. The first cycle for the new profile fires within 5 minutes of settings save.
+3. The first cycle for the new profile fires within one scan interval of settings save (default 15 minutes; `users.scan_interval_minutes`).
 
 ## 11. Adding a new Alpaca account
 

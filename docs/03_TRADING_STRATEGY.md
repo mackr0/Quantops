@@ -2,7 +2,7 @@
 
 **Audience:** finance professionals, strategy researchers, anyone evaluating what the system actually trades.
 **Prerequisites:** working knowledge of equity / options market structure, position sizing math, factor models.
-**Last updated:** 2026-06-04 (audit reconciliation — see `docs/AUDIT_2026_06_04_DOC_RECONCILIATION.md`).
+**Last updated:** 2026-09-19 (four unregistered legacy strategies removed from the bullish table; six never-fired strategies marked). Previous full audit: 2026-06-04 — see `docs/AUDIT_2026_06_04_DOC_RECONCILIATION.md`.
 
 This document describes WHAT the system trades, HOW it sizes, and HOW it manages risk in finance terms — without dwelling on software architecture (`docs/04`) or the AI/ML internals (`docs/02`).
 
@@ -31,17 +31,15 @@ The platform ships with 20+ deterministic strategies, organized by direction and
 
 ### 2a. Bullish strategies (12)
 
-All 12 live as plugin modules in `strategies/` — the canonical registry is `strategies/__init__.py`. (Four older standalone modules — `momentum_breakout`, `volume_spike`, `mean_reversion`, `gap_and_go` — exist in `fallback_strategy.py` / `strategy_small.py` with per-profile `strategy_*` toggle columns. They are dead-code paths today; the live versions of those strategies are part of the 12 plugins below. The schema columns persist for backward compatibility only.)
+> **Six of the 25 strategies have never produced a prediction** in the entire four-month archive — three bullish (`short_squeeze_setup`, `news_sentiment_spike`, `volume_dryup_breakout`) and three bearish (`parabolic_exhaustion`, `catalyst_filing_short`, `iv_regime_short`). They are marked in the tables below and quarantined in `tests/test_no_strategy_zombies.py` pending a per-strategy audit (CHANGELOG 2026-09-16). Their edge claims are design intent, not observed behavior.
+
+All 12 live as plugin modules in `strategies/` — the canonical registry is `strategies/__init__.py`. (Four older standalone modules — `momentum_breakout`, `volume_spike`, `mean_reversion`, `gap_and_go` — exist in `fallback_strategy.py` / `strategy_small.py` with per-profile `strategy_*` toggle columns. They are dead-code paths today and have **no** plugin equivalent — none of the four is registered in `strategies/__init__.py`, so they are not listed below. The schema columns persist for backward compatibility only.)
 
 | Strategy | Edge claim | Confirmation signals |
 |---|---|---|
-| `momentum_breakout` | Stocks breaking above prior resistance with volume continuation | 20d high break + 1.5× avg volume + ADX > 25 |
-| `volume_spike` | Unusual volume often precedes price moves | Volume ratio ≥ 2× 20d avg + price change >= 0 |
-| `mean_reversion` | Oversold bounces in established uptrends | RSI ≤ 30 + price > 50d MA + bullish divergence |
-| `gap_and_go` | Morning gaps that hold and extend | Gap ≥ 3% + first 30-min hold + volume confirmation |
 | `gap_reversal` | Failed gaps reverse — trade the reversion | Gap up ≥ 3% but selling into open + reclaim of pre-market |
-| `news_sentiment_spike` | Positive news with social-media confirmation | News score ≥ 0.7 + Reddit/StockTwits trending bullish |
-| `short_squeeze_setup` (long side) | High short interest names breaking out | Short_pct_float ≥ 20% + breakout + reduced borrow availability |
+| `news_sentiment_spike` — *quarantined 2026-09-16: zero firings since inception, audit open* | Positive news with social-media confirmation | News score ≥ 0.7 + Reddit/StockTwits trending bullish |
+| `short_squeeze_setup` (long side) — *quarantined 2026-09-16: zero firings since inception, audit open* | High short interest names breaking out | Short_pct_float ≥ 20% + breakout + reduced borrow availability |
 | `earnings_drift` | Post-earnings drift on positive surprises | Earnings beat ≥ 5% + price gap + analyst revision streak |
 | `insider_cluster` | Cluster of insider buys signals informed conviction | ≥ 3 insider buys in 30d + dollar volume threshold |
 | `fifty_two_week_breakout` | 52-week high breaks tend to continue | 52w high break + volume + RSI < 80 (avoiding euphoria) |
@@ -49,7 +47,7 @@ All 12 live as plugin modules in `strategies/` — the canonical registry is `st
 | `sector_momentum_rotation` | Names in top-3 sectors via 5d ETF returns | Symbol sector ∈ top-3 sectors by ETF rotation + symbol RS |
 | `analyst_upgrade_drift` | Analyst rating upgrades produce sustained drift | Recent upgrade + price hasn't fully closed gap |
 | `short_term_reversal` | 1-3 day reversal of overdone selling | Down ≥ 5% in 3 days + RSI ≤ 25 + at support |
-| `volume_dryup_breakout` | Volume contraction precedes breakouts | Volume ratio ≤ 0.5× × N consecutive days, then expansion |
+| `volume_dryup_breakout` — *quarantined 2026-09-16: zero firings since inception, audit open* | Volume contraction precedes breakouts | Volume ratio ≤ 0.5× × N consecutive days, then expansion |
 | `max_pain_pinning` | Index ETFs pin to max-pain near monthly opex | Days to monthly opex ≤ 3 + spot near max pain |
 
 ### 2b. Bearish strategies (13)
@@ -59,13 +57,13 @@ All 12 live as plugin modules in `strategies/` — the canonical registry is `st
 | `breakdown_support` | Breaks below well-tested support with volume |
 | `distribution_at_highs` | Topping pattern: price flat at highs while volume rises on red days |
 | `failed_breakout` | Breakout attempts that fail and reverse |
-| `parabolic_exhaustion` | Multi-day parabolic moves followed by reversal candles |
+| `parabolic_exhaustion` — *quarantined 2026-09-16: zero firings since inception, audit open* | Multi-day parabolic moves followed by reversal candles |
 | `relative_weakness_in_strong_sector` | Names underperforming a strong sector's leaders |
 | `relative_weakness_universe` | Universe-wide bottom-percentile 20d return ranker. Always-on (regardless of regime) — fills short books in extended bull markets where textbook bearish technical patterns are rare |
 | `earnings_disaster_short` | Post-earnings drift inverse: misses + guidance cuts produce sustained downside drift |
-| `catalyst_filing_short` | High-severity SEC filings (going-concern, material weakness, accounting restatements) |
+| `catalyst_filing_short` — *quarantined 2026-09-16: zero firings since inception, audit open* | High-severity SEC filings (going-concern, material weakness, accounting restatements) |
 | `sector_rotation_short` | Names in bottom-3 sectors by 5d ETF rotation |
-| `iv_regime_short` | High realized vol + IV expansion = continuation short signal |
+| `iv_regime_short` — *quarantined 2026-09-16: zero firings since inception, audit open* | High realized vol + IV expansion = continuation short signal |
 | `insider_selling_cluster` | Cluster of insider sells in a 30d window |
 | `high_iv_rank_fade` | Long-vol unwinds (short volatility) when IV rank > 90 |
 | `vol_regime` | Multi-symbol vol-regime detector that suppresses dip-buys in volatile regimes |

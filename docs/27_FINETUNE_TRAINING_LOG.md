@@ -24,7 +24,7 @@ the batch-by-batch history.
 | Teaching signal | Hindsight relabeling | Each resolved prediction becomes a flash card: the exact prompt the AI saw, answered with what would have been *correct* given the realized outcome. Losing entries relabel to HOLD; missed >5% moves relabel to the missed direction; ambiguous 2–5% moves are discarded rather than guessed |
 | The iron rule | No look-ahead, asserted per row | Every label derives from an outcome resolved strictly AFTER the decision moment. A leaking row raises; it is never silently skipped |
 | The exam | Held-out most-recent cycles, adapter vs its own untrained base, identical prompts | The only bar that matters: did our data make this exact brain better? Promotion (and any hosting spend) waits on a clear yes |
-| Corpus source | `backups/predictions_archive` + live journals, cycle-joined | 46,583 resolved predictions from Experiment 1, 100.0% joinable to their full prompts; grows daily — all four Experiment-2 arms (primaries and shadows) feed it |
+| Corpus source | `backups/predictions_archive` + live journals, cycle-joined | 46,583 resolved predictions from Experiment 1, 100.0% joinable to their full prompts; grows daily — all four Experiment-2 arms feed it (≈27,000 more labeled decisions by 2026-09-19; see "Where things stand" at the end) |
 
 Training costs nothing but electricity and hours. The corpus is the
 moat: nobody else can train on this system's prompts, fills, and
@@ -185,3 +185,52 @@ steps; evaluate mid-run checkpoints as first-class candidates; report
 frequency-matched-random (~33% here) alongside the base in every
 exam so "beats base" can't hide behind class priors; pre-split the
 few >8K-token prompts the truncation warning flagged.
+
+---
+
+## Where things stand — 2026-09-19 (no batch run since batch 3)
+
+**The recipe is the gate, not the data.** None of the batch-4 recipe
+exists in `finetune/` yet (last code change there: 2026-08-27 — no
+label rebalancing, no learning-rate schedule, no frequency-matched
+baseline in the exam, no mid-run checkpoint sweep, no pre-split of
+over-length prompts). Training before it is built would reproduce
+batch 3's failure on more data.
+
+**The data has arrived.** Running the builder's own `hindsight_label()`
+read-only over the live Experiment-2 journals (profiles 229–240,
+2026-08-24 → 2026-09-19):
+
+| | Batch 3 corpus (Exp 1) | New in Experiment 2 |
+|---|---|---|
+| Labeled decisions | 34,157 | **27,054** (+79%) |
+| Cycle-grouped examples | 10,699 | **7,008** |
+| Label mix | BUY 24% / SHORT 25% / HOLD 51% | BUY 16.4% / SHORT 23.6% / **HOLD 60.0%** |
+| Teachers | Experiment-1 models | four arms, near-even: `gpt-4.1-nano` 6,150 · `gpt-5.6-luna` 6,069 · `gemini-3.5-flash-lite` 7,679 · `gemini-3.7-flash` 7,156 |
+
+Another 11,806 predictions were still unresolved, and 11,802 resolved
+rows fell in the discarded 2–5% gray zone. Two things follow. The new
+data is a second market regime and four different decision-makers —
+the variety batch 2's verdict said was missing. And it is **more
+HOLD-skewed than the corpus that sank batch 3**, so rebalancing (recipe
+item 1) matters more now, not less.
+
+### When to train the next batch
+
+1. **Batch 4: as soon as the recipe is built** (about a day of work in
+   `finetune/dataset_builder.py`, `finetune/local_train.py` and the
+   exam scorer, with tests) — on the pooled ≈61,000-decision corpus.
+   The data condition is already met.
+2. **After batch 4 — evidence-gated, not calendar-gated.** Retrain when
+   *either* the labeled corpus has grown by ≥10,000 decisions since the
+   last batch (≈ every 10–14 days at Experiment 2's ≈7,000/week)
+   *or* the previous batch's verdict named a specific recipe change
+   that has since been built. Never retrain on the same recipe and
+   near-identical data — a 5-hour run that cannot differ from the last
+   one teaches nothing. (The weekly Sunday cadence in doc 20 belonged
+   to the hosted-vendor design, where an increment cost minutes and
+   cents; it does not transfer to local LoRA runs.)
+3. **The promotion bar does not move:** a clear win over both the
+   untrained base and frequency-matched random on the held-out exam
+   before any hosting spend or shadow seat.
+

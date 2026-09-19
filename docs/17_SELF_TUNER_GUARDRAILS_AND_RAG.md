@@ -95,23 +95,23 @@ These are documented as known gaps, not blockers.
 
 ## 4. Deferred future work
 
-Three workstreams are planned but not yet active. Each is scoped here so that picking it up doesn't require re-deriving the plan.
+Three workstreams. As of 2026-09-19 two have started — a prompt-variant shadow arm is live (4.1) and three fine-tune batches have been trained, none promotable (4.2); 4.3 is untouched. Each is scoped here so that picking it up doesn't require re-deriving the plan.
 
 ### 4.1 Prompt engineering — systematic A/B testing of prompt structure
 
-**What exists today.** Layer 6 of the self-tuner (`prompt_layout.get_verbosity`) lets the tuner set per-section verbosity to `brief` / `normal` / `detailed`. This affects per-section length only — not section ordering, not section presence, not framing wording. The tuner's adjustment space is small.
+**What exists today.** (a) `prompt_variants.py` is a live registry and a prompt-variant arm runs in shadow since 2026-07-30: a shadow label of the form `model@variant` keeps the model fixed and rewrites the prompt (`shadow_eval.py` splits the tag and calls `apply_variant()`; `shadow_metrics.py` reports the variant's same-call block rates), so a prompt change is measured by the same machinery as a model change. (b) Layer 6 of the self-tuner (`prompt_layout.get_verbosity`) can set per-section verbosity — but it is **off** in the default evidence mode (excluded from `EVIDENCE_BACKED_OPTIMIZERS`) precisely so every experiment arm sees an identical prompt.
 
-**What 4a builds.** A prompt-variant registry (`prompt_variants.py`) defining named variants of each section (e.g., `portfolio.v1_terse` vs `portfolio.v2_with_factor_table`); a per-profile A/B assignment table; outcome tracking that ties each resolved prediction back to which variants were active at decision time; a nightly learning loop that aggregates per-variant outcomes and shifts profile assignments toward winning variants. Guardrails: variants only swap when a clear lift is demonstrated over ≥50 resolved predictions; thrashing is prevented via a per-variant min-hold window.
+**What 4a still has to build.** Named per-section variants (e.g., `portfolio.v1_terse` vs `portfolio.v2_with_factor_table`); a per-profile A/B assignment table; outcome tracking that ties each resolved prediction back to which variants were active at decision time; a nightly learning loop that aggregates per-variant outcomes and shifts profile assignments toward winning variants. Guardrails: variants only swap when a clear lift is demonstrated over ≥50 resolved predictions; thrashing is prevented via a per-variant min-hold window.
 
-**Why deferred.** Prompt engineering is a refinement of an already-functioning prompt. The bigger lifts come from the deterministic + RAG architecture continuing to compound. Worth doing once a month or two of post-stabilization outcome data has accumulated so the A/B tests have signal.
+**Why the rest is deferred.** Prompt engineering is a refinement of an already-functioning prompt. The bigger lifts come from the deterministic + RAG architecture continuing to compound. Worth doing once a month or two of post-stabilization outcome data has accumulated so the A/B tests have signal.
 
 ### 4.2 Fine-tune — train a model variant on the system's own resolved trades
 
-**What exists today.** The apex LLM is a stock provider model. Every cycle pays the standard per-token rate; the model has no specific knowledge of this profile's history beyond what's injected via prompt context (RAG + specialist panel + track record).
+**What exists today.** The apex LLM is still a stock provider model in production. But the training loop has run: `finetune/dataset_builder.py` (hindsight relabeling, cycle-grouped examples, per-row no-look-ahead assertion) and `finetune/local_train.py` (local LoRA on the operator's Mac via Apple MLX, base Qwen2.5-7B-Instruct 4-bit, $0) produced three batches on 2026-08-26/27. None beat its own untrained base on the held-out exam (batch 2: 38.6% vs 37.3%, a tie; batch 3: 27.6% vs 31.3%, a loss) — the recurring failure is HOLD dominance in the relabeled corpus. Nothing is hosted, shadowed, or promoted. `docs/27_FINETUNE_TRAINING_LOG.md` is the batch-by-batch record and carries the mandatory batch-4 recipe (label rebalancing, learning-rate decay, mid-run checkpoint evaluation, a frequency-matched-random baseline, pre-splitting over-length prompts).
 
-**What 4b builds.** A fine-tuning dataset builder that converts resolved `ai_predictions` into training examples; a fine-tuning pipeline against an open-vendor fine-tune API; a model-version manager so production vs candidate fine-tune run in parallel with promotion gated on measured outperformance; a retraining cadence (likely weekly or monthly per profile prediction volume). Full scoping detail in `docs/20_FINETUNE_PHASE_4B1_INCREMENTAL.md`.
+**What 4b still has to build.** The batch-4 recipe itself (not yet in `finetune/` as of 2026-09-19); then, only after a clear base-beating exam, hosting plus a shadow seat for the owned model so it is graded like any rented arm (§16 of `docs/02_AI_SYSTEM.md`), with promotion gated on measured outperformance. The original hosted-vendor design and weekly cadence are in `docs/20_FINETUNE_PHASE_4B1_INCREMENTAL.md`; the path actually being run is its §16.1 (local training), on an operator cadence.
 
-**Why deferred-but-active.** The dataset-builder and model-registry foundation is in place; the training loop runs once enough post-stabilization data has accumulated. The RAG layer (§2) gets a meaningful fraction of the lift fine-tuning would, at zero incremental cost; fine-tuning is the next marginal step after RAG quality is measurable.
+**Why it is paced, not rushed.** The corpus is the asset and it grows by itself (~27,000 newly labeled decisions in Experiment 2's first four weeks, on top of the 34,157 batch 3 used); a retrain before the recipe changes would reproduce batch 3's failure on more data. The RAG layer (§2) gets a meaningful fraction of the lift fine-tuning would, at zero incremental cost; fine-tuning is the next marginal step after RAG quality is measurable.
 
 ### 4.3 Quant-ML — additional learned models beyond the meta-model
 
@@ -141,4 +141,4 @@ The deferred workstreams have explicit trigger conditions — the data should ar
 | Strategy vote composite score is poorly calibrated against realized outcomes | 4c learned ranker |
 | Execution slippage is materially eroding per-trade edge | 4c microstructure model + extended data pipeline |
 
-None of these conditions are observed today.
+As of 2026-09-19: 4a and 4b have been exercised ahead of their triggers (a prompt-variant shadow arm is running; three LoRA batches trained, none promotable). None of the 4c conditions has been observed.

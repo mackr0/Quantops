@@ -17,7 +17,7 @@ python    /opt/quantopsai/venv/bin/python3      # NOT system python
 services  quantopsai       (scheduler — multi_scheduler.py)
           quantopsai-web   (gunicorn)
 master DB quantopsai.db    (users, alpaca_accounts)
-profiles  quantopsai_profile_<id>.db            # 207-219 on accounts 55/56/57 (A1/A2/A3)
+profiles  quantopsai_profile_<id>.db            # 229-240 on accounts 61/62/63 (A1/A2/A3), Experiment 2 from 2026-08-24
 ```
 
 **Three tools the suite needs. Without them it does NOT run clean, and the
@@ -40,7 +40,7 @@ cd /opt/quantopsai
 ./venv/bin/python3 -m pytest -q -p no:randomly        # ~17 min
 ```
 
-Expected: **6229 passed, 0 failed, 0 skipped** (as of 2026-07-24).
+Expected: **~7,030 passed, 0 failed, 0 skipped** (7,026 as of 2026-09-16; ~17 min — longer, with spurious 30s-timeout failures, if anything else heavy is running: the droplet has 1.9GB RAM and its swap sits full. Run it detached — `setsid nohup ... > deploy_logs/<name>.log 2>&1 < /dev/null &` — and preferably outside market hours).
 
 House rules — all of them, every time:
 

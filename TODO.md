@@ -6,17 +6,19 @@ or incremental refactors that don't fit in the current commit chain.
 Each item names what to build, the user-visible problem it solves,
 and any technical pre-requisites or pitfalls.
 
-**Last reconciled against code: 2026-06-04.** Phase 4B1 foundation
-shipped 2026-05-21 (dataset_builder + model_registry); training
-runner / job monitor / evaluator / inference + scheduler wiring +
-`/finetune` dashboard still pending per docs/20 §3 "Still to build."
+**Last reconciled against code: 2026-09-19.** Phase 4B1: foundation
+shipped 2026-05-21; local training runner + evaluator shipped
+2026-08-26 (`finetune/local_train.py`); three batches trained, none
+promotable (`docs/27_FINETUNE_TRAINING_LOG.md`). **Next: build the
+batch-4 recipe.** Inference provider, hosting, shadow seat and the
+`/finetune` dashboard stay gated on a base-beating exam.
 
 ---
 
 ## P0 — Phase 4B1: incremental fine-tuning (the headline next project)
 
 **Full spec**: `docs/20_FINETUNE_PHASE_4B1_INCREMENTAL.md`
-(Status there: **FOUNDATION SHIPPED 2026-05-21**; corpus clock reset 2026-06-04 after the orphan-class contamination; first training run gated on data accumulation, ~early-to-mid August 2026.)
+(Status there: three local LoRA batches trained 2026-08-26/27, none beat the base; batch 4 is gated on the mandatory recipe — label rebalancing, LR decay, checkpoint sweep, frequency-matched baseline, over-length pre-split — not on data: Experiment 2 had already added ≈27,000 labeled decisions by 2026-09-19.)
 
 **What**: Fine-tune a custom model on this system's own trade history
 so the apex LLM internalizes the candidate universe, regime tagger,
@@ -67,8 +69,10 @@ impossible to construct. One file per commit (reviewable).
 
 ### #7 — Proactive exits for single-leg long options
 
-**Status**: PARTIAL. `options_lifecycle.py` resolves options at
-EXPIRY (marks closed, computes P&L). What's MISSING is proactive
+**Status**: ✅ SHIPPED — `options_exits.py` implements premium stop,
+premium take-profit and DTE exit for single-leg longs and shorts,
+run every cycle by `_task_options_proactive_exits`. Kept for the
+record; the original gap read: proactive
 exit before expiry for single-leg long calls/puts:
 - Premium-based stop: close when current premium drops N% from
   entry (e.g. 50%), using the contract bid (not stock-style %).
