@@ -217,9 +217,10 @@ item 1) matters more now, not less.
 
 ### When to train the next batch
 
-1. **Batch 4: as soon as the recipe is built** (about a day of work in
-   `finetune/dataset_builder.py`, `finetune/local_train.py` and the
-   exam scorer, with tests) — on the pooled ≈61,000-decision corpus.
+1. **Batch 4: as soon as the recipe is built** — the complete build
+   spec and Mac runbook are in `docs/28_FINETUNE_BATCH4_BUILD_SPEC.md`
+   (about a day of work in `finetune/dataset_builder.py`,
+   `finetune/local_train.py` and the exam scorer, with tests) — on the pooled ≈61,000-decision corpus.
    The data condition is already met.
 2. **After batch 4 — evidence-gated, not calendar-gated.** Retrain when
    *either* the labeled corpus has grown by ≥10,000 decisions since the

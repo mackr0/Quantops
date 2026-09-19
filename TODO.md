@@ -10,7 +10,7 @@ and any technical pre-requisites or pitfalls.
 shipped 2026-05-21; local training runner + evaluator shipped
 2026-08-26 (`finetune/local_train.py`); three batches trained, none
 promotable (`docs/27_FINETUNE_TRAINING_LOG.md`). **Next: build the
-batch-4 recipe.** Inference provider, hosting, shadow seat and the
+batch-4 recipe — spec: `docs/28_FINETUNE_BATCH4_BUILD_SPEC.md`.** Inference provider, hosting, shadow seat and the
 `/finetune` dashboard stay gated on a base-beating exam.
 
 ---

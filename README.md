@@ -21,6 +21,11 @@ Read in this order — each doc is written for a specific audience.
 | [`docs/11_INTEGRATION_GUIDE.md`](docs/11_INTEGRATION_GUIDE.md) | Developers adding new strategies, signals, or specialists | …you're extending the platform. |
 | [`docs/12_SCALING_AND_GRADUATION.md`](docs/12_SCALING_AND_GRADUATION.md) | Operators planning capital deployment | …you want to know what changes at $10K, $50K, $250K, $1M+. |
 | [`docs/24_SPECIALIST_CATALOG.md`](docs/24_SPECIALIST_CATALOG.md) | Quants, financial analysts, VC reviewers | …you want the canonical enumeration of all 187 specialists (8 LLM + 179 deterministic) with what each one checks. The value-prop story made concrete. |
+| [`docs/17_SELF_TUNER_GUARDRAILS_AND_RAG.md`](docs/17_SELF_TUNER_GUARDRAILS_AND_RAG.md) | Quants, engineers | …you want the self-tuner's guardrails, evidence mode, the case-file RAG layer, and the status of prompt-variant and fine-tune work. |
+| [`docs/25_MODEL_SELECTION_AND_LEARNING_PLAN.md`](docs/25_MODEL_SELECTION_AND_LEARNING_PLAN.md) | Operator, anyone judging the learning claims | …you want the plan, decisions and progress log behind Experiment 2: which model should run the book, and is the system actually learning. |
+| [`docs/26_EXPERIMENTS.md`](docs/26_EXPERIMENTS.md) | Everyone quoting a result | …you need the experiments register — what each experiment asked, how it ran, what it taught, and the measurement-validity notes to read before citing any number. |
+| [`docs/27_FINETUNE_TRAINING_LOG.md`](docs/27_FINETUNE_TRAINING_LOG.md) | Operator, ML engineers | …you want the batch-by-batch record of training the owned model, and when the next batch should run. |
+| [`docs/28_FINETUNE_BATCH4_BUILD_SPEC.md`](docs/28_FINETUNE_BATCH4_BUILD_SPEC.md) | Whoever builds batch 4 | …you are picking up the fine-tune work: the five mandatory changes, where the code lives, the tests, and the Mac runbook. (`docs/20_FINETUNE_PHASE_4B1_INCREMENTAL.md` is the original design.) |
 | [`CHANGELOG.md`](CHANGELOG.md) | Everyone | Chronological history of every behavior change. |
 | [`OPEN_ITEMS.md`](OPEN_ITEMS.md) | Everyone | Single source of truth for what is still pending. |
 | [`docs/archive/`](docs/archive/) | Archaeology | Pre-rewrite documentation. Frozen for traceability. |
