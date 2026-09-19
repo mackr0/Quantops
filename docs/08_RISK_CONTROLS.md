@@ -167,11 +167,13 @@ A defense-in-depth layer above the per-trade and validation gates. These exist f
 | **AI consistency floor** | Recent-100 directional win rate < 30% for 5 consecutive cycles | Logs error; optional auto-kill via `auto_kill_on_consistency_floor` | `ai_consistency_floor.py` |
 | **DB integrity check** | `PRAGMA quick_check` reports actual file-level corruption | Halts scheduler on startup; sends notification (deduped 1h); `restore_from_backup()` is one-command | `db_integrity.py` |
 
+**Beneath all of these, at the order choke point** (`order_guard.py`, every `submit_order` passes through it): the **oversell door** (a stock SELL may not exceed the profile's own journal long) and its mirror, the **cash door** (`assert_buy_within_own_cash()`, 2026-07-15 — a stock BUY may not exceed the profile's own virtual cash less cash reserved for resting cover stops; fails closed when cash or price is unreadable; never gates exits or protective covers). These are not pipeline gates that a code path can forget to call — no order reaches the broker without them.
+
 **Pre-trade gate order in `trade_pipeline.run_evaluate_buy/sell/short`** (highest priority first):
 1. Broker disconnect → `BROKER_DISCONNECTED`
 2. Master kill switch → `KILL_SWITCH`
 3. Catastrophic single-trade → `CATASTROPHIC_SINGLE_TRADE`
-4. Cross-profile concentration → `BOOK_CONCENTRATION_CAP`
+4. *(removed 2026-06-30 — cross-profile concentration violated profile isolation; see the own-book steering row above. `BOOK_CONCENTRATION_CAP` survives only as a legacy reason string on old rows.)*
 5. Drawdown pause → `DRAWDOWN_PAUSE`
 6. Per-trade portfolio constraints → existing checks
 

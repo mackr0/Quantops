@@ -2,7 +2,7 @@
 
 **Audience:** investors, executives, anyone evaluating QuantOpsAI without diving into the technical layers.
 **Length:** ~3 pages.
-**Last updated:** 2026-06-04 (audit reconciliation — see `docs/AUDIT_2026_06_04_DOC_RECONCILIATION.md`).
+**Last updated:** 2026-09-19 (Experiment-2 fleet, measured cost, learning-layer claims). Previous full audit: 2026-06-04 — see `docs/AUDIT_2026_06_04_DOC_RECONCILIATION.md`.
 
 ## What QuantOpsAI is
 
@@ -12,11 +12,11 @@ Three claims define what makes the architecture distinctive:
 
 1. **The AI is the portfolio manager, not a feature.** A single batched call to a large language model picks the trades per scan cycle from a ranked candidate list. The AI sees roughly fifty per-candidate signals plus full portfolio state, factor exposures, regime context, learned patterns from prior cycles, and per-stock track record. There is no rules engine downstream telling the AI "no" — there are only objective gates (crisis state, regulatory limits, margin checks) that block clearly unsafe actions.
 
-2. **Every decision is captured, resolved, and used to retrain the system.** Each prediction is written to a journal with the full feature snapshot it was made on. When the prediction resolves (target hit, stop hit, time decay, exit signal), the row is labeled win/loss and pushed back into a two-layer meta-model (GBM batch + SGD freshness), a **two-layer calibrated specialist ensemble (179 deterministic rule-checkers + 8 LLM-narrative specialists)**, a self-tuning rule set (12 parameter-tuning layers plus 5 deterministic guardrails that block compounding restriction), and an online (per-resolution) freshness layer. This is the proprietary asset — the corpus of resolved AI predictions in this exact decision context cannot be replicated by competitors.
+2. **Every decision is captured, resolved, and used to retrain the system.** Each prediction is written to a journal with the full feature snapshot it was made on. When the prediction resolves (target hit, stop hit, time decay, exit signal), the row is labeled win/loss and pushed back into a two-layer meta-model (GBM batch + SGD freshness), a **two-layer calibrated specialist ensemble (179 deterministic rule-checkers + 8 LLM-narrative specialists, six of them enabled)**, a self-tuner cut back on 2026-08-23 to the ten levers with real evidence behind them (the full 12-layer registry is one flag away) behind 5 deterministic guardrails that block compounding restriction, an in-context track record rendered into every prompt, and an online (per-resolution) freshness layer. A **shadow-evaluation layer** replays every specialist call to the competing models and scores their disagreements against real trade outcomes, so which model runs the book is itself a measured decision. This is the proprietary asset — the corpus of resolved AI predictions in this exact decision context cannot be replicated by competitors.
 
-3. **The platform runs 13 profiles in parallel inside three Alpaca paper accounts** via a virtual-account reconciliation layer. This is novel infrastructure: see "Virtual paper accounts," below. It compresses what would otherwise require 13 brokerage relationships into 3, and is the foundation for the rigorous baseline + ablation + scaling experiment in `docs/15_EXPERIMENT_DESIGN_2026_05_17.md`.
+3. **The platform runs 12 profiles (229–240) in parallel inside three Alpaca paper accounts** via a virtual-account reconciliation layer. This is novel infrastructure: see "Virtual paper accounts," below. It compresses what would otherwise require 12 brokerage relationships into 3, and is the foundation for Experiment 2 — four model arms × three replicates at $250K each, judged against eleven broker-free virtual benchmarks (Buy-Hold-SPY + ten random books) — registered in `docs/26_EXPERIMENTS.md` with the plan in `docs/25_MODEL_SELECTION_AND_LEARNING_PLAN.md`. Experiment 1's baseline + ablation + scaling design (`docs/15_EXPERIMENT_DESIGN_2026_05_17.md`) was retired 2026-08-23.
 
-4. **The deterministic-vs-narrative split is the cost story.** Hundreds of zero-API-cost rule checkers handle structurally-checkable patterns (RSI overbought, insider clusters, gap into resistance, regulatory events, etc.) so the single batched LLM call only spends tokens on the synthesis work the rule layer structurally can't do. Observed operational AI spend across the 13-profile fleet: **~$1–3/day** (trailing-7d avg $1.29/day at the 2026-07-27 measurement) at the current `gemini-2.5-flash-lite` rate; shadow-model evaluation adds spend up to the operator-set shadow cap on top. Quality goes up with specialist count; cost does not. The full enumeration of all 187 specialists with their individual roles is in `docs/24_SPECIALIST_CATALOG.md`.
+4. **The deterministic-vs-narrative split is the cost story.** Hundreds of zero-API-cost rule checkers handle structurally-checkable patterns (RSI overbought, insider clusters, gap into resistance, regulatory events, etc.) so the single batched LLM call only spends tokens on the synthesis work the rule layer structurally can't do. Observed operational AI spend: ≈ $1.86/day primary + ≈ $1.70/day shadow evaluation (≈ $3.56/day, a ~$107/month run-rate; measured 2026-09-12→18 across the twelve-profile, four-model Experiment-2 fleet). That is above the ≈ $68/month planning figure in `docs/25_MODEL_SELECTION_AND_LEARNING_PLAN.md` §1.5, and the gap is the shadow layer — every arm cross-shadows the other three. (Experiment 1, one model on 13 profiles, measured $1.29/day on 2026-07-27.) Quality goes up with specialist count; cost does not. The full enumeration of all 187 specialists with their individual roles is in `docs/24_SPECIALIST_CATALOG.md`.
 
 ## Why this might be valuable
 
@@ -77,7 +77,7 @@ The full enumeration, including every kill switch and validation gate in the tra
 
 ## What's honest about the limits
 
-QuantOpsAI is a paper-trading platform with two weeks of accumulated decision data as of this writing. The following caveats apply and should not be obscured:
+QuantOpsAI is a paper-trading platform whose live cohort restarted on 2026-08-24 (under four weeks of data per profile as of 2026-09-19), on top of an archive of 170,000+ predictions from prior experiments. The following caveats apply and should not be obscured:
 
 - **Slippage calibration is paper-fitted.** The slippage model's K coefficient is calibrated from paper fills. Real-money fills will deviate. The model assumes IID slippage per trade; correlated regimes (full days of wide spreads) are a documented limit, with by-day bootstrap mode available as a partial mitigation.
 
@@ -85,7 +85,7 @@ QuantOpsAI is a paper-trading platform with two weeks of accumulated decision da
 
 - **Stress scenarios miss cross-asset risk.** The factor set includes equity sectors, equity styles, and Ken French factors; rates, FX, and commodities are not yet in the model. A 2022-style rate shock under-reports.
 
-- **Two weeks of data is a small calibration corpus.** Meta-model AUC, specialist Platt-scaling fits, slippage K, and learned patterns will all materially improve with more resolved predictions. The system is wired to compound this asset over time, but interpreting current performance requires acknowledging the small sample.
+- **The live calibration corpus is weeks old.** The archive (`backups/predictions_archive/`) is large and feeds fine-tuning, but learned state is scoped to each profile's current model, so on the current arms meta-model AUC, specialist Platt-scaling fits, slippage K, and learned patterns will all materially improve with more resolved predictions. The system is wired to compound this asset over time, but interpreting current performance requires acknowledging the small sample.
 
 - **Latency arbitrage, market making, block trading, and index-inclusion arbitrage are out of scope.** These are billion-dollar-fund differentiators that are structural, not addressable in software at this scale.
 

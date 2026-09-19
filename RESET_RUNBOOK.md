@@ -19,7 +19,7 @@ reset inherits all of these automatically. Make sure Step 2 ships them (prod
 and the institutional universe from day one.
 
 > **What a fresh-start does:** deletes every profile + per-profile DB outright,
-> rebuilds the 13 EXP-A* profiles from the manifest, swaps in new Alpaca paper
+> rebuilds the EXP-A* profiles (12 under the Experiment-2 manifest) from the manifest, swaps in new Alpaca paper
 > accounts, wipes AI learning state + caches + audit alerts + runtime/altdata
 > logs + journald. This is the **TRUE fresh-start** path
 > (`clean_orphaned_profiles` + `create_experiment_profiles`), **not** the
@@ -90,8 +90,13 @@ Then edit the clone:
 ```bash
 # local
 git add full_fresh_start_<date>.py && git commit && git push origin main
-# prod — prod git MUST track deployed code; this also ships any pending fixes
-ssh root@67.205.155.63 'cd /opt/quantopsai && git fetch origin && git reset --hard origin/main'
+# prod — prod git MUST track deployed code; this also ships any pending fixes.
+# Use the deploy wrapper, never a bare `git reset --hard`: the wrapper runs the
+# pre-flight gate, verifies the deployed sha/content, waits for the scheduler's
+# idle window and restarts BOTH services (any production .py change must
+# restart the web service too — 2026-07-25).
+./sync.sh                                   # from the Mac, or:
+ssh root@67.205.155.63 'cd /opt/quantopsai && ./droplet-sync.sh'
 ```
 
 Confirm prod `HEAD` matches your pushed commit.
@@ -108,7 +113,7 @@ cd /opt/quantopsai && set -a && . ./.env && set +a
 **Why this is mandatory:** `step3` encrypts the new account keys and needs
 `ENCRYPTION_KEY`, which lives in `/opt/quantopsai/.env`. systemd loads it for the
 service, but a **bare ssh shell does not**. If it's missing, the script crashes
-at `step3` **after `step2` has already wiped all 13 profiles**, and the in-memory
+at `step3` **after `step2` has already wiped every profile**, and the in-memory
 `step1b` Google-key snapshot dies with the process. (This happened on the morning
 2026-06-17 reset; recovery is possible from the 05:00 master backup — see
 *Recovery* — but don't rely on it. Load `.env`.)
@@ -129,10 +134,14 @@ venv/bin/python full_fresh_start_<date>.py
       drift, fold anything intentional into `create_experiment_profiles.PROFILES`
       first (this is how the 999 position caps were lost on 06-09; SPY=1 and
       Randoms=5 and the caps now live in the manifest and survive automatically).
-- [ ] **STEP 4** — Experiment 2: `manifest verified: 9 profiles totaling
-      $2,250,000; arms=[...]` (A1/A2/A3 each 3 × $250K). (Experiment 1
-      printed `13 profiles totaling $3,000,000` — that manifest lives at
-      tag `exp1-system-stability-final`.)
+- [ ] **STEP 4** — Experiment 2: `manifest verified: 12 profiles totaling
+      $3,000,000; arms=[NANO, LUNA, G35LITE, G37FLASH]` — four arms ×
+      three replicates at $250K, so each $1M account is fully
+      allocated. (The first Experiment-2 staging was a nine-profile,
+      three-arm manifest; the incumbent arm was added by operator
+      ruling the same evening. Experiment 1 printed `13 profiles
+      totaling $3,000,000` — that manifest lives at tag
+      `exp1-system-stability-final`.)
 - [ ] **STEP 1c** — every enabled profile's learning data archived
       (`ARCHIVED <n> rows across <k> profile(s)`); the run aborts before
       any write if this fails.
@@ -154,10 +163,15 @@ venv/bin/python full_fresh_start_<date>.py --apply
 
 Confirm in the output:
 - [ ] STEP 1 keys verified ($1M / 0).
-- [ ] **STEP 5b** restores `google/gemini-2.5-flash-lite key=164B` on all 13
-      profiles (the carry-over worked). If `step5c` says `NEW_GOOGLE_AI_KEY not
-      set — skipping`, that's correct for carry-over.
-- [ ] **STEP 6** `OK: 3 accounts, 13 EXP-Ax- profiles linked correctly`.
+- [ ] **STEP 5c** lists, per profile, its primary provider and
+      `shadow_keys=[...]` with **no `MISSING` lines** — Experiment 2
+      installs a per-provider AI key plus a shadow-key map for every
+      arm (§1's `RESET_NEW_GOOGLE_AI_KEY` / `RESET_NEW_OPENAI_AI_KEY`).
+      (Step 5b's single-Google-key carry-over — `google/gemini-2.5-
+      flash-lite key=164B` on all 13 profiles — was the Experiment-1
+      path.)
+- [ ] **STEP 6** `OK: 3 accounts, 12 EXP-Ax- profiles linked correctly`
+      (13 under the Experiment-1 manifest).
 - [ ] `APPLIED — done`.
 
 ---
@@ -182,7 +196,7 @@ Then confirm the rebuilt profiles inherited the institutional universe floors
 ```bash
 sqlite3 quantopsai.db "SELECT MIN(min_price),MAX(min_price),MIN(min_adv),MAX(min_adv) FROM trading_profiles WHERE enabled=1;"
 ```
-Expect `10.0|10.0|5000000.0|5000000.0` (all 13 at $10 min price / $5M min ADV). If
+Expect `10.0|10.0|5000000.0|5000000.0` (all 12 — 13 under the Experiment-1 manifest — at $10 min price / $5M min ADV). If
 they came up at `1.0` / penny floors, the segment baseline regressed — fix
 `segments.py` before trading, don't hand-edit the rows.
 
@@ -216,7 +230,7 @@ Watch the first ~3 cycles / ~20–30 min and confirm:
   reset IDs (e.g. 45–141). Non-blocking — the wipe only removes DBs for
   currently-listed profiles, so prior generations' files linger harmlessly.
 - **Recovery if `step3` ever crashes post-wipe** (i.e. you forgot Step 3): the
-  Google key (uniform across all 13, encrypted in `trading_profiles.ai_api_key_enc`)
+  AI keys (one per provider under Experiment 2; a single uniform Google key under Experiment 1 — encrypted in `trading_profiles.ai_api_key_enc`)
   is recoverable from the daily 05:00 master backup
   `backups/quantopsai.db.YYYYMMDD-0500` — decrypt one `ai_api_key_enc` with
   `crypto.decrypt`, `export RESET_NEW_GOOGLE_AI_KEY=<value>`, re-run `--apply`

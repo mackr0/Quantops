@@ -1,8 +1,8 @@
 # 24 — Specialist Catalog
 
 **Audience:** quants evaluating coverage of the ensemble; financial analysts / forensic accountants / VC reviewers asking "what does the system actually check for before it trades?"; engineers adding a new specialist.
-**Purpose:** the canonical enumeration of every specialist running in production today — 8 LLM-narrative specialists in `specialists/` and 179 deterministic rule checkers in `deterministic_specialists/`. **187 specialists total.**
-**Last updated:** 2026-06-04 (audit reconciliation — see `docs/AUDIT_2026_06_04_DOC_RECONCILIATION.md`).
+**Purpose:** the canonical enumeration of every specialist in the system — 8 LLM-narrative specialists in `specialists/` (**six enabled in production**; `sentiment_narrative` and `pattern_recognizer` are globally disabled for cost via `config.GLOBALLY_DISABLED_SPECIALISTS` since 2026-06-30) and 179 deterministic rule checkers in `deterministic_specialists/`. **187 specialists total, 185 live.**
+**Last updated:** 2026-09-19 (two globally-disabled LLM specialists marked; cost figures re-measured on the Experiment-2 fleet). Previous full audit: 2026-06-04 — see `docs/AUDIT_2026_06_04_DOC_RECONCILIATION.md`.
 
 ---
 
@@ -12,7 +12,7 @@ The system's value-prop story is encoded here. The platform achieves high accura
 
 - **179 deterministic rules** (the catalog in §2) cost nothing per cycle — they're pure-Python pattern matchers. Most decisions short-circuit cleanly through this layer.
 - **8 LLM-narrative specialists** (the catalog in §1) spend the per-call AI tokens, but six of the eight were re-scoped 2026-05-18 (Phase 3 of `docs/17`) to *synthesize* from the deterministic panel rather than re-derive facts. Each LLM specialist now reads `RULES: [V]name [C]name ...` in each candidate's render and writes the narrative thesis on top.
-- **Result:** observed operational AI spend on the 13-profile experiment fleet is ~$1–3/day (trailing-7d avg $1.29/day at the 2026-07-27 measurement) at the `gemini-2.5-flash-lite` rate, plus shadow-evaluation spend up to the operator-set cap. Adding the 100th deterministic specialist costs $0; adding the 9th LLM specialist would meaningfully bump per-cycle cost.
+- **Result:** observed operational AI spend is ≈ $1.86/day primary + ≈ $1.70/day shadow evaluation (≈ $3.56/day, a ~$107/month run-rate; measured 2026-09-12→18 across the twelve-profile, four-model Experiment-2 fleet). That is above the ≈ $68/month planning figure in `docs/25_MODEL_SELECTION_AND_LEARNING_PLAN.md` §1.5, and the gap is the shadow layer — every arm cross-shadows the other three. (Experiment 1, one model on 13 profiles, measured $1.29/day on 2026-07-27.) Adding the 100th deterministic specialist costs $0; adding the 9th LLM specialist would meaningfully bump per-cycle cost.
 
 Each deterministic rule carries a severity:
 - **VETO** — high-confidence block. The candidate is structurally unsafe; ensemble drops it regardless of other verdicts. **10 VETO rules** in production.
@@ -34,9 +34,9 @@ Each specialist exposes `NAME`, `DESCRIPTION`, `HAS_VETO_AUTHORITY`, `APPLIES_TO
 | `gamma_pin_specialist` | Reads dealer GEX + max-pain strike for pinning (stability) vs negative-gamma (instability) regimes | No | option only |
 | `iv_skew_specialist` | Reads put/call IV skew for premium-side bias; consumes options-rule verdicts | No | option only |
 | `option_spread_risk` | Option-aware risk gatekeeper — IV crush, gamma exposure, max-loss budget violations | **Yes** | option only |
-| `pattern_recognizer` | Synthesizes a coherent technical thesis from the deterministic technical rule verdicts | No | stock only |
+| `pattern_recognizer` *(globally disabled 2026-06-30)* | Synthesizes a coherent technical thesis from the deterministic technical rule verdicts | No | stock only |
 | `risk_assessor` | Synthesizes a worst-plausible-outcome scenario from the risk-cluster rule verdicts | **Yes** | stock + option |
-| `sentiment_narrative` | Synthesizes the narrative — who is positioning and why — from smart-money + sentiment rule verdicts | No | stock + option |
+| `sentiment_narrative` *(globally disabled 2026-06-30)* | Synthesizes the narrative — who is positioning and why — from smart-money + sentiment rule verdicts | No | stock + option |
 
 Six of the eight (`adversarial_reviewer`, `earnings_analyst`, `iv_skew_specialist`, `pattern_recognizer`, `risk_assessor`, `sentiment_narrative`) were re-scoped 2026-05-18 to synthesize from the deterministic panel rather than re-derive facts. Two (`gamma_pin_specialist`, `option_spread_risk`) cover unique territory the rule library structurally can't subsume and remain as-is.
 

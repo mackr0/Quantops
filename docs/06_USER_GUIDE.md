@@ -23,7 +23,7 @@ Top of the page: the multi-profile equity overview.
 For each profile:
 - **Equity** (current account value)
 - **P&L** (absolute, since profile creation)
-- **P&L %** (return on initial capital) — the column to compare accounts by, since each profile runs a different strategy at a different capital base. The three baselines (Buy-Hold SPY, Random A/B) appear here too, so you can read the system arms straight against the benchmarks they have to beat. The three accounts with the highest P&L % carry 🥇🥈🥉 medals next to their names — all profiles ranked together (a medal on a baseline means the system hasn't overtaken it yet); the medals update live as the standings change.
+- **P&L %** (return on initial capital) — the column to compare accounts by, since each profile runs a different strategy at a different capital base. The virtual benchmarks (Buy-Hold-SPY and ten random books — broker-free reference books, not profiles, since Experiment 2) appear here too, so you can read the system arms straight against the benchmarks they have to beat. The three accounts with the highest P&L % carry 🥇🥈🥉 medals next to their names — all profiles ranked together (a medal on a baseline means the system hasn't overtaken it yet); the medals update live as the standings change.
 - **Cash**, **Open positions** count, **AI cost today**
 
 The footer shows only the **AI cost total** across profiles. Equity / P&L / cash / position counts are *not* summed: each profile is a different strategy at a different capital base, so an additive "system total" is meaningless — compare by the per-account P&L % instead. AI cost is the one book-wide figure that is genuinely additive.
@@ -199,6 +199,12 @@ Per-profile performance breakdown. The profile dropdown defaults to **All System
 - MFE capture ratio.
 - Slippage stats (avg, worst, total adverse $).
 
+## 6b. The three pages that tell you whether the system is healthy and learning
+
+- **`/issues` — is anything wrong?** One list of everything that needs attention: deduplicated errors and warnings from both services' logs, alt-data job failures, and *live snapshot* rows recomputed on every load from the integrity audits (share-count and value parity against the broker, the equity identity, stored-P&L consistency). A live-snapshot row vanishes by itself once the condition clears. Check this first, every day.
+- **`/shadow` — which model should be running the book?** Every specialist call the primary model makes is replayed to the competing models on the identical prompt. The page shows, per model pair and per purpose, how often they agree and — for the disagreements — whose call the realized trade outcome vindicated, in dollars per decision. No verdict appears until 30 scored decisions exist. It reports the whole experiment (all-time); only cost is windowed to 30 days. Promotion is always your decision; nothing here changes a model automatically.
+- **`/learning` — is it getting better?** The Learning Scoreboard: per profile and per model, win rate, Brier score (calibration: 0 is perfect, 0.25 is a coin flip), HOLD quality and mean move over time, scoped to the model currently running the profile.
+
 ## 7. Common workflows
 
 ### 7a. "I want to test a new strategy idea"
@@ -251,7 +257,7 @@ Per-profile performance breakdown. The profile dropdown defaults to **All System
 
 ## 8. The virtual account model in practice
 
-13 profiles share 3 Alpaca paper accounts. Things to know:
+12 profiles (229–240) share 3 Alpaca paper accounts. Things to know:
 
 - A trade on profile 5 affects the broker account it's mapped to (e.g. Account 2). Profile 8's broker view INCLUDES profile 5's positions if both are mapped to Account 2.
 - Per-profile dashboards and per-profile P&L are computed from each profile's `trades` ledger via FIFO accounting — these are the authoritative per-profile numbers.

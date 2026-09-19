@@ -2,7 +2,7 @@
 
 **Audience:** anyone reviewing or extending the system; reviewers asking "is this rigorous or improvised?"
 **Purpose:** capture HOW decisions get made on this codebase, so that future contributors (including the operator's future self and any AI assistants) can extend the system without violating its spirit.
-**Last updated:** 2026-06-04 (audit reconciliation — see `docs/AUDIT_2026_06_04_DOC_RECONCILIATION.md`).
+**Last updated:** 2026-09-19 (specialist-add procedure corrected; learning-integrity guardrails added). Previous full audit: 2026-06-04 — see `docs/AUDIT_2026_06_04_DOC_RECONCILIATION.md`.
 
 ## What this document is
 
@@ -38,7 +38,7 @@ These are not aspirational doc strings — they are surfaced in `OPEN_ITEMS.md` 
 Every parameter that influences trade decisions must be discoverable:
 
 - It appears in the settings UI, OR
-- It's on the `MANUAL_PARAMETERS` allowlist with a written rationale (e.g., "Strategic AI choice — opt-in via `ai_model_auto_tune`"), OR
+- It's on the `MANUAL_PARAMETERS` allowlist with a written rationale (e.g., `ai_provider` / `ai_model`: "operator-set via the audited `promote()` path in `model_promotion.py`, never tuner-driven"), OR
 - It's auto-tuned (regression test confirms `update_trading_profile(profile_id, <col>=value)` is called from `self_tuning.py`).
 
 A schema column failing all three conditions fails the `test_every_lever_is_tuned` guardrail.
@@ -180,8 +180,9 @@ The guardrail will fail until the task is gated or allowlisted.
 
 This procedure is for the 8-specialist LLM-narrative layer. For the cheaper deterministic-rule layer, see §4.5b. **Prefer §4.5b unless the rule structurally requires LLM synthesis** — every new LLM specialist multiplies per-cycle AI cost.
 
-- Add the specialist class to `ensemble.py`.
-- Plumb through `run_ensemble` synthesizer (verdict aggregation).
+- Drop a module under `specialists/` exposing `NAME`, `DESCRIPTION`, `HAS_VETO_AUTHORITY`, `APPLIES_TO_PIPELINES` and a `build_prompt(candidates, ctx)` function. `specialists/__init__.py` auto-discovers it; there is no class to register in `ensemble.py`. It must answer in the shared batched schema (`_verdicts_schema()` in `ensemble.py`) — the shadow grader and every vendor's structured-output mode depend on that one shape.
+- Veto authority is picked up automatically from `HAS_VETO_AUTHORITY` (`veto_authorized_names()`); verdict aggregation in `run_ensemble` needs no change.
+- Check `config.GLOBALLY_DISABLED_SPECIALISTS` — two of the eight are off fleet-wide for cost; a new LLM specialist has to earn its per-cycle spend against that precedent.
 - Add to `disabled_specialists` allowlist (so health check can disable it).
 - Add Platt-scaling layer in `specialist_calibration.py`.
 - Update `_task_specialist_health_check` if the specialist needs special calibration handling.

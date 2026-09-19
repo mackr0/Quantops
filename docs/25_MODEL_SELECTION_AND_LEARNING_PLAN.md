@@ -48,6 +48,8 @@ the experiment design and the learning loops are what change.
 
 ## 1. Model landscape (verified 2026-08-21 against provider pricing pages)
 
+> **Dated snapshot.** This section's prices, the "current primary" label and §1.4's spend table are as measured on 2026-08-21, *before* Experiment 2. The live cohort since 2026-08-24 is four arms — `gpt-4.1-nano`, `gpt-5.6-luna`, `gemini-3.5-flash-lite`, `gemini-3.7-flash` — on profiles 229–240; measured spend 2026-09-12→18 was ≈ $1.86/day primary + ≈ $1.70/day shadow (~$107/month run-rate vs the ≈ $68/month planned in §1.5).
+
 ### 1.1 Measured volume per profile per month (30 days to 2026-08-21)
 
 | Purpose | Calls | Input tokens | Output tokens |
@@ -185,7 +187,9 @@ Each step: goal → why → checklist → done-when. Check items off here.
 
 ### Step 1 — Make the model test real (replicates; only the model differs)
 
-**Goal:** three arms × three profiles, identical capital and settings,
+**Goal:** four arms × three profiles (three arms as first drafted; the
+incumbent was added as a fourth by operator ruling on 2026-08-23),
+identical capital and settings,
 fresh-started together, plus the BuyHold and two Random baselines.
 **Why:** one profile per arm can never reach significance; matched
 replicates can. The shadow layer stays on cross-wise so every arm is
@@ -204,9 +208,9 @@ Prerequisites (code):
 - [x] 1.3 `batch_select` gradeable in shadow: trade sets exploded per
       symbol and graded with the forecaster rules. Done 2026-08-23
       (register: `calculation_verification/shadow.md`).
-- [ ] 1.4 Remove the dead `ai_model_auto_tune` toggle from Settings (or
-      implement it — decision D3). A control that does nothing must not
-      stay on the page.
+- [x] 1.4 Dead `ai_model_auto_tune` toggle removed from Settings, form
+      handling and the user context; DB column kept append-only, never
+      read. `promote()` covers the need. Done 2026-08-24 (decision D3).
 - [ ] 1.5 Per-profile shadow config: confirm each arm-profile can carry
       its own `shadow_models` list and provider keys (it can today —
       verify the Settings save path round-trips three arms).
@@ -220,7 +224,9 @@ Configuration (operator, with Claude driving):
       (`full_fresh_start_2026_08_24.py --apply`): learning data archived
       first (170,536 rows), certify PASS on funding/drift/reconcile/
       decomposition.
-- [x] 1.9 Profiles 220–228 configured from the manifest (identical
+- [x] 1.9 Profiles 229–240 configured from the four-arm manifest (first
+      staged as 220–228 / nine profiles, re-run the same evening with
+      the incumbent arm added — see the Progress Log) (identical
       except model; cross-shadow lists verified in the DB); baselines
       are the 11 virtual benchmarks. Done 2026-08-23.
 - [x] 1.10 Pre-registered (Section 3). Start date: 2026-08-24.
@@ -242,8 +248,8 @@ Configuration (operator, with Claude driving):
       (keys from env only; per-provider AI + shadow keys; archives
       Experiment 1's learning data before the wipe; creates the
       virtual benchmarks) and the Experiment 2 manifest in
-      `create_experiment_profiles.py` (9 arm-profiles, verified
-      identical except model). Done 2026-08-23. Runs when the operator
+      `create_experiment_profiles.py` (12 arm-profiles — four arms ×
+      three replicates, $250K each — verified identical except model). Done 2026-08-23. Runs when the operator
       supplies the three new paper accounts (1.6–1.9).
 - [x] 1.0 **Immediate, before any of the above:** remove
       `anthropic:claude-haiku-4-5-20251001` from every profile's shadow
@@ -251,7 +257,7 @@ Configuration (operator, with Claude driving):
       2026-08-23 on prod, profiles 207–219 (operator decision).
 
 **Done when:** 12 profiles trading from equal capital on the same day;
-/shadow shows three arms with every purpose including batch_select
+/shadow shows all four arms with every purpose including batch_select
 graded; the register (`calculation_verification/shadow.md`) updated.
 
 ### Step 2 — Define "learning" as a curve you can see
@@ -455,6 +461,8 @@ the numbers that drove it.
 | 2026-08-24 | 5, D3 | D3 done (dead auto-tune toggle removed — promote() covers it); 5.1–5.3 marked done (pre-registration §3 was filled at the start); dashboard benchmarks show LIVE value (bulk read, 60s cache, kept at minute freshness by operator ruling — $0 cost, no rate-limit risk, zero AI involvement) with the column labeled **P&L %** to match the profile table (naming-consistency fix); identity verified clean 12/12 under both old and new semantics on day one. | 178ad40 |
 | 2026-08-25 | — | Day-two incident: five long-option entries mislabeled `auto_closed_external` after our OWN exits filled (the 08-10 guard read only live rows; our own FILL activity counted as external evidence) — premiums vanished from cash/realized, equity drift +$185…+$4,550 on four profiles, cash phantoms on all three accounts, reconciled to the penny. Repaired fleet-wide (dry-run-first script), labeler race-proofed, and the **FILL-TRUTH INVARIANT** shipped at the accounting layer: a fill-bearing row never leaves cash or the realized FIFO regardless of status — future mislabels on any path are cosmetic, never money. 12/12 identity ≤$0.01 and cash parity at cents after. | 141e69c |
 | 2026-08-27 | 4.5 | First fine-tune batches trained and honestly evaluated. Corpus: 46,583 archived resolved predictions → 100.0% prompt-joinable after the cycle-join fix → 4,120 labeled decisions → 1,369 cycle-grouped production-shaped examples. Batch 2 (Qwen2.5-7B-4bit LoRA, M2 Max, ~5h, $0): val loss 1.97→0.78. Held-out exam, 158 graded decisions: **adapter 38.6% vs base 37.3%** directional — NOT a meaningful win yet. What it DID learn: perfect output format (0 unparseable vs 9; base also emitted illegal option actions) and strong HOLD discipline (41/55 vs 22/55) — but overapplied as a cautious prior (70% of answers HOLD), costing bearish/bullish hits. Verdict: pipeline proven, model not yet promotable; **no hosting spend**. Next trigger: retrain at ~2× corpus (the four-arm fleet doubles it in ~3–4 weeks), consider 2–3 epochs + label-balance weighting; hosting decision re-opens on a clear base-beating eval. | bb3b424 |
+| 2026-09-16 | 1, 2 | **The measurement layer had been blind since the restart.** The shadow grader did not understand the batched `{"verdicts": [...]}` schema the 08-23 vendor-fair build introduced: 0 of 37,941 shadow calls graded for 23 days (~$45). Extractor fixed and tied to `_verdicts_schema()` by test; 31,733 comparisons backfilled; per-symbol outcome scoring added for multi-candidate set disagreements (0ce638d, 410a0be). Same day: the zombie guardrail fired 14 days after the reset — six false alarms (the reset wiped their evidence; the archive now keeps a merge-only `strategy_index.json`) and six genuine never-fired strategies quarantined in `_KNOWN_ZOMBIES_2026_09_16`, audit open | 0ce638d, 410a0be |
+| 2026-09-19 | 2, 4.5 | Docs reconciled to the code (learning layer). Fine-tune status: batch 3 (08-27, 34,157 decisions after the (profile,id) dedup fix) LOST to its base (27.6% vs 31.3%) — see [27](27_FINETUNE_TRAINING_LOG.md); the mandatory batch-4 recipe is not yet built in `finetune/`. Experiment 2's first four weeks added ≈27,000 labeled decisions / ≈7,000 cycle examples (60% HOLD — more skewed than batch 3's corpus, so rebalancing is the gate, not data). Also: equity-identity false alarm after the 09-18 expiry fixed at the root (`compute_leg_realized()` now counts $0 broker-activity closes and cash-only rows; CHANGELOG 2026-09-19) | — |
 | 2026-08-23 | — | Experiments Register opened ([26](26_EXPERIMENTS.md)); Experiment 1 retired and tagged `exp1-system-stability-final`; virtual-baseline item 1.12 + D6 added | cb22501… |
 | 2026-08-23 | 1 | 1.0 haiku shadow pulled on prod; 1.1 registry/prices; 1.2 vendor-fair structured output; 1.3 apex call gradeable; D5 shadow scope; 1.12 virtual benchmarks; 1.13 manifest + reset script staged | this commit |
 | 2026-08-23 | 3, 4 | tuner evidence mode (3.1, 3.2, 3.5); weekly tasks fixed (4.1); track-record prompt block (4.2, 4.4) | this commit |

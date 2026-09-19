@@ -1,7 +1,7 @@
 # 09 — Glossary
 
 **Audience:** cross-audience reference. Any term used in the technical docs without definition is defined here.
-**Last updated:** 2026-06-04 (audit reconciliation — see `docs/AUDIT_2026_06_04_DOC_RECONCILIATION.md`).
+**Last updated:** 2026-09-19 (learning / experiment vocabulary added). Previous full audit: 2026-06-04 — see `docs/AUDIT_2026_06_04_DOC_RECONCILIATION.md`.
 
 Alphabetical. Linked terms reference other glossary entries.
 
@@ -9,9 +9,13 @@ Alphabetical. Linked terms reference other glossary entries.
 
 **ADV** — *Average Daily Volume*. The 20-day rolling average of trading volume in shares. Used in slippage modeling: order size as a fraction of ADV is the [participation rate](#participation-rate). On `trades.adv_at_decision`.
 
+**Agreement (shadow)** — Whether a shadow model's answer to a replayed prompt matched the primary model's, after both are reduced to a comparable signal. Agreement alone says nothing about who was right — disagreements are scored against realized trade outcomes. See [shadow evaluation](#shadow-evaluation).
+
 **Alpha decay** — The phenomenon where a strategy's edge degrades over time as the market adapts to the strategy's pattern, or as the underlying market regime shifts. Measured in QuantOpsAI by rolling 30-day [Sharpe ratio](#sharpe-ratio) vs lifetime baseline. See `alpha_decay.py`.
 
 **Almgren-Chriss** — Square-root market-impact model. The expected adverse price impact of an order is approximately `K × √participation_rate`, where K is calibrated empirically. Used in QuantOpsAI's slippage model.
+
+**Arm / replicate** — An *arm* is one experimental condition — in Experiment 2, one AI model (`gpt-4.1-nano`, `gpt-5.6-luna`, `gemini-3.5-flash-lite`, `gemini-3.7-flash`). A *replicate* is one of the three identically-configured $250K profiles running that arm, one per broker account, so an arm's result can be told apart from luck. Four arms × three replicates = profiles 229–240.
 
 **Backwardation** — When near-dated futures (or option implied volatility for nearer expiries) are priced higher than further-dated. Indicates immediate event/uncertainty pricing. Inverse of [contango](#contango).
 
@@ -26,6 +30,8 @@ Alphabetical. Linked terms reference other glossary entries.
 **Bracket order** — Broker order with attached protective stop and/or take-profit orders that get submitted alongside the main order. QuantOpsAI uses Alpaca's bracket-order machinery via `bracket_orders.py`.
 
 **Break-even close** — A trade that exited near its entry price (|pnl_pct| < 0.5%). QuantOpsAI's "scratch" classification — excluded from win rate counts since it's neither a real win nor a real loss.
+
+**Brier score** — Mean squared error between stated probability and outcome (0 = perfect; 0.25 = a coin flip stated at 50%). The Learning Scoreboard's headline calibration metric: it punishes confident wrong calls more than hesitant ones.
 
 **Calibrator (Platt scaling)** — Logistic regression layer fitted to map raw model output (e.g. specialist confidence 0-100) to empirical P(correct). Each specialist in QuantOpsAI's ensemble has its own Platt calibrator.
 
@@ -49,6 +55,8 @@ Alphabetical. Linked terms reference other glossary entries.
 
 **Engle-Granger** — Statistical test for [cointegration](#cointegration). Two-step: (1) regress one series on the other, (2) test residuals for stationarity via [ADF](#adf-test). QuantOpsAI uses statsmodels' implementation.
 
+**Evidence mode** — The self-tuner's default since 2026-08-23 (`SELF_TUNER_MODE=evidence`): only the ten optimizers with real statistical evidence behind them run; the rest of the 12-layer registry is skipped so experiment arms differ only by model. `SELF_TUNER_MODE=full` restores the legacy registry. See `docs/17_SELF_TUNER_GUARDRAILS_AND_RAG.md`.
+
 **Expected Shortfall (ES)** — Average loss conditional on the loss exceeding the [VaR](#value-at-risk-var) threshold. ES_95 = average loss given the loss is in the worst 5% of outcomes. More tail-aware than VaR alone; required by Basel III for banks.
 
 **Factor** — A common driver of returns. Examples: market (Mkt-RF), size (SMB), value (HML), momentum (Mom), quality, low-vol. QuantOpsAI's portfolio risk model uses 21 factors.
@@ -65,6 +73,8 @@ Alphabetical. Linked terms reference other glossary entries.
 
 **Half-spread** — Half of the bid-ask spread. The deterministic component of [slippage](#slippage) — the price impact of trading at the touch.
 
+**Hindsight relabeling** — The fine-tune teaching signal: each resolved prediction becomes a training example pairing the exact prompt the AI saw with what would have been *correct* given the realized outcome — winning entries keep their action, losing entries relabel to HOLD, missed >5% moves relabel to the missed direction, ambiguous 2–5% moves are discarded. Its known failure mode is HOLD dominance. See `docs/27_FINETUNE_TRAINING_LOG.md`.
+
 **HTB** — *Hard-to-borrow*. Stocks with limited shares available for shorting; lenders charge higher borrow rates (sometimes 5-50%+ annualized). QuantOpsAI applies an asymmetric size penalty to HTB shorts.
 
 **Idiosyncratic risk** — Stock-specific variance not explained by common factors. The "residual" after factor regression. Diversifies away across positions, factor risk doesn't.
@@ -77,15 +87,23 @@ Alphabetical. Linked terms reference other glossary entries.
 
 **Kelly criterion** — Optimal-bet-sizing formula: `f* = (bp - q) / b`, where p = win rate, q = 1-p, b = avg_win / avg_loss. Maximizes long-run geometric growth. See [fractional Kelly](#fractional-kelly).
 
+**Learning Scoreboard** — The `/learning` page: per profile and per model, whether the system's calls are getting better — win rate, Brier score, HOLD quality and mean move over time, scoped to the profile's current model.
+
 **Ledoit-Wolf** — A covariance-matrix shrinkage estimator that interpolates between the sample covariance and a diagonal target. Reduces estimation noise on small samples. Used in QuantOpsAI's portfolio risk model.
 
+**Leg-derived realized** — Realized P&L computed by fill-true FIFO lot matching over the trades ledger (`compute_leg_realized()` in `journal.py`) rather than read from the stored `pnl` column. It shares the cash math's price basis at every instant, so the equity-identity audit cannot drift during fill-confirmation windows; the stored column is audited separately.
+
 **Long-vol** — A position with positive vega (gains when volatility rises). Long calls, long puts, long straddles, long strangles are long-vol.
+
+**LoRA adapter** — Low-Rank Adaptation — a small (~50–100MB) set of trained weights layered on a frozen base model. How the owned fine-tune is trained locally at $0 (Qwen2.5-7B base, Apple MLX). See `docs/27_FINETUNE_TRAINING_LOG.md`.
 
 **Max favorable excursion (MFE)** — Highest unrealized profit a position reached during its lifetime, before being closed. The "MFE capture ratio" = realized P&L / MFE — measures how well exit logic captures available profit.
 
 **Mean reversion** — Statistical tendency for prices to return toward an average. Strategy class: bet on extremes reverting.
 
 **Meta-model** — A second-layer classifier that learns "given everything the primary model saw, was the primary model right?" Outputs a probability used to re-weight or suppress the primary model's predictions. QuantOpsAI's meta-model is two-layer: GBM batch + SGD freshness.
+
+**Model promotion** — Switching a profile's primary AI model on shadow evidence — an audited operator action (`promote()` in `model_promotion.py`) that swaps the primary and shadow lists in one write. Never automatic; needs no reset because learned state is model-scoped.
 
 **Monte Carlo** — Simulation technique: repeatedly sample from input distributions, compute output, aggregate the empirical output distribution. Used in QuantOpsAI for portfolio VaR estimation and backtest variance estimation.
 
@@ -106,6 +124,8 @@ Alphabetical. Linked terms reference other glossary entries.
 **RegSHO** — SEC Regulation SHO. Governs short selling, including the FINRA daily short-volume report (free public data).
 
 **Rho** — Option Greek: sensitivity to interest rates. Less important than delta/gamma/vega/theta for short-dated options.
+
+**Shadow evaluation** — Replaying the identical prompt a primary model just answered to one or more challenger models (or prompt variants), storing both answers, and scoring their disagreements against realized outcomes — the A/B layer that decides which model should run the book. Never touches the trading path. See `docs/02_AI_SYSTEM.md` §16.
 
 **Sharpe ratio** — Annualized return / annualized volatility. Risk-adjusted return measure. Sharpe > 1 is good; > 2 is excellent.
 
@@ -131,6 +151,8 @@ Alphabetical. Linked terms reference other glossary entries.
 
 **Vega** — Option Greek: sensitivity to volatility. Long calls and long puts both have positive vega.
 
+**Virtual benchmark** — A broker-free reference book (Buy-Hold-SPY plus ten seeded random books) marked from prices alone — Experiment 2's controls. They replaced Experiment 1's baseline *profiles*, so no capital or broker account is spent on a control.
+
 **VWAP** — *Volume-Weighted Average Price*. Mean trade price weighted by volume. Common intraday execution benchmark. QuantOpsAI's `pct_from_vwap` is a feature.
 
 **VIX** — CBOE Volatility Index. Implied vol of 30-day SPX options. The market's "fear gauge."
@@ -150,3 +172,6 @@ For terms in the codebase that aren't here, search the relevant doc:
 - Strategy name: `docs/03_TRADING_STRATEGY.md`.
 - AI/ML term: `docs/02_AI_SYSTEM.md`.
 - Architectural term: `docs/04_TECHNICAL_REFERENCE.md`.
+
+**Zombie strategy** — A registered strategy that has never produced a prediction — usually API contract drift, an unreachable threshold or a broken dependency. `tests/test_no_strategy_zombies.py` fails the suite on any strategy silent past a 14-day grace period; six known zombies are quarantined (shrink-only) pending audit as of 2026-09-16.
+

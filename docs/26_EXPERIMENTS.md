@@ -120,9 +120,13 @@ decisions and no more knowledge. Everything it built carries forward.
 - **Data:** master DB daily snapshot `/opt/quantopsai/backups/
   quantopsai.db.YYYYMMDD-0500`; per-profile DBs
   `/opt/quantopsai/quantopsai_profile_{207..219}.db`; the cohort's
-  learning data is archived to `predictions_archive/` by the reset
-  procedure (`RESET_RUNBOOK.md`; `archive_predictions` is a manual
-  step — run it BEFORE the wipe).
+  learning data was archived by the reset (`RESET_RUNBOOK.md`). Since
+  2026-08-23 the reset script archives by itself (step 1c, aborts on
+  failure) into `backups/predictions_archive/` — an rsync-excluded
+  tree, after a `--delete` deploy erased the original repo-root
+  archive that same evening — including the `ai_shadow_calls` rows;
+  `archive_predictions()` also maintains `strategy_index.json`, the
+  merge-only sidecar the zombie-strategy guardrail reads.
 - **Metric definitions at the time:** `calculation_verification/` at
   the tag.
 - **Reset tooling used:** `full_fresh_start_2026_07_08.py` (clone of
@@ -190,6 +194,31 @@ live replicates for the ungradable apex call; the Scoreboard for
 "learning was a feeling"; the tuner cut for knob churn; virtual
 baselines for broker exposure and capacity; the budget ceiling for a
 bill dominated by a losing arm.
+
+### Measurement-validity notes (read before quoting any Experiment 2 number)
+- **2026-08-24 → 2026-09-16: the shadow grader was blind.** It did not
+  understand the batched `{"verdicts": [...]}` schema the 08-23
+  vendor-fair build introduced, so 0 of 37,941 shadow calls were
+  graded live for 23 days. Nothing was lost — the raw responses were
+  stored, and 31,733 comparisons were backfilled on 09-16 — but any
+  /shadow reading taken before 09-16 was empty, not neutral. The
+  extractor is now tied to `_verdicts_schema()` by test. Multi-
+  candidate set disagreements gained per-symbol outcome scoring the
+  same day.
+- **~3,200 shadow calls on profiles 229–234 died with Gemini 429
+  quota errors** in the same window (OPEN_ITEMS); those comparisons
+  do not exist, so Gemini-as-challenger coverage is thinner on the
+  OpenAI-primary replicates than the reverse.
+- **Six strategies have never fired** (quarantined 2026-09-16), so
+  every arm is effectively running 19 strategies, not 25 — equal
+  across arms, so it does not bias the comparison, but it bounds what
+  "the system" means in this experiment.
+- **Books are penny-exact.** The equity-identity alarm after the
+  09-18 expiry (p229/230/231) was an audit defect, not a books
+  defect (CHANGELOG 2026-09-19); no journal row was altered.
+- **Spend is running above plan:** ≈ $3.56/day measured 09-12→18
+  (primary ≈ $1.86, shadow ≈ $1.70) against the ≈ $68/month planned
+  in [25](25_MODEL_SELECTION_AND_LEARNING_PLAN.md) §1.5.
 
 ### Return points
 - Reset applied 2026-08-23 18:16 UTC (re-run the same evening with the

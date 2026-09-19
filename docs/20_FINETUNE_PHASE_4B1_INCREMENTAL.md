@@ -2,7 +2,9 @@
 
 **Scoping doc for the chip-away weekly fine-tune of an open-vendor model (OpenAI `gpt-4o-mini` recommended) trained on the system's own archived predictions.**
 
-Status: IN PROGRESS — foundation shipped 2026-05-21; **corpus clock reset 2026-06-04** (see "2026-06-04 update" below); first training run gated on data accumulation (~early-to-mid August 2026, see §17).
+Status: IN PROGRESS — **three local LoRA batches trained 2026-08-26/27, none promotable; batch 4 gated on the recipe in `docs/27_FINETUNE_TRAINING_LOG.md`** (not yet built as of 2026-09-19). History: foundation shipped 2026-05-21; corpus clock reset 2026-06-04 (see "2026-06-04 update" below).
+
+**2026-09-19 reader's note — which parts of this doc are live.** The path being run is **§16.1 (local M2 Max LoRA, Qwen2.5-7B, $0)**. The body of this doc (§0–§14) is the *original* hosted-vendor design — OpenAI `gpt-4o-mini`, a Sunday 23:00 UTC scheduler task, ~500-example weekly increments, a monthly spend cap — and **none of that is what runs**: there is no `_task_finetune_weekly`, no hosted training job, and no weekly cadence. Training is an operator-run loop on the Mac, and the cadence is evidence-gated, not calendar-gated (see "When to train the next batch" in `docs/27_FINETUNE_TRAINING_LOG.md`). The data pipeline (§5), the no-look-ahead rule, the evaluation philosophy (§8) and the promotion bar still apply as written; the label rules in §5.3 have since been extended with a premium-based option labeler and cycle-grouped examples (docs/27, batches 2–3).
 Owner: TBD.
 Created: 2026-05-19.
 
