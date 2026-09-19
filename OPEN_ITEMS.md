@@ -726,3 +726,29 @@ rows touched. See CHANGELOG 2026-09-19;
   taught to `get_virtual_cash`, `get_virtual_positions` AND
   `compute_leg_realized` together — the lockstep test pins sides;
   it cannot pin conventions nobody has invented yet.
+
+---
+
+## INCIDENT FOLLOW-UP 2026-09-19 — OPEN: the scheduler process grows ~400MB/day until it fills swap
+
+Found while chasing suite timeouts: `multi_scheduler.py` (service
+`quantopsai`) held 171MB resident + **972MB in swap** after 2.4 days
+of uptime — the entire 1GB swapfile — and the kernel OOM-killed the
+same process at 1.7GB RSS on 2026-08-27 19:58 UTC. With swap full the
+page cache collapses and everything on the box (web requests, the
+suite, the operator's terminal — the "droplet keeps timing out"
+complaint of 2026-09-16) crawls. Restarted 2026-09-19 16:30 UTC during
+the closed market: swap 1,023MB → 127MB.
+
+- [ ] Find the growth. Start with `tracemalloc` snapshots an hour
+      apart in the running scheduler (top allocation sites by size
+      delta); prime suspects are module-level caches without eviction
+      (bars / alt-data / price memoization keyed by symbol+timestamp)
+      and per-cycle structures appended to long-lived lists.
+- [ ] Until fixed, the process will refill swap in ~2–3 days. Watch
+      `VmSwap` in `/proc/<pid>/status`; a restart in a closed market
+      is safe (graceful SIGTERM drain, `TimeoutStopSec=600`).
+- [ ] Disk is 95% full (3.3GB free; `backups/` is 20GB, `/var/log`
+      1.9GB) and synced writes cost ~33ms. Prune or offload backups
+      beyond the retention actually needed.
+
