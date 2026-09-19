@@ -40,7 +40,16 @@ cd /opt/quantopsai
 ./venv/bin/python3 -m pytest -q -p no:randomly        # ~17 min
 ```
 
-Expected: **~7,030 passed, 0 failed, 0 skipped** (7,026 as of 2026-09-16; ~17 min — longer, with spurious 30s-timeout failures, if anything else heavy is running: the droplet has 1.9GB RAM and its swap sits full. Run it detached — `setsid nohup ... > deploy_logs/<name>.log 2>&1 < /dev/null &` — and preferably outside market hours).
+Expected: **7,036 passed, 0 failed, 0 skipped** (2026-09-19), in ~11 minutes **when run with its temp files in RAM**:
+
+```bash
+mkdir -p /dev/shm/qo-pytest/tmp
+TMPDIR=/dev/shm/qo-pytest/tmp setsid nohup ./venv/bin/python3 -m pytest -q -p no:randomly \
+    --basetemp=/dev/shm/qo-pytest/base > deploy_logs/suite-<name>.log 2>&1 < /dev/null &
+# afterwards: rm -rf /dev/shm/qo-pytest   (peaks ~290MB of the 984MB tmpfs)
+```
+
+Why: the droplet's disk costs ~33ms per synced write (measured 2026-09-19; healthy is 1–2ms) and the suite makes tens of thousands of SQLite commits — on disk the same run took 82 minutes at 40% I/O-wait and tripped 30s timeouts in tests that have nothing wrong with them. tmpfs changes where temp files live, not what any test does. Always detached (`setsid nohup`): a session-tied run dies with a dropped connection. If the box is crawling before you start, check the scheduler's swap (`grep VmSwap /proc/$(systemctl show quantopsai -p MainPID --value)/status`) — see OPEN_ITEMS, 2026-09-19.
 
 House rules — all of them, every time:
 

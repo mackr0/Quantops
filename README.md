@@ -41,7 +41,7 @@ Read in this order — each doc is written for a specific audience.
 
 - **Mode:** paper trading on Alpaca, three accounts virtualized into 12 profiles (229–240) via the FIFO journal layer.
 - **Capital:** $3M total virtual ($1M per Alpaca paper-account cap × 3 accounts), a flat $250K per profile — four model arms × three replicates, one replicate of each arm per account — per `docs/26_EXPERIMENTS.md`. The controls (Buy-Hold-SPY and ten random books) are broker-free virtual benchmarks, not profiles. (Experiment 1's baseline + ablation + capital-scaling design, `docs/15_EXPERIMENT_DESIGN_2026_05_17.md`, was retired 2026-08-23.)
-- **Test suite:** 7,026 tests, zero skipped, zero failed (573 test files; ~17 min full run). Zero-fail / zero-skip is a merge gate, not an aspiration.
+- **Test suite:** 7,036 tests, zero skipped, zero failed (574 test files; ~11 min on the droplet with temp files on tmpfs — see `DROPLET_DEV.md`). Zero-fail / zero-skip is a merge gate, not an aspiration.
 - **Guardrails:** snake_case leakage, hidden-lever, scheduled-feature-toggle, meta-feature UI coverage, schema migration safety, no silent except: pass, no unguarded json.loads, every option submit passes position_intent, every mutating endpoint admin-required.
 - **Deploy:** `./sync.sh` from the Mac or `./droplet-sync.sh` on the droplet — the same stages and pre-flight gate (clean tree, pushed HEAD, content-sha verification, restart decision from the changed set); both self-detach and log to `deploy_logs/`. See `DROPLET_DEV.md`.
 
