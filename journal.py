@@ -3119,6 +3119,12 @@ def recompute_realized_pnl(db_path=None):
     return updated
 
 
+# Broker-activity closes journaled at exactly $0 (activities_capture.
+# _write_option_expiry_or_exercise) — the only legitimate $0-priced rows
+# in the FIFO stream. Anything else at price<=0 is unpriced data.
+_ZERO_PRICE_CLOSE_SIGNALS = ("OPEXP", "OPASN", "OPEXC")
+
+
 def compute_leg_realized(db_path=None):
     """PURE (no writes): {exit_trade_id: leg-derived realized P&L} from
     fill-true FIFO lot matching — the exact math recompute_realized_pnl
@@ -3147,6 +3153,7 @@ def compute_leg_realized(db_path=None):
         px_expr = ("COALESCE(NULLIF(fill_price, 0), price)"
                    if "fill_price" in cols else "price")
         occ_expr = "occ_symbol" if "occ_symbol" in cols else "NULL"
+        sig_expr = "signal_type" if "signal_type" in cols else "NULL"
         # Exclude data_quality-tagged rows so the realized-P&L FIFO consumes
         # the IDENTICAL row-set as get_virtual_positions (the docstring's
         # "mirror exactly" promise). Without this, a tagged-but-not-canceled
@@ -3184,7 +3191,8 @@ def compute_leg_realized(db_path=None):
         try:
             rows = conn.execute(
                 f"SELECT id, symbol, side, qty, {px_expr}, "
-                f"{occ_expr}, pnl FROM trades "
+                f"{occ_expr}, pnl, COALESCE(status, 'open'), "
+                f"{sig_expr} FROM trades "
                 "WHERE COALESCE(status, 'open') NOT IN "
                 f"{dead_list}{ace_guard} "
                 f"{dq_guard} "
@@ -3200,15 +3208,37 @@ def compute_leg_realized(db_path=None):
         out: Dict[int, float] = {}
         long_lots: Dict[str, list] = {}
         short_lots: Dict[str, list] = {}
-        for tid, symbol, side, qty, pxv, occ, old_pnl in rows:
+        for tid, symbol, side, qty, pxv, occ, old_pnl, status, sig in rows:
             qty = float(qty or 0)
             pxv = float(pxv or 0)
-            if qty <= 0 or pxv <= 0:
+            # 2026-09-19 — a CLOSED broker-activity option row at exactly
+            # $0 is a REAL close (the OPEXP/OPASN/OPEXC convention:
+            # worthless expiry / assignment / exercise removes the leg at
+            # $0), not an unpriced row. The blanket price<=0 skip below
+            # left its lot unconsumed, so the premium — which cash had
+            # counted since the entry fill — never reached realized: the
+            # first held-to-expiry longs after the 08-24 move to
+            # leg-derived realized (p229/230/231, 09-18 expiry) flagged
+            # equity drift of exactly the lost premium ($-5/$-3/$-109)
+            # on penny-exact books. A $0 close only CONSUMES lots; it
+            # never opens one (a $0-basis lot is not a position).
+            zero_close = (
+                bool(occ) and pxv == 0 and status == "closed"
+                and side in ("buy", "sell")
+                and sig in _ZERO_PRICE_CLOSE_SIGNALS)
+            if qty <= 0 or (pxv <= 0 and not zero_close):
                 continue
             key = occ if occ else symbol
             mult = 100.0 if occ else 1.0
             realized = None
-            if side == "buy":
+            if side in ("dividend", "cash_debit"):
+                # Cash-only rows (dividend credit / option-settlement
+                # net): no lot interaction, but get_virtual_cash counts
+                # them, so realized must too or the identity drifts by
+                # the row's amount. Same notional expression as cash.
+                amt = qty * pxv * mult
+                realized = amt if side == "dividend" else -amt
+            elif side == "buy":
                 # Cover-first: protective closes for SHORTS are
                 # journaled side='buy'. Consume open short lots and
                 # realize; any leftover opens a long lot.
@@ -3224,7 +3254,7 @@ def compute_leg_realized(db_path=None):
                     consumed_any = True
                     if sl[0][0] <= 0.001:
                         sl.pop(0)
-                if remaining > 0:
+                if remaining > 0 and not zero_close:
                     long_lots.setdefault(key, []).append(
                         [remaining, pxv])
                 if consumed_any:
@@ -3244,7 +3274,7 @@ def compute_leg_realized(db_path=None):
                     consumed_any = True
                     if ll[0][0] <= 0.001:
                         ll.pop(0)
-                if remaining > 0 and occ:
+                if remaining > 0 and occ and not zero_close:
                     # Option sell-to-open (multileg short leg) — a
                     # new short lot, not a phantom close.
                     short_lots.setdefault(key, []).append(
@@ -3266,7 +3296,7 @@ def compute_leg_realized(db_path=None):
                         sl.pop(0)
                 if consumed_any:
                     realized = amt
-            # 'dividend' and anything else: no lot interaction.
+            # Anything else: no lot interaction, no realized.
             if realized is not None:
                 out[tid] = realized
     return out

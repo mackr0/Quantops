@@ -32,6 +32,10 @@ from unittest.mock import patch
 
 import pytest
 
+# Hermetic: these walkers hit every route; none may reach the real
+# network (see conftest.no_network, 2026-09-19).
+pytestmark = pytest.mark.usefixtures("no_network")
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
 
 # Inline copy of the fixture from test_no_500_per_profile.py
@@ -184,6 +188,10 @@ def _is_allowlisted(url: str) -> bool:
 
 
 class TestEveryApiReturnsValidJson:
+    # Integration-weight: builds several journal schemas and walks every
+    # route / every alt-data source. Sat at ~100% of the 30s unit-test
+    # budget on the droplet, so it flipped with any load (2026-09-19).
+    @pytest.mark.timeout(120)
     def test_every_api_response_is_valid_json(
             self, patched_user_with_profiles):
         client, app = _logged_in_client()

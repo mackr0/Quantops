@@ -112,51 +112,69 @@ def _prediction_data_window(db_paths):
         ended before the strategy existed, so it could never have
         fired into them.
     """
+    _totals, earliest, latest = _scan_dbs(db_paths)
+    return earliest, latest
+
+
+_DB_SCAN_MEMO = {}
+
+
+def _scan_dbs(db_paths):
+    """ONE grouped scan of ai_predictions per DB, memoized per DB set:
+    ({strategy_type: lifetime predictions}, earliest_ts, latest_ts).
+
+    2026-09-19 — the counts used to be a COUNT(*) per (strategy, DB)
+    — 25 strategies x 190 on-disk DBs = 4,750 full scans of
+    ai_predictions (no index on strategy_type; 1.3GB of journals and
+    growing every trading day) — plus a separate MIN/MAX scan per DB
+    for the data window. It crossed the suite's 30s timeout as
+    Experiment 2's data grew (>120s on the droplet) and would only get
+    slower. Same numbers, one pass.
+    """
     from datetime import datetime
+    key = tuple(db_paths)
+    if key in _DB_SCAN_MEMO:
+        return _DB_SCAN_MEMO[key]
+    totals = {}
     earliest = latest = None
     for db in db_paths:
         try:
             with closing(sqlite3.connect(db)) as conn:
-                row = conn.execute(
-                    "SELECT MIN(timestamp), MAX(timestamp) "
-                    "FROM ai_predictions"
-                ).fetchone()
+                rows = conn.execute(
+                    "SELECT strategy_type, COUNT(*), MIN(timestamp), "
+                    "MAX(timestamp) FROM ai_predictions "
+                    "GROUP BY strategy_type"
+                ).fetchall()
         except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError):
             continue
-        if not row or not row[0]:
-            continue
-        for raw, agg in ((row[0], "min"), (row[1], "max")):
-            try:
-                ts = datetime.fromisoformat(str(raw).replace("Z", ""))
-            except ValueError:
-                continue
-            if agg == "min" and (earliest is None or ts < earliest):
-                earliest = ts
-            if agg == "max" and (latest is None or ts > latest):
-                latest = ts
-    return earliest, latest
+        for name, n, lo, hi in rows:
+            if name is not None:
+                totals[name] = totals.get(name, 0) + int(n)
+            for raw, agg in ((lo, "min"), (hi, "max")):
+                if not raw:
+                    continue
+                try:
+                    ts = datetime.fromisoformat(str(raw).replace("Z", ""))
+                except ValueError:
+                    continue
+                if agg == "min" and (earliest is None or ts < earliest):
+                    earliest = ts
+                if agg == "max" and (latest is None or ts > latest):
+                    latest = ts
+    _DB_SCAN_MEMO[key] = (totals, earliest, latest)
+    return _DB_SCAN_MEMO[key]
 
 
 def _lifetime_n_anywhere(strategy_name, db_paths):
     """Total lifetime predictions for `strategy_name` summed across
     every profile DB. Returns 0 if no DB has a row."""
-    total = 0
-    for db in db_paths:
-        try:
-            with closing(sqlite3.connect(db)) as conn:
-                row = conn.execute(
-                    "SELECT COUNT(*) FROM ai_predictions "
-                    "WHERE strategy_type = ?",
-                    (strategy_name,),
-                ).fetchone()
-                if row:
-                    total += int(row[0])
-        except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError):
-            continue
-    return total
+    return _scan_dbs(db_paths)[0].get(strategy_name, 0)
 
 
 class TestNoStrategyZombies:
+    # Real-data integration test: scans every profile journal on disk
+    # (1.3GB and growing), so the 30s unit-test default does not fit.
+    @pytest.mark.timeout(180)
     def test_every_aged_strategy_has_at_least_one_lifetime_prediction(self):
         """Headline contract. If a strategy file has existed for >14
         days and has zero lifetime predictions in EVERY profile DB,
