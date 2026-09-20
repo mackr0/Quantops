@@ -74,9 +74,22 @@ machine. Seen 2026-07-24 (16 failures, all this class):
   **absolute** path (absolute short-circuits the fallback probe).
   Use `market_data.resolve_master_db_path()` in prod code — never a bare
   relative `"quantopsai.db"`, which also breaks in cron CWDs.
-- **Live APIs.** Real keys in `.env` mean real Alpaca / Anthropic / Gemini
-  calls. → Stub at the source module (e.g.
-  `options_chain_alpaca.list_available_contracts`).
+  **Never combine that monkeypatch with the `tmp_main_db` fixture** —
+  the fixture already sets and restores `config.DB_PATH`, and the two
+  undo in the wrong order at teardown, leaving `config.DB_PATH` aimed at
+  a dead temp database for every later test (2026-09-20: one such test
+  caused ten order-dependent failures elsewhere).
+- **Live APIs.** The suite **refuses all outbound network by default**
+  (repo-root `conftest.py`, since 2026-09-20): a test that reaches for
+  Yahoo, Alpaca, FRED, an LLM vendor or anything else gets an instant
+  refusal and exercises the code's outage path. Before that, 132 tests
+  made 684 real calls per run, 23 of them GETs to the broker's paper
+  API with the live keys. A test that genuinely must reach the network
+  opts out with `@pytest.mark.allow_network` — and must be added to the
+  allow-list in `tests/test_suite_is_hermetic_2026_09_20.py`, so an
+  opt-out is always a reviewed decision. Stubbing at the source module
+  (e.g. `options_chain_alpaca.list_available_contracts`) is still the
+  way to test a *successful* fetch.
 - **Persisted caches.** e.g. `screener._PERSISTED_CACHE_PATH` is a hardcoded
   `/opt/quantopsai/quantopsai.db`. → Patch the reader.
 

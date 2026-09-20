@@ -742,7 +742,17 @@ investigation:
   spending cap / quota. Until it is raised the Gemini arms keep losing
   cycles (now visible per week in the Learning page's "No decision"
   column, and no longer journaled as HOLDs).
-- 🟠 **132 tests reach the real network (audited 2026-09-20).** A
+- ✅ **RESOLVED 2026-09-20 — 132 tests reached the real network; the
+  suite now refuses all outbound network by default** (repo-root
+  `conftest.py`, opt-out only by `@pytest.mark.allow_network` plus an
+  allow-list entry; covers `tests/` and the `altdata/*/tests` trees;
+  pinned in `tests/test_suite_is_hermetic_2026_09_20.py`). The "known
+  obstacle" below turned out to be ONE polluting test — written the
+  same day — that combined `tmp_main_db` with a monkeypatch of
+  `config.DB_PATH`; fixed, and a whole-suite probe found no other.
+  Full suite with the network refused: all passing, in about half the
+  time. CHANGELOG 2026-09-20. The original finding, kept for the
+  record: a
   record-only audit run of the full suite (socket + curl hooks that log
   and let the call through; 7,113 passed) attributed **684 outbound
   calls to 132 tests in 44 files**: Yahoo 381, `data.alpaca.markets`

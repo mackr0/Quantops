@@ -30,42 +30,10 @@ def _reset_alpaca_active_symbols_cache():
     yield
 
 
-@pytest.fixture
-def no_network(monkeypatch):
-    """Make every outbound network attempt fail INSTANTLY (DNS refused
-    for anything but localhost).
-
-    2026-09-19 — the API-walker tests and the alt-data aggregator test
-    were quietly making REAL calls from the droplet (FRED, Alpaca data
-    + paper-api with live keys, Google Trends, Wikipedia, EIA, SEC,
-    USDA): /api/macro-data alone took 92.8s on cold caches, so the
-    tests passed or hit the 30s timeout depending on whether some
-    earlier run had warmed a persisted cache. With the network refused
-    the routes run their OUTAGE paths — deterministic, fast, and the
-    contract those tests assert (valid JSON, numeric fields numeric)
-    must hold during an outage anyway."""
-    import socket
-    _real = socket.getaddrinfo
-
-    def _refuse(host, *args, **kwargs):
-        if host in (None, "", "localhost", "127.0.0.1", "::1", b"localhost"):
-            return _real(host, *args, **kwargs)
-        raise socket.gaierror(
-            socket.EAI_NONAME, f"network disabled in tests ({host!r})")
-
-    monkeypatch.setattr(socket, "getaddrinfo", _refuse)
-
-    # yfinance goes out through curl_cffi (libcurl does its own DNS and
-    # never touches socket.getaddrinfo) — refuse that door too.
-    try:
-        import curl_cffi.requests as _curl_requests
-
-        def _refuse_curl(self, method, url, *args, **kwargs):
-            raise OSError(f"network disabled in tests ({url!r})")
-
-        monkeypatch.setattr(_curl_requests.Session, "request", _refuse_curl)
-    except (ImportError, AttributeError):
-        pass
+# `no_network` — and the autouse fixture that applies it to EVERY test —
+# live in the repo-root conftest.py, so the altdata/*/tests trees get
+# them too. No test touches the real network unless it is marked
+# `@pytest.mark.allow_network`.
 
 
 @pytest.fixture
