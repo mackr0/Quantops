@@ -46,3 +46,8 @@ beautifulsoup4>=4.12
 lxml>=5.1
 pdfplumber>=0.10
 pyflakes>=3.0
+# finetune/local_train.py reads its generated training config back
+# through a YAML parser before launching an hours-long run (a
+# misparsed learning rate must refuse, not train). Already installed
+# transitively everywhere; declared because the code imports it.
+PyYAML>=6.0

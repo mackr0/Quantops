@@ -150,14 +150,17 @@ made waiting absurd:
 
 **Corpus:** 34,157 labeled decisions → 10,699 cycle-grouped examples
 (BUY 8,246 / SHORT 8,430 / HOLD 17,467 / option 14), 200 cycles held
-out. **Run:** 2,000 LoRA steps planned; stopped at ~1,070.
+out. **Run:** 2,000 LoRA steps, run to completion (the training log
+ends at step 2,000; an earlier version of this entry said it was
+stopped at ~1,070, which the log does not support).
 
 **What happened:** the fastest learning of any batch (val 2.078 →
-0.822 by step 400 — best-ever), a plateau, then a genuine training
-COLLAPSE: validation exploded to 7.3 by step 1,000 and train loss
-followed — the constant 1e-5 learning rate that was fine for
-600-step batches destabilizes long runs. Stopped early; every
-100-step checkpoint was on disk, so nothing was lost but time.
+0.822 by step 400, 0.816 at step 600), a rise to 0.952 at step 800,
+then a genuine training COLLAPSE: validation exploded to 7.3 by step
+1,000 and stayed there through step 2,000, train loss with it — the
+constant 1e-5 learning rate that was fine for 600-step batches
+destabilizes long runs. Every 100-step checkpoint is on disk; the
+step-400 and step-600 checkpoints were examined.
 
 **Exam (134 graded decisions, both surviving checkpoints):**
 
@@ -188,14 +191,79 @@ few >8K-token prompts the truncation warning flagged.
 
 ---
 
-## Where things stand — 2026-09-19 (no batch run since batch 3)
+## Forensic correction — 2026-09-20 · "The answers were barely in the loss"
 
-**The recipe is the gate, not the data.** None of the batch-4 recipe
-exists in `finetune/` yet (last code change there: 2026-08-27 — no
-label rebalancing, no learning-rate schedule, no frequency-matched
-baseline in the exam, no mid-run checkpoint sweep, no pre-split of
-over-length prompts). Training before it is built would reproduce
-batch 3's failure on more data.
+Reading the batch 1–3 artifacts on the Mac before building batch 4
+(adapter configs, training logs, and 400 sampled training examples per
+batch run through the real tokenizer) found two defects in the training
+driver that every batch above shares. They change how the three
+verdicts should be read.
+
+| | Batch 2 | Batch 3 |
+|---|---|---|
+| Prompt masking | off | off |
+| Answer's share of the tokens the loss covered | 0.37% | 0.65% |
+| Examples longer than the 8,192-token window | 30.8% | 39.8% |
+| …of those, answer cut off entirely | 122 of 123 | 157 of 159 |
+
+- **No prompt masking.** mlx-lm averages the loss over the whole
+  sequence unless told otherwise. A ~7,000-token prompt with a
+  ~20-token answer means more than 99% of every gradient step went to
+  re-predicting the prompt.
+- **The window was shorter than the prompts.** Doctrine item 4 below
+  set the window to 8,192 while noting prompts run ~9–10K tokens;
+  mlx-lm truncates the END of a long sequence, which is where the
+  answer is. About a third of all training examples carried no answer.
+  The truncation warning printed in every training log and was filed
+  as a minor follow-up ("the few >8K-token prompts"). It was not minor
+  and it was not few.
+
+**What stands and what does not.** The exam scores are honest — the
+exam generates from the full prompt and grades real answers — and no
+adapter was ever promoted, hosted, or given a seat, so nothing in the
+trading system was affected. What does not stand is the *explanation*:
+"HOLD dominance in the corpus" was diagnosed from models that were
+barely trained on their answers, so it is a hypothesis, not a finding.
+Validation loss ("bottoms near step 400") was 25 unmasked examples and
+measured prompt modelling, not decisions. Batch 3's exams used a
+50-prompt limit (134 decisions, roughly ±8 points of noise), so its
+27.6% vs 31.3% is not a distinguishable difference either way.
+
+**Batch 4 is therefore the first batch that tests whether this
+system's data improves the model.** Its recipe keeps the five changes
+below and adds the two that matter most: prompt masking on, and
+over-length examples split to fit (or dropped and counted) with a
+refuse-to-train guard, because masking plus a truncated answer is a
+divide-by-zero in the trainer's loss. Details and build status:
+`28_FINETUNE_BATCH4_BUILD_SPEC.md` §0.
+
+Doctrine, amended: **6. Prompt masking is always on, and no example
+longer than the training window is ever written** — the trainer
+refuses to start otherwise. Item 4's window stays at 8,192; what
+changed is that examples are made to fit it instead of being cut.
+
+---
+
+## Where things stand — 2026-09-20 (recipe built; no batch run since batch 3)
+
+**The owned model is not in use.** It has never held a seat, made a
+decision, or been hosted; the trading system's live learning (the
+self-tuner, the meta-model, specialist calibration, veto feedback,
+the Experiment-2 arms) is a separate set of mechanisms and is not
+affected by anything in this log. The app says the same thing: the
+Learning page carries an "Our own model" panel driven by
+`finetune/status.json`, which is updated with every verdict here.
+
+**The batch-4 recipe is built** (2026-09-20, `finetune/` +
+`tests/test_finetune_batch4_recipe_2026_09_20.py`): prompt masking
+always on; over-length examples split along the candidate table or
+dropped and counted, never truncated; a refuse-to-train guard;
+internal bookkeeping keys stripped from targets; train-split
+rebalancing with label origins; warmup-plus-cosine learning rate;
+checkpoint sweep against one set of base answers; guessing baselines,
+a paired significance test and an explicit promotion bar. What each
+part does and why is in `28_FINETUNE_BATCH4_BUILD_SPEC.md` §4; its §0
+tracks what has been run.
 
 **The data has arrived.** Running the builder's own `hindsight_label()`
 read-only over the live Experiment-2 journals (profiles 229–240,
@@ -211,17 +279,18 @@ read-only over the live Experiment-2 journals (profiles 229–240,
 Another 11,806 predictions were still unresolved, and 11,802 resolved
 rows fell in the discarded 2–5% gray zone. Two things follow. The new
 data is a second market regime and four different decision-makers —
-the variety batch 2's verdict said was missing. And it is **more
-HOLD-skewed than the corpus that sank batch 3**, so rebalancing (recipe
-item 1) matters more now, not less.
+the variety batch 2's verdict said was missing. And it is more
+HOLD-skewed than batch 3's corpus, which is why the train split is
+rebalanced — though whether HOLD skew was ever the cause of the poor
+scores is exactly what batch 4 tests (see the forensic correction
+above).
 
 ### When to train the next batch
 
-1. **Batch 4: as soon as the recipe is built** — the complete build
-   spec and Mac runbook are in `docs/28_FINETUNE_BATCH4_BUILD_SPEC.md`
-   (about a day of work in `finetune/dataset_builder.py`,
-   `finetune/local_train.py` and the exam scorer, with tests) — on the pooled ≈61,000-decision corpus.
-   The data condition is already met.
+1. **Batch 4: now** — the recipe is built and the data condition is
+   met; the Mac runbook is `docs/28_FINETUNE_BATCH4_BUILD_SPEC.md` §6,
+   on the pooled corpus (Experiment 1's archive plus the live
+   Experiment-2 journals).
 2. **After batch 4 — evidence-gated, not calendar-gated.** Retrain when
    *either* the labeled corpus has grown by ≥10,000 decisions since the
    last batch (≈ every 10–14 days at Experiment 2's ≈7,000/week)

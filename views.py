@@ -1148,7 +1148,13 @@ def learning_page():
             except _sqlite3.Error as close_exc:
                 logger.warning(
                     "learning_page: master DB close failed: %s", close_exc)
-    return render_template("learning.html", b=board)
+    # The owned (fine-tuned) model is a separate track from the rented
+    # arms scored above; its standing comes from the one record that
+    # every batch verdict updates. load_status never raises — an
+    # unreadable record renders as an explicit "unavailable".
+    from finetune.status import load_status
+    return render_template("learning.html", b=board,
+                           own_model=load_status())
 
 
 @views_bp.route("/api/issues-count")
@@ -6514,6 +6520,20 @@ _MEDAL_WARM_MEMO: dict = {}
 _MEDAL_WARM_INTERVAL = 60.0
 
 
+def _warm_medals(uid) -> None:
+    """Background-thread body for the medal warm. A failure here used
+    to escape the thread unhandled — stderr only, never the log (seen
+    as an unhandled-thread-exception warning in the suite, 2026-09-20:
+    the thread outlived its test and hit a torn-down database). The
+    warm is best-effort — the next render retries within a minute —
+    but a failing warm must be visible."""
+    try:
+        _dashboard_totals_payload(uid)
+    except Exception as exc:
+        logger.warning("medal warm for user %s failed: %s: %s",
+                       uid, type(exc).__name__, exc)
+
+
 @views_bp.app_context_processor
 def inject_profile_medals():
     """Make `profile_medals` ({id: medal emoji}) available to EVERY
@@ -6545,7 +6565,7 @@ def inject_profile_medals():
         if now - _MEDAL_WARM_MEMO.get(uid, 0) >= _MEDAL_WARM_INTERVAL:
             _MEDAL_WARM_MEMO[uid] = now
             threading.Thread(
-                target=_dashboard_totals_payload, args=(uid,),
+                target=_warm_medals, args=(uid,),
                 daemon=True, name=f"medal-warm-{uid}",
             ).start()
         return {"profile_medals": file_medals}

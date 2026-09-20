@@ -1,0 +1,49 @@
+{
+  "updated": "2026-09-20",
+  "in_use": false,
+  "headline": "Not in use. Our own model has never made or influenced a trading decision.",
+  "bar": "It earns a seat only by clearly beating two things on decisions it has never seen: the same model before our training, and informed guessing. No money is spent on hosting it until it does.",
+  "rounds": [
+    {
+      "round": 1,
+      "date": "2026-08-26",
+      "studied": 4120,
+      "exam": 50,
+      "ours_pct": 26.0,
+      "untrained_pct": 24.0,
+      "result": "Void",
+      "note": "The exam itself was scored wrongly; fixed the same day. It also showed the lessons were shaped wrongly, which round 2 corrected."
+    },
+    {
+      "round": 2,
+      "date": "2026-08-27",
+      "studied": 4120,
+      "exam": 158,
+      "ours_pct": 38.6,
+      "untrained_pct": 37.3,
+      "result": "Tie - not good enough",
+      "note": "Learned the answer format perfectly and became far more cautious, but answered 'no trade' about 70% of the time."
+    },
+    {
+      "round": 3,
+      "date": "2026-08-27",
+      "studied": 34157,
+      "exam": 134,
+      "ours_pct": 27.6,
+      "untrained_pct": 31.3,
+      "result": "Worse than untrained - not good enough",
+      "note": "Answered 'no trade' on 88 of 134 decisions and got none of 50 falling-stock calls right. With an exam this small the gap is within chance."
+    }
+  ],
+  "finding": {
+    "date": "2026-09-20",
+    "title": "Why rounds 1 to 3 were not a fair test",
+    "points": [
+      "In all three rounds the training was set up so that more than 99% of the model's effort went into re-reading the question it was shown, and less than 1% into learning the right answer.",
+      "About a third of the lessons were too long for the training window, and the part that was cut off was the answer. Those lessons taught nothing.",
+      "The exam scores above are honest - the exam always saw the full question and graded real answers - but these rounds could not show whether this system's own decisions can improve the model. The earlier explanation for the poor scores was drawn from flawed training and is now treated as unproven.",
+      "Both faults are fixed, and the training now refuses to start if any lesson would lose its answer."
+    ]
+  },
+  "next": "Round 4 is the first real test. The corrected training recipe is built; the round has not been trained yet."
+}
