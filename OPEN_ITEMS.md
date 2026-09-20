@@ -720,13 +720,26 @@ investigation:
   the Experiment-2 verdict must account for. This is the PRIMARY-call
   sibling of the shadow-quota item below and has the same account-side
   cause. The fine-tune corpus is NOT affected (these cycles store no
-  prompt, and the builder now excludes failed calls explicitly). Fix
-  needed: a failed call must record NO predictions (or rows tagged so
-  every learning consumer excludes them, like `veto_class=
-  'invalid_input'`), the existing 8,187 rows tagged retroactively, the
-  failure surfaced on `/issues`, and docs/26's measurement-validity
-  notes updated. Own branch + prod deploy — not bundled with the
-  fine-tune change.
+  prompt, and the builder now excludes failed calls explicitly).
+  **DONE 2026-09-20 (CHANGELOG):** a no-decision cycle records NO
+  predictions (`ai_analyst.is_no_decision`, gated at the pipeline's
+  only recording site); the Learning page shows each arm's
+  no-decision share per week; docs/26's measurement-validity notes
+  carry the per-arm, per-week table. The failures already surface on
+  `/issues` as `AI batch call failed` errors while they happen.
+  **STILL OPEN — operator action:** (1) the 8,187 rows already
+  journaled (plus the outcome rows hanging off them) leave the
+  learning data only when
+  `scripts/quarantine_no_decision_predictions_2026_09_20.py --apply`
+  is run on prod — it MOVES them to sibling `*_no_decision` tables in
+  the same journal (30+ modules read `ai_predictions` and most ignore
+  `data_quality`, so a tag would not protect them); dry-run by
+  default, one transaction per journal, `--restore` puts everything
+  back; verified on copies of two real journals (exact counts,
+  idempotent, restore checksum-identical). It modifies live journals,
+  so it waits for the operator's go. (2) The cause is account-side:
+  the Google project's spending cap / quota. Until it is raised the
+  Gemini arms keep losing cycles.
 - 🟠 **132 tests reach the real network (audited 2026-09-20).** A
   record-only audit run of the full suite (socket + curl hooks that log
   and let the call through; 7,113 passed) attributed **684 outbound

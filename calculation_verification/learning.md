@@ -76,6 +76,26 @@ profiles; the share `improved / (improved + worsened)` with n. Shown so
 the tuner's own assessment sits next to the outcome curves it claims
 to move. **VERIFIED (code)**
 
+**No decision** (added 2026-09-20) — per arm, per ISO week:
+`lost_cycles / cycles` as a percentage, shown with both counts.
+`cycles` = rows in `ai_cycles` whose `timestamp` falls in the week
+(every decision cycle writes one, including failed ones). A cycle is
+*lost* when its stored response is `ai_analyst`'s stand-in for a call
+that produced no answer — the provider call failed or the cost cap
+blocked it — recognised by SHAPE (`finetune.dataset_builder
+._is_failed_call`: no trades and reasoning that *begins* with the
+failure marker, or the cost-cap flag), so a real answer that merely
+mentions a failure is not counted. Arm rows sum the replicates'
+counts (never average the rates). A journal with no `ai_cycles` table
+renders "—", not 0%. Cells at or above 5% are highlighted. Limitation:
+`ai_cycles` carries no model column, so after a primary-model switch
+a profile's earlier cycles still count toward its current arm.
+Source: `learning_scoreboard.profile_weekly_predictions`. **VERIFIED**
+(fixture: 4 cycles in a week — a genuine pass, a failed call, a
+cost-capped call, an answer mentioning a failure → 2 of 4 = 50.0%;
+two replicates → 4 of 8; live snapshot 2026-09-20: Gemini arms
+61.7% in W37, matching a direct count of failed cycles).
+
 ## Our own model (panel at the top of the page — added 2026-09-20)
 
 A separate track from the arms above. Source: `finetune/status.json`,

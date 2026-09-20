@@ -523,6 +523,24 @@ def compare_signals(technical_signal, ai_signal):
 # AI-first batch trade selection
 # ---------------------------------------------------------------------------
 
+def is_no_decision(ai_response) -> bool:
+    """True when `ai_select_trades` returned a STAND-IN rather than an
+    answer: the provider call failed (429 / 5xx / unparseable output)
+    or the cost cap blocked it.
+
+    2026-09-20 — both stand-ins carry an empty trade list, and the
+    pipeline's "record a prediction for every candidate the AI
+    analyzed" loop read that as the AI choosing HOLD on every
+    candidate. Over Experiment 2's first four weeks that journaled
+    8,187 HOLD predictions no model ever made (the Gemini arms lost
+    ~21% of their cycles to quota errors), and they resolved and were
+    graded like real ones — 20-32% of all resolved HOLDs on those
+    arms. A cycle with no decision records NO predictions."""
+    return bool(isinstance(ai_response, dict)
+                and (ai_response.get("call_failed")
+                     or ai_response.get("cost_capped")))
+
+
 def ai_select_trades(candidates_data, portfolio_state, market_context, ctx=None):
     """Send a batch of ranked candidates to AI for portfolio-aware trade selection.
 
@@ -600,6 +618,10 @@ def ai_select_trades(candidates_data, portfolio_state, market_context, ctx=None)
             "alternates": [],
             "portfolio_reasoning": f"AI call failed: {exc}",
             "pass_this_cycle": True,
+            # The model produced NO answer. Callers must not read the
+            # empty trade list as "the AI chose HOLD on everything" —
+            # see is_no_decision().
+            "call_failed": True,
         }
 
     validated = _validate_ai_trades(result, candidates_data, ctx,

@@ -3162,7 +3162,26 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                     float(_kr["fractional_kelly"]) if _kr else None)
         except Exception as _kx:
             logger.debug("P4.2 kelly telemetry unavailable: %s", _kx)
-        for c in candidates_data:
+        # 2026-09-20 — a cycle whose AI call FAILED (or was cost-capped)
+        # made no decisions, so it records NO predictions. The stand-in
+        # response has an empty trade list, and this loop used to read
+        # that as "HOLD on every candidate": 8,187 HOLD predictions no
+        # model made were journaled, resolved and graded over
+        # Experiment 2's first four weeks. The ai_cycles row above
+        # still records the failed cycle (its raw response carries the
+        # error), which is what the Learning page's lost-cycle count
+        # reads. Cost: the specialists' verdicts for such a cycle are
+        # not outcome-scored, because specialist outcomes hang off a
+        # prediction row — there is no decision to hang them on.
+        from ai_analyst import is_no_decision
+        _recordable = candidates_data
+        if is_no_decision(ai_response):
+            _recordable = []
+            logging.warning(
+                "AI made no decision this cycle (%s) — recording NO "
+                "predictions for its %d candidates",
+                str(portfolio_reasoning)[:160], len(candidates_data))
+        for c in _recordable:
             # Per-candidate isolation (review 2026-07-17 L5):
             # one candidate's recording failure must not
             # abort the loop — later candidates would lose
