@@ -12,8 +12,13 @@ pattern from being re-introduced.
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 from contextlib import closing
+
+# Absolute: every test runs in its own temp working directory (the
+# production-data guard in the repo-root conftest.py).
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _make_db(path: str) -> None:
@@ -189,7 +194,8 @@ class TestStructuralInvariant:
         Match a status='closed' write that mentions both a symbol
         parameter and a side parameter but has no qty/FIFO marker."""
         import re
-        with open("multi_scheduler.py", encoding="utf-8") as f:
+        with open(os.path.join(_REPO, "multi_scheduler.py"),
+                  encoding="utf-8") as f:
             src = f.read()
         # Look for any UPDATE trades that closes by symbol+side+status='open'
         # without referencing 'qty' nearby — the smoking gun for the

@@ -46,10 +46,19 @@ def _columns_of(sql_create_fn) -> set:
 
 
 class TestQueriesMatchLiveSchemas:
-    def test_tuning_history_query_columns_exist(self):
+    def test_tuning_history_query_columns_exist(self, tmp_path):
         """Run the endpoint's tuning_history SELECT against the REAL
         master DB schema — a renamed/missing column fails HERE instead
-        of blanking the page."""
+        of blanking the page.
+
+        The schema comes from the real initializer (`init_user_db`) in a
+        temp file. It used to open the repo's own `quantopsai.db` — on
+        the droplet that IS the production master database, and on a
+        clean checkout the file does not exist. Tests may not open
+        production databases (repo-root conftest.py, 2026-09-20)."""
+        from models import init_user_db
+        master = str(tmp_path / "master.db")
+        init_user_db(master)
         body = _endpoint_src()
         # Extract every quoted fragment between SELECT and the params,
         # then execute against the live master schema.
@@ -66,9 +75,7 @@ class TestQueriesMatchLiveSchemas:
                     j += 1
                 break
         assert sql, "could not locate the tuning_history SELECT"
-        conn = sqlite3.connect(
-            f"file:{os.path.join(REPO, 'quantopsai.db')}?mode=ro",
-            uri=True)
+        conn = sqlite3.connect(master)
         try:
             conn.execute(sql, (0, 30)).fetchall()   # raises on drift
         finally:

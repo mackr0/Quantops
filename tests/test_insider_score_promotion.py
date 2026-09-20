@@ -60,8 +60,10 @@ def test_score_promotion_documented_in_source():
     """Source-level guard: the score=3 must be associated with the
     P3.5 comment so future refactors don't silently drop it back to 2."""
     import pathlib
-    cluster = pathlib.Path("strategies/insider_cluster.py").read_text()
-    selling = pathlib.Path("strategies/insider_selling_cluster.py").read_text()
+    # Absolute: every test runs in its own temp working directory.
+    repo = pathlib.Path(__file__).resolve().parent.parent
+    cluster = (repo / "strategies/insider_cluster.py").read_text()
+    selling = (repo / "strategies/insider_selling_cluster.py").read_text()
     assert '"score": 3' in cluster, "insider_cluster missing score=3"
     assert '"score": 3' in selling, "insider_selling_cluster missing score=3"
     assert "P3.5" in cluster, "insider_cluster missing P3.5 promotion comment"

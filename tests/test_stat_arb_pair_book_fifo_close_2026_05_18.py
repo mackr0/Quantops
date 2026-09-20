@@ -12,8 +12,13 @@ Fixed in the same commit as the multi_scheduler.py:1374 audit pass.
 """
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
+
+# Absolute: every test runs in its own temp working directory (the
+# production-data guard in the repo-root conftest.py).
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import tempfile
 from contextlib import closing
 
@@ -22,7 +27,8 @@ def test_blanket_pair_close_pattern_absent():
     """AST scan: `UPDATE trades SET status='closed' WHERE symbol=? AND
     strategy='pair_trade' AND ... 'open'` without a FIFO marker
     (qty in nearby context) must not return to stat_arb_pair_book.py."""
-    with open("stat_arb_pair_book.py", encoding="utf-8") as f:
+    with open(os.path.join(_REPO, "stat_arb_pair_book.py"),
+              encoding="utf-8") as f:
         src = f.read()
     pat = re.compile(
         r"UPDATE\s+trades\s+SET\s+status\s*=\s*['\"]closed['\"]"

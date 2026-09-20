@@ -28,8 +28,13 @@ close-detection case without the race-condition false positives.
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 import tempfile
+
+# Absolute: every test runs in its own temp working directory (the
+# production-data guard in the repo-root conftest.py).
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 from contextlib import closing
 
 
@@ -124,7 +129,8 @@ class TestStructuralInvariant:
         the race-condition path that caused two consecutive outages
         on 2026-05-18."""
         import re
-        with open("journal.py", encoding="utf-8") as f:
+        with open(os.path.join(_REPO, "journal.py"),
+                  encoding="utf-8") as f:
             src = f.read()
         # The dangerous pattern: SET status='closed' on side='buy'
         # combined with `symbol NOT IN (...)` placeholder, in an

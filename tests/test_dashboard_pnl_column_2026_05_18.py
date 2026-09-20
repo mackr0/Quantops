@@ -15,14 +15,21 @@ History:
 """
 from __future__ import annotations
 
+import os
+
+# Absolute: every test runs in its own temp working directory (the
+# production-data guard in the repo-root conftest.py).
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 
 def _dashboard():
-    with open("templates/dashboard.html", encoding="utf-8") as f:
+    with open(os.path.join(_REPO, "templates/dashboard.html"),
+              encoding="utf-8") as f:
         return f.read()
 
 
 def _views():
-    with open("views.py", encoding="utf-8") as f:
+    with open(os.path.join(_REPO, "views.py"), encoding="utf-8") as f:
         return f.read()
 
 

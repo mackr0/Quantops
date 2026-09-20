@@ -50,8 +50,11 @@ class TestCrossProcessFallback:
     def test_write_then_read_restores_int_keys(self, monkeypatch,
                                                tmp_path):
         import views
-        monkeypatch.setattr(views, "_MEDALS_FILE",
-                            str(tmp_path / "medals.json"))
+        # The path is read at call time from this variable (2026-09-20
+        # — so the suite's production-data guard holds whenever the
+        # module is imported); the module constant is only the default.
+        monkeypatch.setenv("QUANTOPSAI_MEDALS_FILE",
+                           str(tmp_path / "medals.json"))
         payload = {"profiles": [
             {"id": 218, "pnl_pct": 9.0}, {"id": 217, "pnl_pct": 5.0},
             {"id": 211, "pnl_pct": 2.0}, {"id": 210, "pnl_pct": 1.0},
@@ -75,7 +78,7 @@ class TestCrossProcessFallback:
         import time
         import views
         f = tmp_path / "medals.json"
-        monkeypatch.setattr(views, "_MEDALS_FILE", str(f))
+        monkeypatch.setenv("QUANTOPSAI_MEDALS_FILE", str(f))
         f.write_text(json.dumps(
             {"1": {"ts": 1000.0, "medals": {"218": "🥇"}}}))
         assert views._read_medals_file(1) == {}, "epoch-old must not serve"
@@ -88,9 +91,16 @@ class TestCrossProcessFallback:
 
     def test_missing_file_safe(self, monkeypatch, tmp_path):
         import views
-        monkeypatch.setattr(views, "_MEDALS_FILE",
-                            str(tmp_path / "nope.json"))
+        monkeypatch.setenv("QUANTOPSAI_MEDALS_FILE",
+                           str(tmp_path / "nope.json"))
         assert views._read_medals_file(1) == {}
+
+    def test_without_the_override_the_default_path_is_used(
+            self, monkeypatch):
+        import views
+        monkeypatch.delenv("QUANTOPSAI_MEDALS_FILE", raising=False)
+        assert views._medals_path() == views._MEDALS_FILE
+        assert views._MEDALS_FILE == "/opt/quantopsai/.medals_cache.json"
 
 
 class TestStructural:
