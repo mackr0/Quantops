@@ -220,9 +220,13 @@ bill dominated by a losing arm.
   W37 the Gemini arms were compared on roughly 40% as many decisions
   as the OpenAI arms. Since 2026-09-20 a no-decision cycle records no
   predictions, and the Learning page shows each arm's no-decision
-  share per week. The already-journaled rows leave the learning data
-  only when the operator runs the quarantine script (reversible;
-  CHANGELOG 2026-09-20).
+  share per week. The already-journaled rows were moved out of the
+  learning data on 2026-09-20 (8,187 predictions plus 42,519 outcome
+  rows hanging off them, into `*_no_decision` tables in the same
+  journals — reversible; CHANGELOG 2026-09-20), so HOLD figures read
+  AFTER that date are clean, and any read before it are not. What the
+  move cannot restore is the missing decisions: the Gemini arms still
+  have ~21% fewer scored cycles than they were given.
 - **2026-08-24 → 2026-09-16: the shadow grader was blind.** It did not
   understand the batched `{"verdicts": [...]}` schema the 08-23
   vendor-fair build introduced, so 0 of 37,941 shadow calls were

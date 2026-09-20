@@ -727,19 +727,21 @@ investigation:
   no-decision share per week; docs/26's measurement-validity notes
   carry the per-arm, per-week table. The failures already surface on
   `/issues` as `AI batch call failed` errors while they happen.
-  **STILL OPEN — operator action:** (1) the 8,187 rows already
-  journaled (plus the outcome rows hanging off them) leave the
-  learning data only when
+  **QUARANTINE APPLIED on prod 2026-09-20 (operator: "go, run the
+  quarantine on prod"):**
   `scripts/quarantine_no_decision_predictions_2026_09_20.py --apply`
-  is run on prod — it MOVES them to sibling `*_no_decision` tables in
-  the same journal (30+ modules read `ai_predictions` and most ignore
-  `data_quality`, so a tag would not protect them); dry-run by
-  default, one transaction per journal, `--restore` puts everything
-  back; verified on copies of two real journals (exact counts,
-  idempotent, restore checksum-identical). It modifies live journals,
-  so it waits for the operator's go. (2) The cause is account-side:
-  the Google project's spending cap / quota. Until it is raised the
-  Gemini arms keep losing cycles.
+  MOVED 8,187 predictions + 26,671 `ai_prediction_outcomes` + 15,848
+  `specialist_outcomes` rows into sibling `*_no_decision` tables in
+  the same 12 journals (30+ modules read `ai_predictions` and most
+  ignore `data_quality`, so a tag would not have protected them).
+  Verified after: 0 fabricated rows left, 0 orphaned dependents, 12 of
+  12 journals pass the integrity check, a second apply moved 0,
+  `/learning` renders, both services active with no errors.
+  `--restore --apply` puts everything back exactly. **STILL OPEN —
+  operator action:** the cause is account-side — the Google project's
+  spending cap / quota. Until it is raised the Gemini arms keep losing
+  cycles (now visible per week in the Learning page's "No decision"
+  column, and no longer journaled as HOLDs).
 - 🟠 **132 tests reach the real network (audited 2026-09-20).** A
   record-only audit run of the full suite (socket + curl hooks that log
   and let the call through; 7,113 passed) attributed **684 outbound
