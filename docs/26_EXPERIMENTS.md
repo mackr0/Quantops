@@ -196,6 +196,33 @@ baselines for broker exposure and capacity; the budget ceiling for a
 bill dominated by a losing arm.
 
 ### Measurement-validity notes (read before quoting any Experiment 2 number)
+- **The Gemini arms were blind for a fifth of the experiment, and every
+  arm's HOLD numbers before 2026-09-20 include decisions no model
+  made.** When an arm's PRIMARY decision call failed (provider 429 /
+  5xx), the cycle made no decision — but the pipeline journaled a HOLD
+  for every candidate, and those rows resolved and were graded like
+  real ones. Cycles with no decision, from the 2026-09-20 journal
+  snapshot (lost / total):
+
+  | Arm | W35 | W36 | W37 | W38 | All |
+  |---|---|---|---|---|---|
+  | `gpt-4.1-nano` | 0 / 655 | 93 / 578 (16.1%) | 0 / 472 | 0 / 487 | 93 / 2,192 (4.2%) |
+  | `gpt-5.6-luna` | 0 / 710 | 93 / 584 (15.9%) | 0 / 491 | 0 / 537 | 93 / 2,322 (4.0%) |
+  | `gemini-3.5-flash-lite` | 106 / 711 (14.9%) | 0 / 588 | **305 / 494 (61.7%)** | 84 / 537 (15.6%) | 495 / 2,330 (21.2%) |
+  | `gemini-3.7-flash` | 106 / 705 (15.0%) | 0 / 588 | **304 / 493 (61.7%)** | 84 / 537 (15.6%) | 494 / 2,323 (21.3%) |
+
+  The Gemini failures are `429 RESOURCE_EXHAUSTED`, some reading
+  "exceeded its monthly spending cap" — the same account-side cause as
+  the shadow-quota item below. Consequences: **8,187 fabricated HOLD
+  predictions** (10–16% of all resolved HOLDs on the OpenAI arms,
+  20–32% on the Gemini arms), so any HOLD-quality or HOLD-count figure
+  read before the fix is contaminated, unevenly across arms; and in
+  W37 the Gemini arms were compared on roughly 40% as many decisions
+  as the OpenAI arms. Since 2026-09-20 a no-decision cycle records no
+  predictions, and the Learning page shows each arm's no-decision
+  share per week. The already-journaled rows leave the learning data
+  only when the operator runs the quarantine script (reversible;
+  CHANGELOG 2026-09-20).
 - **2026-08-24 → 2026-09-16: the shadow grader was blind.** It did not
   understand the batched `{"verdicts": [...]}` schema the 08-23
   vendor-fair build introduced, so 0 of 37,941 shadow calls were

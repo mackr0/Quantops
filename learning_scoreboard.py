@@ -38,7 +38,7 @@ def iso_week(date_str: str) -> str:
 def _new_week() -> Dict[str, Any]:
     return {"n": 0, "hits": 0, "hi_n": 0, "hi_hits": 0, "lo_n": 0,
             "lo_hits": 0, "brier_sum": 0.0, "hold_n": 0, "hold_ok": 0,
-            "ret_sum": 0.0}
+            "ret_sum": 0.0, "cycles": 0, "lost_cycles": 0}
 
 
 def profile_weekly_predictions(db_path: str,
@@ -58,6 +58,35 @@ def profile_weekly_predictions(db_path: str,
             f"actual_return_pct FROM ai_predictions WHERE {_RESOLVED_WHERE}"
             + clause, args,
         ).fetchall()
+        # Decision cycles, and how many produced NO decision because
+        # the AI call failed or was cost-capped (2026-09-20: the Gemini
+        # arms lost ~21% of Experiment 2's cycles to quota errors, and
+        # nothing on this page showed it — a blind arm must not be
+        # mistaken for a cautious one). The response body is fetched
+        # only for rows the cheap text match flags, then confirmed by
+        # shape, so a real answer that mentions a failure is not
+        # counted as one.
+        cycle_rows = []
+        try:
+            cycle_rows = conn.execute(
+                "SELECT timestamp, CASE WHEN raw_response_json LIKE "
+                "'%AI call failed%' OR raw_response_json LIKE "
+                "'%Cost cap reached%' THEN raw_response_json END "
+                "FROM ai_cycles").fetchall()
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc).lower():
+                raise
+            logger.debug("learning scoreboard: %s has no ai_cycles table "
+                         "— lost-cycle counts unavailable", db_path)
+    from finetune.dataset_builder import _is_failed_call
+    for ts, maybe_failed in cycle_rows:
+        try:
+            wk = iso_week(ts)
+        except (TypeError, ValueError):
+            continue
+        weeks[wk]["cycles"] += 1
+        if maybe_failed and _is_failed_call(maybe_failed):
+            weeks[wk]["lost_cycles"] += 1
     for ts, sig, conf, ret in rows:
         try:
             wk = iso_week(ts)
@@ -165,6 +194,8 @@ def _finalize_week(w: Dict[str, Any]) -> Dict[str, Any]:
         "hold_n": w["hold_n"], "hold_quality": _rate(w["hold_ok"], w["hold_n"]),
         "mean_move": round(w["ret_sum"] / n, 2) if n else None,
         "thin": n < THIN_WEEK_N,
+        "cycles": w["cycles"], "lost_cycles": w["lost_cycles"],
+        "lost_pct": _rate(w["lost_cycles"], w["cycles"]),
     }
 
 

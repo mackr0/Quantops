@@ -316,7 +316,7 @@ Per-profile DB. Every order submitted lands here.
 
 ## 3. AI prediction journal (`ai_predictions`)
 
-The proprietary asset. Every AI decision writes a row.
+The proprietary asset. Every AI decision writes a row: one per candidate the AI was shown in a cycle — the action it chose, or HOLD for a candidate it passed on. A cycle in which the AI made **no decision** — its call failed (provider 429 / 5xx, unparseable output) or the cost cap blocked it — writes **no rows here** (since 2026-09-20; before that such cycles journaled a HOLD for every candidate, decisions no model made). The failed cycle is still recorded in `ai_cycles`. Rows fabricated before the fix are moved by `scripts/quarantine_no_decision_predictions_2026_09_20.py` into `ai_predictions_no_decision` (same columns plus `quarantined_at`, `quarantine_reason`), with their dependent rows in `ai_prediction_outcomes_no_decision` and `specialist_outcomes_no_decision`; no learning consumer reads those tables.
 
 | Column | Type | Description |
 |---|---|---|
@@ -392,7 +392,7 @@ Audit log of scheduler task executions (when, duration, error if any).
 Cooldown table — wash-trade flagged, recently sold, or otherwise blocked from re-entry.
 
 ### `ai_cycles` (per-profile)
-One row per AI cycle holding the full prompt text once (per-cycle prompt storage since 2026-07-02, 6.15× dedup); `ai_predictions.cycle_id` joins to it. The fine-tune corpus builder depends on this join.
+One row per AI cycle holding the full prompt text once (per-cycle prompt storage since 2026-07-02, 6.15× dedup); `ai_predictions.cycle_id` joins to it. The fine-tune corpus builder depends on this join. Every decision cycle writes a row, **including cycles whose AI call failed** — there `prompt_text` is NULL and `raw_response_json` holds the stand-in response carrying the error (`"portfolio_reasoning": "AI call failed: …"`, or `"cost_capped": true`). That makes this table the record of how often an arm was blind: the Learning page's "No decision" column counts those rows per week.
 
 ### `ai_shadow_calls` (per-profile)
 The shadow-evaluation evidence base: for each replayed call, the challenger's provider/model, prompt hash, raw response, `parsed_signal`, tokens and `cost_usd`, beside the primary's provider/model/response and the graded `agreement`. See `docs/02_AI_SYSTEM.md` §16. Shadow spend lives here, not in `ai_cost_ledger`.

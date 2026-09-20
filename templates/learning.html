@@ -14,7 +14,11 @@
     all of its replicates. This page issues no verdict &mdash; the
     pre-registered decision rule in the plan does that at the horizon.
     Every rate shows its sample size; weeks under {{ b.thin_week_n }}
-    directional decisions are marked thin.
+    directional decisions are marked thin. "No decision" is the share
+    of an arm's decision cycles where the AI call failed or was blocked
+    by the cost cap &mdash; nothing is scored for those cycles, and an arm
+    that was blind for part of a week is being compared on fewer
+    decisions.
 </p>
 
 <article>
@@ -105,6 +109,7 @@
             <th title="hit rate below the high band">Conf &lt; {{ b.high_conf }}</th>
             <th title="mean squared (confidence/100 - hit); lower is better">Brier</th>
             <th title="resolved HOLDs inside the noise band">HOLD quality</th>
+            <th title="decision cycles where the AI call failed or was cost-capped, so NO decision was made — out of all cycles that week. A blind arm is not a cautious one.">No decision</th>
             <th title="mean raw price move of the directional set">Mean move</th>
             <th title="mean weekly equity return across replicates (min .. max)">Equity wk</th>
             <th>SPY wk</th>
@@ -123,6 +128,7 @@
                 <td>{% if w.lo_hit_rate is not none %}{{ w.lo_hit_rate }}% <span class="muted">({{ w.lo_n }})</span>{% else %}&mdash;{% endif %}</td>
                 <td>{% if w.brier is not none %}{{ w.brier }}{% else %}&mdash;{% endif %}</td>
                 <td>{% if w.hold_quality is not none %}{{ w.hold_quality }}% <span class="muted">({{ w.hold_n }})</span>{% else %}&mdash;{% endif %}</td>
+                <td class="{% if w.lost_pct is not none and w.lost_pct >= 5 %}pnl-neg{% endif %}">{% if w.cycles %}{{ w.lost_pct }}% <span class="muted">({{ w.lost_cycles }} of {{ w.cycles }})</span>{% else %}&mdash;{% endif %}</td>
                 <td>{% if w.mean_move is not none %}{{ "%+.2f"|format(w.mean_move) }}%{% else %}&mdash;{% endif %}</td>
                 <td class="{% if w.equity_ret is not none and w.equity_ret > 0 %}pnl-pos{% elif w.equity_ret is not none and w.equity_ret < 0 %}pnl-neg{% endif %}">{% if w.equity_ret is not none %}{{ "%+.2f"|format(w.equity_ret) }}% <span class="muted">({{ "%+.2f"|format(w.equity_ret_min) }} .. {{ "%+.2f"|format(w.equity_ret_max) }}, {{ w.equity_n }})</span>{% else %}&mdash;{% endif %}</td>
                 <td>{% if b.spy.get(wk) is not none %}{{ "%+.2f"|format(b.spy[wk]) }}%{% else %}&mdash;{% endif %}</td>

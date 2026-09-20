@@ -41,7 +41,9 @@ class TestTelemetryStamp:
     def test_kelly_computed_once_per_cycle_not_per_candidate(self):
         src = open(os.path.join(REPO, "trade_pipeline.py")).read()
         block = _record_block(src)
-        head, loop = block.split("for c in candidates_data:", 1)
+        # The loop iterates `_recordable` since 2026-09-20 (the
+        # candidates, or nothing when the AI call produced no decision).
+        head, loop = block.split("for c in _recordable:", 1)
         assert "compute_kelly_recommendation" in head, (
             "the Kelly reference must be computed once before the "
             "candidate loop (it's a per-direction DB aggregate)."
