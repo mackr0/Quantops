@@ -105,6 +105,18 @@ class TestEvidenceHierarchyAtVoidWriters:
         assert v is not None and "terminal-unfilled" in v
 
 
+def _days_ago(days, hhmmss="15:00:00"):
+    """A journal timestamp RELATIVE to now. The resurrection net only
+    looks back `max_age_days` (45). These tests used the incident's
+    literal 2026-08-06 dates, so on 2026-09-20 — day 45 — every row
+    aged out of the window: three tests failed, and the two "must NOT
+    resurrect" tests kept passing for the wrong reason (the row was
+    never examined). A fixed date in a windowed test is a time bomb."""
+    from datetime import datetime, timedelta, timezone
+    day = datetime.now(timezone.utc) - timedelta(days=days)
+    return f"{day:%Y-%m-%d}T{hhmmss}"
+
+
 def _mk_db(tmp_path):
     from journal import init_db
     db = str(tmp_path / "p.db")
@@ -160,7 +172,7 @@ class TestResurrectionNet:
         voided (canceled, price=0). The net must restore it as an
         OPEN short position with broker truth."""
         db = _mk_db(tmp_path)
-        rid = _insert(db, timestamp="2026-08-06T15:46:04", symbol="BAC",
+        rid = _insert(db, timestamp=_days_ago(2, "15:46:04"), symbol="BAC",
                       side="sell", qty=3.0, price=0.0, fill_price=0.72,
                       order_id="oid-bac", status="canceled",
                       occ_symbol="BAC260918P00060000",
@@ -178,7 +190,7 @@ class TestResurrectionNet:
         """A canceled BUY whose order partially filled (7 of 10) comes
         back as an open lot of 7 — broker truth, not journal hope."""
         db = _mk_db(tmp_path)
-        rid = _insert(db, timestamp="2026-08-06T15:00:00", symbol="NEE",
+        rid = _insert(db, timestamp=_days_ago(2), symbol="NEE",
                       side="buy", qty=10.0, price=0.0, fill_price=None,
                       order_id="oid-buy", status="canceled")
         out = _run_net(db, {"oid-buy": _Order("canceled", 7, 86.5)},
@@ -191,10 +203,10 @@ class TestResurrectionNet:
     def test_stock_exit_restored_pending_fill(self, tmp_path,
                                               monkeypatch):
         db = _mk_db(tmp_path)
-        _insert(db, timestamp="2026-08-01T10:00:00", symbol="XOM",
+        _insert(db, timestamp=_days_ago(7, "10:00:00"), symbol="XOM",
                 side="buy", qty=5.0, price=100.0, fill_price=100.0,
                 order_id="oid-open", status="open")
-        rid = _insert(db, timestamp="2026-08-06T15:00:00", symbol="XOM",
+        rid = _insert(db, timestamp=_days_ago(2), symbol="XOM",
                       side="sell", qty=5.0, price=0.0,
                       order_id="oid-exit", status="canceled")
         out = _run_net(db, {"oid-exit": _Order("filled", 5, 104.0)},
@@ -206,7 +218,7 @@ class TestResurrectionNet:
 
     def test_genuinely_unfilled_void_stands(self, tmp_path, monkeypatch):
         db = _mk_db(tmp_path)
-        rid = _insert(db, timestamp="2026-08-06T15:00:00", symbol="DIS",
+        rid = _insert(db, timestamp=_days_ago(2), symbol="DIS",
                       side="buy", qty=4.0, price=0.0,
                       order_id="oid-dead", status="canceled")
         out = _run_net(db, {"oid-dead": _Order("canceled", 0, 0)},
@@ -217,7 +229,7 @@ class TestResurrectionNet:
     def test_unverifiable_order_left_for_next_cycle(self, tmp_path,
                                                     monkeypatch):
         db = _mk_db(tmp_path)
-        rid = _insert(db, timestamp="2026-08-06T15:00:00", symbol="F",
+        rid = _insert(db, timestamp=_days_ago(2), symbol="F",
                       side="buy", qty=4.0, price=0.0,
                       order_id="oid-404", status="canceled")
         out = _run_net(db, {}, monkeypatch)  # every lookup 404s
