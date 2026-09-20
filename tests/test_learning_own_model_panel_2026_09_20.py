@@ -76,8 +76,13 @@ class TestStatusRecord:
 
 def _client(tmp_main_db, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    import config
-    monkeypatch.setattr(config, "DB_PATH", str(tmp_main_db))
+    # `tmp_main_db` already points config.DB_PATH at the temp database
+    # and restores it. Do NOT also monkeypatch it here: the two undo in
+    # the wrong order at teardown (the fixture restores ":memory:", then
+    # monkeypatch "restores" the temp path it saw), leaving
+    # config.DB_PATH aimed at a dead temp database for every later
+    # test. This file did exactly that for a few hours on 2026-09-20 —
+    # it was the polluter behind ten order-dependent failures.
     from models import create_user
     from app import create_app
     app = create_app()
