@@ -9,8 +9,13 @@ Bug 5: Total Trades count excluded open positions
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from datetime import datetime, timedelta
+
+# Absolute: every test runs in its own temp working directory (the
+# production-data guard in the repo-root conftest.py).
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import pytest
 
@@ -389,7 +394,7 @@ class TestSnapshotTriggerWindow:
         # Confirm the last_run key is a date string, not a (h, m) tuple
         from multi_scheduler import run_segment_cycle  # import for side effect
         # Inspect the source literally
-        with open("multi_scheduler.py") as f:
+        with open(os.path.join(_REPO, "multi_scheduler.py")) as f:
             src = f.read()
         assert 'last_run["daily_snapshot"] != today_str' in src, (
             "Dedup must use today_str so re-running the same day doesn't "

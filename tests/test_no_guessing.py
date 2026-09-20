@@ -18,6 +18,11 @@ from types import SimpleNamespace
 
 import pytest
 
+# Absolute: every test runs in its own temp working directory (the
+# production-data guard in the repo-root conftest.py). A RELATIVE glob
+# there finds nothing and passes vacuously — the worst kind of failure.
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 
 # ---------------------------------------------------------------------------
 # 1. Every SQL table name referenced in code must actually exist in a schema
@@ -53,10 +58,15 @@ class TestTableNamesExist:
         )
 
         suspicious = []
-        for pyfile in glob.glob("*.py"):
+        pyfiles = glob.glob(os.path.join(_REPO, "*.py"))
+        assert len(pyfiles) > 100, (
+            f"scanned only {len(pyfiles)} files — the glob must see the "
+            "repo's modules or this guardrail passes vacuously")
+        for path in pyfiles:
+            pyfile = os.path.basename(path)
             if pyfile.startswith("test_"):
                 continue
-            with open(pyfile) as f:
+            with open(path) as f:
                 content = f.read()
             for match in table_pattern.finditer(content):
                 table = match.group(1).lower()
@@ -328,7 +338,7 @@ class TestChangelogUpToDate:
 
     def test_changelog_not_empty(self):
         """CHANGELOG.md must exist and have content."""
-        with open("CHANGELOG.md") as f:
+        with open(os.path.join(_REPO, "CHANGELOG.md")) as f:
             content = f.read()
         assert len(content) > 100, "CHANGELOG.md is empty or too short"
         assert "## 2026-" in content, "CHANGELOG.md has no dated entries"
@@ -445,7 +455,7 @@ class TestTemplateJSMatchesAPI:
     def test_js_never_outputs_raw_snake_case_keys(self):
         """JS that renders API data must never output raw snake_case keys to the user.
         Every key from the API must go through a display name mapping."""
-        with open("templates/ai.html") as f:
+        with open(os.path.join(_REPO, "templates/ai.html")) as f:
             template = f.read()
 
         # Find all places where JS outputs a variable that could be a snake_case key
@@ -470,7 +480,7 @@ class TestTemplateJSMatchesAPI:
 
     def test_sector_flow_js_has_display_names(self):
         """ETF sector flow JS must have human-readable names for all sectors."""
-        with open("templates/ai.html") as f:
+        with open(os.path.join(_REPO, "templates/ai.html")) as f:
             template = f.read()
 
         # All sector keys from market_data.SECTOR_ETFS
@@ -489,7 +499,7 @@ class TestTemplateJSMatchesAPI:
 
     def test_macro_data_js_uses_real_fields(self):
         """ai.html JS for Market Intelligence must reference actual API fields."""
-        with open("templates/ai.html") as f:
+        with open(os.path.join(_REPO, "templates/ai.html")) as f:
             template = f.read()
 
         # Extract the JS block that processes macro data
@@ -540,7 +550,7 @@ class TestTemplateJSMatchesAPI:
         """Tuning status pills must use real field names from
         /api/tuning-status. Renamed from loadTuningStatus to
         loadTuningStatusPills when the Status + History widgets merged."""
-        with open("templates/ai.html") as f:
+        with open(os.path.join(_REPO, "templates/ai.html")) as f:
             template = f.read()
 
         js_start = template.find("function loadTuningStatusPills")
@@ -564,7 +574,7 @@ class TestTemplateJSMatchesAPI:
 
     def test_tuning_history_js_uses_real_fields(self):
         """Tuning history AJAX must use real field names."""
-        with open("templates/ai.html") as f:
+        with open(os.path.join(_REPO, "templates/ai.html")) as f:
             template = f.read()
 
         js_start = template.find("function loadTuningHistory")
@@ -593,7 +603,7 @@ class TestRenderTemplateKwargs:
 
     def _get_template_vars(self, template_path):
         """Extract top-level Jinja variable names from a template."""
-        with open(template_path) as f:
+        with open(os.path.join(_REPO, template_path)) as f:
             content = f.read()
         # Match {{ var.something }} and {% if var.something %}
         # Only capture the top-level variable name (before first dot)

@@ -20,7 +20,12 @@ must not appear in the listed production modules. Replace any with
 """
 from __future__ import annotations
 
+import os
 import re
+
+# Absolute: every test runs in its own temp working directory (the
+# production-data guard in the repo-root conftest.py).
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Files that iterate over the live profile universe and must use
 # get_active_profile_ids() instead of hardcoded ranges.
@@ -64,7 +69,7 @@ def _strip_comments_and_strings(src: str) -> str:
 def test_no_hardcoded_profile_range_in_production_modules():
     failures = []
     for fname in GUARDED_FILES:
-        with open(fname, encoding="utf-8") as f:
+        with open(os.path.join(_REPO, fname), encoding="utf-8") as f:
             src = _strip_comments_and_strings(f.read())
         for m in _RANGE_PAT.finditer(src):
             # Allow only when within a Test-only or example string.

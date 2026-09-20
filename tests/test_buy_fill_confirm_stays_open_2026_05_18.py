@@ -20,7 +20,12 @@ for an entry).
 """
 from __future__ import annotations
 
+import os
 import re
+
+# Absolute: every test runs in its own temp working directory (the
+# production-data guard in the repo-root conftest.py).
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def test_pending_fill_elif_has_occ_symbol_guard():
@@ -28,7 +33,8 @@ def test_pending_fill_elif_has_occ_symbol_guard():
     flips status='pending_fill' to 'closed' must be gated on
     occ_symbol (option-only). Without the guard, every BUY's fill
     confirmation closes the entry."""
-    with open("multi_scheduler.py", encoding="utf-8") as f:
+    with open(os.path.join(_REPO, "multi_scheduler.py"),
+              encoding="utf-8") as f:
         src = f.read()
     # Locate the elif block(s) after the FIFO SELL/COVER if/branch.
     # The buggy pattern: `elif trade["status"] == "pending_fill":`

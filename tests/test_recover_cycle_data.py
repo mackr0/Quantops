@@ -108,7 +108,9 @@ class TestSyncShExclusions:
     """Guardrail against reintroducing the cycle_data wipe bug."""
 
     def test_sync_excludes_runtime_artifacts(self):
-        with open("sync.sh") as f:
+        # Absolute: every test runs in its own temp working directory.
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(repo, "sync.sh")) as f:
             content = f.read()
         # Both runtime artifacts must be excluded
         assert "cycle_data_*.json" in content, (

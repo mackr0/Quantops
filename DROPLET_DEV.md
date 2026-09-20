@@ -64,6 +64,22 @@ Use `-p no:randomly` for reproducibility; drop it occasionally, since
 
 ### The droplet-only failure trap
 
+**The suite cannot reach production data or the network (since 2026-09-20).**
+Here the repo root IS the install directory, so a relative `quantopsai.db`
+is the live master database — and until 2026-09-20 a suite run on this box
+wrote a test's fake asset list into production's
+`alpaca_active_symbols_cache` every time. The repo-root `conftest.py` now
+runs every test in its own temp working directory, redirects any
+`sqlite3.connect` aimed at `/opt/quantopsai` or the repo into a per-test
+sandbox (the run ends with a count of redirected opens), points the medals
+cache file at the sandbox, and refuses all outbound network. Consequences
+for anyone writing a test: read repo files by ABSOLUTE path (a relative
+`open("views.py")` fails, and a relative `glob("*.py")` finds nothing and
+passes vacuously — assert you scanned something); never expect a repo-root
+or `/opt/quantopsai` database to contain anything; build schemas with the
+real initializers in `tmp_path`. After a suite run here, production is
+untouched — `tests/test_suite_cannot_touch_production_2026_09_20.py` pins it.
+
 A test that fails **here but not on the Mac** is almost always a hermeticity
 leak — the test reaching *real host state* that doesn't exist on a clean
 machine. Seen 2026-07-24 (16 failures, all this class):

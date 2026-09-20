@@ -16,8 +16,13 @@ caught the pre-fix code.
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 import tempfile
+
+# Absolute: every test runs in its own temp working directory (the
+# production-data guard in the repo-root conftest.py).
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 from contextlib import closing
 
 import pytest
@@ -125,7 +130,8 @@ class TestStructuralInvariant:
         If this test fails the someone has re-added a 'close every
         open buy' branch — exactly what we just deleted."""
         import re
-        with open("journal.py", encoding="utf-8") as f:
+        with open(os.path.join(_REPO, "journal.py"),
+                  encoding="utf-8") as f:
             src = f.read()
         # Pattern: UPDATE trades SET status='closed' WHERE side='buy'
         # AND status='open' (no symbol filter, no JOIN to sell, no

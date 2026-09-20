@@ -6422,6 +6422,15 @@ def _dashboard_totals_payload(user_id):
 
 
 _MEDALS_FILE = "/opt/quantopsai/.medals_cache.json"
+
+
+def _medals_path() -> str:
+    """Where the cross-process medals cache lives. Read at CALL time so
+    the test suite can point it at a temp file no matter when this
+    module is imported — on the droplet the default is the live file,
+    and a test that renders a page must not overwrite it (2026-09-20)."""
+    import os as _os
+    return _os.environ.get("QUANTOPSAI_MEDALS_FILE") or _MEDALS_FILE
 # 2026-08-31 — serve-stale-while-refreshing. The old 600s hard TTL
 # meant the FIRST render after any idle gap showed bare dropdowns (the
 # operator's "medals don't show up"): cache expired → {} this render,
@@ -6446,9 +6455,10 @@ def _write_medals_file(user_id, payload) -> None:
     import os as _os
     import time as _time
     try:
+        path = _medals_path()
         data = {}
         try:
-            with open(_MEDALS_FILE) as fh:
+            with open(path) as fh:
                 data = _json.load(fh) or {}
         except (OSError, ValueError):
             data = {}
@@ -6457,10 +6467,10 @@ def _write_medals_file(user_id, payload) -> None:
             "medals": {str(k): v for k, v in
                        _medals_from_payload(payload).items()},
         }
-        tmp = _MEDALS_FILE + ".tmp"
+        tmp = path + ".tmp"
         with open(tmp, "w") as fh:
             _json.dump(data, fh)
-        _os.replace(tmp, _MEDALS_FILE)
+        _os.replace(tmp, path)
     except Exception as exc:
         logger.debug("medals file write failed: %s", exc)
 
@@ -6471,7 +6481,7 @@ def _read_medals_file(user_id) -> dict:
     import json as _json
     import time as _time
     try:
-        with open(_MEDALS_FILE) as fh:
+        with open(_medals_path()) as fh:
             data = _json.load(fh) or {}
         entry = data.get(str(user_id)) or {}
         if _time.time() - float(entry.get("ts", 0)) > _MEDALS_FILE_TTL:

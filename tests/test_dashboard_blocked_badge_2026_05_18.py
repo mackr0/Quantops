@@ -19,9 +19,16 @@ render branch.
 """
 from __future__ import annotations
 
+import os
+
+# Absolute: every test runs in its own temp working directory (the
+# production-data guard in the repo-root conftest.py).
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 
 def _read_dashboard() -> str:
-    with open("templates/dashboard.html", encoding="utf-8") as f:
+    with open(os.path.join(_REPO, "templates/dashboard.html"),
+              encoding="utf-8") as f:
         return f.read()
 
 
@@ -90,7 +97,8 @@ def test_simple_strategies_logs_activity_for_baseline_trades():
     show up in the dashboard's Strategy Activity ticker alongside
     AI-pipeline trades. Original code silently wrote to per-profile
     trades table only — ticker reads from master activity_log."""
-    with open("simple_strategies.py", encoding="utf-8") as f:
+    with open(os.path.join(_REPO, "simple_strategies.py"),
+              encoding="utf-8") as f:
         src = f.read()
     assert "log_activity" in src, (
         "simple_strategies._submit_and_log must call log_activity "

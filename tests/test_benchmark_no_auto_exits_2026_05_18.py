@@ -23,14 +23,20 @@ registration must be gated on `_is_baseline = strategy_type in
 """
 from __future__ import annotations
 
+import os
 import re
+
+# Absolute: every test runs in its own temp working directory (the
+# production-data guard in the repo-root conftest.py).
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def test_check_exits_gated_on_baseline_flag():
     """`Check Exits` registration must be inside a `not _is_baseline`
     branch (or equivalent). The function name appears in the lambda
     that wraps the task; the surrounding code must guard it."""
-    with open("multi_scheduler.py", encoding="utf-8") as f:
+    with open(os.path.join(_REPO, "multi_scheduler.py"),
+              encoding="utf-8") as f:
         src = f.read()
     # Locate the Check Exits run_task block + its surrounding 200 chars
     # of context. The guard must mention `_is_baseline` or
@@ -53,7 +59,8 @@ def test_check_exits_gated_on_baseline_flag():
 def test_stop_coverage_gated_on_baseline_flag():
     """`Stop Coverage` auto-attaches protective stops to open longs.
     Random + buy_hold shouldn't have protective stops at all."""
-    with open("multi_scheduler.py", encoding="utf-8") as f:
+    with open(os.path.join(_REPO, "multi_scheduler.py"),
+              encoding="utf-8") as f:
         src = f.read()
     m = re.search(
         r"([\s\S]{0,400})run_task\(\s*"
@@ -72,7 +79,8 @@ def test_baseline_flag_definition_present():
     """The `_is_baseline` flag must be defined from `strategy_type`
     before the auto-exit task block. Without this, the gates above
     would NameError at runtime."""
-    with open("multi_scheduler.py", encoding="utf-8") as f:
+    with open(os.path.join(_REPO, "multi_scheduler.py"),
+              encoding="utf-8") as f:
         src = f.read()
     # Must have a line like `_is_baseline = ... strategy_type ... in ...
     # ("buy_hold", "random")` or similar
@@ -92,7 +100,8 @@ def test_buy_hold_and_random_in_dispatcher():
     random, so when we gate the AI-exit tasks the baseline profiles
     still get their own strategy logic via the scan_and_trade →
     simple_strategies dispatch path."""
-    with open("simple_strategies.py", encoding="utf-8") as f:
+    with open(os.path.join(_REPO, "simple_strategies.py"),
+              encoding="utf-8") as f:
         src = f.read()
     assert 'st == "buy_hold"' in src or "'buy_hold'" in src, (
         "simple_strategies.dispatch missing buy_hold handler"
