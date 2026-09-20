@@ -17,6 +17,52 @@
     directional decisions are marked thin.
 </p>
 
+<article>
+    <header><h3 style="margin:0;">Our own model
+        <span class="muted" style="font-size:0.7em;font-weight:normal;">
+            a small open model trained on this system's own past decisions
+            &mdash; separate from the rented models scored below</span></h3></header>
+    {% if own_model.error %}
+    <p class="pnl-neg">Status unavailable: {{ own_model.error | humanize }}.</p>
+    {% else %}
+    <p><strong>{{ own_model.headline | humanize }}</strong> {{ own_model.bar | humanize }}</p>
+    <div class="overflow-auto">
+    <table class="striped">
+        <thead><tr>
+            <th>Round</th><th>Date</th>
+            <th title="past decisions with a known outcome that the model was given to learn from">Decisions studied</th>
+            <th title="recent decisions held back from training and used only to test it">Exam size</th>
+            <th title="share of exam decisions our trained model got right">Our model</th>
+            <th title="share the same model got right before any of our training">Same model, untrained</th>
+            <th>Result</th>
+        </tr></thead>
+        <tbody>
+        {% for r in own_model.rounds %}
+        <tr>
+            <td>{{ r.round }}</td>
+            <td>{{ r.date }}</td>
+            <td>{{ "{:,}".format(r.studied) }}</td>
+            <td>{{ "{:,}".format(r.exam) }}</td>
+            <td>{% if r.ours_pct is not none %}<strong>{{ r.ours_pct }}%</strong>{% else %}&mdash;{% endif %}</td>
+            <td>{% if r.untrained_pct is not none %}{{ r.untrained_pct }}%{% else %}&mdash;{% endif %}</td>
+            <td>{{ r.result | humanize }}{% if r.note %}<br><span class="muted" style="font-size:0.85em;">{{ r.note | humanize }}</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    {% if own_model.finding %}
+    <p style="margin-bottom:0.25rem;"><strong>{{ own_model.finding.title | humanize }}</strong>
+        <span class="muted">({{ own_model.finding.date }})</span></p>
+    <ul style="font-size:0.9em;">
+        {% for point in own_model.finding.points %}<li>{{ point | humanize }}</li>{% endfor %}
+    </ul>
+    {% endif %}
+    <p><strong>Next:</strong> {{ own_model.next | humanize }}
+        <span class="muted">Status as of {{ own_model.updated }}.</span></p>
+    {% endif %}
+</article>
+
 {% if b.error %}
 <article>
     <header><h3 style="margin:0;">Scoreboard unavailable</h3></header>

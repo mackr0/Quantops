@@ -287,7 +287,13 @@ class TestBuildDataset:
             rows.append(_quality_row(
                 id=i, symbol=f"SYM{i}",
                 timestamp=f"2026-05-{(i % 28) + 1:02d}T10:00:00",
-                resolved_at=f"2026-06-{(i % 28) + 1:02d}T10:00:00"))
+                # Each label resolves 2h after its decision. (It used
+                # to resolve a MONTH later — after every other row's
+                # decision. Since 2026-09-20 the split is time-ordered
+                # and purges any train/val example whose label became
+                # known inside a later block, so that fixture rightly
+                # purged everything.)
+                resolved_at=f"2026-05-{(i % 28) + 1:02d}T12:00:00"))
         self._make_profile_db(db, rows)
         out = str(tmp_path / "corpus")
         manifest = build_dataset([db], out, archive_root=None,

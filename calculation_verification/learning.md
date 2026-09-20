@@ -76,6 +76,39 @@ profiles; the share `improved / (improved + worsened)` with n. Shown so
 the tuner's own assessment sits next to the outcome curves it claims
 to move. **VERIFIED (code)**
 
+## Our own model (panel at the top of the page — added 2026-09-20)
+
+A separate track from the arms above. Source: `finetune/status.json`,
+read by `finetune/status.load_status()`; the panel computes nothing —
+every number is a recorded exam result, and the record is updated in
+the same change as each batch's entry in
+`docs/27_FINETUNE_TRAINING_LOG.md`. A test requires the shipped
+record's round 2 and round 3 numbers to match that log.
+
+**Decisions studied** — labeled decisions in the corpus that round was
+built from (the builder manifest's labeled-row count): resolved
+predictions that survived the quality filter and received a hindsight
+label. It is the size of the material offered, not the number of
+examples a run actually trained on. **VERIFIED (record vs docs/27)**
+
+**Exam size** — graded decisions in that round's held-out exam (the
+most recent cycles, never trained on). **VERIFIED (record vs docs/27)**
+
+**Our model / Same model, untrained** — share of exam decisions whose
+parsed answer fell in the same direction bucket (bullish / bearish /
+hold / option) as the hindsight label; an unparseable answer counts as
+wrong; a symbol omitted from the answer counts as HOLD. Both columns
+answer the identical prompts. Source: `finetune/local_train.py`
+(`score_examples`). **VERIFIED (code + tests)**
+
+**Result** — the recorded verdict for the round, in words. Promotion
+requires beating both the untrained model and frequency-matched
+guessing without being worse on both directional classes
+(`promotion_bar`); no round has.
+
+If the record is missing or incomplete the panel renders "Status
+unavailable" — never an empty or optimistic panel.
+
 ## Conventions honored
 - Any rate from an empty sample renders "—" (README convention 5).
 - Weeks with fewer than 10 directional resolutions are flagged

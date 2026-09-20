@@ -18,6 +18,15 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+# Nothing in this file may touch the real network. 2026-09-19 made the
+# aggregator test hermetic; on 2026-09-20 `test_crypto_skipped` — which
+# reaches the same macro path (FRED) through the crypto branch — hung
+# on a slow TLS handshake and hit the 30s timeout. Every test here
+# either stubs its fetcher or asserts a default, so the whole file
+# runs with outbound network refused: a test that reaches for the
+# network now fails instantly and visibly instead of depending on it.
+pytestmark = pytest.mark.usefixtures("no_network")
+
 
 @pytest.fixture
 def tmp_db(tmp_path, monkeypatch):

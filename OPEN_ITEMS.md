@@ -231,9 +231,19 @@ DESIGNED AI inputs; [exec] = execution change, operator times it.
       Keys are stored+queryable, pinned OUT of the meta extractor.
       Divergence analysis joins the ~2026-08-14 post-fix review.
       Pinned: test_sizing_telemetry_2026_07_27.py (3).
-- [ ] P4.3 [gated on corpus ~2 months at current 21k/2.5wk cadence]
-      Fine-tune training_runner (archive empty, no trainer, registry
-      tables never created, use_finetuned_ai column doesn't exist).
+- [ ] P4.3 Fine-tune — the owned model. NOT the state this item used
+      to describe (it said "no trainer, archive empty"): the trainer
+      exists (`finetune/local_train.py`, local LoRA on the Mac, $0),
+      three batches ran 2026-08-26/27 and none beat its untrained
+      base. 2026-09-20: those runs were found NOT to be a fair test
+      (prompt never masked — answer <1% of the loss; ~1/3 of examples
+      had the answer cut off by the training window); the batch-4
+      recipe fixing both is built and tested. OPEN until a batch
+      clears the promotion bar: run batch 4 and record its verdict
+      (docs/28 §0 tracks the steps, docs/27 the results). Still
+      unbuilt by design until a batch earns it: hosting, a shadow
+      seat, an OpenAI-shape provider for the hosted adapter, and any
+      `use_finetuned_ai` switch — no spend before a clear win.
 - [x] P4.4 [docs] Truth pass — RESOLVED 2026-07-27. "$0.27/day"
       (a single quiet day, 2026-06-04) replaced with measured
       operational spend ~$1-3/day (trailing-7d $1.29/day at fix
@@ -689,6 +699,59 @@ investigation:
   only one side verdicted is a dropped verdict, never graded; and a
   per-symbol decision-id map on batched shadow rows would upgrade
   window matches to exact joins — nice-to-have, not blocking.
+- 🔴 **Failed PRIMARY AI calls are journaled as HOLD decisions the
+  model never made (found 2026-09-20, building the fine-tune corpus).**
+  When the apex batch call fails, `ai_analyst` returns
+  `{"trades": [], "portfolio_reasoning": "AI call failed: …"}` and the
+  pipeline records a HOLD prediction for EVERY candidate of that cycle,
+  attributed to the arm's model; they resolve and are graded like real
+  HOLDs. Measured on the 2026-09-20 journal snapshot, Experiment 2
+  (08-24 → 09-18): the OpenAI arms lost 31 cycles each (4.0–4.4%, one
+  shared 429 event); the **Gemini arms lost 164–166 cycles each
+  (~21%)** to `429 RESOURCE_EXHAUSTED`, 16–17 of them "exceeded its
+  monthly spending cap", clustered on 08-26, 08-28, 08-31 and
+  09-09 → 09-14. Total **8,187 fabricated HOLD predictions** — 10–16%
+  of all resolved HOLDs on the OpenAI arms, **20–32% on the Gemini
+  arms** (p240: 1,234 of 3,825). Two problems: (a) measurement — every
+  consumer of resolved HOLDs (the Learning Scoreboard's HOLD quality,
+  the arm comparison, any learner reading `ai_predictions`) is scoring
+  decisions that were never made, unevenly across arms (PERFECT-DATA
+  violation); (b) the Gemini arms were blind a fifth of the time, which
+  the Experiment-2 verdict must account for. This is the PRIMARY-call
+  sibling of the shadow-quota item below and has the same account-side
+  cause. The fine-tune corpus is NOT affected (these cycles store no
+  prompt, and the builder now excludes failed calls explicitly). Fix
+  needed: a failed call must record NO predictions (or rows tagged so
+  every learning consumer excludes them, like `veto_class=
+  'invalid_input'`), the existing 8,187 rows tagged retroactively, the
+  failure surfaced on `/issues`, and docs/26's measurement-validity
+  notes updated. Own branch + prod deploy — not bundled with the
+  fine-tune change.
+- 🟠 **132 tests reach the real network (audited 2026-09-20).** A
+  record-only audit run of the full suite (socket + curl hooks that log
+  and let the call through; 7,113 passed) attributed **684 outbound
+  calls to 132 tests in 44 files**: Yahoo 381, `data.alpaca.markets`
+  204, FRED 49, **`paper-api.alpaca.markets` 23** (with the live keys
+  from the local `.env`), plus Google News, GitHub, CNBC, Wikipedia,
+  EPA. Every broker call was traced and is a **GET** (positions,
+  option contracts, the asset list) — no test places an order. Worst
+  files: `test_portfolio_exposure.py` (194 calls),
+  `test_no_500_per_profile.py` (121), `test_alpaca_data_migration.py`
+  (45). Consequence: the suite's result depends on those services
+  being up and fast — the 2026-09-19 droplet timeouts and the
+  2026-09-20 `test_crypto_skipped` timeout are this class, fixed one
+  test at a time. **Class fix:** make `no_network` (tests/conftest.py)
+  autouse for the whole suite with an explicit opt-out marker. Known
+  obstacle, measured the same day: with the network refused for every
+  test, 10 tests in `test_reconcile_journal_to_broker.py`,
+  `test_self_tuner_guardrails_2026_05_18.py` and
+  `test_trade_count_auto_loosen_2026_05_18.py` fail — not because they
+  need the network (each PASSES alone with it refused) but because
+  some earlier test, taking its outage path, leaves module state dirty
+  (a tuner clamp: `ai_confidence_threshold=38` where 60 is expected).
+  That polluter must be found and fixed first; it is also a latent
+  flake during any real outage. The `altdata/` test trees need the
+  fixture made visible to them (they have their own rootdir scope).
 - 💰 **Gemini shadow-quota burn.** ~3,200 shadow calls on profiles
   229–234 (the OpenAI-primary arms shadowing Gemini) died with
   `429 RESOURCE_EXHAUSTED` account-quota errors between 2026-08-24 and
