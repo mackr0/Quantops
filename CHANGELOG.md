@@ -5,6 +5,26 @@ at the top.
 
 ---
 
+## 2026-09-21 — Fine-tune batch 4 verdict: NOT promotable. The first fair test of whether this system's decisions improve the model, and the answer so far is no — for two specific, visible reasons. Severity: INFO (research track; the owned model has never held a seat, and nothing is hosted or spent).
+
+Batch 4 trained on the corrected recipe (prompt masking on, every example fitted to the window, unlabeled candidates pruned, time-ordered purged split) until macOS killed the job at step ~630 of 1,200; checkpoints 100–600 were examined on 613 graded decisions over three trading days (160 distinct stock-days). The exam ran 11 hours and completed on its first attempt; every generation is kept.
+
+| | Accuracy | Bullish | Bearish | HOLD | Answer mix |
+|---|---|---|---|---|---|
+| Untrained base | 40.8% | 32/59 | 124/191 | 94/362 | bearish 273 · bullish 181 · hold 138 |
+| Step 100 | 14.5% | 57/59 | 14/191 | 18/362 | bullish 569 |
+| Step 200 | 46.8% | 1/59 | 97/191 | 189/362 | hold 307 · bearish 301 · bullish 5 |
+| Step 500 (lowest validation loss) | 36.0% | 31/59 | 38/191 | 152/362 | hold 265 · bullish 257 · bearish 91 |
+| Step 600 | 43.7% | 0/59 | 109/191 | 159/362 | bearish 351 · hold 262 · bullish 0 |
+
+Guessing band tops out at 48.6%; always answering HOLD scores 59.1%. **No checkpoint clears the promotion bar**, and steps 200, 500 and 600 are each worse than the base on both directional classes. Step 200 beats the base overall even counted by stock-day (70 : 42, p = 0.010) — and the bar rightly refuses it: it got there by almost never saying BUY in a falling week.
+
+**What the raw answers show.** The adapter emits exactly ONE bare trade (median answer 46 characters; the base's is 1,420) — batch 1's one-pick convention again, mirroring targets of which 8,280 of 15,976 hold a single trade; the action is a global prior that swings between checkpoints (BUY on 569 of 613 at step 100, on 0 at step 600); the symbol is loosely chosen (`META` answered when only `BAC` was labeled). Validation loss fell 3.616 → 0.595 in the first 100 steps and was noise afterwards. The plumbing works — the model learns from its answers, fast; what it learns is the targets' shape and base rate.
+
+**Two causes, both visible rather than guessed:** one example (~20 graded tokens) per update, so every step chases the last labels it saw; and 80.8% of directional labels are hindsight "missed moves", which may not be knowable from the prompt — the learnable question, *which of this system's own entries won* (4,307 won / 4,653 lost), is 1 label in 5. **Batch 5 requires** gradient accumulation (a driver flag, to be built), the missed-move cap turned on (built, default off), and the exam reporting own-entry discrimination as its own line. No retrain on this recipe. Recorded in `docs/27` (full entry), `docs/28` §0 (P13/P14 checked), and `finetune/status.json` — the Learning page now shows round 4 beside the same model untrained, in plain English.
+
+---
+
 ## 2026-09-21 — Every deploy was deleting droplet-only files and restarting the scheduler whether or not its code changed; the deploy now ships exactly what git tracks and never deletes. Severity: HIGH (a recurring class — it wiped the learning archive in August; this time scraper caches, logs and a UI cache; and needless mid-cycle scheduler restarts).
 
 Operator: "fix the deploy so it stops wiping deploy_logs." The assumption behind that ask was verified first, and the defect turned out to be the visible corner of a larger one.
