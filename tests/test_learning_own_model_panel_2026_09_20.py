@@ -33,12 +33,17 @@ class TestStatusRecord:
         assert (rounds[3]["ours_pct"], rounds[3]["untrained_pct"],
                 rounds[3]["exam"], rounds[3]["studied"]) == (
                     27.6, 31.3, 134, 34157)
+        assert (rounds[4]["ours_pct"], rounds[4]["untrained_pct"],
+                rounds[4]["exam"], rounds[4]["studied"]) == (
+                    46.8, 40.8, 613, 56552)
         import os
         repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         with open(os.path.join(repo, "docs",
                                "27_FINETUNE_TRAINING_LOG.md")) as fh:
             log = fh.read()
-        for needle in ("38.6%", "37.3%", "27.6%", "31.3%", "34,157"):
+        for needle in ("38.6%", "37.3%", "27.6%", "31.3%", "34,157",
+                       "46.8%", "40.8%", "56,552", "613 graded decisions",
+                       "36.0%", "59.1%", "48.6%"):
             assert needle in log
 
     def test_copy_is_plain_english(self):

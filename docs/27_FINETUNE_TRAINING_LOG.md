@@ -244,7 +244,115 @@ changed is that examples are made to fit it instead of being cut.
 
 ---
 
-## Where things stand — 2026-09-20 (recipe built; no batch run since batch 3)
+## Batch 4 — 2026-09-20/21 · "The plumbing works; the lesson doesn't"
+
+The first batch trained on its answers, and the first examined on an
+exam that could not flatter it. **Verdict: not promotable — no
+checkpoint clears the bar.** What it taught is more specific than the
+score.
+
+**Corpus** (`~/Quantops-finetune/data/20260920_170932`, journals
+snapshotted 2026-09-20): 56,552 labeled decisions in 16,705 cycles —
+Experiment 1's archive (34,157) plus Experiment 2 (22,395; its other
+~4,700 labelable rows belong to cycles whose AI call FAILED, which are
+not decisions — see CHANGELOG 2026-09-20). Split in time: training ends
+2026-09-03, validation starts 09-08, the exam is 200 cycles sampled
+evenly across 09-09 / 09-10 / 09-11; 1,715 training cycles purged
+because their outcomes resolved inside the later blocks. Unlabeled
+candidates pruned from train/val prompts (18,844 blocks). Length pass
+with the real tokenizer: 4,191 training cycles split, **0 dropped, 0
+labels lost, longest example 8,192 tokens**. Rebalance: empty-target
+share 27.4% → 10.0%; BUY:SHORT examples 7,693 : 8,924 (inside 1.25×,
+untouched). **15,976 train / 215 val / 426 exam examples.** Label
+origins in training: missed moves 18,047, flat HOLDs 13,384, losing
+entries 4,653, winning entries 4,307 — 80.8% of directional labels are
+hindsight "missed moves".
+
+**Run:** prompt masking ON (the trainer's own record and mlx-lm's
+loader both confirmed the loss covered exactly the answer), 60-step
+warmup to 1e-5 then cosine, batch size 1, 8,192 window, ~26 s/step.
+Planned 1,200 steps; **macOS killed the job at step ~630** (`[METAL]
+Command buffer execution failed: Impacting Interactivity` — the OS
+reclaiming the GPU, not a recipe fault). Checkpoints 100–600 survived.
+Validation loss, answers only, 100 examples: **3.616 → 0.595 (100) →
+0.605 → 0.625 → 0.748 → 0.548 (500) → 0.673 (600)** — everything it
+was going to learn about the loss it learned in the first 100 steps;
+after that, noise. Not resumed: more steps of this recipe were not the
+missing ingredient, and the exam below agrees.
+
+**Exam** — 426 prompts, 613 graded decisions, **160 distinct
+stock-days** (twelve replicate profiles judge the same stock on the
+same day, so that, not 613, is the real sample). Labels: HOLD 59.1%,
+bearish 31.2%, bullish 9.6%. Guessing baselines: always-HOLD **59.1%**,
+frequency-matched 45.5% (5th–95th percentile 42.4–48.6%).
+
+| | Accuracy | Bullish | Bearish | HOLD | What it answered | vs base, by stock-day |
+|---|---|---|---|---|---|---|
+| Untrained base | 40.8% | 32/59 | 124/191 | 94/362 | bearish 273 · bullish 181 · hold 138 · option 20 | — |
+| Step 100 | **14.5%** | 57/59 | 14/191 | 18/362 | **bullish 569** · hold 22 · bearish 22 | 16 : 69 (worse, p<0.001) |
+| Step 200 | **46.8%** | 1/59 | 97/191 | 189/362 | hold 307 · bearish 301 · bullish 5 | 70 : 42 (p=0.010) |
+| Step 500 *(lowest validation loss — the pick made without looking at the exam)* | 36.0% | 31/59 | 38/191 | 152/362 | hold 265 · bullish 257 · bearish 91 | 47 : 51 (p=0.76) |
+| Step 600 | 43.7% | **0/59** | 109/191 | 159/362 | bearish 351 · hold 262 · **bullish 0** | 59 : 44 (p=0.17) |
+
+Every checkpoint fails the promotion bar: none beats the guessing
+band's 95th percentile (48.6%), none comes near always-HOLD (59.1%),
+and steps 200, 500 and 600 are each worse than the base on BOTH
+directional classes. Step 200 does beat the base overall, even counted
+by stock-day — and the bar is right to refuse it: it got there by
+almost never saying BUY in a falling week.
+
+**What the raw answers show** (every generation is kept in the report;
+ten were read for each of the best and the last checkpoint):
+
+- **The adapter learned to emit exactly ONE bare trade.** Median answer
+  46 characters — `{"trades":[{"symbol":"X","action":"SHORT"}]}` —
+  against the base's 1,420. This is batch 1's one-pick convention back
+  again, and it mirrors the targets: 8,280 of 15,976 contain exactly one
+  trade, and 81% of all target trades are the bare symbol-and-action
+  form a "missed move" label produces.
+- **The action is a global prior, and it swings.** BUY on 569 of 613 at
+  step 100; BUY on 5 at step 200; BUY on 257 at step 500; BUY on **0** at
+  step 600. One example per step, ~20 graded tokens each: every update
+  chases the last few labels it saw.
+- **The symbol is loosely chosen.** With only `BAC` labeled it answered
+  `META`; with only `GS` labeled, `AMZN`. It is picking *a* candidate,
+  not judging *the* candidates.
+- The one thing that looks like skill is not: step 200 scores 47/77 on
+  "entries that lost" (base: 2/77) only because it leaves most
+  candidates out, and an omission is a HOLD.
+- Format is perfect (0 unparseable in all four; base 1), as in batch 2.
+
+**Verdict.** The training now does what it was built to do — the model
+learns from its answers, fast — and what it learns is the SHAPE and the
+BASE RATE of the targets, not which candidates deserve a trade. Two
+causes are visible in the evidence rather than guessed at:
+
+1. **Step noise.** Batch size 1 with ~20 graded tokens per step. The
+   answer mix lurching from all-BUY to no-BUY between checkpoints is
+   what that looks like.
+2. **The lesson is mostly unlearnable.** 80.8% of directional labels
+   are "missed moves": the AI said HOLD and the stock then moved more
+   than 5%. Nothing in the prompt may distinguish those from the flat
+   ones — the base can't either — so the only thing to learn from them
+   is how often they happen. The labels that carry a learnable question
+   — *of the entries this system actually made, which won?* (4,307 won,
+   4,653 lost) — are 1 in 5 and are drowned out.
+
+**Batch 5 changes — both required before any retrain, each answering
+one cause above:** (1) **gradient accumulation** (16–32 examples per
+update) so an update reflects a label mix, not the last example — needs
+a driver flag; (2) the **missed-move cap** (built, default off —
+`--missed-move-cap`), set low enough that own-entry labels dominate the
+directional signal. And the exam must report **own-entry
+discrimination** as its own line — accuracy over the `kept_win` +
+`lost_entry` decisions only (187 of this exam's 613) — because that,
+not predicting which stock jumps 5%, is the question an owned model
+could plausibly win. No retrain on this recipe: it would reproduce this
+result.
+
+---
+
+## Where things stand — 2026-09-21 (batch 4 examined: not promotable)
 
 **The owned model is not in use.** It has never held a seat, made a
 decision, or been hosted; the trading system's live learning (the
@@ -254,7 +362,13 @@ affected by anything in this log. The app says the same thing: the
 Learning page carries an "Our own model" panel driven by
 `finetune/status.json`, which is updated with every verdict here.
 
-**The batch-4 recipe is built** (2026-09-20, `finetune/` +
+**Four batches, none promotable.** Batches 1–3 were not a fair test
+(the forensic correction above); batch 4 was, and it failed the bar for
+reasons that are now specific: the adapter learns the targets' shape
+and base rate — one bare trade, a swinging action prior — not which
+candidates deserve a trade. Nothing is hosted, no money is spent.
+
+**The batch-4 recipe stands** (2026-09-20, `finetune/` +
 `tests/test_finetune_batch4_recipe_2026_09_20.py`): prompt masking
 always on; over-length examples split along the candidate table or
 dropped and counted, never truncated; a refuse-to-train guard;
@@ -287,10 +401,12 @@ above).
 
 ### When to train the next batch
 
-1. **Batch 4: now** — the recipe is built and the data condition is
-   met; the Mac runbook is `docs/28_FINETUNE_BATCH4_BUILD_SPEC.md` §6,
-   on the pooled corpus (Experiment 1's archive plus the live
-   Experiment-2 journals).
+1. **Batch 5: only after its two recipe changes exist** — gradient
+   accumulation in the driver, and the missed-move cap turned on (it is
+   built, default off) — plus the own-entry discrimination line in the
+   exam. See batch 4's verdict. The Mac runbook is
+   `docs/28_FINETUNE_BATCH4_BUILD_SPEC.md` §6; the exam is resumable
+   and the base's answers for an unchanged exam are already on disk.
 2. **After batch 4 — evidence-gated, not calendar-gated.** Retrain when
    *either* the labeled corpus has grown by ≥10,000 decisions since the
    last batch (≈ every 10–14 days at Experiment 2's ≈7,000/week)

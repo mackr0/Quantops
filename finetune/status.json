@@ -1,5 +1,5 @@
 {
-  "updated": "2026-09-20",
+  "updated": "2026-09-21",
   "in_use": false,
   "headline": "Not in use. Our own model has never made or influenced a trading decision.",
   "bar": "It earns a seat only by clearly beating two things on decisions it has never seen: the same model before our training, and informed guessing. No money is spent on hosting it until it does.",
@@ -33,6 +33,16 @@
       "untrained_pct": 31.3,
       "result": "Worse than untrained - not good enough",
       "note": "Answered 'no trade' on 88 of 134 decisions and got none of 50 falling-stock calls right. With an exam this small the gap is within chance."
+    },
+    {
+      "round": 4,
+      "date": "2026-09-21",
+      "studied": 56552,
+      "exam": 613,
+      "ours_pct": 46.8,
+      "untrained_pct": 40.8,
+      "result": "Not good enough - the first fair test",
+      "note": "The best of four snapshots is shown; the one chosen in advance, without looking at the exam, scored 36.0%. Even the best stays below informed guessing (48.6%) and far below simply never trading (59.1%), and it was worse than the untrained model at calling both rising and falling stocks. It learned the answer format within a hundred steps, then answered with a single trade every time - all buys at one snapshot, no buys at the next. It picked up how often each answer occurs, not which stocks deserve a trade."
     }
   ],
   "finding": {
@@ -45,5 +55,5 @@
       "Both faults are fixed, and the training now refuses to start if any lesson would lose its answer."
     ]
   },
-  "next": "Round 4 is the first real test. Its training ran about half of the planned length before the computer's operating system stopped the job (a graphics-processor interruption, not a fault in the training); the saved snapshots from that run are being examined now, which takes about half a day. Until that exam result is in the table above, nothing here says our data improves the model."
+  "next": "No round has shown that this system's own decisions improve the model. Round 4 pointed at two specific causes: each training step learned from a single example, so the model lurched from one habit to another; and four in five of the lessons about when to trade were 'a stock we passed on later moved a lot', which may not be knowable in advance. Round 5 waits for both to be changed - learning from many examples per step, and weighting the lessons toward the trades this system actually made and whether they won - and will be judged first on that question. Nothing is hosted and nothing is spent until a round clearly wins."
 }
