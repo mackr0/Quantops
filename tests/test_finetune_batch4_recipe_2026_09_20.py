@@ -897,8 +897,10 @@ class TestCheckpointSweep:
             "\n".join(json.dumps(m) for m in metas) + "\n")
         calls = []
 
-        def fake_generate(model, adapter, eval_rows, max_tokens):
+        def fake_generate(model, adapter, eval_rows, max_tokens,
+                          cache_path=None):
             calls.append(adapter)
+            assert cache_path and "/generations/" in cache_path
             if adapter is None:
                 return ['{"trades": []}'] * len(eval_rows)
             return ['{"trades":[{"symbol":"AAA","action":"BUY"},'
@@ -936,6 +938,113 @@ class TestCheckpointSweep:
         assert lt.main(["eval", "--data", str(data), "--adapter", d,
                         "--sweep"]) == 2
         assert "validation loss" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# The exam survives a crash
+# ---------------------------------------------------------------------------
+
+class _FakeTokenizer:
+    def apply_chat_template(self, msgs, add_generation_prompt=True,
+                            tokenize=False):
+        return "|".join(m["content"] for m in msgs)
+
+
+def _fake_mlx(monkeypatch, crash_after=None):
+    """A stand-in `mlx_lm` whose generate() echoes the prompt and can
+    die after N answers, the way macOS killed batch 4's Metal job."""
+    import sys
+    import types
+    state = {"loads": 0, "generated": []}
+    mod = types.ModuleType("mlx_lm")
+
+    def load(model_path, adapter_path=None):
+        state["loads"] += 1
+        return object(), _FakeTokenizer()
+
+    def generate(model, tokenizer, prompt, max_tokens, verbose=False):
+        if crash_after is not None and len(state["generated"]) >= crash_after:
+            raise RuntimeError("[METAL] Command buffer execution failed: "
+                               "Impacting Interactivity")
+        state["generated"].append(prompt)
+        return f"answer to {prompt}"
+    mod.load, mod.generate = load, generate
+    monkeypatch.setitem(sys.modules, "mlx_lm", mod)
+    return state
+
+
+def _rows(n):
+    return [{"messages": [{"role": "user", "content": f"p{i}"},
+                          {"role": "assistant", "content": "{}"}]}
+            for i in range(n)]
+
+
+class TestExamSurvivesACrash:
+    def test_a_crash_costs_one_answer_not_the_whole_exam(self, tmp_path,
+                                                          monkeypatch):
+        rows = _rows(5)
+        cache = lt.generation_cache_path(str(tmp_path), rows, "m", "base",
+                                         2000)
+        _fake_mlx(monkeypatch, crash_after=3)
+        with pytest.raises(RuntimeError, match="Impacting Interactivity"):
+            lt._generate_answers("m", None, rows, 2000, cache_path=cache)
+        assert len(open(cache).read().splitlines()) == 3   # saved as made
+        state = _fake_mlx(monkeypatch)                     # the rerun
+        texts = lt._generate_answers("m", None, rows, 2000,
+                                     cache_path=cache)
+        assert state["generated"] == ["p3", "p4"]          # only the rest
+        assert texts == [f"answer to p{i}" for i in range(5)]
+
+    def test_a_finished_answerer_is_never_regenerated_or_even_loaded(
+            self, tmp_path, monkeypatch):
+        rows = _rows(3)
+        cache = lt.generation_cache_path(str(tmp_path), rows, "m", "base",
+                                         2000)
+        _fake_mlx(monkeypatch)
+        first = lt._generate_answers("m", None, rows, 2000, cache_path=cache)
+        state = _fake_mlx(monkeypatch)
+        again = lt._generate_answers("m", None, rows, 2000, cache_path=cache)
+        assert again == first
+        assert state["loads"] == 0 and state["generated"] == []
+
+    def test_a_torn_last_line_is_regenerated_not_trusted(self, tmp_path,
+                                                         monkeypatch):
+        rows = _rows(3)
+        cache = lt.generation_cache_path(str(tmp_path), rows, "m", "base",
+                                         2000)
+        os.makedirs(os.path.dirname(cache))
+        with open(cache, "w") as fh:
+            fh.write(json.dumps({"i": 0, "text": "answer to p0"}) + "\n")
+            fh.write('{"i": 1, "text": "answer to')        # died mid-write
+        state = _fake_mlx(monkeypatch)
+        texts = lt._generate_answers("m", None, rows, 2000, cache_path=cache)
+        assert state["generated"] == ["p1", "p2"]
+        assert texts == [f"answer to p{i}" for i in range(3)]
+
+    def test_answers_are_never_reused_for_a_different_exam_or_setup(
+            self, tmp_path):
+        rows = _rows(3)
+        base = lt.generation_cache_path(str(tmp_path), rows, "m", "base", 2000)
+        other_exam = list(rows)
+        other_exam[1] = {"messages": [{"role": "user", "content": "CHANGED"}]}
+        assert base != lt.generation_cache_path(
+            str(tmp_path), other_exam, "m", "base", 2000)
+        assert base != lt.generation_cache_path(
+            str(tmp_path), rows, "other-model", "base", 2000)
+        assert base != lt.generation_cache_path(
+            str(tmp_path), rows, "m", "base", 300)
+        # two training runs' step-500 checkpoints never share a file
+        assert lt.generation_cache_path(
+            str(tmp_path), rows, "m", "step_500@runA", 2000
+        ) != lt.generation_cache_path(
+            str(tmp_path), rows, "m", "step_500@runB", 2000)
+        # the label (the target answer) is NOT part of the identity
+        relabeled = [dict(r, messages=[r["messages"][0],
+                                       {"role": "assistant",
+                                        "content": "different"}])
+                     for r in rows]
+        assert base == lt.generation_cache_path(
+            str(tmp_path), relabeled, "m", "base", 2000)
 
 
 # ---------------------------------------------------------------------------

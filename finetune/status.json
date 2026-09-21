@@ -45,5 +45,5 @@
       "Both faults are fixed, and the training now refuses to start if any lesson would lose its answer."
     ]
   },
-  "next": "Round 4 is the first real test. It started training on 2026-09-20 on the corrected recipe and takes about half a day; its exam follows. Until that exam result is in the table above, nothing here says our data improves the model."
+  "next": "Round 4 is the first real test. Its training ran about half of the planned length before the computer's operating system stopped the job (a graphics-processor interruption, not a fault in the training); the saved snapshots from that run are being examined now, which takes about half a day. Until that exam result is in the table above, nothing here says our data improves the model."
 }
