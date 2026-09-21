@@ -107,17 +107,25 @@ class TestReconstruct:
 class TestSyncShExclusions:
     """Guardrail against reintroducing the cycle_data wipe bug."""
 
-    def test_sync_excludes_runtime_artifacts(self):
+    def test_a_deploy_cannot_wipe_runtime_artifacts(self):
+        """The cycle_data wipe came from `rsync --delete` removing
+        droplet-only files. This used to pin the exclude entries for
+        them; since 2026-09-21 the deploy ships an ALLOWLIST (what git
+        tracks) and never deletes, so the artifacts are out of its reach
+        — provided git never tracks them."""
+        import subprocess
         # Absolute: every test runs in its own temp working directory.
         repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         with open(os.path.join(repo, "sync.sh")) as f:
-            content = f.read()
-        # Both runtime artifacts must be excluded
-        assert "cycle_data_*.json" in content, (
-            "sync.sh missing cycle_data exclusion — deploys will wipe "
-            "dashboard state again. See test_recover_cycle_data.py."
-        )
-        assert "scheduler_status.json" in content
-        # Database files must always be excluded
-        assert "*.db" in content
-        assert "*.db-wal" in content
+            code = [ln for ln in f.read().splitlines()
+                    if not ln.lstrip().startswith("#")]
+        assert not [ln for ln in code if "--delete" in ln], (
+            "a deploy that can delete will wipe dashboard state again")
+        assert [ln for ln in code if '--files-from="$SHIP_LIST"' in ln]
+        tracked = subprocess.run(
+            ["git", "ls-files", "--", "cycle_data_*.json",
+             "scheduler_status.json", "*.db", "*.db-wal", "*.db-shm"],
+            cwd=repo, capture_output=True, text=True, check=True).stdout
+        assert tracked.strip() == "", (
+            "runtime artifacts must never be tracked — the deploy would "
+            f"overwrite prod's copy: {tracked}")

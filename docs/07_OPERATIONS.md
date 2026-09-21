@@ -62,14 +62,15 @@ Three running processes:
 
 Local: `sync.sh` is the deploy command from the operator's laptop. Steps:
 
-1. `rsync -avz --delete --exclude=...` from local to `/opt/quantopsai/`. Excludes `__pycache__`, `.cache/`, `*.db`, `tests/__pycache__`, etc.
-2. `ssh root@67.205.155.63 'cd /opt/quantopsai && git fetch && git reset --hard origin/main'` — sync prod's `.git/` to GitHub. Without this step prod git would drift since rsync skips `.git/`.
+1. Ship **exactly the files git tracks** at HEAD to `/opt/quantopsai/` — `rsync --checksum --files-from=<git ls-files>`, an allowlist, with **no `--delete`**. A deploy can only ever write files git knows about and never removes anything on the droplet, so everything that exists only there — journals, `backups/`, `logs/`, `deploy_logs/`, the altdata scrapers' caches, `.cache/`, marker files, the medals cache — is out of its reach by construction, with no exclude list to maintain. (Until 2026-09-21 this was `rsync --delete` of the whole working tree minus a hand-kept exclude list, which deleted every droplet-only path not on the list and uploaded the Mac's untracked files over prod's — see CHANGELOG.) Changes are detected by content, not timestamp, so the list of changed files — which decides what gets restarted — is exact.
+2. `ssh root@67.205.155.63 'cd /opt/quantopsai && git fetch && git reset --hard origin/main'` — sync prod's `.git/` to GitHub. This is also what **removes files that were deleted from the repo**, since step 1 never deletes.
 3. Wait for the scheduler to be idle (no active task), then `systemctl restart quantopsai quantopsai-web`.
 4. Verify both services running.
 
 Failure modes:
 
-- **rsync fails:** check SSH connectivity. `ssh root@67.205.155.63` from the local machine.
+- **rsync fails:** check SSH connectivity. `ssh root@67.205.155.63` from the local machine. A failed dry run stops the deploy before anything is sent (it used to be swallowed and read as "nothing changed").
+- **A runtime file must never be tracked by git:** the deploy would overwrite prod's copy with the repo's on every run. Tests pin this for journals, cycle data, scheduler status, the archive trees.
 - **Git reset fails:** check the prod git remote is still pointing at GitHub. `cd /opt/quantopsai && git remote -v`.
 - **Scheduler doesn't return to idle:** `journalctl -u quantopsai --since '5 min ago'` to find the stuck task. May need `systemctl restart quantopsai` with `--force` (will kill in-flight tasks).
 

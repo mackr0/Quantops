@@ -4,8 +4,13 @@ sync.sh rsyncs the repo to prod with --delete, excluding backups/ but
 — until today — not predictions_archive/. The first deploy after the
 Experiment 1 reset deleted the 170,536-row archive the reset had just
 written (recovered from the pre-wipe DB backups). Pins:
-  - both rsync invocations in sync.sh exclude backups/ AND
-    predictions_archive/;
+  - the deploy cannot delete ANYTHING on the droplet (2026-09-21: the
+    exclude list this test used to pin was replaced by an allowlist —
+    sync.sh ships `git ls-files` with no --delete, so the archive, which
+    git does not track, is out of its reach by construction; the full
+    pins live in test_deploy_ships_only_tracked_files_2026_09_21.py);
+  - the archive trees are not tracked by git (or a deploy would
+    overwrite them);
   - every archive default root lives under backups/;
   - the archive includes the shadow-model rows (the challengers'
     evaluation record) alongside predictions.
@@ -22,15 +27,22 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
-class TestSyncExcludes:
-    def test_every_rsync_block_excludes_the_data_trees(self):
+class TestDeployCannotReachTheArchive:
+    def test_the_deploy_never_deletes_on_the_droplet(self):
         src = open(os.path.join(ROOT, "sync.sh")).read()
-        blocks = re.findall(r"rsync -az --delete.*?/Users/mackr0/Quantops/",
-                            src, flags=re.S)
-        assert len(blocks) >= 2, "expected the dry-run and the real rsync"
-        for b in blocks:
-            assert "--exclude 'backups/'" in b
-            assert "--exclude 'predictions_archive/'" in b
+        code = [ln for ln in src.splitlines()
+                if not ln.lstrip().startswith("#")]
+        assert not [ln for ln in code if "--delete" in ln]
+        assert '--files-from="$SHIP_LIST"' in src
+
+    def test_the_archive_trees_are_not_tracked_by_git(self):
+        """The deploy ships exactly what git tracks; a tracked file
+        under these trees would be overwritten on every deploy."""
+        import subprocess
+        tracked = subprocess.run(
+            ["git", "ls-files", "--", "backups", "predictions_archive"],
+            cwd=ROOT, capture_output=True, text=True, check=True).stdout
+        assert tracked.strip() == "", tracked
 
 
 class TestArchiveRoots:
