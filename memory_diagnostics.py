@@ -131,7 +131,8 @@ def growth_report(baseline_types: Dict[str, int],
                   baseline_containers: Dict[str, int],
                   now_types: Dict[str, int],
                   now_containers: Dict[str, int],
-                  rss_delta_mb: Optional[float]) -> List[str]:
+                  rss_delta_mb: Optional[float],
+                  native_threshold_mb: float = 100.0) -> List[str]:
     """The report's lines — pure, so it is tested without a live heap."""
     lines: List[str] = []
     types = _top_growth(baseline_types, now_types, 12)
@@ -152,7 +153,7 @@ def growth_report(baseline_types: Dict[str, int],
     heavy_grew = sum(max(0, now_types.get(k, 0) - baseline_types.get(k, 0))
                      for k in _HEAVY_TYPES)
     containers_grew = sum(d for _k, d, _v in conts)
-    if (rss_delta_mb is not None and rss_delta_mb > 100
+    if (rss_delta_mb is not None and rss_delta_mb > native_threshold_mb
             and objects_grew < 50_000 and heavy_grew < 200
             and containers_grew < 1_000):
         lines.append(
@@ -230,15 +231,39 @@ def tick(now: Optional[float] = None) -> None:
             if _state["baseline_types"] is None:
                 _state["baseline_types"] = types
                 _state["baseline_containers"] = conts
+                _state["prev_types"], _state["prev_containers"] = types, conts
+                _state["prev_rss"] = rss
                 logger.info("[MEMDIAG] baseline taken: %d live objects, %d "
                             "module-level containers >= %d long (%.1fs)",
                             sum(types.values()), len(conts),
                             _CONTAINER_MIN_LEN, time.time() - t0)
                 return
+            # Two views. SINCE START includes one-time costs — the
+            # scheduler imports its heavy modules lazily, on the first
+            # trading cycle, long after the baseline. THIS WINDOW (the
+            # last 30 minutes) does not: a leak is whatever keeps
+            # appearing here, window after window.
+            prev_rss = _state.get("prev_rss")
+            window = (rss - prev_rss) if (rss is not None
+                                          and prev_rss is not None) else None
+            logger.info("[MEMDIAG] === THIS WINDOW (last %d min), rss %s ===",
+                        REPORT_SECONDS // 60,
+                        f"{window:+.0f}MB" if window is not None else "n/a")
+            # ~10MB per 5-minute cycle is ~60MB per window: a 30MB
+            # window with quiet objects is already worth saying.
+            for line in growth_report(_state["prev_types"],
+                                      _state["prev_containers"],
+                                      types, conts, window,
+                                      native_threshold_mb=30.0):
+                logger.info("[MEMDIAG] %s", line)
+            logger.info("[MEMDIAG] === SINCE START, rss %s ===",
+                        f"{delta:+.0f}MB" if delta is not None else "n/a")
             for line in growth_report(_state["baseline_types"],
                                       _state["baseline_containers"],
                                       types, conts, delta):
                 logger.info("[MEMDIAG] %s", line)
+            _state["prev_types"], _state["prev_containers"] = types, conts
+            _state["prev_rss"] = rss
             logger.info("[MEMDIAG] growth report took %.1fs",
                         time.time() - t0)
     except Exception as exc:          # a diagnostic must never hurt the scheduler

@@ -99,7 +99,58 @@ class TestTick:
         msgs = [r.getMessage() for r in caplog.records]
         assert sum("rss=200MB" in m for m in msgs) == 3
         assert sum("baseline taken" in m for m in msgs) == 1
-        assert sum("object types that grew most" in m for m in msgs) == 1
+        # one report = two views: this window, and since start
+        assert sum("object types that grew most" in m for m in msgs) == 2
+        assert sum("THIS WINDOW" in m for m in msgs) == 1
+        assert sum("SINCE START" in m for m in msgs) == 1
+
+    def test_the_window_view_separates_a_one_time_burst_from_a_leak(
+            self, monkeypatch, caplog):
+        """The scheduler imports its heavy modules lazily, on the first
+        trading cycle — long after the baseline. SINCE START carries
+        that one-time burst forever; THIS WINDOW shows only what kept
+        growing, which is the leak."""
+        heap = {"types": {"function": 1_000, "LeakyThing": 0}, "rss": 100.0}
+        monkeypatch.setattr(md, "read_memory", lambda: {
+            "rss_mb": heap["rss"], "swap_mb": 0.0, "threads": 2.0})
+        monkeypatch.setattr(md, "type_counts", lambda: dict(heap["types"]))
+        monkeypatch.setattr(md, "container_lengths", lambda: {})
+        t = 3_000_000.0
+        md.tick(t)                                           # baseline
+        heap["types"] = {"function": 400_000, "LeakyThing": 5_000}
+        heap["rss"] = 400.0                                  # imports + leak
+        md.tick(t + 1801)
+        with caplog.at_level(logging.INFO, logger="memory_diagnostics"):
+            heap["types"] = {"function": 400_000, "LeakyThing": 10_000}
+            heap["rss"] = 460.0                              # leak only
+            md.tick(t + 3602)
+        msgs = [r.getMessage() for r in caplog.records]
+        w = msgs.index(next(m for m in msgs if "THIS WINDOW" in m))
+        s = msgs.index(next(m for m in msgs if "SINCE START" in m))
+        assert "rss +60MB" in msgs[w] and "rss +360MB" in msgs[s]
+        window_types = msgs[w + 1]
+        assert "LeakyThing +5,000" in window_types
+        assert "function" not in window_types       # the burst is gone
+        assert "function +399,000" in msgs[s + 1]   # …but still in the total
+
+    def test_a_quiet_window_with_growing_rss_gets_the_native_verdict(
+            self, monkeypatch, caplog):
+        heap = {"rss": 100.0}
+        monkeypatch.setattr(md, "read_memory", lambda: {
+            "rss_mb": heap["rss"], "swap_mb": 0.0, "threads": 2.0})
+        monkeypatch.setattr(md, "type_counts", lambda: {"dict": 1000})
+        monkeypatch.setattr(md, "container_lengths", lambda: {})
+        t = 4_000_000.0
+        md.tick(t)
+        with caplog.at_level(logging.INFO, logger="memory_diagnostics"):
+            heap["rss"] = 160.0                     # +60MB, objects flat
+            md.tick(t + 1801)
+        msgs = [r.getMessage() for r in caplog.records]
+        w = msgs.index(next(m for m in msgs if "THIS WINDOW" in m))
+        s = msgs.index(next(m for m in msgs if "SINCE START" in m))
+        assert any("NOT held by Python objects" in m for m in msgs[w:s]), (
+            "60MB in one window with quiet objects must be called out — "
+            "the since-start threshold (100MB) would miss it for hours")
 
     def test_a_failing_collector_never_reaches_the_scheduler(
             self, monkeypatch, caplog):
