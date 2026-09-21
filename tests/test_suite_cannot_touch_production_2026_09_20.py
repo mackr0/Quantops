@@ -126,6 +126,60 @@ class TestTheIncidentPath:
         assert os.path.dirname(views._medals_path()) == prod_sandbox_dir
 
 
+class TestTheFloorIsTheSessionNotTheTest:
+    """A background thread can outlive the test that started it. On
+    2026-09-20 the dashboard's medal-warm thread did: its test's
+    overrides were torn down, the thread fell through to the real path,
+    and a droplet run wrote an empty medals cache into the install
+    directory. After EVERY per-test patch is undone, the guards must
+    still hold."""
+
+    def test_after_teardown_the_medals_path_is_still_temp(self,
+                                                          monkeypatch):
+        import views
+        monkeypatch.undo()
+        path = os.path.realpath(views._medals_path())
+        assert not path.startswith("/opt/quantopsai")
+        assert not path.startswith(os.path.realpath(REPO))
+
+    def test_after_teardown_the_working_directory_is_still_temp(
+            self, monkeypatch):
+        monkeypatch.undo()
+        cwd = os.path.realpath(os.getcwd())
+        assert not cwd.startswith("/opt/quantopsai")
+        assert not cwd.startswith(os.path.realpath(REPO))
+
+    def test_a_thread_outliving_its_patches_still_hits_the_sandbox(
+            self, monkeypatch):
+        import threading
+        seen = {}
+        go = threading.Event()
+
+        def straggler():
+            go.wait(5)
+            conn = sqlite3.connect("/opt/quantopsai/quantopsai.db")
+            try:
+                seen["file"] = _opened_file(conn)
+            finally:
+                conn.close()
+        t = threading.Thread(target=straggler)
+        t.start()
+        monkeypatch.undo()              # the test's own overrides are gone
+        go.set()
+        t.join(10)
+        assert "file" in seen
+        opened = os.path.realpath(seen["file"])
+        assert not opened.startswith("/opt/quantopsai")
+        assert opened.endswith("_quantopsai.db")
+
+    def test_the_session_floor_is_set_at_import(self):
+        src = open(os.path.join(REPO, "conftest.py")).read()
+        assert "_SESSION_DIR = tempfile.mkdtemp(" in src
+        assert 'os.environ["QUANTOPSAI_MEDALS_FILE"] = ' in src
+        assert '@pytest.fixture(scope="session", autouse=True)' in src
+        assert "def _session_working_directory():" in src
+
+
 class TestMechanismIsWired:
     def test_root_conftest_carries_both_guards(self):
         src = open(os.path.join(REPO, "conftest.py")).read()

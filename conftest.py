@@ -45,8 +45,10 @@ every test:
 """
 import hashlib
 import os
+import shutil
 import socket
 import sqlite3
+import tempfile
 
 import pytest
 
@@ -56,7 +58,22 @@ _LOCAL_HOSTS = (None, "", "localhost", "127.0.0.1", "::1", "0.0.0.0",
 _REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 _PROTECTED_ROOTS = tuple(sorted({"/opt/quantopsai", _REPO_ROOT}))
 _real_sqlite_connect = sqlite3.connect
-_sandbox = {"dir": None, "redirected": 0}
+
+# SESSION-LEVEL floor. The guards must hold for the whole process, not
+# only inside a test: a background thread a test started (the dashboard's
+# medal warm) can outlive that test, and the moment the per-test
+# overrides were torn down it fell through to the REAL paths — a droplet
+# run on 2026-09-20 wrote an empty medals cache into the install
+# directory exactly that way. So a sandbox, a medals path and a working
+# directory exist from import to exit; each test narrows them to its own
+# temp locations and hands back the session ones, never "nothing".
+_SESSION_DIR = tempfile.mkdtemp(prefix="qo_test_session_")
+_sandbox = {"dir": os.path.join(_SESSION_DIR, "prod_sandbox"),
+            "redirected": 0}
+os.makedirs(_sandbox["dir"], exist_ok=True)
+os.makedirs(os.path.join(_SESSION_DIR, "cwd"), exist_ok=True)
+os.environ["QUANTOPSAI_MEDALS_FILE"] = os.path.join(
+    _sandbox["dir"], "medals_cache.json")
 
 
 def _protected(path: str) -> bool:
@@ -88,6 +105,19 @@ def _sandboxed_connect(database, *args, **kwargs):
 
 
 sqlite3.connect = _sandboxed_connect
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _session_working_directory():
+    """The directory a test's chdir is restored TO is itself temp — so a
+    thread that outlives its test never resolves a relative path against
+    the install directory. Done in a fixture, not at import: collection
+    must see the invocation directory."""
+    os.chdir(os.path.join(_SESSION_DIR, "cwd"))
+    yield
+    # No chdir back: the process is about to exit, and returning to the
+    # install directory would reopen the hole for a last straggler.
+    shutil.rmtree(_SESSION_DIR, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)
@@ -124,10 +154,14 @@ def pytest_configure(config):
         "(the suite refuses them by default — see conftest.py)")
 
 
-@pytest.fixture
-def no_network(monkeypatch):
-    """Make every outbound network attempt fail INSTANTLY (DNS refused
-    for anything but localhost).
+# The refusal is installed for the whole SESSION, at import — not per
+# test — for the same reason as the production-data floor above: a
+# thread that outlives its test must still find the network refused.
+_real_getaddrinfo = socket.getaddrinfo
+
+
+def _refuse(host, *args, **kwargs):
+    """DNS refused INSTANTLY for anything but localhost.
 
     2026-09-19 — the API-walker tests and the alt-data aggregator test
     were quietly making REAL calls from the droplet (FRED, Alpaca data
@@ -137,36 +171,44 @@ def no_network(monkeypatch):
     earlier run had warmed a persisted cache. With the network refused
     the routes run their OUTAGE paths — deterministic, fast, and the
     contract those tests assert (valid JSON, numeric fields numeric)
-    must hold during an outage anyway.
+    must hold during an outage anyway."""
+    if host in _LOCAL_HOSTS:
+        return _real_getaddrinfo(host, *args, **kwargs)
+    raise socket.gaierror(
+        socket.EAI_NONAME, f"network disabled in tests ({host!r})")
 
-    Applied to every test by `_network_refused_by_default` below; still
-    requestable by name."""
-    _real = socket.getaddrinfo
 
-    def _refuse(host, *args, **kwargs):
-        if host in _LOCAL_HOSTS:
-            return _real(host, *args, **kwargs)
-        raise socket.gaierror(
-            socket.EAI_NONAME, f"network disabled in tests ({host!r})")
+socket.getaddrinfo = _refuse
 
-    monkeypatch.setattr(socket, "getaddrinfo", _refuse)
+# yfinance goes out through curl_cffi (libcurl does its own DNS and
+# never touches socket.getaddrinfo) — refuse that door too.
+try:
+    import curl_cffi.requests as _curl_requests
+    _real_curl_request = _curl_requests.Session.request
 
-    # yfinance goes out through curl_cffi (libcurl does its own DNS and
-    # never touches socket.getaddrinfo) — refuse that door too.
-    try:
-        import curl_cffi.requests as _curl_requests
+    def _refuse_curl(self, method, url, *args, **kwargs):
+        raise OSError(f"network disabled in tests ({url!r})")
 
-        def _refuse_curl(self, method, url, *args, **kwargs):
-            raise OSError(f"network disabled in tests ({url!r})")
+    _curl_requests.Session.request = _refuse_curl
+except (ImportError, AttributeError):
+    # curl_cffi not installed here: that door does not exist.
+    _curl_requests = None
 
-        monkeypatch.setattr(_curl_requests.Session, "request", _refuse_curl)
-    except (ImportError, AttributeError):
-        # curl_cffi not installed here: that door does not exist.
-        pass
+
+@pytest.fixture
+def no_network():
+    """Kept so tests can still ask for it by name; the refusal is
+    already in force for every test (and between them)."""
+    yield
 
 
 @pytest.fixture(autouse=True)
-def _network_refused_by_default(request):
-    if request.node.get_closest_marker("allow_network") is None:
-        request.getfixturevalue("no_network")
+def _network_refused_by_default(request, monkeypatch):
+    """A test marked `allow_network` gets the real functions back for
+    its own duration; everything else runs under the session refusal."""
+    if request.node.get_closest_marker("allow_network") is not None:
+        monkeypatch.setattr(socket, "getaddrinfo", _real_getaddrinfo)
+        if _curl_requests is not None:
+            monkeypatch.setattr(_curl_requests.Session, "request",
+                                _real_curl_request)
     yield
