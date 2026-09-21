@@ -753,26 +753,89 @@ def stage_checkpoint(adapter_dir: str, step: int, dest_root: str) -> str:
     return dest
 
 
+def generation_cache_path(data_dir: str, eval_rows: List[Dict[str, Any]],
+                          model: str, candidate: str, max_tokens: int
+                          ) -> str:
+    """Where one answerer's generations for one exam are kept — pure.
+
+    The name carries a digest of everything that determines the
+    answers' meaning (the exam's prompts, the base model, the
+    generation cap), so a file is only ever reused for the SAME exam
+    under the SAME settings; rebuild the corpus and the old answers
+    are simply never looked at again. `candidate` is "base" or a
+    checkpoint label that includes the training run."""
+    import hashlib
+    h = hashlib.sha1()
+    for row in eval_rows:
+        for m in row["messages"]:
+            if m.get("role") != "assistant":
+                h.update((m.get("content") or "").encode())
+        h.update(b"\x00")
+    h.update(f"|{model}|{max_tokens}".encode())
+    safe = re.sub(r"[^A-Za-z0-9_.@-]", "_", candidate)
+    return os.path.join(data_dir, "generations",
+                        f"{safe}__{h.hexdigest()[:12]}.jsonl")
+
+
+def _load_generations(path: str) -> Dict[int, str]:
+    """{prompt index: text} already on disk. A torn final line (the
+    process died mid-write) is dropped; that prompt is regenerated."""
+    done: Dict[int, str] = {}
+    if not os.path.exists(path):
+        return done
+    with open(path) as fh:
+        for line in fh:
+            try:
+                rec = json.loads(line)
+                done[int(rec["i"])] = rec["text"]
+            except (ValueError, KeyError, TypeError):
+                logger.warning("generation cache %s: dropped an "
+                               "unreadable line (regenerating it)", path)
+    return done
+
+
 def _generate_answers(model_path: str, adapter: Optional[str],
                       eval_rows: List[Dict[str, Any]],
-                      max_tokens: int) -> List[str]:
+                      max_tokens: int,
+                      cache_path: Optional[str] = None) -> List[str]:
     """Raw completions, one per eval row — parsing/scoring happens in
     the caller so the report can keep the generations for forensics
     (the first eval discarded them and 7 'unparseable' answers could
-    not be diagnosed)."""
-    from mlx_lm import load, generate
-    model, tokenizer = load(model_path, adapter_path=adapter)
-    texts: List[str] = []
-    for i, row in enumerate(eval_rows):
-        msgs = [m for m in row["messages"] if m.get("role") != "assistant"]
-        prompt = tokenizer.apply_chat_template(
-            msgs, add_generation_prompt=True, tokenize=False)
-        text = generate(model, tokenizer, prompt=prompt,
-                        max_tokens=max_tokens, verbose=False)
-        texts.append(text)
-        if (i + 1) % 25 == 0:
-            print(f"  {i + 1}/{len(eval_rows)} generated")
-    return texts
+    not be diagnosed).
+
+    RESUMABLE. An exam is ~half a day of GPU time, and macOS can kill
+    a long Metal job at any moment ("Impacting Interactivity" ended
+    batch 4's training run at step ~630). With `cache_path`, every
+    answer is appended to disk the moment it is produced and a rerun
+    generates only what is missing — so a crash costs one answer, not
+    eleven hours, and the untrained base's answers are generated once
+    per exam no matter how many sweeps follow."""
+    done = _load_generations(cache_path) if cache_path else {}
+    todo = [i for i in range(len(eval_rows)) if i not in done]
+    if done:
+        print(f"  resuming: {len(done)} answers already on disk, "
+              f"{len(todo)} to generate")
+    if todo:
+        from mlx_lm import load, generate
+        model, tokenizer = load(model_path, adapter_path=adapter)
+        if cache_path:
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        for n, i in enumerate(todo, 1):
+            msgs = [m for m in eval_rows[i]["messages"]
+                    if m.get("role") != "assistant"]
+            prompt = tokenizer.apply_chat_template(
+                msgs, add_generation_prompt=True, tokenize=False)
+            text = generate(model, tokenizer, prompt=prompt,
+                            max_tokens=max_tokens, verbose=False)
+            done[i] = text
+            if cache_path:
+                with open(cache_path, "a") as fh:
+                    fh.write(json.dumps({"i": i, "text": text}) + "\n")
+                    fh.flush()
+                    os.fsync(fh.fileno())
+            if n % 25 == 0:
+                print(f"  {n}/{len(todo)} generated")
+    return [done[i] for i in range(len(eval_rows))]
 
 
 def cmd_eval(args) -> int:
@@ -880,10 +943,20 @@ def cmd_eval(args) -> int:
     }
     print("baselines", json.dumps(baselines, indent=2))
 
+    # Answers are kept per (exam, model, answerer): the base's under
+    # "base", a checkpoint's under its step AND its training run, so
+    # two runs' step-500 checkpoints never share a file.
+    run_tag = (os.path.basename(os.path.normpath(args.adapter))
+               if args.adapter else "")
+
     def _sit_exam(name: str, adapter: Optional[str]) -> List[Optional[str]]:
         print(f"generating with {name} …")
-        texts = _generate_answers(args.model, adapter, eval_rows,
-                                  args.max_tokens)
+        label = "base" if name == "base" else f"{name}@{run_tag}"
+        texts = _generate_answers(
+            args.model, adapter, eval_rows, args.max_tokens,
+            cache_path=generation_cache_path(
+                str(data_dir), eval_rows, args.model, label,
+                args.max_tokens))
         answers: List[Optional[str]] = []
         gens: List[Dict[str, Any]] = []
         for text, lmap in zip(texts, label_maps):
