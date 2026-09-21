@@ -61,6 +61,29 @@ class TestGrowthReport:
                                  rss_delta_mb=20.0)
         assert not any("NOT held by Python objects" in ln for ln in lines)
 
+    def test_the_live_case_344mb_with_141_new_frames_is_called_native(self):
+        """2026-09-21, second window of the first session: RSS +344MB,
+        DataFrame +141, a few thousand dicts and lists. The count-based
+        guard read 141 frames as a possible explanation and stayed
+        silent; measured in BYTES they held almost nothing."""
+        before = {"dict": 62_397, "list": 38_264, "DataFrame": 1_767,
+                  "NumpyBlock": 11_413, "BlockValuesRefs": 14_946}
+        after = {"dict": 64_252, "list": 39_894, "DataFrame": 1_908,
+                 "NumpyBlock": 12_399, "BlockValuesRefs": 16_214}
+        lines = md.growth_report(before, {"market_data._bars_cache": 1_227},
+                                 after, {"market_data._bars_cache": 1_328},
+                                 rss_delta_mb=344.0, native_threshold_mb=30.0,
+                                 array_mb_delta=2.0)
+        text = "\n".join(lines)
+        assert "arrays held by pandas frames: +2MB" in text
+        assert "NOT held by Python objects" in text
+
+    def test_when_arrays_do_hold_the_growth_it_is_not_called_native(self):
+        lines = md.growth_report({"DataFrame": 10}, {}, {"DataFrame": 151}, {},
+                                 rss_delta_mb=344.0, native_threshold_mb=30.0,
+                                 array_mb_delta=310.0)
+        assert not any("NOT held by Python objects" in ln for ln in lines)
+
     def test_no_rss_available_does_not_crash_the_report(self):
         assert md.growth_report({}, {}, {"dict": 5}, {}, rss_delta_mb=None)
 
@@ -74,6 +97,69 @@ class TestCollectors:
         found = md.container_lengths()
         assert found["fake_leaky_module._cache"] == 5000
         assert "fake_leaky_module._small" not in found
+
+    def test_frame_bytes_are_found_and_shared_buffers_counted_once(self):
+        """numpy arrays are not tracked by the garbage collector, so a
+        walk of gc.get_objects() never sees one (the first version of
+        this measure did exactly that and reported zero). The pandas
+        blocks that hold them ARE tracked."""
+        import numpy as np
+        import pandas as pd
+        base = md.array_bytes_mb()["owned_arrays_mb"]
+        df = pd.DataFrame(np.zeros((1_000_000, 4)))           # 32MB
+        now = md.array_bytes_mb()["owned_arrays_mb"]
+        assert 30 <= now - base <= 40, now - base
+        slices = [df.iloc[i:] for i in range(1, 40)]          # views of it
+        again = md.array_bytes_mb()["owned_arrays_mb"]
+        assert again - now < 2, "views must not be counted again"
+        del slices, df
+
+    def test_trim_returns_a_before_after_pair_or_none(self):
+        out = md.trim_allocator()
+        assert out is None or (len(out) == 2 and out[1] <= out[0] + 50)
+
+    def test_a_grown_process_runs_the_trim_experiment_and_says_what_it_means(
+            self, monkeypatch, caplog):
+        heap = {"rss": 100.0}
+        monkeypatch.setattr(md, "read_memory", lambda: {
+            "rss_mb": heap["rss"], "swap_mb": 0.0, "threads": 2.0})
+        monkeypatch.setattr(md, "type_counts", lambda: {"dict": 1000})
+        monkeypatch.setattr(md, "container_lengths", lambda: {})
+        monkeypatch.setattr(md, "array_bytes_mb", lambda: {
+            "owned_arrays_mb": 20.0, "owned_arrays": 5.0, "bytes_mb": 1.0})
+        monkeypatch.setattr(md, "trim_allocator", lambda: (900.0, 310.0))
+        t = 5_000_000.0
+        md.tick(t)
+        with caplog.at_level(logging.INFO, logger="memory_diagnostics"):
+            heap["rss"] = 900.0
+            md.tick(t + 1801)
+            heap["rss"] = 330.0                     # next window: measured
+            md.tick(t + 3602)                       # from AFTER the trim
+        msgs = [r.getMessage() for r in caplog.records]
+        trim = [m for m in msgs if "allocator trim" in m]
+        assert "900MB -> 310MB (-590MB)" in trim[0]
+        assert "FREED by Python" in trim[0]
+        assert any("pandas frames hold 20MB in 5 distinct buffers" in m
+                   for m in msgs)
+        second = [m for m in msgs if "THIS WINDOW" in m][1]
+        assert "rss +20MB" in second, second        # 330 - 310, not 330 - 900
+
+    def test_a_trim_that_recovers_nothing_says_the_memory_is_still_held(
+            self, monkeypatch, caplog):
+        monkeypatch.setattr(md, "read_memory", lambda: {
+            "rss_mb": 900.0, "swap_mb": 0.0, "threads": 2.0})
+        monkeypatch.setattr(md, "type_counts", lambda: {"dict": 1000})
+        monkeypatch.setattr(md, "container_lengths", lambda: {})
+        monkeypatch.setattr(md, "array_bytes_mb", lambda: {
+            "owned_arrays_mb": 20.0, "owned_arrays": 5.0, "bytes_mb": 1.0})
+        monkeypatch.setattr(md, "trim_allocator", lambda: (900.0, 895.0))
+        md._state["first_rss"] = 100.0
+        md._state["started"] = 6_000_000.0
+        t = 6_000_000.0
+        md.tick(t)
+        with caplog.at_level(logging.INFO, logger="memory_diagnostics"):
+            md.tick(t + 1801)
+        assert any("still holding" in r.getMessage() for r in caplog.records)
 
     def test_type_counts_sees_live_objects(self):
         class Marker:
