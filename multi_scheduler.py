@@ -6266,6 +6266,14 @@ def main_loop(active_segments=None, legacy_mode=False):
     while not _shutdown:
         now = datetime.now(ET)
 
+        # Memory attribution (2026-09-21): this process grows ~700-800MB
+        # per trading session and fills swap within two days. One cheap
+        # call per iteration; it logs a [MEMDIAG] line every 5 minutes
+        # and a growth report (which object types / module-level
+        # containers grew) every 30. It never raises.
+        import memory_diagnostics
+        memory_diagnostics.tick()
+
         # Rotate log file if day changed
         new_today = now.strftime("%Y-%m-%d")
         if new_today != today_str:

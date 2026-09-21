@@ -828,11 +828,33 @@ suite, the operator's terminal — the "droplet keeps timing out"
 complaint of 2026-09-16) crawls. Restarted 2026-09-19 16:30 UTC during
 the closed market: swap 1,023MB → 127MB.
 
-- [ ] Find the growth. Start with `tracemalloc` snapshots an hour
-      apart in the running scheduler (top allocation sites by size
-      delta); prime suspects are module-level caches without eviction
-      (bars / alt-data / price memoization keyed by symbol+timestamp)
-      and per-cycle structures appended to long-lived lists.
+- [ ] Find the growth. **STILL OPEN — cause not yet identified.
+      2026-09-21: what is now known, and the instrument that will
+      name it.** (1) *The shape*, from the box's `sar` history
+      (09-17 → 09-19): flat overnight, climbing only through the
+      13:30–20:00 UTC session — about **700–800MB in ONE trading day**
+      (~10MB per 5-minute cycle), far faster than the 400MB/day this
+      item first estimated — and the memory is COLD: after the close
+      it is pushed to swap and never read back. Growth belongs to the
+      live trading cycle. (2) *Ruled out by measurement, not
+      opinion:* `market_data._bars_cache` never evicts, but a 200-bar
+      frame is ~11KB, so the whole 11,000-symbol universe tops out
+      near 200MB; a NEW LLM SDK client is built per call and never
+      closed (`ai_providers.py`), but constructing and dropping
+      hundreds of them is fully reclaimed; glibc ARENA retention
+      under the per-cycle 13-thread pool — a faithful replay on the
+      droplet plateaus at +27MB over 30 cycles, and
+      `MALLOC_ARENA_MAX=2` changes nothing (so do NOT ship that as a
+      "fix"). Static reading of the 42 module-level caches found none
+      keyed by time except small ones. (3) *The instrument:*
+      `memory_diagnostics.tick()` now runs in the scheduler loop —
+      `[MEMDIAG]` RSS/swap every 5 minutes and, every 30, a growth
+      report naming the object types and module-level containers that
+      grew, with an explicit verdict when the growth is not Python
+      objects; `touch /opt/quantopsai/.memdiag_trace` runs a bounded
+      20-minute allocation trace. `docs/07` §5 has the commands. The
+      first trading session after 2026-09-21 yields the attribution;
+      the fix follows from it.
 - [ ] Until fixed, the process will refill swap in ~2–3 days. Watch
       `VmSwap` in `/proc/<pid>/status`; a restart in a closed market
       is safe (graceful SIGTERM drain, `TimeoutStopSec=600`).

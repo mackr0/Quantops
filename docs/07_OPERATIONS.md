@@ -160,6 +160,19 @@ print(\"corrupt:\", any_corrupt(results))
 
 The `db_integrity.check_db` function uses `PRAGMA quick_check` (storage-level only) and pre-screens for valid file size + SQLite magic-header. **Don't use `PRAGMA integrity_check` directly** — it also reports NOT NULL / UNIQUE / FK constraint violations on existing rows, which are NOT file corruption (and are a known false-positive after schema migrations that add NOT NULL columns).
 
+### Scheduler memory
+
+The scheduler process grows by roughly 700–800MB over a trading session and fills the 1GB swapfile within about two days (it was OOM-killed at 1.7GB on 2026-08-27); the cause is OPEN (see OPEN_ITEMS). It reports on itself: `memory_diagnostics.tick()` runs once per scheduler loop and writes `[MEMDIAG]` lines at INFO (journald only — nothing reaches `/issues`):
+
+```bash
+journalctl -u quantopsai --since today | grep MEMDIAG            # everything
+journalctl -u quantopsai --since today | grep "MEMDIAG. rss="    # RSS / swap / threads every 5 min
+```
+
+Every 30 minutes a growth report, measured against the first report after the process started, names the object **types** whose live count grew most, the **module-level containers** whose length grew most, and live counts of the usual suspects (DataFrames, connections, threads, HTTP clients). If RSS grew by more than 100MB while object counts, buffer-holding types and containers all stayed quiet, it says the memory is **not** held by Python objects — look at the allocator or a C extension instead of a Python cache.
+
+For exact allocation sites, run a bounded trace (costs CPU and memory; off by default): `touch /opt/quantopsai/.memdiag_trace`. The next loop iteration starts `tracemalloc`; 20 minutes later it logs the 25 call sites whose allocations grew most, stops tracing and removes the flag. Until the cause is fixed, watch the process's swap usage (`grep VmSwap /proc/$(systemctl show quantopsai -p MainPID --value)/status`) and restart in a closed market when it approaches the swapfile's size.
+
 ### Free disk
 
 The DBs grow ~10-50 MB per month per profile. Caches grow modestly. Plan for 1-2 GB free at minimum.
