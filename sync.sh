@@ -68,37 +68,51 @@ fi
 echo "Syncing code to ${DROPLET_IP}:${REMOTE_DIR}..."
 echo "  local HEAD = $LOCAL_HEAD (matches origin/main)"
 
-# Capture which files changed via rsync dry-run
-CHANGED=$(rsync -az --delete --dry-run --itemize-changes \
-    --exclude 'venv/' \
-    --exclude '__pycache__/' \
-    --exclude '.git/' \
-    --exclude '.claude/' \
-    --exclude '*.db' \
-    --exclude '*.db-shm' \
-    --exclude '*.db-wal' \
-    --exclude '*.pyc' \
-    --exclude '.env' \
-    --exclude 'node_modules/' \
-    --exclude '.DS_Store' \
-    --exclude 'logs/' \
-    --exclude 'backups/' \
-    --exclude 'predictions_archive/' \
-    --exclude 'exports/' \
-    --exclude '*.pkl' \
-    --exclude 'cycle_data_*.json' \
-    --exclude 'scheduler_status.json' \
-    --exclude 'dynamic_screener_cache.json' \
-    --exclude '.sync_test_marker' \
-    --exclude '.deploy_sha' \
-    --exclude '.deploy_timestamp' \
-    --exclude '.daily_snapshot_done.marker' \
-    --exclude '.daily_summary_sent_p*.marker' \
-    --exclude '.weekly_digest_sent.marker' \
-    --exclude '.capital_rebalance_done.marker' \
-    --exclude '.post_mortem_done_p*.marker' \
-    /Users/mackr0/Quantops/ \
-    root@${DROPLET_IP}:${REMOTE_DIR}/ 2>/dev/null | grep '^<f' | awk '{print $2}' || true)
+# ---------------------------------------------------------------------------
+# WHAT SHIPS: exactly the files git tracks at HEAD — an ALLOWLIST.
+#
+# 2026-09-21 — this used to be `rsync --delete` of the whole working tree
+# minus a hand-kept exclude list (kept TWICE: once for the dry run, once
+# for the real transfer). Anything on the droplet that was not on the Mac
+# and not on that list was DELETED by every deploy, and anything untracked
+# on the Mac was UPLOADED over prod's copy:
+#   - 2026-08: the learning archive was wiped (then excluded by hand);
+#   - deploy_logs/ — droplet-side suite and droplet-sync logs deleted, the
+#     Mac's own sync log uploaded in their place;
+#   - .medals_cache.json — the dropdown-medal cache, wiped every deploy;
+#   - altdata/congresstrades/data/cache/ — 395 downloaded House PTR PDFs
+#     and 655 price CSVs deleted every deploy and replaced by the Mac's
+#     stale copy, so the next cron run re-downloaded them all;
+#   - .cache/french_factors/, altdata/company_tickers.json — same.
+# A denylist fails OPEN: every new runtime file is one forgotten exclude
+# away from being wiped. An allowlist fails CLOSED: a deploy can only ever
+# write files git knows about, and it never deletes. Files REMOVED from
+# the repo are removed on prod by the `git reset --hard origin/main`
+# below, which already runs on every deploy. The pre-flight gate above
+# guarantees the working tree equals HEAD, so "tracked" == "what is in
+# the commit being deployed".
+#
+# --checksum: prod's files are rewritten by that git reset, so their
+# mtimes never match the Mac's; without it rsync's quick check re-sends
+# (and the restart logic below "sees a change in") nearly every file.
+# ---------------------------------------------------------------------------
+SHIP_LIST=$(mktemp -t qo-sync-files.XXXXXX)
+trap 'rm -f "$SHIP_LIST"' EXIT
+git -C "$LOCAL_REPO" ls-files -z > "$SHIP_LIST"
+if [ ! -s "$SHIP_LIST" ]; then
+    echo "ERROR: git ls-files returned nothing — refusing to deploy."
+    exit 1
+fi
+RSYNC_SHIP=(rsync -az --checksum --from0 --files-from="$SHIP_LIST")
+
+# Capture which files changed via rsync dry-run. A FAILED dry run must
+# stop the deploy: swallowing it used to read as "nothing changed".
+if ! DRY_RUN_OUT=$("${RSYNC_SHIP[@]}" --dry-run --itemize-changes \
+        "$LOCAL_REPO/" "root@${DROPLET_IP}:${REMOTE_DIR}/"); then
+    echo "ERROR: rsync dry run failed (droplet unreachable?) — nothing deployed."
+    exit 1
+fi
+CHANGED=$(echo "$DRY_RUN_OUT" | grep '^<f' | awk '{print $2}' || true)
 
 if [ -z "$CHANGED" ]; then
     # 2026-06-10 — DO NOT EARLY-RETURN HERE. The pre-fix script
@@ -126,36 +140,9 @@ fi
 
 # Actually sync (skipped when rsync dry-run found nothing to transfer)
 if ! $SKIP_RSYNC; then
-    rsync -az --delete \
-        --exclude 'venv/' \
-        --exclude '__pycache__/' \
-        --exclude '.git/' \
-        --exclude '.claude/' \
-        --exclude '*.db' \
-        --exclude '*.db-shm' \
-        --exclude '*.db-wal' \
-        --exclude '*.pyc' \
-        --exclude '.env' \
-        --exclude 'node_modules/' \
-        --exclude '.DS_Store' \
-        --exclude 'logs/' \
-        --exclude 'backups/' \
-        --exclude 'predictions_archive/' \
-        --exclude 'exports/' \
-        --exclude '*.pkl' \
-        --exclude 'cycle_data_*.json' \
-        --exclude 'scheduler_status.json' \
-        --exclude 'dynamic_screener_cache.json' \
-        --exclude '.sync_test_marker' \
-    --exclude '.deploy_sha' \
-    --exclude '.deploy_timestamp' \
-        --exclude '.daily_snapshot_done.marker' \
-        --exclude '.daily_summary_sent_p*.marker' \
-        --exclude '.weekly_digest_sent.marker' \
-        --exclude '.capital_rebalance_done.marker' \
-        --exclude '.post_mortem_done_p*.marker' \
-        /Users/mackr0/Quantops/ \
-        root@${DROPLET_IP}:${REMOTE_DIR}/
+    # The SAME command as the dry run above — one definition, so the two
+    # can never drift apart (they did: the exclude list was kept twice).
+    "${RSYNC_SHIP[@]}" "$LOCAL_REPO/" "root@${DROPLET_IP}:${REMOTE_DIR}/"
 
     echo "Sync complete."
 else
