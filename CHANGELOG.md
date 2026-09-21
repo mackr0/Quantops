@@ -5,6 +5,23 @@ at the top.
 
 ---
 
+## 2026-09-21 — The scheduler's memory growth: three suspected causes ruled out by measurement, and the scheduler now attributes its own growth. Severity: MEDIUM (the process still grows — cause NOT yet fixed; this ships the instrument that will name it, and records what it is not).
+
+Operator: "now fix the scheduler memory leak." It is not fixed yet, and this entry says so plainly: the growth only happens in the live trading cycle, the market was closed, and every cause that could be tested offline turned out not to be it.
+
+**The shape (from the droplet's `sar` history, 09-17 → 09-19).** Flat overnight; climbing only through the 13:30–20:00 UTC session — about **700–800MB in one trading day**, ~10MB per 5-minute cycle (OPEN_ITEMS had estimated 400MB/day) — and cold: after the close the pages are pushed to swap and never read back. That is retained per-cycle data or stranded freed memory, not a hot cache.
+
+**Ruled out, each by an experiment:**
+- *The bars cache.* `market_data._bars_cache` never evicts — but a 200-bar frame measures ~11KB, so caching the entire 11,000-symbol universe tops out near 200MB, not 1.7GB.
+- *A new LLM SDK client per call.* `ai_providers.py` builds `OpenAI(...)` / `anthropic.Anthropic(...)` / `genai.Client(...)` on every call and never closes one; constructing and dropping hundreds is fully reclaimed (0.0–4.9KB each, flat on repeat).
+- *glibc arena retention.* The scheduler builds a fresh 13-thread pool every cycle plus a pool per ensemble call, and never trims. A faithful replay on the droplet (13 workers per cycle, each building and dropping pandas frames, prompt-sized strings and parsed JSON, `gc.collect()` before every reading) plateaus at +27MB across 30 cycles; `MALLOC_ARENA_MAX=2` and a per-cycle `malloc_trim(0)` change it by a few MB. Shipping an arena cap would have been a guess dressed as a fix.
+
+**The instrument (`memory_diagnostics.py`, one `tick()` per scheduler loop iteration).** `[MEMDIAG]` lines at INFO — journald only, nothing on `/issues`: RSS / swap / threads every 5 minutes; every 30, a growth report against the first report after start, naming the object **types** whose live count grew most and the **module-level containers** whose length grew most, plus live counts of the usual suspects. When RSS grew by >100MB while object counts, buffer-holding types (DataFrame, ndarray, bytes…) and containers all stayed quiet, it says the memory is not held by Python objects. `touch /opt/quantopsai/.memdiag_trace` runs a bounded 20-minute `tracemalloc` and logs the 25 call sites that grew most, then removes its own flag. It never raises into the scheduler. `docs/07` §5 has the commands; OPEN_ITEMS carries the state of the hunt.
+
+**Pinned:** `tests/test_memory_diagnostics_2026_09_21.py` (13 tests) — the report names what grew, biggest first; the not-Python-objects verdict fires only when counts, buffer types and containers are all quiet (a first draft keyed on counts alone and would have blamed the allocator for 9,000 new DataFrames); a growing module-level cache is found; heartbeat and report cadence; a failing collector never reaches the scheduler; the trace is off by default, bounded, names the growth site and removes its flag; the scheduler loop calls it every iteration; routine lines stay at INFO.
+
+---
+
 ## 2026-09-21 — Batch 4's training was killed by macOS at step ~630; the exam is now resumable so a crash costs one answer, not half a day. Severity: LOW (fine-tune tooling; nothing in trading).
 
 Batch 4 (launched 2026-09-20 on the corrected recipe) stopped at step ~630 of 1,200 with `[METAL] Command buffer execution failed: Impacting Interactivity` — macOS kills a long GPU job when the display needs the GPU. Not a recipe or data fault; checkpoints 100–600 are intact. Validation loss on answers only was 3.616 at the start, then 0.595 / 0.605 / 0.625 / 0.748 / 0.548 / 0.673 at steps 100–600: flat and noisy after step 100. The run was deliberately **not** resumed before examining it — if no checkpoint shows promise, more steps of the same recipe are not what is missing.
