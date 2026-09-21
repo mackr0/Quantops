@@ -206,6 +206,20 @@ class TestWiring:
         assert head.index("memory_diagnostics.tick()") < head.index(
             "# Rotate log file if day changed")
 
+    def test_the_closed_market_sleep_loop_calls_tick_too(self):
+        """A market-hours fleet spends every night and weekend parked in
+        the inner sleep loop; with the hook only at the top of the outer
+        loop it reported once at startup and then nothing for 8 hours.
+        The overnight readings are the control, and the last one before
+        the open is the baseline the session is read against."""
+        src = open(os.path.join(REPO, "multi_scheduler.py")).read()
+        i = src.index('f"Market closed, sleeping until')
+        inner = src[i:src.index("time.sleep(60)", i)]
+        assert "while not _shutdown:" in inner
+        assert "memory_diagnostics.tick()" in inner
+        assert inner.index("memory_diagnostics.tick()") < inner.index(
+            "_closed_market_housekeeping()")
+
     def test_reports_stay_off_the_issues_page(self):
         """INFO only for the routine lines — /issues collects WARNING+."""
         src = open(os.path.join(REPO, "memory_diagnostics.py")).read()

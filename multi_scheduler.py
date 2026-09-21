@@ -6638,6 +6638,15 @@ def main_loop(active_segments=None, legacy_mode=False):
                 now = datetime.now(ET)
                 if is_market_open(now):
                     break
+                # Memory attribution also runs from HERE: a market-hours
+                # fleet spends every night and weekend parked in this
+                # loop, so the outer-loop call alone reported once at
+                # startup and then nothing for 8 hours (2026-09-21). The
+                # overnight readings are the control — they show whether
+                # the process is flat while closed — and the last one
+                # before the open is the baseline the session is read
+                # against.
+                memory_diagnostics.tick()
                 # CLOSED-MARKET HOUSEKEEPING (2026-07-25): the broker
                 # keeps acting after the close — Friday's option expiry
                 # activities (OPASN/OPEXP/settlements) posted at ~01:00
