@@ -82,10 +82,21 @@ class TestOptOutIsExplicitAndVisible:
 class TestMechanismIsWired:
     def test_root_conftest_applies_the_refusal_to_every_test(self):
         src = open(os.path.join(REPO, "conftest.py")).read()
-        assert "@pytest.fixture(autouse=True)" in src
-        assert "def _network_refused_by_default(request):" in src
+        # installed for the whole SESSION at import, not per test
+        assert "\nsocket.getaddrinfo = _refuse\n" in src
+        assert "_curl_requests.Session.request = _refuse_curl" in src
+        assert "def _network_refused_by_default(request, monkeypatch):" in src
         assert 'get_closest_marker("allow_network")' in src
-        assert "def no_network(monkeypatch):" in src
+        assert "def no_network():" in src
+
+    def test_the_refusal_outlives_a_tests_own_teardown(self, monkeypatch):
+        """A background thread can outlive the test that started it (the
+        dashboard's medal warm did, on 2026-09-20, and wrote into the
+        install directory). Undoing every per-test patch must leave the
+        network STILL refused — the floor is the session, not the test."""
+        monkeypatch.undo()
+        with pytest.raises(socket.gaierror, match="network disabled"):
+            socket.getaddrinfo("paper-api.alpaca.markets", 443)
 
     def test_there_is_one_definition_of_the_fixture(self):
         """A second `no_network` under tests/ would shadow the root one
