@@ -852,9 +852,29 @@ the closed market: swap 1,023MB → 127MB.
       report naming the object types and module-level containers that
       grew, with an explicit verdict when the growth is not Python
       objects; `touch /opt/quantopsai/.memdiag_trace` runs a bounded
-      20-minute allocation trace. `docs/07` §5 has the commands. The
-      first trading session after 2026-09-21 yields the attribution;
-      the fix follows from it.
+      20-minute allocation trace. `docs/07` §5 has the commands.
+      (4) *First live session, 2026-09-21 — it is NATIVE memory, not a
+      Python cache.* RSS 239MB before the open → 712MB at 13:48 UTC →
+      1,059MB at 14:15 (box: 1.38GB used, 277MB in swap, 45 minutes
+      in). The first window carries the one-time import burst
+      (`sys.modules` +2,511). The SECOND window is the finding: **RSS
+      +344MB in 30 minutes while Python objects barely moved** —
+      DataFrame +141, dict +1,855, list +1,630, weakrefs DOWN, the
+      only growing containers `market_data._bars_cache` +101 and
+      `order_status_cache._cache` +95. 141 small frames cannot hold
+      344MB. So the growth is either memory Python already freed that
+      glibc is keeping (fragmentation) or memory a C extension still
+      holds. The reporter now settles which: every 30-minute report
+      states the MB actually held by pandas frames (arrays are not
+      GC-tracked, so they are reached through their blocks, each
+      buffer counted once) and — once the process has grown 100MB —
+      calls `malloc_trim(0)` and logs RSS before and after. **A large
+      drop means trimming after each cycle is the fix; no drop means a
+      native holder, and the flag-file allocation trace is next.**
+      Two real but SMALL leaks also surfaced, to fix regardless:
+      `sec_filings._CIK_CACHE` (10,438 entries, loaded whole) and
+      `order_status_cache._cache` (4,709 and growing every window,
+      never evicted).
 - [ ] Until fixed, the process will refill swap in ~2–3 days. Watch
       `VmSwap` in `/proc/<pid>/status`; a restart in a closed market
       is safe (graceful SIGTERM drain, `TimeoutStopSec=600`).

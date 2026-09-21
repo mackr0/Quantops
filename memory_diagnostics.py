@@ -85,6 +85,64 @@ def read_memory() -> Dict[str, Optional[float]]:
     return out
 
 
+def array_bytes_mb() -> Dict[str, float]:
+    """MB actually held by the arrays inside every live pandas object.
+
+    Object COUNTS cannot say whether 141 new DataFrames explain 344MB;
+    this can. numpy arrays (and bytes) are NOT tracked by the garbage
+    collector, so they cannot be found by walking `gc.get_objects()` —
+    but the pandas BLOCKS that hold them are, and frames are where this
+    process keeps its arrays. Each underlying buffer is counted once,
+    however many frames, slices and views share it. If RSS grows by
+    hundreds of MB and this does not, the memory is not in any frame
+    Python holds."""
+    roots: Dict[int, int] = {}
+    n_blocks = 0
+    for obj in gc.get_objects():
+        if not type(obj).__name__.endswith("Block"):
+            continue
+        values = getattr(obj, "values", None)
+        if values is None or not hasattr(values, "nbytes"):
+            continue
+        n_blocks += 1
+        root = values
+        for _ in range(8):                     # follow views to the owner
+            base = getattr(root, "base", None)
+            if base is None or not hasattr(base, "nbytes"):
+                break
+            root = base
+        try:
+            roots[id(root)] = int(root.nbytes)
+        except (TypeError, ValueError):
+            continue
+    return {"owned_arrays_mb": sum(roots.values()) / 1e6,
+            "owned_arrays": float(len(roots)),
+            "blocks": float(n_blocks), "bytes_mb": 0.0}
+
+
+def trim_allocator() -> Optional[Tuple[float, float]]:
+    """Ask glibc to hand FREE heap memory back to the OS and return
+    (rss_before_mb, rss_after_mb); None where that is not available.
+
+    This is the experiment that separates the two kinds of native
+    growth. If RSS drops by hundreds of MB, the memory was already
+    freed by Python and merely kept by the allocator (fragmentation) —
+    trimming is then also the fix. If it barely moves, something native
+    is genuinely still holding it. `malloc_trim` only releases memory
+    nobody is using; it cannot break anything."""
+    import ctypes
+    before = read_memory()["rss_mb"]
+    if before is None:
+        return None
+    try:
+        libc = ctypes.CDLL("libc.so.6")
+        libc.malloc_trim(0)
+    except (OSError, AttributeError):
+        return None
+    after = read_memory()["rss_mb"]
+    return (before, after) if after is not None else None
+
+
 def type_counts() -> Counter:
     """Live object count per type name. O(number of objects) — seconds
     on a large heap, which is why it runs every 30 minutes, not every
@@ -132,8 +190,15 @@ def growth_report(baseline_types: Dict[str, int],
                   now_types: Dict[str, int],
                   now_containers: Dict[str, int],
                   rss_delta_mb: Optional[float],
-                  native_threshold_mb: float = 100.0) -> List[str]:
-    """The report's lines — pure, so it is tested without a live heap."""
+                  native_threshold_mb: float = 100.0,
+                  array_mb_delta: Optional[float] = None) -> List[str]:
+    """The report's lines — pure, so it is tested without a live heap.
+
+    `array_mb_delta` is the growth in MB actually held by arrays and
+    byte buffers (`array_bytes_mb`). When it is known it REPLACES the
+    count-based guess about buffer-holding types: on 2026-09-21 a
+    window grew 344MB with +141 DataFrames, and the count guard read
+    those 141 frames as a possible explanation and stayed silent."""
     lines: List[str] = []
     types = _top_growth(baseline_types, now_types, 12)
     conts = _top_growth(baseline_containers, now_containers, 12)
@@ -153,8 +218,15 @@ def growth_report(baseline_types: Dict[str, int],
     heavy_grew = sum(max(0, now_types.get(k, 0) - baseline_types.get(k, 0))
                      for k in _HEAVY_TYPES)
     containers_grew = sum(d for _k, d, _v in conts)
+    if array_mb_delta is not None:
+        lines.append(f"arrays held by pandas frames: "
+                     f"{array_mb_delta:+.0f}MB")
+        buffers_quiet = (rss_delta_mb is not None
+                         and array_mb_delta < 0.25 * rss_delta_mb)
+    else:
+        buffers_quiet = heavy_grew < 200
     if (rss_delta_mb is not None and rss_delta_mb > native_threshold_mb
-            and objects_grew < 50_000 and heavy_grew < 200
+            and objects_grew < 50_000 and buffers_quiet
             and containers_grew < 1_000):
         lines.append(
             f"RSS grew {rss_delta_mb:.0f}MB while Python object counts "
@@ -228,11 +300,14 @@ def tick(now: Optional[float] = None) -> None:
             t0 = time.time()
             types = dict(type_counts())
             conts = container_lengths()
+            held = array_bytes_mb()
+            held_mb = held["owned_arrays_mb"] + held["bytes_mb"]
             if _state["baseline_types"] is None:
                 _state["baseline_types"] = types
                 _state["baseline_containers"] = conts
                 _state["prev_types"], _state["prev_containers"] = types, conts
                 _state["prev_rss"] = rss
+                _state["baseline_held_mb"] = _state["prev_held_mb"] = held_mb
                 logger.info("[MEMDIAG] baseline taken: %d live objects, %d "
                             "module-level containers >= %d long (%.1fs)",
                             sum(types.values()), len(conts),
@@ -251,19 +326,47 @@ def tick(now: Optional[float] = None) -> None:
                         f"{window:+.0f}MB" if window is not None else "n/a")
             # ~10MB per 5-minute cycle is ~60MB per window: a 30MB
             # window with quiet objects is already worth saying.
-            for line in growth_report(_state["prev_types"],
-                                      _state["prev_containers"],
-                                      types, conts, window,
-                                      native_threshold_mb=30.0):
+            for line in growth_report(
+                    _state["prev_types"], _state["prev_containers"],
+                    types, conts, window, native_threshold_mb=30.0,
+                    array_mb_delta=held_mb - _state.get("prev_held_mb",
+                                                        held_mb)):
                 logger.info("[MEMDIAG] %s", line)
             logger.info("[MEMDIAG] === SINCE START, rss %s ===",
                         f"{delta:+.0f}MB" if delta is not None else "n/a")
-            for line in growth_report(_state["baseline_types"],
-                                      _state["baseline_containers"],
-                                      types, conts, delta):
+            for line in growth_report(
+                    _state["baseline_types"], _state["baseline_containers"],
+                    types, conts, delta,
+                    array_mb_delta=held_mb - _state.get("baseline_held_mb",
+                                                        held_mb)):
                 logger.info("[MEMDIAG] %s", line)
+            logger.info(
+                "[MEMDIAG] pandas frames hold %.0fMB in %d distinct buffers "
+                "(%d blocks); process rss %s",
+                held["owned_arrays_mb"], int(held["owned_arrays"]),
+                int(held.get("blocks", 0)),
+                f"{rss:.0f}MB" if rss is not None else "n/a")
+            # The trim experiment, once per report and only when the
+            # process has actually grown: freed-but-retained memory
+            # comes back; genuinely held memory does not.
+            rss_after_trim = rss
+            if delta is not None and delta > 100:
+                trimmed = trim_allocator()
+                if trimmed is not None:
+                    before, after = trimmed
+                    rss_after_trim = after
+                    logger.info(
+                        "[MEMDIAG] allocator trim: rss %.0fMB -> %.0fMB "
+                        "(%+.0fMB) — %s", before, after, after - before,
+                        "that memory had been FREED by Python and was only "
+                        "kept by the allocator" if before - after > 50 else
+                        "almost nothing came back, so the growth is memory "
+                        "something is still holding")
             _state["prev_types"], _state["prev_containers"] = types, conts
-            _state["prev_rss"] = rss
+            # The next window is measured from AFTER the trim, so a
+            # trim's release is not mistaken for that window shrinking.
+            _state["prev_rss"] = rss_after_trim
+            _state["prev_held_mb"] = held_mb
             logger.info("[MEMDIAG] growth report took %.1fs",
                         time.time() - t0)
     except Exception as exc:          # a diagnostic must never hurt the scheduler
