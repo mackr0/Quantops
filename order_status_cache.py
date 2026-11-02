@@ -58,6 +58,24 @@ RATE_LIMIT_COOLDOWN_S = 90.0
 
 _lock = threading.Lock()
 _cache: dict = {}          # (order_id, nested) -> (fetched_at, order, forever)
+#: 2026-11-01 — the cache is BOUNDED. Terminal orders are cached forever
+#: by design, but the set of orders a long-lived process has seen grows
+#: without end (4,709 entries after two days, never evicted — one of the
+#: two small leaks named in OPEN_ITEMS 2026-09-19). Above the cap the
+#: oldest tenth is dropped; re-looking-up an evicted terminal order costs
+#: one API call, exactly as after a restart.
+CACHE_MAX_ENTRIES = 2000
+
+
+def _evict_if_needed_locked() -> int:
+    """Drop the oldest ~10% of entries when over the cap. Caller holds
+    `_lock`. Returns the number evicted."""
+    if len(_cache) <= CACHE_MAX_ENTRIES:
+        return 0
+    victims = sorted(_cache.items(), key=lambda kv: kv[1][0])[:max(1, len(_cache) // 10)]
+    for key, _ in victims:
+        _cache.pop(key, None)
+    return len(victims)
 _cooldown_until = 0.0
 
 
@@ -139,6 +157,7 @@ def get_order_cached(api, order_id: str, nested: bool = False,
     if order is not None:
         with _lock:
             _cache[key] = (now, order, _is_immutable(order))
+            _evict_if_needed_locked()
     return order
 
 

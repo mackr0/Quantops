@@ -50,6 +50,20 @@ logger = logging.getLogger(__name__)
 HEARTBEAT_SECONDS = 300
 REPORT_SECONDS = 1800
 TRACE_SECONDS = 1200
+# 2026-11-01 — the live malloc_trim experiment (six weeks of 30-minute
+# reports) answered its question: during a session trim returns ~130MB
+# (freed by Python, kept by glibc) and ~670MB stays held — a native
+# holder, still being attributed. The ~130MB is reclaimed continuously
+# now: a trim on any 5-minute heartbeat that shows TRIM_GROWTH_MB of
+# growth since the last one. And the operational failure (swap fills in
+# 2-3 days, the box crawls, the kernel OOM-kills the process mid-session)
+# is cut off: when the process holds RESTART_SWAP_MB of swap or
+# RESTART_TOTAL_MB in total, `restart_recommended()` says so and the
+# scheduler re-executes itself in place while the market is closed with
+# more than an hour to the open (see multi_scheduler's closed-market loop).
+TRIM_GROWTH_MB = 40.0
+RESTART_SWAP_MB = 600.0
+RESTART_TOTAL_MB = 1100.0
 TRACE_FLAG = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           ".memdiag_trace")
 _CONTAINER_MIN_LEN = 200
@@ -63,7 +77,7 @@ _state: Dict[str, Any] = {
     "started": None, "first_rss": None, "last_heartbeat": 0.0,
     "last_report": 0.0, "baseline_types": None,
     "baseline_containers": None, "trace_started": None,
-    "trace_baseline": None,
+    "trace_baseline": None, "last_trim_rss": None,
 }
 _lock = threading.Lock()
 
@@ -141,6 +155,40 @@ def trim_allocator() -> Optional[Tuple[float, float]]:
         return None
     after = read_memory()["rss_mb"]
     return (before, after) if after is not None else None
+
+
+def maybe_trim(rss_mb: Optional[float]) -> Optional[Tuple[float, float]]:
+    """Trim the allocator when RSS has grown TRIM_GROWTH_MB since the
+    last trim (or first reading). Returns (before, after) when a trim
+    ran. Caller holds `_lock`."""
+    if rss_mb is None:
+        return None
+    last = _state.get("last_trim_rss")
+    if last is None:
+        _state["last_trim_rss"] = rss_mb
+        return None
+    if rss_mb - last < TRIM_GROWTH_MB:
+        return None
+    result = trim_allocator()
+    _state["last_trim_rss"] = result[1] if result else rss_mb
+    return result
+
+
+def restart_recommended(mem: Optional[Dict[str, Optional[float]]] = None
+                        ) -> Optional[str]:
+    """A one-line reason when the process should be re-executed at the
+    next safe moment (market closed, >60 min to the open), else None.
+    Pure: reads /proc, decides nothing about market state."""
+    mem = read_memory() if mem is None else mem
+    rss, swap = mem.get("rss_mb"), mem.get("swap_mb")
+    if rss is None or swap is None:
+        return None
+    if swap >= RESTART_SWAP_MB:
+        return (f"scheduler holds {swap:.0f}MB of swap (limit {RESTART_SWAP_MB:.0f}MB)")
+    if rss + swap >= RESTART_TOTAL_MB:
+        return (f"scheduler holds {rss + swap:.0f}MB rss+swap (limit "
+                f"{RESTART_TOTAL_MB:.0f}MB)")
+    return None
 
 
 def type_counts() -> Counter:
@@ -294,6 +342,10 @@ def tick(now: Optional[float] = None) -> None:
                 f"{mem['swap_mb']:.0f}MB" if mem["swap_mb"] is not None else "n/a",
                 int(mem["threads"] or 0), hours,
                 f"{delta:+.0f}MB" if delta is not None else "n/a")
+            trimmed = maybe_trim(rss)
+            if trimmed:
+                logger.info("[MEMDIAG] heartbeat trim: rss %.0fMB -> %.0fMB (%+.0fMB)",
+                            trimmed[0], trimmed[1], trimmed[1] - trimmed[0])
             if now - _state["last_report"] < REPORT_SECONDS:
                 return
             _state["last_report"] = now
