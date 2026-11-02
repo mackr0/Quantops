@@ -388,3 +388,50 @@ def test_restore_returns_error_when_no_backup(tmp_path):
     )
     assert out["status"] == "error"
     assert "no backup" in out["detail"].lower()
+
+
+class TestWalAwareRecheck:
+    """2026-11-02 — an immutable quick_check can report 'malformed' on a
+    healthy WAL database while a writer is mid-checkpoint (it happened at
+    the deploy restart and halted the scheduler). With a -wal sidecar
+    present the check re-reads through the WAL; without one it does not
+    (backups stay sidecar-free)."""
+
+    def _fake_connect(self, calls):
+        def connect(target, *a, **kw):
+            calls.append(target)
+            class _Conn:
+                def execute(self_inner, sql):
+                    class _Cur:
+                        def fetchall(cur_self):
+                            if "immutable=1" in target:
+                                raise sqlite3.DatabaseError("database disk image is malformed")
+                            return [("ok",)]
+                    return _Cur()
+                def close(self_inner): pass
+            return _Conn()
+        return connect
+
+    def test_recheck_through_wal_clears_a_false_malformed(self, tmp_path, monkeypatch):
+        from db_integrity import check_db
+        import db_integrity
+        p = tmp_path / "live.db"
+        conn = sqlite3.connect(str(p)); conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE t (x)"); conn.commit(); conn.close()
+        (tmp_path / "live.db-wal").write_bytes(b"\x00" * 32)      # a writer is around
+        calls = []
+        monkeypatch.setattr(db_integrity.sqlite3, "connect", self._fake_connect(calls))
+        out = check_db(str(p))
+        assert out["status"] == "ok" and "WAL-aware" in out["detail"]
+        assert any("immutable=1" in c for c in calls) and any(c.endswith("?mode=ro") for c in calls)
+
+    def test_no_wal_sidecar_means_no_recheck(self, tmp_path, monkeypatch):
+        from db_integrity import check_db
+        import db_integrity
+        p = tmp_path / "backup.db"
+        conn = sqlite3.connect(str(p)); conn.execute("CREATE TABLE t (x)"); conn.commit(); conn.close()
+        calls = []
+        monkeypatch.setattr(db_integrity.sqlite3, "connect", self._fake_connect(calls))
+        out = check_db(str(p))
+        assert out["status"] == "corrupt" and "malformed" in out["detail"]
+        assert not any(c.endswith("?mode=ro") for c in calls)

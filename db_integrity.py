@@ -122,6 +122,10 @@ def check_db(path: str) -> Dict[str, str]:
     `-shm` sidecars next to the file we are inspecting. Without it,
     inspecting a backup file leaves sidecar pollution in the backup
     directory, which then gets picked up by find_latest_backup.
+    2026-11-02: because immutable ignores the WAL, a non-ok result on
+    a file that HAS a -wal sidecar is re-checked WAL-aware before it
+    is called corrupt (see the inline note) — the false "malformed"
+    that halted the scheduler at startup on deploy day.
 
     Returns {"status": "ok"|"corrupt"|"missing"|"error", "detail": <str>}.
     """
@@ -137,13 +141,40 @@ def check_db(path: str) -> Dict[str, str]:
         if magic != _SQLITE_MAGIC:
             return {"status": "corrupt",
                     "detail": "missing SQLite file header magic"}
-        with closing(sqlite3.connect(
-            f"file:{path}?mode=ro&immutable=1", uri=True, timeout=5.0,
-        )) as conn:
-            result = conn.execute("PRAGMA quick_check").fetchall()
+        try:
+            with closing(sqlite3.connect(
+                f"file:{path}?mode=ro&immutable=1", uri=True, timeout=5.0,
+            )) as conn:
+                result = conn.execute("PRAGMA quick_check").fetchall()
+        except sqlite3.DatabaseError as exc:
+            result = [(str(exc),)]
         # An OK DB returns exactly [("ok",)]
         if len(result) == 1 and result[0][0] == "ok":
             return {"status": "ok", "detail": "ok"}
+        # 2026-11-02 — `immutable=1` reads the MAIN file only and ignores
+        # the WAL and all locks. While a writer is active (the deploy
+        # restarts web + scheduler together; a repair script may be
+        # running) the main file can be mid-checkpoint, and quick_check
+        # then reports "database disk image is malformed" for a healthy
+        # database: at 16:51:24 UTC the scheduler refused to start on a
+        # master DB that passed integrity_check 20 minutes later. When a
+        # -wal sidecar exists — the only case a live writer can be
+        # involved — re-check through the WAL (plain mode=ro honors it)
+        # and trust THAT answer. Backups never carry a -wal, so the
+        # no-sidecar property this function promises them is unchanged.
+        if os.path.exists(path + "-wal"):
+            try:
+                with closing(sqlite3.connect(
+                    f"file:{path}?mode=ro", uri=True, timeout=10.0,
+                )) as conn:
+                    recheck = conn.execute("PRAGMA quick_check").fetchall()
+            except sqlite3.DatabaseError as exc:
+                recheck = [(str(exc),)]
+            if len(recheck) == 1 and recheck[0][0] == "ok":
+                return {"status": "ok",
+                        "detail": ("ok (immutable read saw a mid-checkpoint page; "
+                                   "WAL-aware re-check clean)")}
+            result = recheck
         # Filter out NOT NULL constraint violations on existing rows.
         # These are NOT file corruption — they happen when a column is
         # added to an existing table via ALTER TABLE with NOT NULL but
