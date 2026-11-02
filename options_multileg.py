@@ -550,6 +550,13 @@ def _combo_submit_with_retry(api, payload, max_retries=2,
     raise RuntimeError("Combo submit retry loop exited without result")
 
 
+def _leg_quote_snapshots(underlying: str):
+    """Live chain snapshots for the spread's underlying (patchable in
+    tests). Returns {occ: snapshot} or None."""
+    from options_chain_alpaca import _fetch_snapshots
+    return _fetch_snapshots(underlying) or None
+
+
 def _submit_alpaca_order_raw(api, payload):
     """POST directly to Alpaca's `/v2/orders` endpoint, bypassing
     the alpaca-trade-api SDK's narrow `submit_order` signature.
@@ -885,6 +892,34 @@ def execute_multileg_strategy(
                 "(continuing to submit): %s", exc,
             )
 
+    if use_combo and limit_price is None:
+        # P2.2 step 2 (2026-11-01): multi-leg spreads NEVER go to market.
+        # Derive the net limit from the strategy's mid net premium with a
+        # small concession toward fillability; with no net price there is
+        # nothing to bound the fill, so the spread is skipped.
+        from marketable_limit import (multileg_limit_from_net,
+                                      multileg_net_from_quotes)
+        _net = getattr(strategy, "net_premium_per_contract", None)
+        if _net is None:
+            # Production specs are built from strikes alone (no
+            # premiums): price the spread from the chain's live leg
+            # quotes — one snapshot call for the underlying.
+            try:
+                _snaps = _leg_quote_snapshots(strategy.underlying)
+            except Exception as _q_exc:
+                logger.debug("[multileg] leg quotes unavailable for %s: %s",
+                             strategy.underlying, _q_exc)
+                _snaps = None
+            _net = multileg_net_from_quotes(strategy.legs, _snaps)
+        limit_price = multileg_limit_from_net(_net)
+        if limit_price is None:
+            result["action"] = "SKIP"
+            result["reason"] = (
+                "multi-leg spreads never go to market (P2.2 step 2) and no "
+                "net premium was available to derive a limit")
+            logger.info("[multileg] %s SKIPPED — %s", strategy.name,
+                        result["reason"])
+            return result
     combo_id: Optional[str] = None
     if use_combo:
         try:

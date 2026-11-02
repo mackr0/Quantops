@@ -198,6 +198,7 @@ class TestComboPathFallthroughOnRetryExhaustion:
             lower_strike=26.0,
             upper_strike=27.0,
             qty=3,
+            long_premium=5.0, short_premium=2.0,  # P2.2 step 2: net premium → limit
         )
 
         sequential_calls = []

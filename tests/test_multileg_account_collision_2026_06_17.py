@@ -32,7 +32,7 @@ def _stub_order(order_id="ord-x"):
 def _spread():
     from options_multileg import build_bear_call_spread
     # sell the $15 call (short), buy the $17 call (long)
-    return build_bear_call_spread("NOK", EXPIRY, 15, 17, qty=1)
+    return build_bear_call_spread("NOK", EXPIRY, 15, 17, qty=1, short_premium=2.0, long_premium=0.5)
 
 
 def _pos(occ, qty):

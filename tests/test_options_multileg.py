@@ -303,7 +303,7 @@ class TestExecuteMultilegStrategy:
         from options_multileg import (
             build_bull_call_spread, execute_multileg_strategy,
         )
-        spec = build_bull_call_spread("AAPL", EXPIRY, 150, 160, qty=2)
+        spec = build_bull_call_spread("AAPL", EXPIRY, 150, 160, qty=2, long_premium=5.0, short_premium=2.0)  # P2.2 step 2: a net premium → limit (never market)
         captured = self._patch_post(
             monkeypatch, return_value=MagicMock(id="combo-123"),
         )
@@ -327,7 +327,7 @@ class TestExecuteMultilegStrategy:
         from options_multileg import (
             build_bull_call_spread, execute_multileg_strategy,
         )
-        spec = build_bull_call_spread("AAPL", EXPIRY, 150, 160, qty=1)
+        spec = build_bull_call_spread("AAPL", EXPIRY, 150, 160, qty=1, long_premium=5.0, short_premium=2.0)  # P2.2 step 2: a net premium → limit (never market)
         captured = self._patch_post(
             monkeypatch, return_value=MagicMock(id="combo-456"),
         )
@@ -345,7 +345,7 @@ class TestExecuteMultilegStrategy:
         from options_multileg import (
             build_bull_call_spread, execute_multileg_strategy,
         )
-        spec = build_bull_call_spread("AAPL", EXPIRY, 150, 160, qty=1)
+        spec = build_bull_call_spread("AAPL", EXPIRY, 150, 160, qty=1, long_premium=5.0, short_premium=2.0)  # P2.2 step 2: a net premium → limit (never market)
         captured = self._patch_post(monkeypatch, side_effect=[
             Exception("MLEG not supported on this account"),
             MagicMock(id="leg-1"),
@@ -369,7 +369,7 @@ class TestExecuteMultilegStrategy:
         from options_multileg import (
             build_bull_call_spread, execute_multileg_strategy,
         )
-        spec = build_bull_call_spread("AAPL", EXPIRY, 150, 160, qty=1)
+        spec = build_bull_call_spread("AAPL", EXPIRY, 150, 160, qty=1, long_premium=5.0, short_premium=2.0)  # P2.2 step 2: a net premium → limit (never market)
         # 4 calls: combo (fails) -> leg 1 (succeeds) -> leg 2 (fails)
         # -> rollback of leg 1 (succeeds).
         captured = self._patch_post(monkeypatch, side_effect=[
@@ -555,7 +555,7 @@ class TestExecuteMultilegStrategy:
         conn.commit()
         conn.close()
 
-        spec = build_bull_call_spread("AAPL", EXPIRY, 150, 160, qty=1)
+        spec = build_bull_call_spread("AAPL", EXPIRY, 150, 160, qty=1, long_premium=5.0, short_premium=2.0)  # P2.2 step 2: a net premium → limit (never market)
 
         def fake_post(api, payload):
             return MagicMock(id="combo-id")

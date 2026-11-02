@@ -122,19 +122,17 @@ class TestJournalColumn:
 
 
 class TestNoBehaviorChange:
-    def test_entry_estimator_still_blind_to_spread(self):
-        """Step 1 is telemetry. The entry-path estimate_slippage call
-        must NOT receive the live spread until the operator times the
-        step-2 rollout (it would shift predicted costs and
-        wide_spread/slippage_high specialist firing)."""
+    def test_entry_estimator_sees_the_spread(self):
+        """Step 2 (2026-11-01, operator go): the entry-path estimate now
+        receives the live spread from the same NBBO fetch that prices
+        the marketable limit. (Step 1 pinned the inverse while the
+        rollout was operator-timed.)"""
         src = open(os.path.join(REPO, "trade_pipeline.py")).read()
         i = src.find('_est = estimate_slippage(\n                    symbol=symbol, qty=qty, side="buy"')
         assert i != -1
         block = src[i:i + 400]
-        assert "spread_bps" not in block, (
-            "the entry estimator now receives a spread argument — "
-            "that is the step-2 behavior change, which is "
-            "operator-timed. Revert or get the operator's go."
+        assert 'spread_bps=_ml["spread_bps"] if _ml else None' in block, (
+            "the entry estimator must receive the live spread (P2.2 step 2)"
         )
 
     def test_both_entry_sides_stamp_spread(self):

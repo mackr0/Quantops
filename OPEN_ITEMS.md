@@ -162,25 +162,15 @@ DESIGNED AI inputs; [exec] = execution change, operator times it.
       costs. Pinned: test_realized_slippage_labels_2026_07_26.py
       (+ legacy short fixture fixed from side='sell' — it mirrored
       the mapping bug).
-- [ ] P2.2 [exec — operator times rollout] NBBO + marketable limits.
-      STEP 1 DONE 2026-07-26: get_nbbo_spread_bps() (real two-sided
-      quote or None — one-sided/crossed refused); get_snapshot's
-      bid/ask now the real NBBO (was: trade-price alias) + spread_bps
-      key; spread_bps_at_decision column stamped on buy AND short
-      entries. Telemetry only — the entry estimator still receives
-      spread_bps=None (pinned: feeding it the live spread shifts
-      predicted costs + wide_spread/slippage_high firing, which is
-      the step-2 behavior change). Pinned:
-      test_nbbo_spread_telemetry_2026_07_26.py (8).
-      STEP 2 [awaits operator go]: marketable-limit orders +
-      never-market multi-leg options + feed real spread to the
-      estimator/specialists. Data to time it: spread_bps_at_decision
-      accumulates from step-1 deploy; compare vs realized
-      slippage_pct per symbol/size before flipping.
-      RE-REVIEW 2026-08-10 (guaranteed 4 ways: this open box; Claude
-      droplet memory p22-step2-pending-decision; session task; and a
-      one-time cloud routine trig_019jvekvKcSfSq6h9NEoermf firing
-      2026-08-10T13:00Z with the analysis request).
+- [x] P2.2 NBBO + marketable limits — DONE 2026-11-01, rolled out to
+      every book (CHANGELOG 2026-11-01): entries are marketable limits
+      (far touch + 10 bps, one NBBO fetch per entry feeding sizing,
+      limit, estimator and the spread stamp; no quote → market as
+      before); multi-leg spreads never go to market; stale-cancel runs
+      for every profile; the estimator and spread specialists see the
+      live spread. Decision data: 2,305 entries, median +1.6 bps vs
+      3.9 bps spread, p90 +26 bps, 47% worse than the far touch,
+      $43,025 gross in ten weeks. Exits/protectives stay market.
 - [x] P2.3 [none] Backtester slippage — DONE 2026-11-01 (CHANGELOG
       2026-11-01): ADV and realized vol from each symbol's own bars
       (`backtester._window_liquidity`) at both slippage calls.

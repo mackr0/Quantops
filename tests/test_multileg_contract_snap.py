@@ -152,6 +152,7 @@ def test_execute_multileg_snaps_strikes_before_submit():
         upper_strike=15.50,  # listed: 15.0 or 16.0
         lower_strike=14.50,  # listed: 14.0 or 15.0
         qty=2,
+        long_premium=5.0, short_premium=2.0,  # P2.2 step 2: net premium → limit
     )
 
     fake_api = MagicMock()
@@ -200,6 +201,7 @@ def test_execute_multileg_refuses_when_no_close_match():
         upper_strike=200.0,
         lower_strike=190.0,
         qty=1,
+        long_premium=5.0, short_premium=2.0,  # P2.2 step 2: net premium → limit
     )
 
     fake_api = MagicMock()
@@ -235,6 +237,7 @@ def test_execute_multileg_falls_through_when_chain_unavailable():
         upper_strike=15.0,
         lower_strike=14.0,
         qty=1,
+        long_premium=5.0, short_premium=2.0,  # P2.2 step 2: net premium → limit
     )
 
     fake_api = MagicMock()
@@ -304,6 +307,7 @@ def test_duplicate_position_guard_blocks_re_open():
         lower_strike=20.0,
         upper_strike=21.0,
         qty=1,
+        long_premium=5.0, short_premium=2.0,  # P2.2 step 2: net premium → limit
     )
 
     fake_api = MagicMock()
@@ -361,6 +365,7 @@ def test_duplicate_guard_allows_when_no_open_position():
         lower_strike=20.0,
         upper_strike=21.0,
         qty=1,
+        long_premium=5.0, short_premium=2.0,  # P2.2 step 2: net premium → limit
     )
 
     fake_api = MagicMock()
@@ -431,6 +436,7 @@ def test_multileg_log_captures_fill_price():
         lower_strike=20.0,
         upper_strike=21.0,
         qty=1,
+        long_premium=5.0, short_premium=2.0,  # P2.2 step 2: net premium → limit
     )
 
     fake_api = MagicMock()
@@ -568,6 +574,7 @@ def test_sequential_legs_pass_position_intent_open():
         lower_strike=20.0,
         upper_strike=21.0,
         qty=1,
+        long_premium=5.0, short_premium=2.0,  # P2.2 step 2: net premium → limit
     )
 
     fake_api = MagicMock()
@@ -630,6 +637,7 @@ def test_sequential_rollback_uses_close_intent():
         lower_strike=20.0,
         upper_strike=21.0,
         qty=1,
+        long_premium=5.0, short_premium=2.0,  # P2.2 step 2: net premium → limit
     )
 
     fake_api = MagicMock()

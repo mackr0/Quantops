@@ -35,7 +35,7 @@ EXPIRY = date(2026, 9, 11)
 
 def _bull_call_spread():
     from options_multileg import build_bull_call_spread
-    return build_bull_call_spread("NEE", EXPIRY, 91, 95, qty=5)
+    return build_bull_call_spread("NEE", EXPIRY, 91, 95, qty=5, long_premium=5.0, short_premium=2.0)
 
 
 def _mk_db(tmp_path):

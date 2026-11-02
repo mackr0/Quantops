@@ -79,14 +79,14 @@ def _bear_call_spread():
     """Credit spread: short lower-strike call + long higher-strike
     call. Builder emits short FIRST (credit-spread convention)."""
     from options_multileg import build_bear_call_spread
-    return build_bear_call_spread("NOK", EXPIRY, 15, 17, qty=1)
+    return build_bear_call_spread("NOK", EXPIRY, 15, 17, qty=1, short_premium=2.0, long_premium=0.5)
 
 
 def _bull_put_spread():
     """Credit spread: short higher-strike put + long lower-strike
     put. Builder emits short FIRST."""
     from options_multileg import build_bull_put_spread
-    return build_bull_put_spread("NU", EXPIRY, 10, 12, qty=1)
+    return build_bull_put_spread("NU", EXPIRY, 10, 12, qty=1, short_premium=2.0, long_premium=0.5)
 
 
 class TestSequentialFallbackLegOrdering:
@@ -162,6 +162,7 @@ class TestSequentialFallbackLegOrdering:
         from options_multileg import build_iron_condor
         strategy = build_iron_condor(
             "AAPL", EXPIRY, 140, 145, 160, 165, qty=1,
+            put_short_premium=1.0, put_long_premium=0.4, call_short_premium=1.0, call_long_premium=0.4,  # P2.2 step 2: net premium → limit
         )
         # Builder emits shorts-first by convention
         assert strategy.legs[0].side == "sell"
@@ -180,7 +181,7 @@ class TestSequentialFallbackLegOrdering:
         the long leg first. Sorting must be a no-op — preserves
         the existing correct order."""
         from options_multileg import build_bull_call_spread
-        strategy = build_bull_call_spread("AAPL", EXPIRY, 150, 160, qty=1)
+        strategy = build_bull_call_spread("AAPL", EXPIRY, 150, 160, qty=1, long_premium=5.0, short_premium=2.0)
         # Builder emits long-first for debit spreads
         assert strategy.legs[0].side == "buy"
         assert strategy.legs[1].side == "sell"
