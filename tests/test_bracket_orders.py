@@ -191,7 +191,8 @@ def test_sweep_places_stop_on_unprotected_position(tmp_db):
     _seed_open_buy(tmp_db, "AAPL", 100, 150.0)
     api = _backed_api(100)
     api.submit_order.return_value = MagicMock(id="stop-xyz")
-    positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0}]
+    positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0,
+                  "current_price": 160.0}]  # +6.7% ≥ 1R: the trail arms (breakeven-then-trail, 2026-11-02)
 
     ensure_protective_stops(api, positions, _make_ctx(stop_loss_pct=0.05), tmp_db)
 
@@ -216,7 +217,8 @@ def test_sweep_skips_position_with_active_stop(tmp_db):
     api = _backed_api(100)  # backed, so ONLY the active-stop skip prevents a submit
     # Active order — broker reports 'new' status
     api.get_order.return_value = MagicMock(status="new")
-    positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0}]
+    positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0,
+                  "current_price": 160.0}]  # +6.7% ≥ 1R: the trail arms (breakeven-then-trail, 2026-11-02)
 
     ensure_protective_stops(api, positions, _make_ctx(), tmp_db)
     api.submit_order.assert_not_called()
@@ -229,7 +231,8 @@ def test_sweep_resubmits_when_existing_order_is_stale(tmp_db):
     api = _backed_api(100)
     api.get_order.return_value = MagicMock(status="filled")  # stale
     api.submit_order.return_value = MagicMock(id="fresh-stop")
-    positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0}]
+    positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0,
+                  "current_price": 160.0}]  # +6.7% ≥ 1R: the trail arms (breakeven-then-trail, 2026-11-02)
 
     ensure_protective_stops(api, positions, _make_ctx(), tmp_db)
     api.submit_order.assert_called_once()
@@ -349,7 +352,8 @@ def test_sweep_places_one_order_per_position_static_stop(tmp_db):
     api.submit_order.return_value = MagicMock(id="stop-id")
     ctx = _make_ctx(stop_loss_pct=0.05, take_profit_pct=0.10,
                        use_trailing_stops=False)
-    positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0}]
+    positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0,
+                  "current_price": 160.0}]  # +6.7% ≥ 1R: the trail arms (breakeven-then-trail, 2026-11-02)
 
     ensure_protective_stops(api, positions, ctx, tmp_db)
 
@@ -370,7 +374,8 @@ def test_sweep_prefers_trailing_when_enabled(tmp_db):
     api.submit_order.return_value = MagicMock(id="trail-id")
     ctx = _make_ctx(stop_loss_pct=0.05, take_profit_pct=0.10,
                        use_trailing_stops=True)
-    positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0}]
+    positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0,
+                  "current_price": 160.0}]  # +6.7% ≥ 1R: the trail arms (breakeven-then-trail, 2026-11-02)
 
     ensure_protective_stops(api, positions, ctx, tmp_db)
 
@@ -487,7 +492,8 @@ def test_sweep_picks_trailing_over_static_stop(tmp_db):
     api = _backed_api(100)
     api.submit_order.return_value = MagicMock(id="trail-id")
     ctx = _make_ctx(stop_loss_pct=0.05, use_trailing_stops=True)
-    positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0}]
+    positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0,
+                  "current_price": 160.0}]  # +6.7% ≥ 1R: the trail arms (breakeven-then-trail, 2026-11-02)
 
     ensure_protective_stops(api, positions, ctx, tmp_db)
     assert api.submit_order.call_count == 1
@@ -501,7 +507,8 @@ def test_sweep_falls_back_to_static_stop_when_trailing_disabled(tmp_db):
     api = _backed_api(100)
     api.submit_order.return_value = MagicMock(id="stop-id")
     ctx = _make_ctx(stop_loss_pct=0.05, use_trailing_stops=False)
-    positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0}]
+    positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0,
+                  "current_price": 160.0}]  # +6.7% ≥ 1R: the trail arms (breakeven-then-trail, 2026-11-02)
 
     ensure_protective_stops(api, positions, ctx, tmp_db)
     assert api.submit_order.call_count == 1
@@ -530,7 +537,8 @@ def test_sweep_cancels_legacy_stop_and_tp_when_placing_trailing(tmp_db):
     api = _backed_api(100)
     api.submit_order.return_value = MagicMock(id="new-trail")
     ctx = _make_ctx(stop_loss_pct=0.05, use_trailing_stops=True)
-    positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0}]
+    positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0,
+                  "current_price": 160.0}]  # +6.7% ≥ 1R: the trail arms (breakeven-then-trail, 2026-11-02)
 
     ensure_protective_stops(api, positions, ctx, tmp_db)
 

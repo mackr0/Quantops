@@ -688,6 +688,64 @@ def trail_percent_for_entry(stop_loss_pct: float) -> Optional[float]:
     return max(TRAIL_PERCENT_MIN, min(TRAIL_PERCENT_MAX, pct))
 
 
+# ── Breakeven-then-trail (2026-11-02) ────────────────────────────────
+# The 5% trail-from-the-high armed at entry was the fleet's loss engine:
+# 565 trailing fills since the 08-24 reset for −$122,421 (vs +$74,201 on
+# the AI's own exit decisions), median 0.1 days after entry, 78% of the
+# stopped longs had been UP >1% first, and price was back +1.8% in the
+# position's favor by the next close in 69% of a sampled 80. A trail
+# from the intraday high on a 3%-vol name is an intraday-noise stop.
+# Now: the static stop at entry protects from day 0; the trail arms only
+# once the position is up ≥ TRAIL_ARM_R_MULTIPLE stop-widths, with a
+# width never tighter than the name's own daily range (TRAIL_ATR_MULT ×
+# ATR14 as % of price), capped at TRAIL_PERCENT_MAX_VOL.
+TRAIL_ATR_MULT = 2.5
+TRAIL_PERCENT_MAX_VOL = 12.0
+TRAIL_ARM_R_MULTIPLE = 1.0
+
+
+def trail_percent_for_position(stop_loss_pct: float,
+                               atr_pct: Optional[float]) -> Optional[float]:
+    """Trail width in percent: the larger of the profile's stop width and
+    TRAIL_ATR_MULT × the symbol's ATR14 (as a fraction of price), capped
+    at TRAIL_PERCENT_MAX_VOL. With no ATR available the stop width alone
+    applies (never tighter than before). None on invalid inputs."""
+    base = trail_percent_for_entry(stop_loss_pct)
+    if base is None:
+        return None
+    if atr_pct is not None and atr_pct > 0:
+        base = max(base, float(atr_pct) * 100.0 * TRAIL_ATR_MULT)
+    return round(min(TRAIL_PERCENT_MAX_VOL, base), 2)
+
+
+def trail_armed(entry_price: float, current_price: float, is_short: bool,
+                stop_loss_pct: float) -> bool:
+    """True once the open gain is at least TRAIL_ARM_R_MULTIPLE stop-widths
+    (1R by default). Unknown or invalid prices → False: the static stop
+    keeps protecting (fail-safe)."""
+    try:
+        entry, cur = float(entry_price or 0), float(current_price or 0)
+    except (TypeError, ValueError):
+        return False
+    if entry <= 0 or cur <= 0 or not stop_loss_pct or stop_loss_pct <= 0:
+        return False
+    gain = (entry - cur) / entry if is_short else (cur - entry) / entry
+    return gain >= float(stop_loss_pct) * TRAIL_ARM_R_MULTIPLE
+
+
+def _atr_pct(symbol: str, price: float) -> Optional[float]:
+    """ATR14 as a fraction of price from the live bars; None when unknown
+    (the trail then falls back to the stop width)."""
+    try:
+        from portfolio_manager import calculate_atr_stops
+        _, _, atr = calculate_atr_stops(symbol, float(price))
+        if atr and price and float(price) > 0:
+            return float(atr) / float(price)
+    except Exception as exc:
+        logger.debug("ATR unavailable for %s: %s", symbol, exc)
+    return None
+
+
 def submit_protective_trailing(
     api,
     symbol: str,
@@ -855,9 +913,10 @@ def ensure_protective_stops(api, positions, ctx, db_path,
     mis-tracking — purely the second reservation). See 2026-06-23 below.
 
     Order priority:
-      1. If `use_trailing_stops`: place trailing_stop ONLY. Functionally
-         a superset — it covers downside (initial level = entry × (1 - trail))
-         AND locks in gains as the high-water rises.
+      1. If `use_trailing_stops` (2026-11-02, breakeven-then-trail): a
+         STATIC stop at entry until the position is up ≥ 1R, then the
+         trailing stop — never tighter than 2.5×ATR14, capped at 12% —
+         replaces it. A live trailing stop is never churned.
       2. Else: place static stop ONLY.
 
     Take-profit is dropped from the broker side; the polling TP check
@@ -1364,20 +1423,45 @@ def ensure_protective_stops(api, positions, ctx, db_path,
             sl_pct = sl_pct_short if is_short else sl_pct_long
 
             if use_trailing:
-                # Trailing-stop ONLY: it covers downside (initial level =
-                # entry × (1 - trail)) AND dynamic profit-lock as the
-                # high-water rises. This is the single sell-side
-                # reservation for the slice; the AI's fixed profit target
-                # is enforced by the per-cycle polling TP. No broker-side
-                # TP is placed (it would double-reserve the slice — see
-                # the docstring and the TP-sunset above).
+                # BREAKEVEN-THEN-TRAIL (2026-11-02; see the constants above).
+                # ONE sell-side reservation per slice, as always: a live
+                # trailing stop is kept untouched; otherwise the position
+                # gets a STATIC stop at entry until it is up ≥ 1R, and only
+                # then the trailing stop — volatility-scaled — replaces it.
+                cur_price = float(pos.get("current_price") or 0)
                 existing_trail_id = row["protective_trailing_order_id"]
-                if not (existing_trail_id and _is_order_active(api, existing_trail_id)):
-                    # Cancel any stale STATIC stop before re-arming the
-                    # trailing so its reservation is freed (the lingering
-                    # broker-side TP was already sunset above).
+                trail_live = bool(existing_trail_id
+                                  and _is_order_active(api, existing_trail_id))
+                if not trail_live and not trail_armed(entry_price, cur_price,
+                                                      is_short, sl_pct):
+                    existing_stop_id = row["protective_stop_order_id"]
+                    if not (existing_stop_id and _is_order_active(api, existing_stop_id)):
+                        stop_price = stop_price_for_entry(entry_price, sl_pct, is_short)
+                        if stop_price is not None:
+                            order_id = submit_protective_stop(
+                                api, symbol, abs_qty, close_side, stop_price,
+                                db_path=db_path, entry_trade_id=row["id"],
+                            )
+                            if order_id:
+                                try:
+                                    conn.execute(
+                                        "UPDATE trades SET protective_stop_order_id = ? "
+                                        "WHERE id = ?",
+                                        (order_id, row["id"]),
+                                    )
+                                    conn.commit()
+                                except Exception as exc:
+                                    logger.warning(
+                                        "Protective stop placed but couldn't "
+                                        "store id: %s (symbol=%s)", exc, symbol,
+                                    )
+                elif not trail_live:
+                    # Up ≥ 1R: arm the trail. Cancel the static stop first so
+                    # its reservation is freed (the lingering broker-side TP
+                    # was already sunset above).
                     _cancel_stale_other_orders(api, conn, row, ("stop",))
-                    trail_pct = trail_percent_for_entry(sl_pct)
+                    trail_pct = trail_percent_for_position(
+                        sl_pct, _atr_pct(symbol, cur_price or entry_price))
                     if trail_pct is not None:
                         order_id = submit_protective_trailing(
                             api, symbol, abs_qty, close_side, trail_pct,
