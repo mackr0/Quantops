@@ -662,7 +662,21 @@ def get_all_macro_data() -> Dict[str, Any]:
                                  lambda: _get_cftc_module().get_cftc_cot_positioning()),
         "sector_flow_diff": _safe_macro("sector_flow_diff",
                                           lambda: _get_sfd_module().get_sector_flow_differentials()),
+        # 2026-11-02 Tier-4 (docs/25 D12): CBOE VIX term structure and
+        # breadth from the screener's own bars.
+        "vix_term": _safe_macro("vix_term", _get_vix_term),
+        "breadth": _safe_macro("breadth", _get_breadth),
     }
+
+
+def _get_vix_term():
+    from altdata_tier4 import get_vix_term_structure
+    return get_vix_term_structure()
+
+
+def _get_breadth():
+    from market_breadth import snapshot
+    return snapshot()
 
 
 def _safe_macro(name, callable_):

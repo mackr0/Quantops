@@ -1662,6 +1662,19 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context,
         bottom = ", ".join(f"{r['sector']}(#{r['rank']})" for r in sector_mom["rankings"][-3:])
         phase = sector_mom.get("rotation_phase", "mixed").upper().replace("_", " ")
         market_section += f"\n  SECTOR MOMENTUM: Top: {top} | Bottom: {bottom} ({phase})"
+    # 2026-11-02 Tier-4 macro: VIX term structure + own-universe breadth.
+    vt = macro.get("vix_term") or {}
+    if vt.get("has_data"):
+        market_section += (f"\n  VIX TERM STRUCTURE: VIX {vt.get('vix', 0):.1f} / VIX3M "
+                           f"{vt.get('vix3m', 0):.1f} (ratio {vt.get('ratio_1m_3m') or 0:.2f}, "
+                           f"{str(vt.get('structure', '?')).upper()}"
+                           f"{' — STRESS' if vt.get('stress') else ''})")
+    br = macro.get("breadth") or {}
+    if br.get("has_data"):
+        market_section += (f"\n  BREADTH ({br.get('n', 0)} symbols): "
+                           f"{br.get('pct_above_sma20', 0):.0f}% above 20d mean, "
+                           f"adv/dec {br.get('adv_dec') if br.get('adv_dec') is not None else 'n/a'} "
+                           f"({str(br.get('regime', 'mixed')).upper()})")
     mgex = macro.get("market_gex", {})
     if mgex.get("sample_size", 0) >= 5:
         regime = mgex.get("net_regime", "balanced").upper()
@@ -1845,6 +1858,32 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context,
             if finra.get("is_elevated"):
                 txt = _weighted_signal_text("finra_short_vol_ratio",
                     f"Short vol: {finra.get('short_volume_ratio', 0):.0%} of daily (elevated)")
+                if txt: alt_parts.append(txt)
+            # 2026-11-02 Tier-4 self-built sources (docs/25 D12).
+            rs = alt.get("reg_sho_threshold") or {}
+            if rs.get("on_threshold_list"):
+                txt = _weighted_signal_text("reg_sho_threshold",
+                    f"REG SHO THRESHOLD LIST ({', '.join(rs.get('venues') or []) or 'listed'}): "
+                    "persistent fails-to-deliver")
+                if txt: alt_parts.append(txt)
+            ftd = alt.get("fails_to_deliver") or {}
+            if ftd.get("reported") and (ftd.get("is_large") or ftd.get("trend") == "rising"):
+                txt = _weighted_signal_text("ftd_latest",
+                    f"Fails-to-deliver {ftd.get('trend', '?')}: {ftd.get('latest_fails', 0):,} sh "
+                    f"({ftd.get('latest_date', '?')}), max {ftd.get('max_fails', 0):,}")
+                if txt: alt_parts.append(txt)
+            f144 = alt.get("form144") or {}
+            if f144.get("has_data") and f144.get("count_30d", 0) > 0:
+                txt = _weighted_signal_text("form144_count_30d",
+                    f"Form 144: {f144.get('count_30d', 0)} insider intent-to-sell filings in 30d "
+                    f"(latest {f144.get('latest_days_ago', '?')}d ago)")
+                if txt: alt_parts.append(txt)
+            lk = alt.get("ipo_lockup") or {}
+            if lk.get("is_recent_listing"):
+                txt = _weighted_signal_text("ipo_lockup_window",
+                    f"Recent listing ({lk.get('days_listed', '?')}d): lock-up expiry est. "
+                    f"{lk.get('lockup_expiry_est', '?')}"
+                    + (" — IN WINDOW" if lk.get("in_lockup_window") else ""))
                 if txt: alt_parts.append(txt)
             cluster = alt.get("insider_cluster", {})
             if cluster.get("is_cluster"):

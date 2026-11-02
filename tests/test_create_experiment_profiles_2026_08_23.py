@@ -216,3 +216,44 @@ class TestResetScript:
         monkeypatch.setenv("ENCRYPTION_KEY", "x")
         assert mod.step1_verify_keys() is False
         assert "no AI key" in capsys.readouterr().out
+
+
+class TestResetScript20261103:
+    """The Experiment 3 reset script (clone of 08-24 with the D9 manifest
+    and three-provider keys)."""
+
+    def _load(self, monkeypatch):
+        for v in ("RESET_NEW_GOOGLE_AI_KEY", "RESET_NEW_OPENAI_AI_KEY",
+                  "RESET_NEW_ANTHROPIC_AI_KEY", "RESET_NEW_DEEPSEEK_AI_KEY"):
+            monkeypatch.delenv(v, raising=False)
+        import importlib
+        sys.modules.pop("full_fresh_start_2026_11_03", None)
+        return importlib.import_module("full_fresh_start_2026_11_03")
+
+    def test_no_keys_in_source(self, monkeypatch):
+        mod = self._load(monkeypatch)
+        for name, _label, k, s in mod.NEW_KEYS:
+            assert k.startswith("TODO") and s.startswith("TODO"), name
+        import re
+        src = open(mod.__file__).read()
+        assert not re.search(r'"PK[A-Z0-9]{18,}"', src)
+        assert not re.search(r"sk-ant-[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{32,}", src)
+
+    def test_three_provider_keys_and_order(self, monkeypatch):
+        mod = self._load(monkeypatch)
+        assert set(mod.NEW_AI_KEYS) >= {"anthropic", "deepseek", "openai"}
+        import inspect
+        main_src = inspect.getsource(mod.main)
+        order = [main_src.index(s) for s in (
+            "step1_verify_keys(", "step1c_archive_learning_data(",
+            "step2_destroy_old_state(", "step4_build_profiles(",
+            "step5c_install_new_ai_key(", "step4b_create_virtual_benchmarks(")]
+        assert order == sorted(order)
+        assert "EXPERIMENT 3" in main_src
+
+    def test_verify_keys_refuses_without_every_arm_provider(self, monkeypatch, capsys):
+        mod = self._load(monkeypatch)
+        monkeypatch.setenv("ENCRYPTION_KEY", "x")
+        assert mod.step1_verify_keys() is False
+        out = capsys.readouterr().out
+        assert "no AI key" in out and "anthropic" in out and "deepseek" in out

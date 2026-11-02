@@ -153,6 +153,16 @@ _DISPLAY_NAMES = {
     "finra_short_vol_ratio":    "FINRA Short Volume Ratio",
     "eps_revision_direction":   "EPS Revision Direction",
     "eps_revision_magnitude":   "EPS Revision %",
+    # 2026-11-02 Tier-4 self-built sources
+    "reg_sho_threshold":        "Reg SHO Threshold List",
+    "ftd_latest":               "Fails-to-Deliver (latest)",
+    "ftd_trend":                "Fails-to-Deliver Trend",
+    "form144_count_30d":        "Form 144 Filings (30d)",
+    "ipo_lockup_window":        "IPO Lock-up Window",
+    "_vix_term_ratio":          "VIX / VIX3M Ratio",
+    "_vix_backwardation":       "VIX Backwardation",
+    "_breadth_pct_above_sma20": "Breadth: % Above 20d Mean",
+    "_breadth_adv_dec":         "Breadth: Advance/Decline",
 
     # New macro features
     "_yield_spread_10y2y":      "10Y-2Y Yield Spread",

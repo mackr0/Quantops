@@ -3457,6 +3457,18 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                     features_payload["app_store_free_score"] = (
                         max(0, 201 - int(_fr)) if _fr else 0
                     )
+                if alt:
+                    # 2026-11-02 Tier-4 self-built sources (docs/25 D12).
+                    _rs = alt.get("reg_sho_threshold") or {}
+                    features_payload["reg_sho_threshold"] = 1 if _rs.get("on_threshold_list") else 0
+                    _ftd = alt.get("fails_to_deliver") or {}
+                    features_payload["ftd_latest"] = _ftd.get("latest_fails", 0) or 0
+                    features_payload["ftd_trend"] = _ftd.get("trend", "none") if _ftd.get("has_data") else "unknown"
+                    _f144 = alt.get("form144") or {}
+                    features_payload["form144_count_30d"] = _f144.get("count_30d", 0) or 0
+                    _lk = alt.get("ipo_lockup") or {}
+                    features_payload["ipo_lockup_window"] = 1 if _lk.get("in_lockup_window") else 0
+                    features_payload["days_to_lockup_expiry"] = _lk.get("days_to_lockup_expiry")
                 social = c.get("social") or {}
                 if social:
                     features_payload["reddit_mentions"] = social.get("mentions", 0)
@@ -3473,6 +3485,13 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 _fm = _macro.get("fred_macro", {})
                 features_payload["_unemployment_rate"] = _fm.get("unemployment_rate", 0)
                 features_payload["_cpi_yoy"] = _fm.get("cpi_yoy", 0)
+                # 2026-11-02 Tier-4 macro: VIX term structure + own-universe breadth.
+                _vt = _macro.get("vix_term") or {}
+                features_payload["_vix_term_ratio"] = _vt.get("ratio_1m_3m") or 0
+                features_payload["_vix_backwardation"] = 1 if _vt.get("structure") == "backwardation" else 0
+                _br = _macro.get("breadth") or {}
+                features_payload["_breadth_pct_above_sma20"] = _br.get("pct_above_sma20") or 0
+                features_payload["_breadth_adv_dec"] = _br.get("adv_dec") or 0
                 features_payload["_rotation_phase"] = _macro.get("sector_momentum", {}).get("rotation_phase", "mixed")
                 features_payload["_market_gex_regime"] = _macro.get("market_gex", {}).get("net_regime", "balanced")
 

@@ -940,15 +940,20 @@ finding and its reason recorded in docs/26 + docs/25 as it ships.
       block as a cached system prompt on every vendor; measured through
       the ledger's `cached_tokens` — read it after the first week.
       CHANGELOG 2026-11-02.
-- [ ] ⏳ **Reset to Experiment 3** — `full_fresh_start_2026_11_03.py`
-      (clone of 08-24 with the D9 manifest; keys: RESET_NEW_ANTHROPIC /
-      _DEEPSEEK / _OPENAI); tag `exp2-learning-phase1-final` before,
-      `exp3-cost-ladder-start` after. Needs the operator's Anthropic and
-      DeepSeek keys and the three Alpaca paper keys.
-- [ ] ⏳ **Data tranche 1** (D12, free sources): SEC fails-to-deliver,
-      Reg SHO threshold list, Form 144, N-PORT holdings, CBOE VIX term
-      structure, own-universe breadth, IPO lockup calendar — each a
-      checker + weightable signal.
+- [~] ⏳ **Reset to Experiment 3** — `full_fresh_start_2026_11_03.py`
+      WRITTEN and pinned (CHANGELOG 2026-11-02); not yet applied. Needs
+      the operator's Anthropic and DeepSeek keys and the three Alpaca
+      paper keys (env vars in the script header); tag
+      `exp2-learning-phase1-final` before, `exp3-cost-ladder-start` after.
+- [x] **Data tranche 1** (D12, free sources): SEC fails-to-deliver,
+      Reg SHO threshold list, Form 144, CBOE VIX term structure,
+      own-universe breadth, IPO lock-up proxy — each a checker +
+      weightable signal (`altdata_tier4.py`, `market_breadth.py`;
+      CHANGELOG 2026-11-02).
+- [ ] ⏳ **Data tranche 2** (D12): N-PORT monthly fund holdings (large
+      XML), S-1/424B lock-up calendar, Treasury auction results, CFTC
+      COT per-symbol mapping. Build after Experiment 3's first two
+      weeks show which tranche-1 signals the tuner keeps.
 - [ ] ⏳ Batch 5 of the owned model on the corrected-policy corpus
       (P4.3), when the corpus exists.
 

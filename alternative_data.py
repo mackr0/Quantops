@@ -2612,6 +2612,14 @@ def get_all_alternative_data(symbol):
         "job_postings": _cached_safe("job_postings", _get_job_postings),
         "insider_track_records": _cached_safe("insider_track_records", _get_insider_track),
         "star_manager_holdings": _cached_safe("star_manager_holdings", _get_star_holdings),
+        # 2026-11-02 Tier-4 self-built sources (altdata_tier4, docs/25 D12):
+        # Reg SHO threshold list, SEC fails-to-deliver, Form 144 intent-
+        # to-sell, IPO lock-up proxy. Each returns has_data=False when its
+        # source is unreachable — never a fabricated neutral.
+        "reg_sho_threshold": _cached_safe("reg_sho_threshold", _get_t4_reg_sho),
+        "fails_to_deliver": _cached_safe("fails_to_deliver", _get_t4_ftd),
+        "form144": _cached_safe("form144", _get_t4_form144),
+        "ipo_lockup": _cached_safe("ipo_lockup", _get_t4_ipo_lockup),
         # #8 (sector_flow_diff) is symbol-agnostic and lives in the
         # macro cache (altdata_tier2_macro.get_sector_flow_differentials);
         # surfaced under alt_data["macro"]["sector_flow_diff"]
@@ -2657,6 +2665,26 @@ def _get_recent_13dg_safe(symbol):
 # 2026-05-17 Tier-2 helper: generic try/except wrapper for any
 # per-symbol fetcher that should never raise into the prompt
 # pipeline. Returns {} on any failure with a warning logged.
+def _get_t4_reg_sho(symbol):
+    from altdata_tier4 import get_reg_sho_threshold
+    return get_reg_sho_threshold(symbol)
+
+
+def _get_t4_ftd(symbol):
+    from altdata_tier4 import get_fails_to_deliver
+    return get_fails_to_deliver(symbol)
+
+
+def _get_t4_form144(symbol):
+    from altdata_tier4 import get_form144
+    return get_form144(symbol)
+
+
+def _get_t4_ipo_lockup(symbol):
+    from altdata_tier4 import get_ipo_lockup
+    return get_ipo_lockup(symbol)
+
+
 def _safe(fetcher_callable, *args, **kwargs):
     try:
         return fetcher_callable(*args, **kwargs)
