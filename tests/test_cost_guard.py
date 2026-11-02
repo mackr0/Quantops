@@ -7,6 +7,20 @@ from unittest.mock import patch
 import pytest
 
 
+import pytest as _pytest
+
+
+@_pytest.fixture(autouse=True)
+def _unbounded_fleet_budget(monkeypatch):
+    """2026-11-02 (docs/25 D10): `daily_ceiling_usd` is now bounded above by
+    the fleet budget's daily share (`fleet_daily_budget_usd`). These tests
+    pin the INNER rule (user override → trailing-avg × 1.5, floored at
+    $5), so lift the budget bound here; the bound itself is pinned in
+    tests/test_provider_health_2026_11_02.py."""
+    import cost_guard
+    monkeypatch.setattr(cost_guard, "fleet_daily_budget_usd", lambda: float("inf"))
+
+
 class TestDailyCeiling:
     def test_floors_at_5_dollars(self):
         from cost_guard import daily_ceiling_usd

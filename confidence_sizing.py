@@ -1,56 +1,43 @@
-"""Confidence-tiered position sizing multiplier (2026-05-12).
+"""Confidence-tiered position sizing — RETIRED to a flat multiplier (2026-11-02).
 
-The AI's confidence score is calibrated — buckets show a monotonic
-win-rate relationship from a 19K-prediction audit on 2026-05-12:
+History. 2026-05-12: a 19K-prediction audit showed monotonic win-rate
+buckets by AI confidence (60s 50.7%, 70s 54.4%, 80s 58.0%), and this
+module scaled positions 0.7× below 60, 1.2× in the 70s and 1.5× at 80+.
 
-  conf  0- 59  →  weaker than baseline (treat as uncertain)
-  conf 60- 69  →  win rate 50.7% over 222 trades  (baseline)
-  conf 70- 79  →  win rate 54.4% over 717 trades  (+3.7pt)
-  conf 80- 89  →  win rate 58.0% over  56 trades  (+7.3pt)
-  conf 90-100  →  small sample, conservatively bucketed with 80-89
+2026-11-02 (docs/25 D13, docs/26 Experiment 2 §4): on the 10,532
+directional predictions resolved since the 2026-08-24 reset the
+relationship is INVERTED — the 80–89 bucket is the worst (40% win,
+−0.99% per call) and the 60s the best (+0.61%). A ladder that put the
+most money on the worst bucket was costing the books; the self-reported
+confidence of these models does not carry sizing information. Every
+tier is now 1.0×. Confidence is still recorded on every prediction so
+the relationship keeps being measured; if a future model's confidence
+calibrates, the ladder can be re-derived from that evidence — never
+from the model's say-so.
 
-The old position-size logic applied a flat 1.25× boost at conf ≥ 80
-and no multiplier elsewhere. That left the calibration advantage at
-the lower buckets unused AND failed to scale risk DOWN on
-low-confidence trades. This module replaces it with a 4-tier ladder
-that leans into the calibration we have:
-
-  conf < 60          → 0.7×  (pull back on low conviction)
-  conf 60-69         → 1.0×  (baseline)
-  conf 70-79         → 1.2×  (above-baseline win rate)
-  conf 80+           → 1.5×  (highest-calibrated bucket)
-
-Same risk envelope as before (the trade_pipeline still caps at
-max_position_pct / short_cap_pct after the multiplier). Better
-expected return because we lean into the calibrated edge.
-
-Tunable: the tier multipliers can become AI-tuned per profile in a
-future wave by learning the per-bucket win rates over the profile's
-own resolved predictions. For v1 this is a hard table — the data
-across 11 profiles is consistent enough that one ladder is a sane
-default.
+The API is unchanged so the two call sites in `trade_pipeline` (long
+and short sizing) and their tests keep working.
 """
 from __future__ import annotations
 
 from typing import Optional
 
 
-# (lower_bound_inclusive, multiplier). Highest match wins.
+# (lower_bound_inclusive, multiplier). Highest match wins. Flat since
+# 2026-11-02 — see the module docstring for why.
 CONFIDENCE_TIERS = (
-    (80.0, 1.5),
-    (70.0, 1.2),
-    (60.0, 1.0),
-    (0.0,  0.7),
+    (0.0, 1.0),
 )
+
+#: True while the ladder is flat. Pinned by test so a re-introduction
+#: of confidence-scaled sizing is a deliberate, documented decision.
+CONFIDENCE_SIZING_FLAT = all(m == 1.0 for _lo, m in CONFIDENCE_TIERS)
 
 
 def confidence_multiplier(ai_confidence: Optional[float]) -> float:
-    """Return the position-size multiplier for an AI confidence value.
-
-    When `ai_confidence` is None (no AI prediction attached to the
-    trade — pure technical signal) returns 1.0 so the caller's
-    baseline allocation is unchanged.
-    """
+    """Return the position-size multiplier for an AI confidence value
+    (1.0 for every value while the ladder is flat; None / non-numeric
+    → 1.0 as before)."""
     if ai_confidence is None:
         return 1.0
     try:
@@ -60,19 +47,13 @@ def confidence_multiplier(ai_confidence: Optional[float]) -> float:
     for floor, mult in CONFIDENCE_TIERS:
         if c >= floor:
             return mult
-    return 1.0  # unreachable — last tier is 0.0
+    return 1.0
 
 
 def apply_confidence_sizing(base_alloc_pct: float,
                               ai_confidence: Optional[float],
                               max_cap_pct: float) -> float:
     """Scale a base allocation percentage by the confidence multiplier,
-    capped at `max_cap_pct` (the profile's max-position-pct ceiling).
-
-    Returns the scaled allocation pct. Equivalent to the old line
-        if ai_confidence and ai_confidence >= 80:
-            alloc_pct = min(alloc_pct * 1.25, max_cap_pct)
-    but using the 4-tier ladder.
-    """
+    capped at `max_cap_pct` (the profile's max-position-pct ceiling)."""
     mult = confidence_multiplier(ai_confidence)
     return min(base_alloc_pct * mult, max_cap_pct)

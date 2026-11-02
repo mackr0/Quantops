@@ -66,6 +66,10 @@ NUMERIC_FEATURES = [
     # to the GBM as if it were a real rank).
     "google_trends_z", "wikipedia_pageviews_z",
     "app_store_grossing_score", "app_store_free_score",
+    # 2026-11-02 Tier-4 self-built sources (docs/25 D12). Used by the
+    # NEXT training; live bundles keep their own feature_names.
+    "reg_sho_threshold", "ftd_latest", "form144_count_30d", "ipo_lockup_window",
+    "_vix_term_ratio", "_breadth_pct_above_sma20",
 ]
 
 # Categorical features — one-hot encoded

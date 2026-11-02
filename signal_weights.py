@@ -128,6 +128,17 @@ WEIGHTABLE_SIGNALS: Tuple[Tuple[str, str, "callable"], ...] = (
     ("political_context",        "Political Context (MAGA Mode)",
         lambda f: _truthy(f, "political_context") or _truthy(f, "maga_mode")),
 
+    # 2026-11-02 Tier-4 self-built sources (docs/25 D12). Materially
+    # present = the condition the rule / prompt line fires on.
+    ("reg_sho_threshold",         "Reg SHO Threshold List",
+        lambda f: _truthy(f, "reg_sho_threshold")),
+    ("ftd_latest",                "Fails-to-Deliver (large)",
+        lambda f: _at_least(f, "ftd_latest", 100_000)),
+    ("form144_count_30d",         "Form 144 Intent-to-Sell (30d)",
+        lambda f: _at_least(f, "form144_count_30d", 1)),
+    ("ipo_lockup_window",         "IPO Lock-up Expiry Window",
+        lambda f: _truthy(f, "ipo_lockup_window")),
+
     # Strategy weights — the modular `strategies/` plugins. Vote keys
     # land in features_json as `vote_<name>`. Listing the headline ones;
     # auto-generated strategies add their own vote_ keys but get their

@@ -128,7 +128,9 @@ class TestDropPredictionLink:
         # No resolve patch: the override resolve either succeeds or
         # falls back to ctx.ai_confidence_threshold — both are 45 here,
         # so the test exercises the gate's REAL resolution path.
-        with patch("journal.record_trade_drop", side_effect=_capture):
+        import trade_pipeline as _tp
+        with patch("journal.record_trade_drop", side_effect=_capture), \
+             patch.object(_tp, "CONFIDENCE_GATE_ACTIVE", True):   # gate inert by default since 2026-11-02
             kept = _apply_confidence_gate(
                 [{"symbol": "FCX", "action": "BUY", "confidence": 41,
                   "_pred_id": 314, "reasoning": "r"}],

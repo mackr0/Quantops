@@ -16,10 +16,14 @@ PROVIDERS = {
     "anthropic": {
         "name": "Anthropic (Claude)",
         "models": {
-            "claude-haiku-4-5-20251001": "Claude Haiku 4.5 (small)",
-            "claude-sonnet-5": "Claude Sonnet 5 (mid)",
-            "claude-opus-5": "Claude Opus 5 (frontier)",
-            "claude-fable-5": "Claude Fable 5 (frontier+, thinking always on)",
+            "claude-haiku-5-5": "Claude Haiku 5.5 (small, current gen)",
+            "claude-sonnet-5-5": "Claude Sonnet 5.5 (mid, current gen)",
+            "claude-opus-5-5": "Claude Opus 5.5 (frontier, current gen)",
+            "claude-fable-5-1": "Claude Fable 5.1 (frontier+, thinking always on)",
+            "claude-haiku-4-5-20251001": "Claude Haiku 4.5 (small, previous gen)",
+            "claude-sonnet-5": "Claude Sonnet 5 (mid, previous gen)",
+            "claude-opus-5": "Claude Opus 5 (frontier, previous gen)",
+            "claude-fable-5": "Claude Fable 5 (frontier+, previous gen)",
             "claude-sonnet-4-6": "Claude Sonnet 4.6 (legacy)",
             "claude-opus-4-6": "Claude Opus 4.6 (legacy)",
         },
@@ -27,16 +31,19 @@ PROVIDERS = {
     "openai": {
         "name": "OpenAI (GPT)",
         "models": {
-            "gpt-5-nano": "GPT-5 Nano (smallest)",
-            "gpt-5.6-luna": "GPT-5.6 Luna (small, current gen)",
-            "gpt-5-mini": "GPT-5 Mini (small+)",
-            "gpt-5.4-mini": "GPT-5.4 Mini (mid-)",
-            "gpt-5.6-terra": "GPT-5.6 Terra (mid)",
-            "gpt-5.6-sol": "GPT-5.6 Sol (frontier)",
-            "gpt-4.1-nano": "GPT-4.1 Nano (legacy)",
+            "gpt-6-luna": "GPT-6 Luna (small, current gen)",
+            "gpt-6.1-terra": "GPT-6.1 Terra (mid, current gen)",
+            "gpt-6.1-sol": "GPT-6.1 Sol (frontier-, current gen)",
+            "gpt-6-sol": "GPT-6 Sol (frontier-, current gen)",
+            "gpt-6-astra": "GPT-6 Astra (frontier, current gen)",
+            "gpt-5.6-luna": "GPT-5.6 Luna (small, previous gen)",
+            "gpt-5.6-terra": "GPT-5.6 Terra (mid, previous gen)",
+            "gpt-5.6-sol": "GPT-5.6 Sol (frontier, previous gen)",
+            "gpt-5.4-mini": "GPT-5.4 Mini (mid-, legacy)",
+            "gpt-5-nano": "GPT-5 Nano (DEPRECATED — retires 2026-12-11)",
+            "gpt-5-mini": "GPT-5 Mini (DEPRECATED — retires 2026-12-11)",
             "gpt-4o-mini": "GPT-4o Mini (legacy)",
             "gpt-4o": "GPT-4o (legacy)",
-            "o3-mini": "o3-mini (legacy reasoning)",
         },
     },
     "google": {
@@ -44,7 +51,10 @@ PROVIDERS = {
         "models": {
             "gemini-3.1-flash-lite": "Gemini 3.1 Flash-Lite (small)",
             "gemini-3.5-flash-lite": "Gemini 3.5 Flash-Lite (small, current gen)",
-            "gemini-3.7-flash": "Gemini 3.7 Flash (mid)",
+            "gemini-3.6-flash": "Gemini 3.6 Flash (mid, current gen)",
+            "gemini-3.8-flash": "Gemini 3.8 Flash (mid, current gen)",
+            "gemini-4-argon": "Gemini 4 Argon (frontier, GA 2026-10-13)",
+            "gemini-3.7-flash": "Gemini 3.7 Flash (DEPRECATED 2026-10-08 → 3.8 Flash)",
             "gemini-3.1-pro-preview": "Gemini 3.1 Pro (frontier, PREVIEW)",
             "gemini-2.5-flash-lite": "Gemini 2.5 Flash-Lite (legacy)",
             "gemini-2.5-flash": "Gemini 2.5 Flash (legacy)",
@@ -54,19 +64,71 @@ PROVIDERS = {
     "deepseek": {
         "name": "DeepSeek",
         "models": {
-            "deepseek-chat": "DeepSeek V3.2 (cheap reasoning)",
-            "deepseek-reasoner": "DeepSeek R1 (reasoning-heavy)",
+            "deepseek-flash": "DeepSeek V4.1 Flash (small, open-weight)",
+            "deepseek-v4-pro": "DeepSeek V4 Pro (mid, open-weight)",
+            "deepseek-chat": "DeepSeek chat alias (legacy name → V4.1 Flash)",
+            "deepseek-reasoner": "DeepSeek reasoner alias (legacy)",
+        },
+    },
+    "xai": {
+        "name": "xAI (Grok)",
+        "models": {
+            "grok-4.3": "Grok 4.3 (mid-)",
+            "grok-4.7": "Grok 4.7 (frontier-)",
         },
     },
 }
 
+# Lifecycle per model id, read by the picker badge and the daily
+# deprecation lookahead (provider_health). Verified 2026-11-02 against
+# developers.openai.com/api/docs/deprecations,
+# ai.google.dev/gemini-api/docs/changelog and
+# platform.claude.com/docs/en/about-claude/model-deprecations. A model
+# missing here is "active". `retire_on` is the vendor's shutdown date
+# (YYYY-MM-DD); for a Google "routed" deprecation it is the deprecation
+# date, since requests already go to the replacement.
+MODEL_STATUS_VERIFIED_ON = "2026-11-02"
+MODEL_STATUS = {
+    # OpenAI
+    "gpt-4.1-nano":  {"status": "retired",    "retire_on": "2026-10-23", "replacement": "gpt-5.6-luna"},
+    "gpt-4.1-mini":  {"status": "deprecated", "retire_on": "2027-01-14", "replacement": "gpt-6-luna"},
+    "gpt-4.1":       {"status": "deprecated", "retire_on": "2027-01-14", "replacement": "gpt-6-luna"},
+    "gpt-5-nano":    {"status": "deprecated", "retire_on": "2026-12-11", "replacement": "gpt-5.6-luna"},
+    "gpt-5-mini":    {"status": "deprecated", "retire_on": "2026-12-11", "replacement": "gpt-5.6-terra"},
+    "gpt-5":         {"status": "deprecated", "retire_on": "2026-12-11", "replacement": "gpt-5.6-sol"},
+    "gpt-5.1":       {"status": "deprecated", "retire_on": "2027-04-01", "replacement": "gpt-6-sol"},
+    "gpt-5.4-nano":  {"status": "deprecated", "retire_on": "2027-04-01", "replacement": "gpt-6-luna"},
+    "o3-mini":       {"status": "retired",    "retire_on": "2026-10-23", "replacement": "gpt-5.6-terra"},
+    "o4-mini":       {"status": "retired",    "retire_on": "2026-10-23", "replacement": "gpt-5.6-terra"},
+    "o1":            {"status": "retired",    "retire_on": "2026-10-23", "replacement": "gpt-5.6-sol"},
+    # Google (deprecated models are routed to the replacement)
+    "gemini-3.5-flash": {"status": "deprecated", "retire_on": "2026-10-08", "replacement": "gemini-3.6-flash"},
+    "gemini-3.7-flash": {"status": "deprecated", "retire_on": "2026-10-08", "replacement": "gemini-3.8-flash"},
+    "gemini-2.0-flash": {"status": "retired",    "retire_on": "2026-06-01", "replacement": "gemini-3.1-flash-lite"},
+    "gemini-2.0-flash-lite": {"status": "retired", "retire_on": "2026-06-01", "replacement": "gemini-3.1-flash-lite"},
+    "gemini-3-pro-preview": {"status": "retired", "retire_on": "2026-03-09", "replacement": "gemini-3.1-pro-preview"},
+    # Anthropic
+    "claude-sonnet-4-5-20250929": {"status": "deprecated", "retire_on": "2026-11-30", "replacement": "claude-sonnet-5-5"},
+    "claude-opus-4-1-20250805":   {"status": "retired",    "retire_on": "2026-08-05", "replacement": "claude-opus-4-8"},
+    "claude-3-5-haiku-20241022":  {"status": "retired",    "retire_on": "2026-02-19", "replacement": "claude-haiku-4-5-20251001"},
+    "claude-3-haiku-20240307":    {"status": "retired",    "retire_on": "2026-04-20", "replacement": "claude-haiku-4-5-20251001"},
+}
+
+
+def model_status(model_id):
+    """{status, retire_on, replacement} — 'active' when not listed."""
+    return dict(MODEL_STATUS.get(model_id) or
+                {"status": "active", "retire_on": None, "replacement": None})
+
+
 # Default model per provider when a caller passes model=None: the
 # cheapest CURRENT-generation model, never a legacy id.
 _DEFAULT_MODELS = {
-    "anthropic": "claude-haiku-4-5-20251001",
+    "anthropic": "claude-haiku-5-5",
     "openai": "gpt-5.6-luna",
     "google": "gemini-3.1-flash-lite",
-    "deepseek": "deepseek-chat",
+    "deepseek": "deepseek-flash",
+    "xai": "grok-4.3",
 }
 
 # Regex to strip markdown code fences (```json ... ``` or ``` ... ```)
@@ -245,13 +307,24 @@ def get_model_catalog(provider, check_availability=True):
     out = []
     for mid, label in models.items():
         price = price_for(mid)
+        st = model_status(mid)
+        # 2026-11-02 — the lifecycle table beats the list endpoint:
+        # OpenAI's GET /v1/models still returned gpt-4.1-nano three
+        # weeks after every completion call 404'd "deprecated", so a
+        # list-based badge said "available" for a dead model.
+        available = (mid in live) if live is not None else None
+        if st["status"] == "retired":
+            available = False
         out.append({
             "id": mid,
             "label": label,
             "cost_label": cost_label(mid),
             "input_per_m": price["input"] if price else None,
             "output_per_m": price["output"] if price else None,
-            "available": (mid in live) if live is not None else None,
+            "available": available,
+            "status": st["status"],
+            "retire_on": st["retire_on"],
+            "replacement": st["replacement"],
         })
     return out
 
@@ -607,7 +680,7 @@ def _openai_strict_schema(schema):
 
 
 def _call_provider(provider, prompt, model, api_key, max_tokens,
-                   schema=None):
+                   schema=None, system=None):
     """Dispatch to provider-specific helper. Returns a NORMALIZED 4-tuple
     (text, in_tok, out_tok, cached_tok) — providers whose helper returns the
     legacy 3-tuple get cached_tok=0. cached_tok = prompt tokens served from
@@ -625,6 +698,8 @@ def _call_provider(provider, prompt, model, api_key, max_tokens,
     # patchers of _call_google/_call_openai/_call_anthropic keep working
     # (mock-signature-parity lesson, 2026-07-02).
     extra = {"schema": schema} if schema is not None else {}
+    if system:
+        extra["system"] = system
     if provider == "anthropic":
         result = _call_anthropic(prompt, model, api_key, max_tokens, **extra)
     elif provider == "openai":
@@ -632,10 +707,9 @@ def _call_provider(provider, prompt, model, api_key, max_tokens,
     elif provider == "google":
         result = _call_google(prompt, model, api_key, max_tokens, **extra)
     elif provider == "deepseek":
-        if schema is not None:
-            logger.info("deepseek: no native schema mode — prompt-level "
-                        "JSON only (model=%s)", model)
-        result = _call_deepseek(prompt, model, api_key, max_tokens)
+        result = _call_deepseek(prompt, model, api_key, max_tokens, **extra)
+    elif provider == "xai":
+        result = _call_xai(prompt, model, api_key, max_tokens, **extra)
     else:
         raise ValueError(f"Unknown AI provider: {provider!r}")
     if isinstance(result, tuple) and len(result) == 3:
@@ -711,13 +785,23 @@ def _enforce_cost_cap(prompt: str, model: Optional[str], max_tokens: int,
 
 
 def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1024,
-            db_path=None, purpose=None, decision_id=None, schema=None):
+            db_path=None, purpose=None, decision_id=None, schema=None, system=None):
     """Send a prompt to the specified AI provider and return the response text.
 
     `schema` (optional JSON schema): when given, the provider's native
     structured-output mode is used and the returned text is JSON that
     conforms to it; the same schema is handed to every shadow arm so
     they are held to the identical contract.
+
+    `system` (optional, 2026-11-02 — prompt caching, docs/25 D14): the
+    STABLE instruction block, sent as the provider's system prompt and
+    marked cacheable (Anthropic `cache_control`; OpenAI / DeepSeek / xAI
+    cache a repeated prefix automatically; Gemini `system_instruction`).
+    The apex call's instructions are the same every cycle for a profile
+    while the data changes, so the split lets the vendor bill the
+    instructions at the cache-read rate. Shadow arms receive the same
+    split. Forwarded only when set, so every existing patcher of the
+    provider helpers keeps its signature.
 
     Args:
         prompt: The user prompt string
@@ -773,7 +857,7 @@ def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1
     # Cost cap (added 2026-05-15 — pipeline-wide hard stop). Raises
     # CostCapExceeded when over budget; falls open when db_path can't
     # be attributed to a user.
-    _enforce_cost_cap(prompt, model, max_tokens, db_path, purpose)
+    _enforce_cost_cap((system or "") + prompt, model, max_tokens, db_path, purpose)
 
     # Build attempt order: primary first, then fallbacks. If primary
     # circuit is currently OPEN, primary is skipped — but we still
@@ -857,6 +941,7 @@ def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1
                     attempt_provider, prompt, attempt_model,
                     attempt_key, max_tokens,
                     **({"schema": schema} if schema is not None else {}),
+                    **({"system": system} if system else {}),
                 )
                 # Tolerate the legacy 3-tuple contract (tests and any
                 # external patcher of _call_provider) — cached tokens
@@ -924,6 +1009,7 @@ def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1
                 primary_response=cleaned_response,
                 decision_id=decision_id,
                 **({"schema": schema} if schema is not None else {}),
+                **({"system": system} if system else {}),
             )
         except Exception as exc:
             logger.debug("shadow eval dispatch skipped: %s", exc)
@@ -1028,12 +1114,32 @@ def call_ai_structured(prompt, schema, tool_name="emit",
     return parsed if isinstance(parsed, dict) else None
 
 
-def _call_anthropic(prompt, model, api_key, max_tokens, schema=None):
-    """Call Anthropic Claude API. Returns (text, input_tokens, output_tokens).
+#: Claude 5.x models think by default (adaptive) and the thinking shares
+#: `max_tokens` with the answer; a 4K budget that was generous for a
+#: non-thinking model can be eaten before the JSON is written. Floor
+#: the budget on those models. Older models keep the caller's value.
+ANTHROPIC_THINKING_MAX_TOKENS_FLOOR = 8000
+_ANTHROPIC_THINKING_MODEL_RE = re.compile(r"^claude-(haiku|sonnet|opus|fable|mythos)-5")
 
-    With `schema`, the model is forced to call a single tool whose
-    input_schema is the schema; the tool input is returned serialized
-    as JSON text so the caller contract (text) is unchanged."""
+
+def _anthropic_text(message):
+    """Concatenate the text blocks. Claude 5.x responses carry
+    `thinking` blocks before the text, so `content[0].text` is wrong."""
+    parts = [getattr(b, "text", "") for b in (getattr(message, "content", None) or [])
+             if getattr(b, "type", "text") == "text" and getattr(b, "text", None) is not None]
+    return "".join(parts)
+
+
+def _call_anthropic(prompt, model, api_key, max_tokens, schema=None, system=None):
+    """Call Anthropic Claude API. Returns (text, input_tokens, output_tokens,
+    cached_tokens).
+
+    2026-11-02 (Haiku 5.5 arm, docs/25 D9): structured output uses the
+    API's `output_config.format` json_schema mode instead of a forced
+    tool call — forced `tool_choice` returns 400 on the 5.5 family.
+    Text is read from the text blocks (thinking blocks come first on
+    5.x), a `refusal` stop reason raises instead of returning an empty
+    string, and the token budget is floored for thinking models."""
     try:
         import anthropic
     except ImportError as exc:
@@ -1043,48 +1149,54 @@ def _call_anthropic(prompt, model, api_key, max_tokens, schema=None):
         ) from exc
 
     client = anthropic.Anthropic(api_key=api_key)
+    budget = max_tokens
+    if _ANTHROPIC_THINKING_MODEL_RE.match(model or ""):
+        budget = max(int(max_tokens or 0), ANTHROPIC_THINKING_MAX_TOKENS_FLOOR)
+    kwargs = {
+        "model": model,
+        "max_tokens": budget,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    if system:
+        # Stable instructions as a cached system block (prompt caching;
+        # the vendor bills a cache read at 10% of the input rate when
+        # the same prefix repeats within the TTL).
+        kwargs["system"] = [{"type": "text", "text": system,
+                             "cache_control": {"type": "ephemeral"}}]
     if schema is not None:
-        import json as _json
-        tool_spec = {
-            "name": "emit",
-            "description": "Submit the structured result for this request.",
-            "input_schema": schema,
+        kwargs["output_config"] = {
+            "format": {"type": "json_schema",
+                       "schema": _openai_strict_schema(schema)},
         }
-        message = client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            tools=[tool_spec],
-            tool_choice={"type": "tool", "name": "emit"},
-            messages=[{"role": "user", "content": prompt}],
-        )
-        usage = getattr(message, "usage", None)
-        in_tok = getattr(usage, "input_tokens", 0) if usage else 0
-        out_tok = getattr(usage, "output_tokens", 0) if usage else 0
-        for block in message.content:
-            if getattr(block, "type", None) == "tool_use":
-                return (_json.dumps(dict(getattr(block, "input", {}) or {})),
-                        in_tok, out_tok)
-        # Forced tool_choice guarantees a tool_use block; reaching here
-        # means the API contract changed — surface it, never return "".
+    message = client.messages.create(**kwargs)
+    stop = getattr(message, "stop_reason", None)
+    if stop == "refusal":
+        det = getattr(message, "stop_details", None)
         raise RuntimeError(
-            "anthropic structured call returned no tool_use block "
-            f"(model={model}, stop_reason="
-            f"{getattr(message, 'stop_reason', None)!r})")
-    message = client.messages.create(
-        model=model,
-        max_tokens=max_tokens,
-        messages=[{"role": "user", "content": prompt}],
-    )
+            f"anthropic refused the request (model={model}, category="
+            f"{getattr(det, 'category', None)!r}): "
+            f"{getattr(det, 'explanation', '') or ''}")
     usage = getattr(message, "usage", None)
     in_tok = getattr(usage, "input_tokens", 0) if usage else 0
     out_tok = getattr(usage, "output_tokens", 0) if usage else 0
-    return message.content[0].text, in_tok, out_tok
+    cached = getattr(usage, "cache_read_input_tokens", 0) if usage else 0
+    text = _anthropic_text(message)
+    if schema is not None and not text:
+        raise RuntimeError(
+            "anthropic structured call returned no text block "
+            f"(model={model}, stop_reason={stop!r})")
+    return text, in_tok, out_tok, int(cached or 0)
 
 
-_OPENAI_REASONING_MODEL_RE = re.compile(r"^(gpt-5|o\d)")
+_OPENAI_REASONING_MODEL_RE = re.compile(r"^(gpt-[5-9]|o\d)")
+#: Effort pinned per generation. gpt-5.x stays at "low" (the incumbent
+#: arm's measured behavior since 08-24 — unchanged so its record stays
+#: comparable). gpt-6.x runs at the vendor default (no pin): the cost
+#: ladder (docs/25 D9) compares models as the vendor ships them.
+_OPENAI_PINNED_EFFORT_RE = re.compile(r"^gpt-5")
 
 
-def _call_openai(prompt, model, api_key, max_tokens, schema=None):
+def _call_openai(prompt, model, api_key, max_tokens, schema=None, system=None):
     """Call OpenAI API. Returns (text, input_tokens, output_tokens).
 
     2026-08-23: uses `max_completion_tokens` (the GPT-5.x family rejects
@@ -1102,10 +1214,15 @@ def _call_openai(prompt, model, api_key, max_tokens, schema=None):
         ) from exc
 
     client = OpenAI(api_key=api_key)
+    messages = [{"role": "user", "content": prompt}]
+    if system:
+        # OpenAI caches a repeated prefix (≥1,024 tokens) automatically;
+        # the stable block goes first as the system message.
+        messages.insert(0, {"role": "system", "content": system})
     kwargs = {
         "model": model,
         "max_completion_tokens": max_tokens,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": messages,
     }
     if schema is not None:
         kwargs["response_format"] = {
@@ -1116,7 +1233,7 @@ def _call_openai(prompt, model, api_key, max_tokens, schema=None):
                 "strict": True,
             },
         }
-    if _OPENAI_REASONING_MODEL_RE.match(model or ""):
+    if _OPENAI_PINNED_EFFORT_RE.match(model or ""):
         kwargs["reasoning_effort"] = "low"
     try:
         response = client.chat.completions.create(**kwargs)
@@ -1134,42 +1251,69 @@ def _call_openai(prompt, model, api_key, max_tokens, schema=None):
     usage = getattr(response, "usage", None)
     in_tok = getattr(usage, "prompt_tokens", 0) if usage else 0
     out_tok = getattr(usage, "completion_tokens", 0) if usage else 0
-    return response.choices[0].message.content, in_tok, out_tok
+    cached = _openai_cached_tokens(usage)
+    return response.choices[0].message.content, in_tok, out_tok, cached
 
 
-def _call_deepseek(prompt, model, api_key, max_tokens):
-    """Call DeepSeek API via the OpenAI-compatible endpoint.
+def _openai_cached_tokens(usage):
+    """prompt_tokens_details.cached_tokens on OpenAI-compatible usage
+    objects (OpenAI automatic prefix caching, DeepSeek context caching,
+    xAI). 0 when absent."""
+    det = getattr(usage, "prompt_tokens_details", None) if usage else None
+    try:
+        return int(getattr(det, "cached_tokens", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
 
-    DeepSeek exposes a Chat Completions endpoint at
-    https://api.deepseek.com — the official OpenAI Python SDK works
-    against it by overriding `base_url`. No separate dependency
-    needed; reuses the `openai` package the OpenAI provider already
-    requires.
 
-    Returns (text, input_tokens, output_tokens).
-    """
+def _call_openai_compatible(base_url, vendor, prompt, model, api_key,
+                            max_tokens, schema=None, system=None):
+    """Chat Completions against an OpenAI-compatible endpoint (DeepSeek,
+    xAI). `schema` → `response_format=json_object` plus the schema in
+    the prompt; these vendors accept json_object but not every strict
+    json_schema keyword, so the contract is prompt-level + JSON mode.
+    Returns (text, in, out, cached)."""
     try:
         from openai import OpenAI
     except ImportError as exc:
         raise ImportError(
-            "The 'openai' package is required for the DeepSeek provider "
-            "(DeepSeek uses an OpenAI-compatible endpoint). "
+            f"The 'openai' package is required for the {vendor} provider "
+            f"({vendor} uses an OpenAI-compatible endpoint). "
             "Install it with: pip install openai"
         ) from exc
-
-    client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
-    response = client.chat.completions.create(
-        model=model,
-        max_tokens=max_tokens,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    client = OpenAI(api_key=api_key, base_url=base_url)
+    content = prompt
+    kwargs = {"model": model, "max_tokens": max_tokens}
+    if schema is not None:
+        import json as _json
+        content = (prompt + "\n\nRespond with ONLY a JSON object matching "
+                   "this JSON schema exactly:\n" + _json.dumps(schema))
+        kwargs["response_format"] = {"type": "json_object"}
+    kwargs["messages"] = ([{"role": "system", "content": system}] if system else []) + \
+        [{"role": "user", "content": content}]
+    response = client.chat.completions.create(**kwargs)
     usage = getattr(response, "usage", None)
     in_tok = getattr(usage, "prompt_tokens", 0) if usage else 0
     out_tok = getattr(usage, "completion_tokens", 0) if usage else 0
-    return response.choices[0].message.content, in_tok, out_tok
+    return (response.choices[0].message.content, in_tok, out_tok,
+            _openai_cached_tokens(usage))
 
 
-def _call_google(prompt, model, api_key, max_tokens, schema=None):
+def _call_xai(prompt, model, api_key, max_tokens, schema=None, system=None):
+    """xAI Grok via its OpenAI-compatible endpoint."""
+    return _call_openai_compatible("https://api.x.ai/v1", "xai", prompt, model,
+                                   api_key, max_tokens, schema=schema, system=system)
+
+
+def _call_deepseek(prompt, model, api_key, max_tokens, schema=None, system=None):
+    """DeepSeek via its OpenAI-compatible endpoint (api.deepseek.com).
+    Returns (text, input_tokens, output_tokens, cached_tokens) — DeepSeek
+    reports context-cache hits in prompt_tokens_details.cached_tokens."""
+    return _call_openai_compatible("https://api.deepseek.com", "deepseek", prompt,
+                                   model, api_key, max_tokens, schema=schema, system=system)
+
+
+def _call_google(prompt, model, api_key, max_tokens, schema=None, system=None):
     """Call Google Gemini API. Returns (text, input_tokens, output_tokens).
 
     With `schema` (2026-08-23), `response_json_schema` constrains the
@@ -1204,6 +1348,8 @@ def _call_google(prompt, model, api_key, max_tokens, schema=None):
     }
     if schema is not None:
         config["response_json_schema"] = schema
+    if system:
+        config["system_instruction"] = system
     response = client.models.generate_content(
         model=model,
         contents=prompt,

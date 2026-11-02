@@ -29,6 +29,14 @@ def _get_bars_for_symbols(symbols, limit=30):
             df = get_bars(sym, limit=limit)
             if df is not None and not df.empty and len(df) >= 2:
                 result[sym] = df
+                # 2026-11-02 — market breadth is a by-product of the bars
+                # we already fetch (market_breadth.snapshot feeds the
+                # prompt, the rules and the feature payload).
+                try:
+                    from market_breadth import record_bars
+                    record_bars(sym, df)
+                except Exception as _mb_exc:
+                    logger.debug("breadth record failed for %s: %s", sym, _mb_exc)
         except (KeyError, ValueError, AttributeError, TypeError,
                 OSError) as _bf_exc:
             # Per-symbol bar fetch loop; one bad symbol shouldn't

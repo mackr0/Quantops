@@ -181,6 +181,45 @@ by more than half on every arm.
 
 ---
 
+### 1.6 Model landscape re-verified 2026-11-02 (supersedes §1.2 for any new arm)
+
+Read from the vendors' pricing and deprecation pages and the
+Artificial Analysis leaderboard on 2026-11-02. $/1M tokens, standard
+tier, uncached, short context. "Index" is the Artificial Analysis
+Intelligence Index (range = effort settings). Cost/book-month uses
+September's measured volume (7.5M in / 0.7M out; 1.0M out for
+reasoning models).
+
+| Model | Vendor | In / Out | Index | $/book-month | Lifecycle |
+|---|---|---|---|---|---|
+| `claude-haiku-5-5` | Anthropic | 0.10 / 0.50 | 36 | 1.10 | active (≥ 2027-10-07) |
+| `gpt-6-luna` | OpenAI | 0.10 / 0.50 | — | 1.10 | active |
+| `deepseek-flash` (V4.1 Flash) | DeepSeek | 0.30 / 1.20 peak; ½ off-peak | 32 | 1.55 | active |
+| `gpt-5.6-luna` | OpenAI | 0.20 / 1.20 | — | 2.35 | active, no shutdown date |
+| `gpt-6.1-terra` | OpenAI | 1.00 / 5.00 | 42–51 | 12.50 | active |
+| `gpt-6.1-sol` | OpenAI | 2.00 / 10.00 | 46–55 | 25.00 | active |
+| `gemini-4-argon` | Google | 2.00 / 10.00 | 50 | 25.00 | GA 2026-10-13; price rises 2026-12-01 |
+| `claude-sonnet-5-5` | Anthropic | 2.00 / 10.00 | 41–54 | 25.00 | active (≥ 2027-09-28) |
+| `claude-opus-5-5` | Anthropic | 4.00 / 20.00 | 52–58 | 50.00 | active (≥ 2027-09-22) |
+| `gpt-6-astra` | OpenAI | 10.00 / 50.00 | 51–57 | 100.00 | active |
+| `claude-fable-5-1` | Anthropic | 10.00 / 50.00 | 47–50 | 100.00 | active (≥ 2027-09-01) |
+| `gemini-3.8-flash` / `gemini-3.6-flash` | Google | 0.75 / 3.75 | — | 7.75 | active; price rises 2027-01-01 |
+| `grok-4.7` / `grok-4.3` | xAI | 2.00/6.00 · 1.25/2.50 | — | 19 · 11 | active |
+| `kimi-k2.7` · `glm-5.3` · `qwen3.8-flash` | Moonshot · Z.ai · Alibaba | 0.95/4.00 · 1.40/4.40 · 0.15/0.47 | — | — | aggregator prices, unverified with the vendors |
+
+Retired / deprecated since §1.2: `gpt-4.1-nano` retired 2026-10-23
+(→ `gpt-5.6-luna`); `gpt-5-nano`, `gpt-5-mini`, `gpt-5` retire 2026-12-11;
+`gpt-5.1`, `gpt-5.4-nano` retire 2027-04-01; `gpt-4.1`, `gpt-4.1-mini`
+retire 2027-01-14; `o1`, `o3-mini`, `o4-mini`, `gpt-4-turbo` retired
+2026-10-23; `gemini-3.5-flash` → `gemini-3.6-flash` and `gemini-3.7-flash`
+→ `gemini-3.8-flash` (deprecated 2026-10-08, requests routed);
+`claude-sonnet-4-5` retires 2026-11-30 (→ `claude-sonnet-5-5`).
+Programmatic signals: OpenAI's `GET /v1/models` carries a
+`shutdown_date` per model; Anthropic and Google publish tables and
+email; none of them announce through response headers — hence the
+static lifecycle table in `ai_providers.MODEL_STATUS` plus the live
+probe (D8).
+
 ## 2. The five steps
 
 Each step: goal → why → checklist → done-when. Check items off here.
@@ -448,6 +487,13 @@ the numbers that drove it.
 | D5 | 2026-08-21 | Cross-shadowing: **specialist purposes only**, not `batch_select` | the replicates ARE the apex-call A/B; shadowing it pays twice (§1.5) | MS (proposed by Claude, pending confirmation) |
 | D6 | 2026-08-23 | **Baselines tracked virtually (no broker), Random × 10 replicas** | static portfolios; removes wipe exposure, reset steps, $750K conduit use; free replicas give a real null band (item 1.12) | MS |
 | D7 | 2026-08-23 | Target: Experiment 2 implemented before the 2026-08-24 open; the reset itself waits on new Alpaca paper accounts from the operator (or approval to reuse 55/56/57 in place) | operator directive | MS |
+| D8 | 2026-11-02 | **Warning system before anything else**: provider probe per profile, deprecation lookahead, decision-flow watchdog, credit runway (`provider_health.py`) | nine of twelve books had made no decision for 2–6 weeks (nano retired 10-23, Google credits depleted; three Gemini books silent since 09-25) and nothing said so; the operator found it in a P&L review. "This is not the first time models have been deprecated or tokens have run out" | MS |
+| D9 | 2026-11-02 | **Experiment 3 arms: `claude-haiku-5-5` / `deepseek-flash` / `gpt-5.6-luna` / `gpt-6.1-terra`**, 3 replicates each, same 12-book / 3-account structure | the question is cost vs result on a system that supplies the data; a 10× price ladder across three vendors; luna kept as the bridge to Experiment 2's decision corpus; Google dropped (credits + both arms' models deprecated 10-08) | MS |
+| D10 | 2026-11-02 | **Fleet AI budget: < $100 / month, hard-capped** | operator constraint; projected ≈ $52 at September's measured volume; any $2/$10 model as a 3-replicate arm ≈ $75 and Opus 5.5 ≈ $150, so no frontier arm this round; revisit at the next reset if caching holds the bill under $50 | MS |
+| D11 | 2026-11-02 | **Reset (Experiment 2 → 3)** rather than repair in place | the incumbent model no longer exists, three arms have weeks of gaps, and the 11-01/02 policy changes make pre/post books incomparable; the prediction corpus (scored on raw underlying moves) is archived, not discarded | MS |
+| D12 | 2026-11-02 | **Data expansion is self-built from public sources only; no paid feeds** (Quiver / Polygon / Benzinga stay 💰 OPEN) | operator: "we have been building our own; it's better to control it long term"; first tranche named in docs/26 Experiment 3 | MS |
+| D13 | 2026-11-02 | **Entry-quality policy set** shipped before the reset: three losing strategies off, confidence out of sizing and gating, binding specialist vetoes, 40-bar-return regime rule; the "require a meta score" lever dropped as a time artifact | measured on 10,532 resolved directional predictions (docs/26 Experiment 2 §4) | MS |
+| D14 | 2026-11-02 | **Catalog refreshed and every id carries a lifecycle status** (active / deprecated-with-date / retired) read by the picker and the lookahead; prompt caching built for the apex call | the catalog had no GPT-6, Gemini 4, Claude 5.5 or current open-weight models and listed retired ids as available | MS |
 
 ---
 
@@ -468,6 +514,8 @@ the numbers that drove it.
 | 2026-08-23 | 1 | 1.0 haiku shadow pulled on prod; 1.1 registry/prices; 1.2 vendor-fair structured output; 1.3 apex call gradeable; D5 shadow scope; 1.12 virtual benchmarks; 1.13 manifest + reset script staged | this commit |
 | 2026-08-23 | 3, 4 | tuner evidence mode (3.1, 3.2, 3.5); weekly tasks fixed (4.1); track-record prompt block (4.2, 4.4) | this commit |
 | 2026-08-23 | 2 | Learning Scoreboard `/learning` (2.1–2.4) with register `learning.md` | 878c493 |
+| 2026-11-02 | 1, 5 | **Experiment 2 retired; Experiment 3 designed** (docs/26). Findings: 9/12 books dead 2–6 weeks (nano retired, Google credits); −$67K was the exit policy (trailing stops −$122K vs AI exits +$74K) over a +0.25%/call signal; entry-quality levers measured (strategies, confidence inverted, vetoes non-binding via shared-account `held_symbols`, regime 88% bull in a flat quarter); landscape re-verified (§1.6); D8–D14 | this commit |
+| 2026-11-02 | D8–D14 | Built: `provider_health` warning system; catalog + lifecycle table + $100 cap; policy set (strategies / confidence / vetoes / regime); apex-prompt caching; tier-4 data (Reg SHO, FTD, Form 144, lock-up proxy, VIX term, breadth) + 6 rules; `full_fresh_start_2026_11_03.py`. Reset awaits the operator's keys | this commit |
 | 2026-08-23 | 1 | **Reset applied** (1.6–1.10), twice the same evening: first run archived Experiment 1 (170,536 rows; the archive was then deleted by a deploy and regenerated from the pre-wipe backups into `backups/predictions_archive/`); after the operator's incumbent ruling the reset was re-run with the four-arm manifest — profiles 229–240 on accounts 61/62/63 (`08-24-acct-1..3`), $250K each, keys installed, 11 benchmarks pending activation at the 2026-08-24 open, **CERTIFIED CLEAN** on all five checks. Pre-registration (§3) filled. | tag `exp2-learning-phase1-start` |
 
 ---

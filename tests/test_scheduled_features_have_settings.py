@@ -44,6 +44,11 @@ INFRASTRUCTURE_TASKS = {
     "_task_daily_snapshot",            # equity / pnl tracking
     "_task_cost_check",                # AI spend guard
     "_task_data_source_health",        # silent-fallback detector (2026-05-15 incident response)
+    "_task_provider_health",           # 2026-11-02 (docs/25 D8): AI provider probe /
+                                        # deprecation lookahead / decision-flow watchdog /
+                                        # credit runway. Nine of twelve books ran blind for
+                                        # weeks because nothing watched the providers; a
+                                        # toggle would recreate exactly that blind spot.
     "_task_auto_expire_gate_tightens", # 4th guardrail from 2026-05-14 (auto-revert old unhelpful gate-tightens)
     "_task_trade_rate_anomaly_check",  # Item 5 of docs/17 Phase 1 —
                                         # observability layer that writes

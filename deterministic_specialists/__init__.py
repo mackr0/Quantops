@@ -215,6 +215,13 @@ RULE_MODULES = [
     "deterministic_specialists.divergent_signals_caution",
     # Execution / liquidity
     "deterministic_specialists.wide_spread_caution",
+    # ── Tier-4 self-built sources (2026-11-02, docs/25 D12) ──
+    "deterministic_specialists.reg_sho_threshold_short_caution",
+    "deterministic_specialists.ftd_rising_short_caution",
+    "deterministic_specialists.form144_cluster_long_caution",
+    "deterministic_specialists.ipo_lockup_expiry_long_caution",
+    "deterministic_specialists.vix_backwardation_caution",
+    "deterministic_specialists.breadth_washout_long_caution",
     "deterministic_specialists.extreme_high_price_caution",
     "deterministic_specialists.multi_alt_data_silent",
     # Volume / flow

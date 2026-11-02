@@ -165,6 +165,15 @@ class TestLiveGateBehavior:
     gate was extracted from run_trade_cycle precisely so no replica is
     needed; the wiring pin above proves the live path calls it)."""
 
+    @pytest.fixture(autouse=True)
+    def _arm_the_gate(self, monkeypatch):
+        """2026-11-02: the gate is INERT by default (confidence is inverted
+        on the resolved data — docs/25 D13). These tests exercise the
+        mechanism itself, so arm it; the default is pinned in
+        tests/test_entry_quality_policy_2026_11_02.py."""
+        import trade_pipeline
+        monkeypatch.setattr(trade_pipeline, "CONFIDENCE_GATE_ACTIVE", True)
+
     def _gate(self, trades, threshold, monkeypatch=None):
         from unittest.mock import MagicMock
         import trade_pipeline

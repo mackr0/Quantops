@@ -115,6 +115,51 @@ _cache: Dict[str, Any] = {"regime": None, "regime_ts": 0}
 _CACHE_TTL = 30 * 60
 
 
+#: Trend rule (2026-11-02, docs/25 D13). "Bull" means the index has
+#: actually risen over roughly two months, not merely that price sits
+#: above a still-rising 50-day average: the old rule labelled 88% of
+#: Experiment 2's predictions "bull" through a flat quarter (SPY −0.8%
+#: 08-24 → 11-02) because after a rally the SMA50 keeps rising for weeks
+#: while price goes nowhere. Replayed on SPY bars: old rule 74% bull
+#: since 08-24; this rule 70% sideways, and still bull through the
+#: May–Sep 2025 and May–Jun 2026 rallies, bear in Mar 2026.
+TREND_RETURN_WINDOW = 40        # trading days (~2 months)
+TREND_RETURN_MIN = 0.03         # ±3% over the window
+
+
+def classify_trend(closes) -> Dict[str, Any]:
+    """{regime: bull|bear|sideways, ret_window, sma50, slope, spy_trend}
+    from a sequence of closes (oldest first). Needs ≥ 50 closes; with
+    fewer than TREND_RETURN_WINDOW+1 the return term is unavailable and
+    the answer is 'sideways' (never a confident label from thin data)."""
+    vals = [float(x) for x in list(closes)]
+    out = {"regime": "sideways", "ret_window": None, "sma50": None,
+           "slope": None, "spy_trend": "flat"}
+    if len(vals) < 50:
+        return out
+    px = vals[-1]
+    sma50 = sum(vals[-50:]) / 50.0
+    sma50_old = (sum(vals[-60:-10]) / 50.0) if len(vals) >= 60 else sma50
+    slope = sma50 - sma50_old
+    out.update(sma50=round(sma50, 4), slope=round(slope, 4))
+    if px > sma50 and slope > 0:
+        out["spy_trend"] = "up"
+    elif px < sma50 and slope < 0:
+        out["spy_trend"] = "down"
+    if len(vals) < TREND_RETURN_WINDOW + 1:
+        return out
+    base = vals[-(TREND_RETURN_WINDOW + 1)]
+    if base <= 0:
+        return out
+    ret = px / base - 1.0
+    out["ret_window"] = round(ret, 4)
+    if ret > TREND_RETURN_MIN and px > sma50 and slope > 0:
+        out["regime"] = "bull"
+    elif ret < -TREND_RETURN_MIN and px < sma50 and slope < 0:
+        out["regime"] = "bear"
+    return out
+
+
 def detect_regime() -> Dict[str, Any]:
     """Detect current market regime by analyzing SPY and VIX.
 
@@ -154,18 +199,9 @@ def detect_regime() -> Dict[str, Any]:
         result["spy_price"] = round(spy_price, 2)
         result["spy_sma50"] = round(sma50, 2)
 
-        if len(spy_hist) >= 60:
-            sma50_10d_ago = float(spy_hist["close"].iloc[-60:-10].tail(50).mean())
-        else:
-            sma50_10d_ago = sma50
-        sma50_slope = sma50 - sma50_10d_ago
-
-        if spy_price > sma50 and sma50_slope > 0:
-            result["spy_trend"] = "up"
-        elif spy_price < sma50 and sma50_slope < 0:
-            result["spy_trend"] = "down"
-        else:
-            result["spy_trend"] = "flat"
+        trend = classify_trend(spy_hist["close"].tolist())
+        result["spy_trend"] = trend["spy_trend"]
+        result["spy_ret_40d"] = trend["ret_window"]
 
         # VIX priority: Alpaca SPY options ATM IV → yfinance ^VIX →
         # explicit unknown. Pre-2026-05-16 a missing Alpaca chain
@@ -254,12 +290,8 @@ def detect_regime() -> Dict[str, Any]:
         # rather than silently misclassifying.
         if vix_val is not None and vix_val > 30 and result["volatility"] == "high":
             regime = "volatile"
-        elif result["spy_trend"] == "up" and spy_price > sma50:
-            regime = "bull"
-        elif result["spy_trend"] == "down" and spy_price < sma50:
-            regime = "bear"
         else:
-            regime = "sideways"
+            regime = trend["regime"]   # bull / bear only on a real move (classify_trend)
         result["regime"] = regime
 
         # Recommendation based on regime

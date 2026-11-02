@@ -89,8 +89,11 @@ def _candidate_sections(prompt):
     Tickers also appear in sector/rotation context elsewhere, so
     assertions must be scoped to the listing itself.
     """
-    start = prompt.index("CANDIDATES")
-    end = prompt.index("\nRULES:", start)
+    # 2026-11-02: the prompt is stable-instructions first (RULES live in
+    # the cached block), then the live data; the candidate listing ends
+    # where the per-cycle notes begin.
+    start = prompt.index("CANDIDATES", prompt.index("=== LIVE DATA"))
+    end = prompt.index("\nTHIS CYCLE:", start)
     body = prompt[start:end]
     marker = "DISCRETIONARY WATCH"
     if marker in body:

@@ -134,7 +134,7 @@ decisions and no more knowledge. Everything it built carries forward.
 
 ---
 
-## Experiment 2 — Learning & Model Selection, Phase 1 — RUNNING (start: 2026-08-24)
+## Experiment 2 — Learning & Model Selection, Phase 1 — RETIRED (2026-08-24 → 2026-11-02)
 
 ### What it is designed to answer
 1. **Does anything beat the incumbent on real trades?** `gpt-4.1-nano`
@@ -264,3 +264,210 @@ bill dominated by a losing arm.
 - Start tag: `exp2-learning-phase1-start` (the commit that recorded
   the reset).
 - Decision and progress logs: [25](25_MODEL_SELECTION_AND_LEARNING_PLAN.md) §4–5.
+
+### What it found — the 2026-11-02 post-mortem (numbers from the journals, the broker and the scheduler log)
+
+**1. The experiment had quietly collapsed to one arm.** On 2026-11-02
+the twelve books were checked for the date of their last AI decision:
+
+| Arm | Books | Last decision | Cause (scheduler log) |
+|---|---|---|---|
+| `gpt-4.1-nano` | 229–231 | 10-12 / 10-23 / 10-23 | OpenAI shut the model down 2026-10-23 (announced 04-22); every call 404 `model_not_found` — 154 failed cycles since 10-20 |
+| `gpt-5.6-luna` | 232–234 | 11-02 (healthy) | — |
+| `gemini-3.5-flash-lite` | 235–237 | 09-25 / 10-21 / 09-25 | Google 402 `RESOURCE_EXHAUSTED: prepayment credits depleted` — 462 failed cycles since 10-20; Google also deprecated the model itself on 2026-10-08 (routed to 3.6 Flash) |
+| `gemini-3.7-flash` | 238–240 | 10-22 / 10-22 / 09-25 | same 402; model deprecated 2026-10-08 (routed to 3.8 Flash) |
+
+Nine of twelve books made no decision for two to six weeks while their
+stops and sweeps kept running, so the books looked alive. Nothing
+probed the AI providers (the health probe covered Alpaca and yfinance
+only), the model picker's "available" badge read the vendor's list-
+models endpoint, which still returned `gpt-4.1-nano` three weeks after
+it stopped answering, and no alert fires when a book goes N cycles
+without a decision. **This is the finding that outranks every other
+one here**: the comparison the experiment existed to make was not
+being made from late September on, and the operator learned it from a
+P&L review, not from the system. The fix is Experiment 3's first
+deliverable (provider health probe, deprecation lookahead, decision-
+flow watchdog, credit runway — CHANGELOG 2026-11-02).
+
+**2. P&L: −$67,349 on $3M since 08-24 (SPY −0.8%), 2 of 12 books
+positive** — but the loss was the exit policy, not the entries.
+Realized P&L by exit reason across all books: trailing-stop fills
+**−$122,421** (565 long exits, median 0.1 days after entry, 78% of the
+stopped longs had been up >1% first, price back +1.8% in the
+position's favor by the next close in 69% of a sample), options
+−$17,045 (single-leg long calls/puts −$16.9K of it, 28% win), **the
+AI's own exit decisions +$74,201**, fees/dividends −$612. Entry
+execution paid $43,025 of gross slippage in ten weeks with market
+orders (p90 +26 bps against a 3.9 bps median spread). All three were
+changed on 2026-11-01/02 before the reset: breakeven-then-trail stops,
+no naked long premium, marketable-limit entries (CHANGELOG).
+
+**3. The directional signal exists.** 10,532 AI-selected directional
+predictions resolved (outcome = raw underlying move at the horizon,
+sign-adjusted): **+0.25% per call**; bearish calls +1.17% at 51% win
+(n=4,830), bullish −0.53% at 43% (n=5,702). Entry hit rate 41–53% by
+month, no arm trending up. The signal reached the predictions and was
+destroyed between prediction and realized P&L.
+
+**4. Entry-quality levers, measured on the same 10,532 predictions
+(all shipped before the reset, CHANGELOG 2026-11-02):**
+- Strategies that lose on their own direction: `earnings_drift` 23%
+  win −3.76%/call (n=64), `insider_selling_cluster` 34% −1.12% (n=1,158,
+  the largest single drag), `vol_regime` 50% −0.92% (n=400). Removed
+  from the active set (`strategy_policy.OPERATOR_DISABLED_STRATEGIES`).
+  Winners: `batch_ai` (the AI's own pick, no screener vote) +1.81%
+  (n=1,565), `volume_spike` 61% +0.70% (n=1,712), `mean_reversion`
+  +0.39%. `volume_spike` is marked in the candidate line.
+- **Confidence is inverted**: the 80–89 bucket is the worst (40% win,
+  −0.99%), the 60s the best (+0.61%). Yet `confidence_sizing` scaled
+  positions 1.5× at 80+ and 0.7× below 60, and the confidence gate
+  blocked entries below the profile floor. Both removed from decisions
+  (sizing flat, gate inert); confidence is still recorded.
+- **Specialist VETOs were advisory in practice.** 955 traded SHORTs
+  carried an ensemble verdict of VETO from a veto-authorized
+  specialist (`adversarial_reviewer` 633, `risk_assessor` 556; −0.28% /
+  −0.27% per call vs +0.25% overall). Cause: the pre-selection veto
+  exempted "held exits", `held_symbols` is the shared Alpaca account's
+  positions (three books per account), so a bearish candidate on a
+  symbol any sibling book held long passed as an exit and the AI then
+  opened a SHORT. Fixed with a post-selection gate: a vetoed symbol can
+  only become an exit (`SPECIALIST_VETO` drop code).
+- **The regime classifier called 88% of predictions "bull"** through a
+  flat quarter (51,315 bull / 6,101 sideways / 714 bear) because
+  `detect_regime` read "price above a rising SMA50" as bull; after a
+  rally the SMA50 keeps rising for weeks while price goes nowhere.
+  Replaced by a 40-bar return rule (±3%) shared with the short-slate
+  throttle, which also called "strong bull" and suppressed routine
+  shorts — the profitable side.
+- **The "require a meta score" lever was a time artifact**: every
+  unscored prediction (3,319) is from August, before any book had a
+  trained meta-model; every prediction since September is scored. No
+  change made; recorded so it is not re-proposed.
+- Meta-model AUC by book 0.50–0.72; specialist cautions do not
+  discriminate (46–47% win at 0 and at 3+ cautions). The owned-model
+  track (P4.3 batch 5) waits for a corpus produced under the corrected
+  policies.
+
+**5. Spend:** $66.44 total since 08-24 across all AI calls; $39 in
+September with all twelve books alive (per book: nano $0.7–0.9, luna
+$2.6–2.9, 3.5-flash-lite $3.0–3.8, 3.7-flash $4.5–8.2). The plan's
+"$3.56/day" alarm in the validity notes was the shadow burn, since
+stopped. Budget was never the constraint; dead credentials were.
+
+**6. Model landscape at retirement (verified 2026-11-02 against the
+vendors' pricing and deprecation pages; see [25](25_MODEL_SELECTION_AND_LEARNING_PLAN.md) §1.6):**
+`gpt-4.1-nano` retired 10-23; `gpt-5-nano` / `gpt-5-mini` / `gpt-5`
+retire 12-11; `gemini-3.5-flash` / `gemini-3.7-flash` deprecated 10-08;
+the catalog had none of GPT-6 (Astra / 6.1 Sol / 6.1 Terra / 6-luna),
+Gemini 4 Argon, Claude 5.5 (Haiku / Sonnet / Opus) or Claude Fable 5.1,
+nor the current open-weight tier (DeepSeek V4.1 Flash, Kimi K2.7, GLM
+5.3, Qwen 3.8).
+
+### Why it is retired
+Its first question (beat the incumbent) can no longer be asked — the
+incumbent no longer exists. Its arm comparison stopped being made in
+late September for three of four arms. Its P&L was dominated by an
+exit policy that has since been replaced, so pre/post books are not
+comparable. What it produced carries forward: the platform fixes
+above, the measured entry-quality levers, the model-landscape audit,
+the warning-system requirement, and 10,532 resolved directional
+predictions scored on raw underlying moves, which the exit and
+execution changes do not touch.
+
+### How to return to this exact moment
+- **Git:** tag `exp2-learning-phase1-final` (the commit that retires
+  this entry).
+- **Data:** per-profile DBs `quantopsai_profile_{229..240}.db`;
+  archived by the reset script into `backups/predictions_archive/
+  <pid>/exp2_final_<date>/` (step 1c); master DB snapshots
+  `backups/quantopsai.db.YYYYMMDD-0500`.
+- **Code at retirement:** `full_fresh_start_2026_08_24.py`,
+  `create_experiment_profiles.py` at the tag (four Experiment 2 arms).
+- **Attribution queries:** `scripts/exit_attribution.py`; the
+  strategy / confidence / veto / regime numbers above are reproducible
+  from `ai_predictions.features_json` (`ensemble_specialists`,
+  `regime_at_prediction`, `strategy_type`, `meta_model_score`).
+
+---
+
+## Experiment 3 — Cost Ladder on a Corrected System — DESIGNED 2026-11-02 (start: at reset)
+
+### What it is designed to answer
+1. **Does cost buy returns?** Four models spanning a 10× price range
+   ($0.10/$0.50 to $1/$5 per 1M tokens) and the independent
+   Artificial Analysis intelligence index 32 → 51, all fed the same
+   data, strategies, specialists and policies. Operator framing: "does
+   a free or low-cost model perform the same as an expensive model
+   because of the system we have built providing so much data into
+   the decision making process?"
+2. **Did the 2026-11 corrections move the P&L to where the signal is?**
+   Experiment 2 measured +0.25%/call of directional signal and lost
+   money anyway. With static-then-trailing stops, marketable-limit
+   entries, no naked long premium, the three losing strategies off,
+   confidence out of sizing, binding vetoes and a regime label that
+   reads a flat market as flat, realized P&L should track the
+   prediction-level signal. The incumbent arm (`gpt-5.6-luna`, the one
+   model with a continuous record) is the bridge that makes the
+   before/after readable on the same model.
+3. **How much does the owned model help** — the fine-tune corpus now
+   accumulates under the corrected policies; batch 5 trains on it
+   (docs/27) and, when it clears its gate, joins as an arm.
+
+### Design
+- **Four arms × three replicates**, $250K each, one replicate of every
+  arm per paper account (unchanged from Experiment 2 — the structure
+  that proved stable). Only `ai_provider` / `ai_model` differ (D9):
+
+  | Arm | Model | Vendor | $/1M in / out | Index | Est. $/month (3 books) |
+  |---|---|---|---|---|---|
+  | floor | `claude-haiku-5-5` | Anthropic | 0.10 / 0.50 | 36 | $3.30 |
+  | open-weight | `deepseek-flash` (V4.1 Flash) | DeepSeek | 0.30 / 1.20 peak, half off-peak | 32 | $4.65 |
+  | incumbent | `gpt-5.6-luna` | OpenAI | 0.20 / 1.20 | — | $7.05 |
+  | top | `gpt-6.1-terra` | OpenAI | 1.00 / 5.00 | 42–51 | $37.50 |
+
+  Projected ≈ $52/month at September's measured volume (7.5M in / 0.7M
+  out per book, 1M out for the reasoning arm). **Hard ceiling $100/month
+  fleet-wide** (D10), enforced by the cost guard, with a daily credit-
+  runway projection.
+- **Why not a frontier arm:** any $2/$10 model (GPT-6.1 Sol, Claude
+  Sonnet 5.5, Gemini 4 Argon) costs ≈ $75/month as a three-replicate
+  arm and Claude Opus 5.5 ≈ $150, each alone breaking the ceiling.
+  Terra at max effort scores within a few index points of Sol at high
+  effort, so the ladder still spans a frontier-adjacent model against
+  a $0.10 one. Prompt caching (new in this experiment) is measured for
+  a month; if the bill runs well under $50 the top arm can be revisited
+  at the next reset, never mid-experiment.
+- **Three vendors**, so a single vendor's deprecation or billing event
+  cannot blind the whole ladder again.
+- **Warning system in force before the first cycle** (D8): per-profile
+  provider probe every 30 minutes classifying deprecated-model / credits
+  / quota / auth / outage; vendor deprecation lookahead at 60/30/7 days;
+  decision-flow watchdog (no successful decision in N market hours);
+  credit-runway projection against the $100 ceiling. Email on first
+  occurrence, daily while unresolved, dashboard banner.
+- **Policies in force from day one** (CHANGELOG 2026-11-01/02): see
+  Experiment 2 §4 above. All books, all at once — the operator's
+  standing rule (rollouts are never staged; the books are one dataset).
+- **Baselines virtual** (D6), **shadowing specialist-only** (D5), **pre-
+  registered decision rule** (docs/25 §3) all carried forward.
+- **Data expansion, self-built only** (D12): the operator does not pay
+  for data subscriptions; sources are public endpoints, cached locally,
+  each shipped as a deterministic checker plus a weightable signal so
+  the self-tuner measures its hit rate. First tranche: SEC fails-to-
+  deliver, Reg SHO threshold list, Form 144, N-PORT fund holdings, CBOE
+  VIX term structure, own-universe market breadth, IPO lockup calendar.
+
+### Why this design
+Experiment 1 compared small models and could not score the apex call;
+Experiment 2 compared small/mid models and lost three arms to dead
+credentials while an exit policy hid the signal. Experiment 3 keeps
+the replicate structure that worked, puts the monitoring in first,
+spans cost instead of vendor, and runs on policies chosen from the
+measured decision data rather than assumed.
+
+### Return points
+- Design decisions D8–D14 in [25](25_MODEL_SELECTION_AND_LEARNING_PLAN.md) §4.
+- Reset script `full_fresh_start_2026_11_03.py`; manifest
+  `create_experiment_profiles.py` (Experiment 3 arms); start tag
+  `exp3-cost-ladder-start` (set when the reset is applied).

@@ -31,8 +31,11 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
+# insider_selling_cluster is alt-data-sourced too but is OFF by operator
+# policy since 2026-11-02 (strategy_policy: 34% win, −1.12%/call on 1,158
+# calls) — it is never active, so it cannot be in the expected set.
 ALT_STRATEGIES = {
-    "insider_cluster", "insider_selling_cluster",
+    "insider_cluster",
     "short_squeeze_setup", "analyst_upgrade_drift",
 }
 # Modules whose data IS the alt-data block enable_alt_data gates. Extend

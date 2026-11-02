@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import pytest
 import os
 import sys
 import types
@@ -118,7 +119,7 @@ class TestOpenAIPath:
                 self.chat = types.SimpleNamespace(completions=_Completions())
 
         monkeypatch.setattr("openai.OpenAI", _Client)
-        text, _i, _o = ap._call_openai("p", "gpt-5.6-luna", "k", 512,
+        text, _i, _o, *_ = ap._call_openai("p", "gpt-5.6-luna", "k", 512,
                                        schema=SCHEMA)
         assert json.loads(text) == {"verdicts": []}
         rf = captured["response_format"]
@@ -162,7 +163,7 @@ class TestOpenAIPath:
                 self.chat = types.SimpleNamespace(completions=_Completions())
 
         monkeypatch.setattr("openai.OpenAI", _Client)
-        text, _i, _o = ap._call_openai("p", "gpt-5-nano", "k", 64)
+        text, _i, _o, *_ = ap._call_openai("p", "gpt-5-nano", "k", 64)
         assert text == "ok"
         assert len(calls) == 2 and "reasoning_effort" not in calls[1]
 
@@ -197,16 +198,21 @@ class TestGooglePath:
 
 
 class TestAnthropicPath:
-    def test_schema_forces_tool_use_and_returns_json_text(self, monkeypatch):
+    def test_schema_uses_output_config_json_schema_and_returns_text(self, monkeypatch):
+        """2026-11-02: structured output goes through the API's
+        output_config.format json_schema mode — forced tool_choice is a
+        400 on the Claude 5.5 family (the Haiku 5.5 arm). The text is
+        read from the TEXT block even when a thinking block precedes it."""
         captured = {}
 
         class _Messages:
             def create(self, **kw):
                 captured.update(kw)
-                block = types.SimpleNamespace(type="tool_use",
-                                              input={"verdicts": []})
+                thinking = types.SimpleNamespace(type="thinking", thinking="")
+                block = types.SimpleNamespace(type="text",
+                                              text=json.dumps({"verdicts": []}))
                 return types.SimpleNamespace(
-                    content=[block],
+                    content=[thinking, block], stop_reason="end_turn",
                     usage=types.SimpleNamespace(input_tokens=1,
                                                 output_tokens=1))
 
@@ -215,11 +221,31 @@ class TestAnthropicPath:
                 self.messages = _Messages()
 
         monkeypatch.setattr("anthropic.Anthropic", _Client)
-        text, _i, _o = ap._call_anthropic("p", "claude-sonnet-5", "k", 256,
-                                          schema=SCHEMA)
+        text, _i, _o, _c = ap._call_anthropic("p", "claude-haiku-5-5", "k", 256,
+                                              schema=SCHEMA)
         assert json.loads(text) == {"verdicts": []}
-        assert captured["tool_choice"] == {"type": "tool", "name": "emit"}
-        assert captured["tools"][0]["input_schema"] == SCHEMA
+        assert "tool_choice" not in captured and "tools" not in captured
+        fmt = captured["output_config"]["format"]
+        assert fmt["type"] == "json_schema"
+        assert fmt["schema"] == ap._openai_strict_schema(SCHEMA)
+        # thinking model → token budget floored
+        assert captured["max_tokens"] == ap.ANTHROPIC_THINKING_MAX_TOKENS_FLOOR
+
+    def test_refusal_raises_instead_of_empty_string(self, monkeypatch):
+        class _Messages:
+            def create(self, **kw):
+                return types.SimpleNamespace(
+                    content=[], stop_reason="refusal",
+                    stop_details=types.SimpleNamespace(category="cyber", explanation="no"),
+                    usage=types.SimpleNamespace(input_tokens=1, output_tokens=0))
+
+        class _Client:
+            def __init__(self, api_key=None):
+                self.messages = _Messages()
+
+        monkeypatch.setattr("anthropic.Anthropic", _Client)
+        with pytest.raises(RuntimeError, match="refused"):
+            ap._call_anthropic("p", "claude-haiku-5-5", "k", 256)
 
 
 class TestOneCallPath:

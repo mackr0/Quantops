@@ -81,6 +81,7 @@ KNOWN_ACTIONS: Set[str] = {
     # details entry (same downstream shape as BLACKLIST_BLOCKED) plus
     # a CONFIDENCE_GATE trade-drop row for the AI Brain badge.
     "CONFIDENCE_BLOCKED",
+    "SPECIALIST_VETOED",   # 2026-11-02 post-selection binding veto gate (detail row)
     # Options pipeline
     "OPTIONS", "OPTIONS_OPEN", "MULTILEG_OPEN",
     # Pair-trading pipeline

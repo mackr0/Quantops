@@ -114,3 +114,12 @@ ENABLE_CONCENTRATION_AWARE = True
 # ATR stops. Operator-set policy — deliberately NOT auto-tuned (see
 # self_tuning._OPERATOR_ONLY_PARAMS).
 SCREEN_MIN_ADV = 5_000_000
+
+
+# 2026-11-02 (docs/25 D10) — the whole fleet's AI spend ceiling. The
+# cost guard derives its daily ceiling from this (budget / 21 trading
+# days) unless the operator's per-user override is LOWER, and the
+# provider_health credit-runway check projects trailing spend against
+# it daily. Operator constraint: "total monthly cost below 100".
+FLEET_MONTHLY_AI_BUDGET_USD = float(os.getenv("FLEET_MONTHLY_AI_BUDGET_USD", "100"))
+FLEET_TRADING_DAYS_PER_MONTH = 21

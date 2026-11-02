@@ -51,10 +51,10 @@ class TestStamp:
         from journal import init_db
         init_db(db)   # applies the migration list incl. ai_model
         pid = record_prediction("AAPL", "BUY", 70, "r", 100.0, db_path=db,
-                                ai_provider="openai", ai_model="gpt-4.1-nano")
+                                ai_provider="openai", ai_model="gpt-5.6-luna")
         conn = sqlite3.connect(db)
         assert conn.execute("SELECT ai_provider, ai_model FROM ai_predictions "
-                            "WHERE id=?", (pid,)).fetchone() == ("openai", "gpt-4.1-nano")
+                            "WHERE id=?", (pid,)).fetchone() == ("openai", "gpt-5.6-luna")
 
     def test_pipeline_passes_ctx_model(self):
         import inspect
@@ -105,7 +105,7 @@ class TestPromotion:
     def _profile(self, **over):
         p = {"id": 1, "ai_provider": "google", "ai_model": "gemini-3.5-flash-lite",
              "ai_api_key_enc": "ENC-GOOGLE",
-             "shadow_models": json.dumps(["openai:gpt-4.1-nano",
+             "shadow_models": json.dumps(["openai:gpt-6.1-terra",
                                           "google:gemini-3.7-flash"]),
              "shadow_api_keys_enc": json.dumps({"openai": "ENC-OPENAI"})}
         p.update(over)
@@ -113,11 +113,11 @@ class TestPromotion:
 
     def test_plan_swaps_primary_and_shadow_and_keys(self):
         from model_promotion import plan_promotion
-        plan = plan_promotion(self._profile(), "openai", "gpt-4.1-nano")
-        assert (plan["ai_provider"], plan["ai_model"]) == ("openai", "gpt-4.1-nano")
+        plan = plan_promotion(self._profile(), "openai", "gpt-6.1-terra")
+        assert (plan["ai_provider"], plan["ai_model"]) == ("openai", "gpt-6.1-terra")
         assert plan["ai_api_key_enc"] == "ENC-OPENAI"
         shadows = json.loads(plan["shadow_models"])
-        assert "openai:gpt-4.1-nano" not in shadows          # never shadows itself
+        assert "openai:gpt-6.1-terra" not in shadows          # never shadows itself
         assert "google:gemini-3.5-flash-lite" in shadows      # old primary demoted
         assert "google:gemini-3.7-flash" in shadows
         keys = json.loads(plan["shadow_api_keys_enc"])
@@ -151,13 +151,13 @@ class TestPromotion:
         update_trading_profile(
             pid, ai_provider="google", ai_model="gemini-3.5-flash-lite",
             ai_api_key_enc="ENC-GOOGLE", enable_shadow_eval=1,
-            shadow_models=json.dumps(["openai:gpt-4.1-nano"]),
+            shadow_models=json.dumps(["openai:gpt-6.1-terra"]),
             shadow_api_keys_enc=json.dumps({"openai": "ENC-OPENAI"}))
         from model_promotion import promote
-        out = promote(pid, "openai", "gpt-4.1-nano", reason="beat the primary")
-        assert out["_to"] == "openai:gpt-4.1-nano"
+        out = promote(pid, "openai", "gpt-6.1-terra", reason="beat the primary")
+        assert out["_to"] == "openai:gpt-6.1-terra"
         p = next(x for x in get_user_profiles(uid) if x["id"] == pid)
-        assert (p["ai_provider"], p["ai_model"]) == ("openai", "gpt-4.1-nano")
+        assert (p["ai_provider"], p["ai_model"]) == ("openai", "gpt-6.1-terra")
         assert "google:gemini-3.5-flash-lite" in json.loads(p["shadow_models"])
         conn = sqlite3.connect(str(tmp_main_db))
         assert conn.execute("SELECT COUNT(*) FROM activity_log WHERE "

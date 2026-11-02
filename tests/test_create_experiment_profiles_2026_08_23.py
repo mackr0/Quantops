@@ -68,19 +68,40 @@ class TestManifestStructure:
             for r in reps[1:]:
                 assert {k: v for k, v in r.items() if k != "name"} == ref
 
-    def test_arm_models_are_the_d1_decision(self, manifest):
+    def test_arm_models_are_the_d9_cost_ladder(self, manifest):
+        """Experiment 3 (docs/25 D9, 2026-11-02): four price points across
+        three vendors, < $100/month fleet-wide (D10)."""
         arms = sorted({(p["ai_provider"], p["ai_model"]) for p in manifest})
-        assert arms == [("google", "gemini-3.5-flash-lite"),
-                        ("google", "gemini-3.7-flash"),
-                        ("openai", "gpt-4.1-nano"),
-                        ("openai", "gpt-5.6-luna")]
+        assert arms == [("anthropic", "claude-haiku-5-5"),
+                        ("deepseek", "deepseek-flash"),
+                        ("openai", "gpt-5.6-luna"),
+                        ("openai", "gpt-6.1-terra")]
 
     def test_the_incumbent_is_an_arm(self, manifest):
-        """gpt-4.1-nano is Experiment 1's measured winner; a new model is
-        only better if it beats nano on real trades, so nano must be a
-        full arm, never just a shadow (operator, 2026-08-23)."""
-        nano = [p for p in manifest if p["ai_model"] == "gpt-4.1-nano"]
-        assert len(nano) == 3 and all(p["strategy_type"] == "ai" for p in nano)
+        """gpt-5.6-luna is the only model with a continuous record since
+        2026-08-24 (Experiment 2's other three arms died to a retirement
+        and a credit outage); it stays a full arm so Experiment 3's
+        before/after is readable on the same model."""
+        luna = [p for p in manifest if p["ai_model"] == "gpt-5.6-luna"]
+        assert len(luna) == 3 and all(p["strategy_type"] == "ai" for p in luna)
+
+    def test_no_arm_runs_a_retired_or_deprecated_model(self, manifest):
+        from ai_providers import model_status
+        for p in manifest:
+            assert model_status(p["ai_model"])["status"] == "active", p["ai_model"]
+
+    def test_ladder_fits_the_budget(self, manifest):
+        """Projected spend at September's measured volume (7.5M in /
+        0.7M out per book-month; 1.0M out for reasoning models) must sit
+        under config.FLEET_MONTHLY_AI_BUDGET_USD with headroom."""
+        import config
+        from ai_pricing import PRICING
+        total = 0.0
+        for p in manifest:
+            pr = PRICING[p["ai_model"]]
+            out_m = 1.0 if p["ai_model"].startswith("gpt-6") else 0.7
+            total += 7.5 * pr["input"] + out_m * pr["output"]
+        assert total < config.FLEET_MONTHLY_AI_BUDGET_USD * 0.6, total
 
     def test_every_model_and_shadow_is_registered(self):
         from create_experiment_profiles import _verify_manifest_totals
@@ -195,3 +216,44 @@ class TestResetScript:
         monkeypatch.setenv("ENCRYPTION_KEY", "x")
         assert mod.step1_verify_keys() is False
         assert "no AI key" in capsys.readouterr().out
+
+
+class TestResetScript20261103:
+    """The Experiment 3 reset script (clone of 08-24 with the D9 manifest
+    and three-provider keys)."""
+
+    def _load(self, monkeypatch):
+        for v in ("RESET_NEW_GOOGLE_AI_KEY", "RESET_NEW_OPENAI_AI_KEY",
+                  "RESET_NEW_ANTHROPIC_AI_KEY", "RESET_NEW_DEEPSEEK_AI_KEY"):
+            monkeypatch.delenv(v, raising=False)
+        import importlib
+        sys.modules.pop("full_fresh_start_2026_11_03", None)
+        return importlib.import_module("full_fresh_start_2026_11_03")
+
+    def test_no_keys_in_source(self, monkeypatch):
+        mod = self._load(monkeypatch)
+        for name, _label, k, s in mod.NEW_KEYS:
+            assert k.startswith("TODO") and s.startswith("TODO"), name
+        import re
+        src = open(mod.__file__).read()
+        assert not re.search(r'"PK[A-Z0-9]{18,}"', src)
+        assert not re.search(r"sk-ant-[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{32,}", src)
+
+    def test_three_provider_keys_and_order(self, monkeypatch):
+        mod = self._load(monkeypatch)
+        assert set(mod.NEW_AI_KEYS) >= {"anthropic", "deepseek", "openai"}
+        import inspect
+        main_src = inspect.getsource(mod.main)
+        order = [main_src.index(s) for s in (
+            "step1_verify_keys(", "step1c_archive_learning_data(",
+            "step2_destroy_old_state(", "step4_build_profiles(",
+            "step5c_install_new_ai_key(", "step4b_create_virtual_benchmarks(")]
+        assert order == sorted(order)
+        assert "EXPERIMENT 3" in main_src
+
+    def test_verify_keys_refuses_without_every_arm_provider(self, monkeypatch, capsys):
+        mod = self._load(monkeypatch)
+        monkeypatch.setenv("ENCRYPTION_KEY", "x")
+        assert mod.step1_verify_keys() is False
+        out = capsys.readouterr().out
+        assert "no AI key" in out and "anthropic" in out and "deepseek" in out
