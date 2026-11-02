@@ -210,7 +210,8 @@ class TestBrokerTruthSkipAndHeal:
         api.get_position.return_value = SimpleNamespace(qty="100")
         api.list_orders.return_value = []  # no coverage
         api.submit_order.return_value = MagicMock(id="new-trail")
-        positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0}]
+        positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0,
+                  "current_price": 160.0}]  # +6.7% ≥ 1R: the trail arms (breakeven-then-trail, 2026-11-02)
         ensure_protective_stops(api, positions, _ctx(), full_db)
         assert api.submit_order.call_count == 1
         assert api.submit_order.call_args.kwargs["type"] == "trailing_stop"

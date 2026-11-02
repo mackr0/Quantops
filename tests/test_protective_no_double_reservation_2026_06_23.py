@@ -57,7 +57,7 @@ def _mk_position(symbol="BMNR", qty=2977, avg=20.0):
     return {
         "symbol": symbol, "qty": qty,
         "avg_entry_price": avg,
-        "current_price": avg * 1.01,
+        "current_price": avg * 1.06,  # ≥ 1R: trailing mode arms the trail (2026-11-02)
         "is_option": False, "occ_symbol": None,
     }
 

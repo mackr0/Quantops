@@ -129,7 +129,7 @@ class TestProtectiveSweepIgnoresSiblingCoverage:
         ctx = _make_ctx(use_trailing_stops=True)
         positions = [{
             "symbol": "PAVS", "qty": 1164, "avg_entry_price": 1.68,
-            "current_price": 1.60,
+            "current_price": 1.80,  # +7% ≥ 1R: the trail arms (2026-11-02)
         }]
         ensure_protective_stops(api, positions, ctx, db)
 
