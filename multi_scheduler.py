@@ -435,6 +435,30 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             db_path=ctx.db_path,
         )
 
+    # Health probes run EVERY cycle (each rate-limits itself: data
+    # sources every 10 min, provider every 30 min per profile). Until
+    # 2026-11-02 both sat inside the `if run_snapshot:` block below and
+    # therefore ran ONCE A DAY at snapshot time — the data-source probe
+    # since 2026-05-15 despite its "every 10 min" note, and the new
+    # provider probe would have inherited the same blind spot (the
+    # first post-deploy cycle on 11-02 never reached it).
+    # Data-source health probe — alerts LOUDLY if a critical
+    # source (Alpaca bars / options / news) is silently failing.
+    run_task(
+        f"[{seg_label}] Data Source Health",
+        lambda: _task_data_source_health(ctx),
+        db_path=ctx.db_path,
+    )
+    # AI provider health (2026-11-02, docs/25 D8): probe this
+    # profile's own model+key, the decision-flow watchdog, and once a
+    # day the deprecation lookahead + fleet credit runway. The check
+    # that would have caught nine dead books in September.
+    run_task(
+        f"[{seg_label}] Provider Health",
+        lambda: _task_provider_health(ctx),
+        db_path=ctx.db_path,
+    )
+
     if run_snapshot:
         run_task(
             f"[{seg_label}] Daily Snapshot",
@@ -445,23 +469,6 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
         run_task(
             f"[{seg_label}] Cost Check",
             lambda: _task_cost_check(ctx),
-            db_path=ctx.db_path,
-        )
-        # Data-source health probe — alerts LOUDLY if a critical
-        # source (Alpaca bars / options / news) is silently failing.
-        # Internally rate-limited to every 10 min across all profiles.
-        run_task(
-            f"[{seg_label}] Data Source Health",
-            lambda: _task_data_source_health(ctx),
-            db_path=ctx.db_path,
-        )
-        # AI provider health (2026-11-02, docs/25 D8): probe this
-        # profile's own model+key, the decision-flow watchdog, and once a
-        # day the deprecation lookahead + fleet credit runway. The check
-        # that would have caught nine dead books in September.
-        run_task(
-            f"[{seg_label}] Provider Health",
-            lambda: _task_provider_health(ctx),
             db_path=ctx.db_path,
         )
         # Auto-expiry of gate-tightening tuning changes that haven't

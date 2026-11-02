@@ -274,6 +274,21 @@ class TestWiring:
         html = open(os.path.join(REPO, "templates", "dashboard.html")).read()
         assert "provider-health-banner" in html and "no decisions" in html
 
+    def test_health_tasks_run_every_cycle_not_only_at_snapshot(self):
+        """2026-11-02: the first post-deploy cycle never reached the
+        provider probe because it sat under `if run_snapshot:` (daily).
+        Both health probes must be dispatched OUTSIDE that block."""
+        src = open(os.path.join(REPO, "multi_scheduler.py")).read()
+        i_snap = src.index("    if run_snapshot:\n        run_task(\n            f\"[{seg_label}] Daily Snapshot\"")
+        i_prov = src.index('f"[{seg_label}] Provider Health"')
+        i_dsh = src.index('f"[{seg_label}] Data Source Health"')
+        assert i_prov < i_snap and i_dsh < i_snap
+        # and at function-body indentation (4 spaces), not nested (8)
+        line = src[src.rfind("\n", 0, i_prov) + 1:i_prov]
+        assert line == "            " or line.strip() == ""      # inside run_task( call, 12 spaces
+        call_start = src.rfind("    run_task(", 0, i_prov)
+        assert src[call_start - 1] == "\n" and src[call_start:call_start + 13] == "    run_task("
+
     def test_master_schema_creates_the_table(self, tmp_main_db):
         import sqlite3
         with sqlite3.connect(tmp_main_db) as c:
