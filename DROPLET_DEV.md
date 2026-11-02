@@ -40,7 +40,7 @@ cd /opt/quantopsai
 ./venv/bin/python3 -m pytest -q -p no:randomly        # ~17 min
 ```
 
-Expected: **7,392 passed, 0 failed, 0 skipped** (2026-11-02), in ~14 minutes **when run with its temp files in RAM**:
+Expected: **7,394 passed, 0 failed, 0 skipped** (2026-11-02), in ~14 minutes **when run with its temp files in RAM**:
 
 ```bash
 mkdir -p /dev/shm/qo-pytest/tmp

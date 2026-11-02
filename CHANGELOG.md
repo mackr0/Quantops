@@ -5,6 +5,10 @@ at the top.
 
 ---
 
+## 2026-11-02 — Startup integrity check: a WAL-aware re-check before calling the master DB corrupt. Severity: MEDIUM (a false "database disk image is malformed" halted the scheduler for 30 s at the deploy restart and emailed a corruption alarm).
+
+At 16:51:24 UTC, as the deploy restarted web and scheduler together while the post-deploy verification was writing `provider_health` rows, `db_integrity.check_db` reported `quantopsai.db` malformed and the scheduler refused to start; systemd restarted it 30 s later and the same check passed ("16 DBs healthy"), and `PRAGMA integrity_check` on the file returned `ok` twenty minutes later. Cause: the check opens the file with `immutable=1`, which reads the MAIN file only and ignores the WAL and every lock — correct for a backup (no sidecars are created), wrong for a live database whose writer is mid-checkpoint. Now, when the immutable read is not clean AND a `-wal` sidecar exists (the only case a live writer can be involved), the file is re-checked with a plain read-only connection that honors the WAL, and that answer stands. Backups never carry a `-wal`, so the no-sidecar promise is unchanged. The 16:51 email was this false alarm. Tests: `TestWalAwareRecheck` (re-check clears a false malformed; no sidecar → no re-check).
+
 ## 2026-11-02 — Tier-4 self-built data sources (docs/25 D12) and the Experiment 3 reset script. Severity: MEDIUM (new inputs to every book's prompt, rules and features; no execution change).
 
 **Why these, and why free.** Operator constraint: no paid data subscriptions — "we have been building our own; it's better to control it long term." The system already reads ~25 free sources; the gaps with a plausible edge on the measured failure modes (shorts into squeezes, longs into insider supply, size in stress regimes) are delivery and supply data the SEC and the exchanges publish for nothing, plus two market-wide readings derivable from data we already fetch.
