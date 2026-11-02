@@ -288,7 +288,13 @@ one here**: the comparison the experiment existed to make was not
 being made from late September on, and the operator learned it from a
 P&L review, not from the system. The fix is Experiment 3's first
 deliverable (provider health probe, deprecation lookahead, decision-
-flow watchdog, credit runway — CHANGELOG 2026-11-02).
+flow watchdog, credit runway — CHANGELOG 2026-11-02). Shipping it
+exposed a second blind spot: the data-source health probe installed
+after the 2026-05-15 Alpaca-key incident had been dispatched from
+inside the once-a-day snapshot block, so "every 10 minutes" had
+really been once a day at the close for six months; both probes now
+run every cycle (CHANGELOG 2026-11-02, "Health probes run every
+cycle").
 
 **2. P&L: −$67,349 on $3M since 08-24 (SPY −0.8%), 2 of 12 books
 positive** — but the loss was the exit policy, not the entries.

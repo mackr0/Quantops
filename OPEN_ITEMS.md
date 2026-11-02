@@ -926,6 +926,10 @@ finding and its reason recorded in docs/26 + docs/25 as it ships.
 - [x] **Warning system** (D8) — `provider_health.py`: provider probe,
       deprecation lookahead, decision-flow watchdog, credit runway;
       dashboard banner; `/api/provider-health`. CHANGELOG 2026-11-02.
+      Same day: both health probes moved out of the daily snapshot
+      gate (the data-source probe had silently been daily since 05-15);
+      startup integrity check made WAL-aware (false "malformed" at the
+      deploy restart).
 - [x] **Catalog + lifecycle table + budget cap** (D10, D14) — current
       models of five vendors priced; `MODEL_STATUS`; Anthropic 5.x call
       path; `FLEET_MONTHLY_AI_BUDGET_USD`. CHANGELOG 2026-11-02.
