@@ -6649,6 +6649,32 @@ def main_loop(active_segments=None, legacy_mode=False):
                         "closed-market housekeeping failed (%s: %s)",
                         type(_hk_exc).__name__, _hk_exc,
                     )
+                # MEMORY SELF-RESTART (2026-11-01). The process grows
+                # several hundred MB per session (native, under
+                # attribution — OPEN_ITEMS 2026-09-19), fills the 1GB
+                # swapfile in 2-3 days, and the box then crawls until the
+                # kernel OOM-kills it mid-session. When the diagnostics
+                # say the process is holding too much, re-execute in
+                # place HERE — market closed, nothing in flight, more
+                # than an hour to the open — same PID, systemd sees
+                # nothing, the next cycle starts from a 160MB process.
+                try:
+                    _mem_reason = memory_diagnostics.restart_recommended()
+                    if _mem_reason and not is_market_open(
+                            datetime.now(ET) + timedelta(minutes=60)):
+                        logging.error(
+                            "[MEMDIAG] %s — market closed with >60 min to "
+                            "the open; re-executing the scheduler in place "
+                            "to release it.", _mem_reason)
+                        for _h in logging.getLogger().handlers:
+                            try:
+                                _h.flush()
+                            except Exception as _fl_exc:
+                                logging.debug("handler flush failed: %s", _fl_exc)
+                        os.execv(sys.executable, [sys.executable] + sys.argv)
+                except Exception as _mem_exc:
+                    logging.warning("memory self-restart check failed (%s: %s)",
+                                    type(_mem_exc).__name__, _mem_exc)
                 # PRE-OPEN DISARM must fire from HERE: a market-hours
                 # fleet spends every night/weekend parked in this loop
                 # and exits only AT the open — the outer-loop call

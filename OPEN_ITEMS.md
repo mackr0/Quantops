@@ -875,9 +875,21 @@ the closed market: swap 1,023MB → 127MB.
       `sec_filings._CIK_CACHE` (10,438 entries, loaded whole) and
       `order_status_cache._cache` (4,709 and growing every window,
       never evicted).
-- [ ] Until fixed, the process will refill swap in ~2–3 days. Watch
-      `VmSwap` in `/proc/<pid>/status`; a restart in a closed market
-      is safe (graceful SIGTERM drain, `TimeoutStopSec=600`).
+- [x] **Swap can no longer fill** — 2026-11-01 (CHANGELOG 2026-11-01):
+      the scheduler re-executes itself in place from its closed-market
+      loop when it holds ≥600MB swap or ≥1.1GB rss+swap, only with
+      >60 min to the open; the allocator is trimmed on every heartbeat
+      that shows 40MB of growth (returns the ~130MB fragmentation
+      share); `order_status_cache` is bounded at 2,000 entries.
+- [ ] **Name the native holder** — the live experiment's verdict is in
+      (2026-11-01): ~670MB native, a once-per-session step in the first
+      hour (10-30: 356MB at 13:21Z → 794MB at 14:36Z, flat after).
+      Measurement runs itself on 2026-11-02: tracemalloc windows at
+      13:28Z and 14:00Z (`[MEMDIAG]` in the journal) and
+      `scripts/memdiag_native_sampler.sh` 13:00Z→21:30Z
+      (`deploy_logs/memdiag-native-2026-11-02.log`: heap vs anonymous
+      mappings vs library pages, fds by type, threads). Read both after
+      the close, fix the holder, then this item closes.
 - [x] Disk is 95% full (3.3GB free; `backups/` is 20GB, `/var/log`
       1.9GB) and synced writes cost ~33ms. Prune or offload backups
       beyond the retention actually needed. **It reached 100% on
