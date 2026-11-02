@@ -109,3 +109,29 @@ def multileg_limit_from_net(net_premium_per_contract: Optional[float],
     if net < 0 and limit >= 0:
         limit = -min_concession   # never flip a credit spread into a debit
     return round(limit, 2)
+
+
+def multileg_net_from_quotes(legs, snapshots) -> Optional[float]:
+    """Signed mid net premium per share for a spread from the chain
+    snapshots Alpaca returns ({occ: {"latestQuote": {"bp", "ap"}}}):
+    Σ mid × (+1 for a bought leg, −1 for a sold leg), each leg weighted
+    by its contracts relative to the first leg. None when any leg lacks
+    a two-sided quote — the caller then SKIPs the spread."""
+    if not legs or not snapshots:
+        return None
+    base_qty = float(getattr(legs[0], "qty", 1) or 1)
+    net = 0.0
+    for leg in legs:
+        snap = snapshots.get(getattr(leg, "occ_symbol", "")) or {}
+        q = snap.get("latestQuote") or snap.get("latest_quote") or {}
+        try:
+            bid = float(q.get("bp") or q.get("bid_price") or 0)
+            ask = float(q.get("ap") or q.get("ask_price") or 0)
+        except (TypeError, ValueError):
+            return None
+        if bid <= 0 or ask <= 0 or ask < bid:
+            return None
+        mid = (bid + ask) / 2.0
+        sign = 1.0 if str(getattr(leg, "side", "")).lower() == "buy" else -1.0
+        net += sign * mid * (float(getattr(leg, "qty", 1) or 1) / base_qty)
+    return round(net, 4)

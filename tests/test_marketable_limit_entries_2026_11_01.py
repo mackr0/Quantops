@@ -95,8 +95,8 @@ class TestPipelineWiring:
         src = open(os.path.join(REPO, "options_multileg.py")).read()
         i = src.find("multi-leg spreads NEVER go to market")
         assert i != -1
-        assert "multileg_limit_from_net(" in src[i:i + 800]
-        assert 'result["action"] = "SKIP"' in src[i:i + 1200]
+        assert "multileg_limit_from_net(" in src[i:i + 1600]
+        assert 'result["action"] = "SKIP"' in src[i:i + 2000]
 
 
 class TestMultilegSkipsWithoutNet:
@@ -119,3 +119,57 @@ class TestMultilegSkipsWithoutNet:
         res = om.execute_multileg_strategy(object(), spec, ctx=_Ctx(), log=False, limit_price=None)
         assert res["action"] == "SKIP" and "never go to market" in res["reason"]
         assert posted == []
+
+
+class TestMultilegPricedFromLiveQuotes:
+    """Production specs are built from strikes alone (no premiums):
+    the combo's net limit comes from the chain's live leg quotes."""
+
+    def _spec(self, om):
+        leg_s = om.OptionLeg(occ_symbol="CDE261127P00015000", underlying="CDE", expiry="2026-11-27",
+                             strike=15.0, right="P", side="sell", qty=1)
+        leg_b = om.OptionLeg(occ_symbol="CDE261127P00014000", underlying="CDE", expiry="2026-11-27",
+                             strike=14.0, right="P", side="buy", qty=1)
+        return om.OptionStrategy(name="bull_put", underlying="CDE", expiry="2026-11-27",
+                                 legs=[leg_s, leg_b], qty=1, spread_width_points=1.0,
+                                 is_credit=True, thesis="t", net_premium_per_contract=None)
+
+    def test_net_from_quotes_arithmetic(self):
+        import options_multileg as om
+        spec = self._spec(om)
+        snaps = {"CDE261127P00015000": {"latestQuote": {"bp": 0.90, "ap": 1.00}},
+                 "CDE261127P00014000": {"latestQuote": {"bp": 0.60, "ap": 0.70}}}
+        # sell mid 0.95, buy mid 0.65 → net −0.30 (credit)
+        assert ml.multileg_net_from_quotes(spec.legs, snaps) == pytest.approx(-0.30)
+        assert ml.multileg_net_from_quotes(spec.legs, {"CDE261127P00015000": snaps["CDE261127P00015000"]}) is None
+        one_sided = dict(snaps); one_sided["CDE261127P00014000"] = {"latestQuote": {"bp": 0, "ap": 0.70}}
+        assert ml.multileg_net_from_quotes(spec.legs, one_sided) is None
+
+    def test_combo_is_a_limit_priced_from_the_quotes(self, monkeypatch):
+        import options_multileg as om
+        posted = []
+        class _Order:
+            id = "combo-1"; status = "accepted"; legs = []
+        monkeypatch.setattr(om, "_submit_alpaca_order_raw",
+                            lambda api, payload: posted.append(payload) or _Order())
+        monkeypatch.setattr(om, "_leg_quote_snapshots", lambda u: {
+            "CDE261127P00015000": {"latestQuote": {"bp": 0.90, "ap": 1.00}},
+            "CDE261127P00014000": {"latestQuote": {"bp": 0.60, "ap": 0.70}}})
+        monkeypatch.setattr(om, "_log_strategy_legs", lambda *a, **k: None, raising=False)
+        class _Ctx:
+            db_path = None; profile_id = 1; display_name = "T"; alpaca_account_id = 1
+        res = om.execute_multileg_strategy(object(), self._spec(om), ctx=_Ctx(), log=False, limit_price=None)
+        assert res["action"] != "SKIP", res
+        assert posted and posted[0]["type"] == "limit"
+        # credit −0.30 conceded toward fillability → −0.28 → posted as |0.28|
+        assert posted[0]["limit_price"] == pytest.approx(0.28)
+
+    def test_no_quotes_means_skip_not_market(self, monkeypatch):
+        import options_multileg as om
+        posted = []
+        monkeypatch.setattr(om, "_submit_alpaca_order_raw", lambda api, payload: posted.append(payload))
+        monkeypatch.setattr(om, "_leg_quote_snapshots", lambda u: None)
+        class _Ctx:
+            db_path = None; profile_id = 1; display_name = "T"; alpaca_account_id = 1
+        res = om.execute_multileg_strategy(object(), self._spec(om), ctx=_Ctx(), log=False, limit_price=None)
+        assert res["action"] == "SKIP" and posted == []

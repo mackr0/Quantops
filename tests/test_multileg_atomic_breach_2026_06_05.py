@@ -150,7 +150,7 @@ def test_combo_journal_failure_cancels_broker_and_halts(
     from options_multileg import (
         build_bull_call_spread, execute_multileg_strategy,
     )
-    spec = build_bull_call_spread("AAPL", EXPIRY, 150, 160, qty=1)
+    spec = build_bull_call_spread("AAPL", EXPIRY, 150, 160, qty=1, long_premium=5.0, short_premium=2.0)
 
     cancels = []
 
@@ -205,7 +205,7 @@ def test_combo_rollback_failure_still_halts_with_loud_title(
     from options_multileg import (
         build_bull_call_spread, execute_multileg_strategy,
     )
-    spec = build_bull_call_spread("AAPL", EXPIRY, 150, 160, qty=1)
+    spec = build_bull_call_spread("AAPL", EXPIRY, 150, 160, qty=1, long_premium=5.0, short_premium=2.0)
 
     api = MagicMock()
     api.cancel_order = MagicMock(
