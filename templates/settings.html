@@ -828,7 +828,7 @@
                 <label style="display:flex;align-items:flex-start;gap:0.5rem;">
                     <input type="checkbox" name="use_limit_orders" value="1" style="flex-shrink:0;margin-top:0.2rem;"
                            {{ 'checked' if prof.get('use_limit_orders', 0) else '' }}>
-                    <span>Use Limit Orders<br><small style="color:#888;font-weight:normal;">Better fill prices on entries. Orders cancelled if not filled within 5 minutes.</small></span>
+                    <span>Use Limit Orders<br><small style="color:#888;font-weight:normal;">Superseded 2026-11-01: every entry is now a marketable limit (far touch + 10 bps, canceled if unfilled after 5 minutes) and multi-leg spreads never go to market. This toggle no longer changes execution.</small></span>
                 </label>
             </fieldset>
 

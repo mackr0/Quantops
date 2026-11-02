@@ -1643,9 +1643,20 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
         # above their checked price and keep the full budget. Same
         # reserve is enforced again at the order door (order_guard) —
         # this is the sizing half, that is the unbypassable half.
-        use_limit = ctx is not None and getattr(ctx, "use_limit_orders", False)
+        # P2.2 step 2 (2026-11-01): entries are MARKETABLE LIMITS — far
+        # touch + MARKETABLE_BUFFER_BPS — whenever a two-sided NBBO
+        # exists. ONE quote fetch here serves the sizing reserve, the
+        # limit price, the slippage estimator and the journal's spread
+        # stamp. No quote → a market order with the full slippage
+        # reserve, exactly as before (a quote outage must not stop
+        # trading; it only loses the cap for that order). The old
+        # `use_limit_orders` profile toggle (plain limit at the decision
+        # price) is superseded and no longer read.
+        from marketable_limit import marketable_entry, MARKETABLE_BUFFER_BPS
+        _ml = marketable_entry(symbol, "buy", price)
+        use_limit = _ml is not None
         if use_limit:
-            cash_budget = cash
+            cash_budget = cash / (1 + MARKETABLE_BUFFER_BPS / 10_000.0)
         else:
             cash_budget = cash / (1 + config.MARKET_BUY_SLIPPAGE_RESERVE_PCT)
         dollars = min(max_dollars, cash_budget)
@@ -1710,7 +1721,7 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
         # path that re-admits a 100%-of-cash market buy.
         trade_value = qty * price
         _required_cash = (
-            trade_value if use_limit
+            trade_value * (1 + MARKETABLE_BUFFER_BPS / 10_000.0) if use_limit
             else trade_value * (1 + config.MARKET_BUY_SLIPPAGE_RESERVE_PCT)
         )
         if not allowed and "exceeds" in constraint_reason and equity > 0:
@@ -1796,7 +1807,7 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
             "take_profit": {"limit_price": str(target_price)},
         }
         if use_limit:
-            order_kwargs["limit_price"] = str(round(price, 2))
+            order_kwargs["limit_price"] = str(_ml["limit_price"])
         # RETRY_OK: trade_pipeline.execute_trade is the contract boundary
         # — its caller in multi_scheduler (trade_pipeline.py ~line 2259)
         # wraps each call in try/except. A transient 429/503 surfaces
@@ -1895,6 +1906,7 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                 _est = estimate_slippage(
                     symbol=symbol, qty=qty, side="buy",
                     decision_price=price,
+                    spread_bps=_ml["spread_bps"] if _ml else None,
                     adv_shares=adv_at_decision,
                     db_path=db_path,
                     market_type=getattr(ctx, "market_type", None) if ctx else None,
@@ -1909,17 +1921,8 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
             # P2.2 step 1 — record the NBBO spread at decision time.
             # Telemetry only: nothing reads it yet; step 2 (marketable
             # limits / spread-aware sizing) is operator-timed.
-            spread_at_decision = None
-            try:
-                from market_data import get_nbbo_spread_bps
-                _nbbo = get_nbbo_spread_bps(symbol)
-                spread_at_decision = _nbbo["spread_bps"] if _nbbo else None
-            except Exception as _sp_exc:
-                logger.debug(
-                    "NBBO spread capture failed for %s on BUY "
-                    "(non-fatal — journal still writes): %s: %s",
-                    symbol, type(_sp_exc).__name__, _sp_exc,
-                )
+            # (step 2: the same quote priced the marketable limit above.)
+            spread_at_decision = _ml["spread_bps"] if _ml else None
             log_trade(
                 symbol=symbol,
                 side="buy",
@@ -2366,7 +2369,11 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                     # is reduce-only against the entry qty (OCO not
                     # additive), so shared-account math holds:
                     # sum(brackets) == aggregate position.
-                    use_limit = ctx is not None and getattr(ctx, "use_limit_orders", False)
+                    # P2.2 step 2 (2026-11-01): marketable limit at the bid
+                    # − buffer when a two-sided NBBO exists; see the BUY path.
+                    from marketable_limit import marketable_entry
+                    _ml_s = marketable_entry(symbol, "sell", price)
+                    use_limit = _ml_s is not None
                     order_type = "limit" if use_limit else "market"
                     stop_price = round(price * (1 + short_sl), 2)
                     target_price = round(price * (1 - short_tp), 2)
@@ -2386,7 +2393,7 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                         "take_profit": {"limit_price": str(target_price)},
                     }
                     if use_limit:
-                        order_kwargs["limit_price"] = str(round(price, 2))
+                        order_kwargs["limit_price"] = str(_ml_s["limit_price"])
                     # RETRY_OK: see BUY-side rationale above — execute_trade
                     # caller in multi_scheduler wraps in try/except.
                     order = api.submit_order(**order_kwargs)
@@ -2428,7 +2435,8 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                         _short_spread = None
                         try:
                             from market_data import get_nbbo_spread_bps
-                            _nbbo = get_nbbo_spread_bps(symbol)
+                            _nbbo = ({"spread_bps": _ml_s["spread_bps"]} if _ml_s
+                                     else get_nbbo_spread_bps(symbol))
                             _short_spread = (
                                 _nbbo["spread_bps"] if _nbbo else None)
                         except Exception as _sp_exc:
@@ -5579,6 +5587,8 @@ def _build_candidates_data(shortlist, ctx, symbol_reputation):
                 _est = estimate_slippage(
                     symbol=symbol, qty=_qty, side="buy",
                     decision_price=_price,
+                    spread_bps=(signal.get("spread_bps")
+                                or entry.get("spread_bps") or None),
                     adv_shares=_adv,
                     daily_vol_bps=_atr_pct or 200.0,
                     db_path=ctx.db_path,

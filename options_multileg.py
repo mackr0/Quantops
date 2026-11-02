@@ -885,6 +885,22 @@ def execute_multileg_strategy(
                 "(continuing to submit): %s", exc,
             )
 
+    if use_combo and limit_price is None:
+        # P2.2 step 2 (2026-11-01): multi-leg spreads NEVER go to market.
+        # Derive the net limit from the strategy's mid net premium with a
+        # small concession toward fillability; with no net price there is
+        # nothing to bound the fill, so the spread is skipped.
+        from marketable_limit import multileg_limit_from_net
+        limit_price = multileg_limit_from_net(
+            getattr(strategy, "net_premium_per_contract", None))
+        if limit_price is None:
+            result["action"] = "SKIP"
+            result["reason"] = (
+                "multi-leg spreads never go to market (P2.2 step 2) and no "
+                "net premium was available to derive a limit")
+            logger.info("[multileg] %s SKIPPED — %s", strategy.name,
+                        result["reason"])
+            return result
     combo_id: Optional[str] = None
     if use_combo:
         try:

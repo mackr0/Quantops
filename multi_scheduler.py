@@ -1368,8 +1368,11 @@ def _task_cancel_stale_orders(ctx):
 
     seg_label = ctx.display_name or ctx.segment
 
-    if not getattr(ctx, "use_limit_orders", False):
-        return
+    # P2.2 step 2 (2026-11-01): every profile's entries are marketable
+    # limits now, so this runs for every profile (it used to be gated on
+    # the superseded `use_limit_orders` toggle). Protective legs are
+    # excluded below; a resting entry older than five minutes is a price
+    # that ran away — cancel it and let the next cycle re-decide.
 
     try:
         api = get_api(ctx)
