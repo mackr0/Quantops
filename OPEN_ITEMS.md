@@ -181,8 +181,9 @@ DESIGNED AI inputs; [exec] = execution change, operator times it.
       droplet memory p22-step2-pending-decision; session task; and a
       one-time cloud routine trig_019jvekvKcSfSq6h9NEoermf firing
       2026-08-10T13:00Z with the analysis request).
-- [ ] P2.3 [none] Backtester slippage: drop hardcoded adv=1M /
-      constant 12.67bps.
+- [x] P2.3 [none] Backtester slippage — DONE 2026-11-01 (CHANGELOG
+      2026-11-01): ADV and realized vol from each symbol's own bars
+      (`backtester._window_liquidity`) at both slippage calls.
 
 **Phase 3 — breadth:**
 - [x] P3.1 [proposal → operator decision] HOLD wall — PROPOSAL

@@ -331,6 +331,35 @@ def print_backtest_report(result: BacktestResult) -> None:
 # Strategy-router backtest (Feature 6)
 # ---------------------------------------------------------------------------
 
+
+def _window_liquidity(window, lookback: int = 20):
+    """Per-symbol liquidity inputs for the slippage model, from the
+    bars the backtest already holds (2026-11-01, OPEN_ITEMS P2.3):
+    20-bar average daily volume and realized daily volatility in bps.
+    Replaces the hardcoded ``adv_shares=1_000_000`` that priced every
+    symbol's impact as if it traded a million shares a day, and the
+    model's 200 bps default vol. Returns (adv_shares, daily_vol_bps);
+    either is None when the window cannot say (no volume column /
+    fewer than two closes) — the model then falls back to its
+    documented defaults, exactly as before."""
+    adv = None
+    vol_bps = None
+    try:
+        tail = window.iloc[-lookback:]
+        if "volume" in tail.columns:
+            v = tail["volume"].astype(float)
+            v = v[v > 0]
+            if len(v) > 0:
+                adv = float(v.mean())
+        closes = tail["close"].astype(float)
+        if len(closes) >= 3:
+            rets = closes.pct_change().dropna()
+            if len(rets) >= 2:
+                vol_bps = float(rets.std() * 1e4)
+    except Exception:
+        return None, None
+    return adv, vol_bps
+
 def _calculate_atr(df: pd.DataFrame, period: int = 14) -> float:
     """Calculate the latest ATR from a DataFrame with high/low/close columns."""
     if len(df) < period + 1:
@@ -1104,15 +1133,15 @@ def backtest_with_params(market_type: str, params: dict, days: int = 90,
                     try:
                         from slippage_model import estimate_slippage
                         # Size: position is initial_capital * 0.10 / entry_price.
-                        # ADV unknown in this offline path → use a coarse
-                        # 1M-share default so impact is small for typical
-                        # backtest sizing. The half-spread + vol terms are
-                        # the dominant components in that regime.
+                        # ADV and realized vol come from this symbol's own
+                        # bars (2026-11-01; was a flat 1M-share ADV and
+                        # the model's 200 bps default for every symbol).
                         _qty = (initial_capital * 0.10 / entry_price)
+                        _adv, _vol = _window_liquidity(window)
                         _est = estimate_slippage(
                             symbol=symbol, qty=int(max(_qty, 1)),
                             side="sell", decision_price=exit_price,
-                            adv_shares=1_000_000,
+                            adv_shares=_adv, daily_vol_bps=_vol,
                         )
                         exit_price = _est.get("fill_price", exit_price * (1 - 0.002))
                     except Exception:
@@ -1151,10 +1180,11 @@ def backtest_with_params(market_type: str, params: dict, days: int = 90,
                         try:
                             from slippage_model import estimate_slippage
                             _qty = (initial_capital * 0.10 / current_price)
+                            _adv, _vol = _window_liquidity(window)
                             _est = estimate_slippage(
                                 symbol=symbol, qty=int(max(_qty, 1)),
                                 side="buy", decision_price=current_price,
-                                adv_shares=1_000_000,
+                                adv_shares=_adv, daily_vol_bps=_vol,
                             )
                             entry_price = _est.get(
                                 "fill_price", current_price * 1.002,
