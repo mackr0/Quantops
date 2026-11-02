@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+from contextlib import closing
 import os
 import re
 import sqlite3
@@ -40,28 +41,27 @@ def main() -> int:
     arm_pnl = collections.defaultdict(float)
     for prof in profiles:
         ctx = build_user_context_from_profile(prof["id"])
-        c = sqlite3.connect(ctx.db_path)
-        c.row_factory = sqlite3.Row
-        for r in c.execute("""
-            SELECT side, occ_symbol IS NOT NULL AS opt, UPPER(COALESCE(signal_type,'')) sig,
-                   COALESCE(strategy,'') strat, COUNT(*) n, SUM(pnl) s
-            FROM trades WHERE pnl IS NOT NULL AND data_quality IS NULL
-              AND COALESCE(status,'') NOT IN ('canceled','expired','rejected') AND timestamp >= ?
-            GROUP BY 1,2,3,4""", (args.since,)):
-            key = ("option" if r["opt"] else "stock", r["side"],
-                   "activity" if r["strat"] == "alpaca_activity" else r["sig"][:20])
-            agg[key][0] += r["n"]; agg[key][1] += r["s"]
-            arm_pnl[prof["name"]] += r["s"]
-        for r in c.execute("""
-            SELECT t.pnl, t.reason, t.timestamp, e.timestamp ets, e.max_favorable_excursion mfe,
-                   COALESCE(e.fill_price, e.price) epx, e.side eside
-            FROM trades t LEFT JOIN trades e
-              ON e.id = CAST(substr(t.reason, instr(t.reason,'entry_trade=')+12) AS INTEGER)
-            WHERE t.pnl IS NOT NULL AND t.data_quality IS NULL AND UPPER(t.signal_type)='PROTECTIVE_TRAILING'
-              AND COALESCE(t.status,'') NOT IN ('canceled','expired','rejected') AND t.timestamp >= ?""",
-                           (args.since,)):
-            trail.append(dict(r))
-        c.close()
+        with closing(sqlite3.connect(ctx.db_path)) as c:
+            c.row_factory = sqlite3.Row
+            for r in c.execute("""
+                SELECT side, occ_symbol IS NOT NULL AS opt, UPPER(COALESCE(signal_type,'')) sig,
+                       COALESCE(strategy,'') strat, COUNT(*) n, SUM(pnl) s
+                FROM trades WHERE pnl IS NOT NULL AND data_quality IS NULL
+                  AND COALESCE(status,'') NOT IN ('canceled','expired','rejected') AND timestamp >= ?
+                GROUP BY 1,2,3,4""", (args.since,)):
+                key = ("option" if r["opt"] else "stock", r["side"],
+                       "activity" if r["strat"] == "alpaca_activity" else r["sig"][:20])
+                agg[key][0] += r["n"]; agg[key][1] += r["s"]
+                arm_pnl[prof["name"]] += r["s"]
+            for r in c.execute("""
+                SELECT t.pnl, t.reason, t.timestamp, e.timestamp ets, e.max_favorable_excursion mfe,
+                       COALESCE(e.fill_price, e.price) epx, e.side eside
+                FROM trades t LEFT JOIN trades e
+                  ON e.id = CAST(substr(t.reason, instr(t.reason,'entry_trade=')+12) AS INTEGER)
+                WHERE t.pnl IS NOT NULL AND t.data_quality IS NULL AND UPPER(t.signal_type)='PROTECTIVE_TRAILING'
+                  AND COALESCE(t.status,'') NOT IN ('canceled','expired','rejected') AND t.timestamp >= ?""",
+                               (args.since,)):
+                trail.append(dict(r))
     print(f"\n{'instr':7} {'side':10} {'signal':22} {'n':>6} {'pnl':>11}")
     total = 0.0
     for k, (n, s) in sorted(agg.items(), key=lambda kv: kv[1][1]):
