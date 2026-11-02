@@ -169,7 +169,8 @@ class TestActivitiesFetchPerType:
         def __init__(self):
             self.calls = []
 
-        def get_activities(self, activity_types=None, after=None):
+        def get_activities(self, activity_types=None, after=None, **kw):
+            # 2026-11-01: the capture pass pages (page_size / page_token)
             self.calls.append(activity_types)
             if "," in (activity_types or ""):
                 raise ValueError(

@@ -3432,7 +3432,11 @@ def _collect_integrity_findings():
         logging.exception("integrity gate: broker-drift check failed")
     try:
         from certify_books import check_decomposition
-        findings += list(check_decomposition(tolerance=250.0) or [])
+        # 2026-11-01: the identity is price-free (one positions snapshot;
+        # see certify_books.check_decomposition) so $5 is the budget for
+        # cents of rounding, not for mark skew — the old $250 hid a real
+        # +$136.92 mis-booking on two books for ten days.
+        findings += list(check_decomposition(tolerance=5.0) or [])
     except Exception:
         logging.exception("integrity gate: decomposition check failed")
     return findings
@@ -3483,8 +3487,9 @@ def _run_integrity_gate():
         (zero-tolerance: a share-count mismatch is always a real bug;
          the phantom showed as broker=-41,907 vs virtual=0).
       • decomposition — (equity − initial) == realized + unrealized per
-        profile, $250 tolerance so routine fee/slippage noise can't
-        false-halt the whole book.
+        profile, price-free, $5 tolerance (2026-11-01) so nothing but a
+        real mis-booking can trip it; the old $250 "noise" budget
+        existed only because two price reads were being compared.
 
     Replaces the old `audit_runner` block, which ran AFTER trading on its
     own interval, only emailed (never halted), and audited the wrong

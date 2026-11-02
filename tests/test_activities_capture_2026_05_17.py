@@ -350,7 +350,7 @@ class TestErrorHandling:
         ctx = _ctx(1, db, api)
         summary = capture_activities_for_profile(ctx)
         assert summary == {"DIV": 0, "OPEXP": 0, "OPASN": 0, "OPEXC": 0,
-                           "MA": 0}
+                           "MA": 0, "FEE": 0}
 
     def test_activity_without_id_skipped(self, tmp_path):
         from activities_capture import capture_activities_for_profile

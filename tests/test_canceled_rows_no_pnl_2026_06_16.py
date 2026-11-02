@@ -90,7 +90,7 @@ def test_certify_decomposition_reader_excludes_canceled():
     non-executed statuses."""
     src = (REPO / "certify_books.py").read_text()
     idx = src.find("def check_decomposition")
-    body = src[idx:idx + 1200]
+    body = src[idx: idx + 3700]  # 2026-11-01: longer docstring
     assert "NOT IN" in body and "'canceled'" in body and "'rejected'" in body, (
         "certify decomposition must exclude canceled/expired/rejected "
         "from realized P&L"

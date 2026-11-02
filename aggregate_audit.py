@@ -37,6 +37,8 @@ Usage:
 """
 from __future__ import annotations
 
+import sqlite3
+from contextlib import closing
 import logging
 import re
 from collections import defaultdict
@@ -931,44 +933,70 @@ _FEE_NET_CACHE: Dict[str, tuple] = {}
 _FEE_NET_TTL = 6 * 3600.0
 
 
-def _account_fee_net(api) -> float:
-    """Cumulative net of the account's FEE activities (negative =
-    fees charged). Cached 6h per account. Fail-open to 0.0 — a fee
-    fetch hiccup must not fail the parity audit; the uncorrected
-    drift is at most the fee total (~$1/day), far under tolerance."""
+def _account_fee_net(api, db_paths=None) -> float:
+    """Net of the account's FEE activities that NO book has journaled
+    (negative = fees charged). 2026-11-01: fees are now booked per
+    book by activities_capture (`cash_debit` rows keyed by the
+    activity id), so journaled fees already sit inside journal_cash;
+    adjusting for them again here would double-count. Only fees whose
+    activity id appears in none of `db_paths` are adjusted for
+    broker-side (pre-reset history, or a fee the writer refused).
+    Activity rows are cached 6h per account; the journaled set is
+    re-read on each call (cheap). Fail-open to 0.0 — a fee fetch
+    hiccup must not fail the parity audit."""
     import time as _time
     key = str(getattr(api, "_key_id", "") or "") or "default"
     now = _time.time()
     hit = _FEE_NET_CACHE.get(key)
+    acts = None
     if hit is not None and (now - hit[0]) < _FEE_NET_TTL:
-        return hit[1]
-    total = 0.0
-    try:
-        token = None
-        while True:
-            kw = dict(activity_types="FEE", page_size=100)
-            if token:
-                kw["page_token"] = token
-            acts = api.get_activities(**kw) or []
-            if not acts:
-                break
-            for a in acts:
-                try:
-                    total += float(getattr(a, "net_amount", 0) or 0)
-                except (ValueError, TypeError):
-                    continue
-            token = getattr(acts[-1], "id", None)
-            if len(acts) < 100:
-                break
-    except Exception as exc:
-        logger.warning(
-            "aggregate_audit: FEE fetch failed (%s) — parity runs "
-            "without the fee adjustment this pass", exc,
-        )
-        return hit[1] if hit is not None else 0.0
-    _FEE_NET_CACHE[key] = (now, total)
-    return total
+        acts = hit[1]
+    else:
+        try:
+            acts = []
+            token = None
+            while True:
+                kw = dict(activity_types="FEE", page_size=100)
+                if token:
+                    kw["page_token"] = token
+                page = api.get_activities(**kw) or []
+                if not page:
+                    break
+                for a in page:
+                    try:
+                        acts.append((str(getattr(a, "id", "") or ""),
+                                     float(getattr(a, "net_amount", 0) or 0)))
+                    except (ValueError, TypeError):
+                        continue
+                token = getattr(page[-1], "id", None)
+                if len(page) < 100:
+                    break
+            _FEE_NET_CACHE[key] = (now, acts)
+        except Exception as exc:
+            logger.warning(
+                "aggregate_audit: FEE fetch failed (%s) — parity runs "
+                "with the cached/none fee adjustment this pass", exc,
+            )
+            acts = hit[1] if hit is not None else []
+    journaled = _journaled_activity_ids(db_paths or [])
+    return sum(net for aid, net in acts if aid not in journaled)
 
+
+def _journaled_activity_ids(db_paths) -> set:
+    """Activity ids (the '::'-shaped order_ids the activities pass
+    writes, voided ones included) across the given journals."""
+    out: set = set()
+    for db_path in db_paths:
+        try:
+            with closing(sqlite3.connect(db_path)) as conn:
+                for (oid,) in conn.execute(
+                        "SELECT order_id FROM trades "
+                        "WHERE order_id LIKE '%::%'"):
+                    out.add(str(oid).split("::voided")[0])
+        except sqlite3.Error as exc:
+            logger.warning("aggregate_audit: journaled-activity read failed "
+                           "for %s: %s", db_path, exc)
+    return out
 
 # ─────────────────────────────────────────────────────────────────────
 # In-flight own-order attribution (2026-08-26)
@@ -1170,13 +1198,12 @@ def audit_account_cash_parity(
         broker_cash = round(_bc, 2)
         journal_cash = round(info["journal_cash"], 2)
         # 2026-07-25 — account-level broker FEES (Alpaca paper charges
-        # real TAF/ORF/CAT fees: 79 rows, −$16.16 in the cohort's first
-        # 17 days). Fees are account-day aggregates ("proceed of 1547
-        # shares (101 trades)") — NOT attributable to any profile's
-        # own-book, so they cannot be journaled; the parity comparison
-        # accounts for them broker-side instead. Left unmodeled they
-        # accumulate toward the tolerance and eventually false-flag.
-        fee_net = _account_fee_net(api)
+        # real TAF/ORF/CAT fees). 2026-11-01: they ARE attributable —
+        # by the broker's own fills → own order_id → book — and
+        # activities_capture now journals each book's share, so the
+        # broker-side adjustment covers only fees no book has journaled
+        # (pre-reset history, or a split the writer refused).
+        fee_net = _account_fee_net(api, info.get("db_paths") or [])
         d = round(broker_cash - (journal_cash + fee_net), 2)
         tol = max(tolerance_abs, abs(broker_cash) * tolerance_pct)
         row = {
