@@ -77,6 +77,37 @@ class TestRegSho:
         assert t4.get_reg_sho_threshold("AAPL")["has_data"] is False
 
 
+class TestRegShoLiveShapes:
+    """Shapes seen on 2026-11-02 at 11:50 ET: Nasdaq answers today's
+    not-yet-published date with an HTML page (HTTP 200); NYSE answers
+    with a header-only stub plus a timestamp trailer. Neither is a list."""
+    HTML = "\n\n<!DOCTYPE html PUBLIC ...><html><body>Symbol lookup | not found</body></html>"
+    STUB = "Symbol|Security Name|Market Category|Reg SHO Threshold Flag|Filler|Filler\n20261102210500\n"
+
+    def test_html_and_header_only_are_not_lists(self):
+        assert t4._looks_like_threshold_file(self.HTML) is False
+        assert t4._looks_like_threshold_file(self.STUB) is True      # right shape…
+        assert t4.parse_threshold_file(self.STUB) == set()           # …but empty → skipped by the loader
+        assert t4._looks_like_threshold_file(NASDAQ_TXT) and t4._looks_like_threshold_file(NYSE_TXT)
+
+    def test_loader_falls_back_to_the_previous_day(self, monkeypatch):
+        def fake_get(url, timeout=30):
+            if "20261102" in url:
+                return self.HTML
+            if "2026-11-02" in url:
+                return self.STUB
+            if "20261030" in url:
+                return NASDAQ_TXT
+            if "2026-10-30" in url:
+                return NYSE_TXT
+            return None
+        monkeypatch.setattr(t4, "_http_get_text", fake_get)
+        monkeypatch.setattr(t4, "_business_days_back",
+                            lambda n, today=None: [date(2026, 11, 2), date(2026, 10, 30)])
+        lists = t4.load_threshold_lists()
+        assert lists["dates"] == {"nasdaq": "2026-10-30", "nyse": "2026-10-30"} and lists["count"] == 4
+
+
 class TestFailsToDeliver:
     def test_parse_skips_header_trailer_and_dot_price(self):
         d = t4.parse_ftd_text(FTD_TXT)
@@ -115,7 +146,7 @@ class TestForm144:
         today = date.today().isoformat()
         monkeypatch.setattr(sec_filings, "get_company_filings",
                             lambda sym, form_types=None, since_date=None: [
-                                {"form": "144", "filing_date": today},
+                                {"form_type": "144", "filed_date": today},     # the real key (sec_filings)
                                 {"form": "144", "filing_date": today},
                                 {"form": "144/A", "filing_date": "2020-01-01"}])
         r = t4.get_form144("AAPL")
