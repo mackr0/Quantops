@@ -170,7 +170,7 @@ def _run_cash(db_path, api, broker_cash, journal_cash):
          patch.object(agg, "_broker_cash", lambda a: broker_cash), \
          patch.object(agg, "_journal_cash",
                       lambda p, i: journal_cash), \
-         patch.object(agg, "_account_fee_net", lambda a: 0.0), \
+         patch.object(agg, "_account_fee_net", lambda a, *rest: 0.0), \
          patch("order_status_cache.get_order_cached", _cached):
         return agg.audit_account_cash_parity([7])
 

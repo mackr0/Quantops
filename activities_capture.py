@@ -46,7 +46,50 @@ logger = logging.getLogger(__name__)
 # entry row rotted 'open', the integrity gate read broker=0 vs
 # virtual=3, the reconciler halted the profile on an orphan_close, and
 # the fleet sat kill-switched for two weeks. Probed live: accepted.
-_HANDLED_TYPES = ("DIV", "OPEXP", "OPASN", "OPEXC", "MA")
+_HANDLED_TYPES = ("DIV", "OPEXP", "OPASN", "OPEXC", "MA", "FEE")
+
+# ── Broker fees (2026-11-01) ─────────────────────────────────────────
+# Alpaca paper charges real regulatory/exchange fees as account-level
+# FEE activities, one row per fee kind per trading day, each naming the
+# base it was charged on ("REG fee for proceed of $25811.31 on
+# 2026-10-23", "CAT fee for proceed of 6 trades on …", "ORF fee for
+# proceed of 2 contracts on …", "OPT TAF fee for proceed of 2 contracts
+# (2 trades) on …", "OPT REG fee for proceed of $1365 on …", "TAF fee for
+# proceed of 1332 shares (29 trades) on …") — except
+# the flat "OCC Clearing Fee" (one row per option fill). Verified on
+# the 2026-10-23 account-61 day: the broker's own FILL activities for
+# the day reproduce every base exactly (sell proceeds to the cent, CAT
+# = fill events stock+option, ORF = option contracts), and every fill
+# maps to exactly one book by its order_id. So a fee is split across
+# the account's books pro-rata on the base the broker names, from the
+# broker's own fills, by own order_id — no guessing — and the split is
+# refused (audit alert) when the books' fills do not reproduce the
+# stated base or a fill belongs to no book. Booked as cash-only
+# 'cash_debit' rows (pnl = −share) so the per-book identity holds and
+# the account-level cash parity no longer needs a broker-side
+# adjustment for them (aggregate_audit adjusts only for fees NOT yet
+# journaled).
+_FEE_SHAPES = (
+    ("REG", re.compile(
+        r"^REG fee for proceed of \$([\d.,]+) on (\d{4}-\d{2}-\d{2})")),
+    ("OPT_REG", re.compile(
+        r"^OPT REG fee for proceed of \$([\d.,]+) on (\d{4}-\d{2}-\d{2})")),
+    ("CAT", re.compile(
+        r"^CAT fee for proceed of (\d+) trades on (\d{4}-\d{2}-\d{2})")),
+    ("TAF", re.compile(
+        r"^TAF fee for proceed of (\d+) shares \(\d+ trades\) "
+        r"on (\d{4}-\d{2}-\d{2})")),
+    ("OPT_TAF", re.compile(
+        r"^OPT TAF fee for proceed of (\d+) contracts \(\d+ trades\) "
+        r"on (\d{4}-\d{2}-\d{2})")),
+    ("ORF", re.compile(
+        r"^ORF fee for proceed of (\d+) contracts on (\d{4}-\d{2}-\d{2})")),
+    ("OCC", re.compile(r"^OCC Clearing Fee")),
+)
+_FILLS_TTL_S = 3600.0
+_fills_memo: Dict[Tuple[Any, str], Tuple[float, list]] = {}
+_order_ids_memo: Dict[str, Tuple[float, set]] = {}
+_leg_parent_memo: Dict[Tuple[Any, str], Tuple[float, Dict[str, str]]] = {}
 
 # Corporate-action types the journal CANNOT book (stock-for-stock
 # reorgs, splits, spin-offs, share journals, symbol changes). All
@@ -89,6 +132,9 @@ def clear_memos() -> None:
     """Drop the per-process attribution / reorg-fetch memos (tests)."""
     _attribution_memo.clear()
     _reorg_fetch_memo.clear()
+    _fills_memo.clear()
+    _order_ids_memo.clear()
+    _leg_parent_memo.clear()
 
 
 def _utcnow_iso() -> str:
@@ -938,6 +984,296 @@ def _explain_unhandled_reorgs(ctx, api, since: datetime) -> int:
     return written
 
 
+def _is_option_symbol(sym: str) -> bool:
+    """OCC option symbols are UNDERLYING + YYMMDD + C/P + strike."""
+    return bool(sym) and len(sym) > 6 and any(c.isdigit() for c in sym[1:7])
+
+
+def _fee_shape(description: str, activity_date: str):
+    """(kind, base, day) for a FEE description, or None when the shape
+    is unknown. base is dollars (REG/OPT_REG), a count (CAT/OPT_TAF/
+    ORF) or None (OCC); day is the trading day the fee was charged on."""
+    desc = str(description or "").strip()
+    for kind, rx in _FEE_SHAPES:
+        m = rx.match(desc)
+        if not m:
+            continue
+        if kind == "OCC":
+            return kind, None, str(activity_date or "")[:10]
+        raw, day = m.group(1), m.group(2)
+        try:
+            base = float(raw.replace(",", ""))
+        except ValueError:
+            return None
+        return kind, base, day
+    return None
+
+
+def _account_fills_on(api, aid, day: str) -> list:
+    """The account's FILL activities for trading day `day`
+    (YYYY-MM-DD, UTC window), as dicts {order_id, symbol, side, qty,
+    price, is_option}; memoized per (account, day) for an hour. Raises
+    on a broker failure (the caller defers the fee)."""
+    key = (aid, day)
+    hit = _fills_memo.get(key)
+    if hit and (time.time() - hit[0]) < _FILLS_TTL_S:
+        return hit[1]
+    from datetime import date as _date
+    d0 = _date.fromisoformat(day)
+    d1 = d0 + timedelta(days=1)
+    out: list = []
+    token = None
+    while True:
+        kw = dict(activity_types="FILL", after=f"{d0.isoformat()}T00:00:00Z",
+                  until=f"{d1.isoformat()}T00:00:00Z", page_size=100,
+                  direction="asc")
+        if token:
+            kw["page_token"] = token
+        acts = list(api.get_activities(**kw) or [])
+        for a in acts:
+            sym = (getattr(a, "symbol", "") or "").upper()
+            out.append({
+                "order_id": str(getattr(a, "order_id", "") or ""),
+                "symbol": sym,
+                "side": str(getattr(a, "side", "") or "").lower(),
+                "qty": float(getattr(a, "qty", 0) or 0),
+                "price": float(getattr(a, "price", 0) or 0),
+                "is_option": _is_option_symbol(sym),
+            })
+        if len(acts) < 100:
+            break
+        token = getattr(acts[-1], "id", None)
+        if not token:
+            break
+    if aid:
+        _fills_memo[key] = (time.time(), out)
+    return out
+
+
+def _account_leg_parents(api, aid, day: str) -> Dict[str, str]:
+    """{leg order id → parent order id} for the account's multi-leg and
+    bracket orders on `day`. The broker reports FILL activities under
+    the LEG id, while a spread is journaled under its PARENT id (the
+    MULTILEG rows share it) and `get_order(leg_id)` 404s — legs are only
+    addressable through the parent (found 2026-11-01: p231's CDE put
+    spread on 10-21 left both leg fills "owned by no book" and every
+    fee for that day refused). Memoized per (account, day) for an hour.
+    Raises on a broker failure (the caller defers)."""
+    key = (aid, day)
+    hit = _leg_parent_memo.get(key)
+    if hit and (time.time() - hit[0]) < _FILLS_TTL_S:
+        return hit[1]
+    from datetime import date as _date
+    d0 = _date.fromisoformat(day)
+    d1 = d0 + timedelta(days=1)
+    out: Dict[str, str] = {}
+    for o in list(api.list_orders(status="all", after=f"{d0.isoformat()}T00:00:00Z",
+                                  until=f"{d1.isoformat()}T00:00:00Z",
+                                  limit=500, nested=True) or []):
+        parent = str(getattr(o, "id", "") or "")
+        for leg in (getattr(o, "legs", None) or []):
+            leg_id = str(getattr(leg, "id", "") or "")
+            if leg_id and parent:
+                out[leg_id] = parent
+    if aid:
+        _leg_parent_memo[key] = (time.time(), out)
+    return out
+
+
+def _journal_order_ids(db_path: str) -> Optional[set]:
+    """Every order_id this journal has ever recorded (5-minute memo).
+    None = unreadable (fail closed)."""
+    hit = _order_ids_memo.get(db_path)
+    if hit and (time.time() - hit[0]) < 300.0:
+        return hit[1]
+    try:
+        with sqlite3.connect(db_path) as conn:
+            ids = {str(r[0]) for r in conn.execute(
+                "SELECT order_id FROM trades WHERE order_id IS NOT NULL")}
+    except sqlite3.Error as exc:
+        logger.warning("_journal_order_ids UNVERIFIABLE for %s: %s",
+                       db_path, exc)
+        return None
+    _order_ids_memo[db_path] = (time.time(), ids)
+    return ids
+
+
+def _fee_metric(kind: str, fills: list) -> float:
+    """The base the broker charged `kind` on, computed from one book's
+    fills for the day: sell proceeds (REG), option sell premium
+    (OPT_REG), fill events (CAT), shares sold (TAF), option contracts
+    sold (OPT_TAF), option contracts traded (ORF, OCC)."""
+    if kind == "REG":
+        return sum(f["qty"] * f["price"] for f in fills
+                   if not f["is_option"] and f["side"].startswith("sell"))
+    if kind == "OPT_REG":
+        return sum(f["qty"] * f["price"] * 100.0 for f in fills
+                   if f["is_option"] and f["side"].startswith("sell"))
+    if kind == "CAT":
+        return float(len(fills))
+    if kind == "TAF":
+        return sum(f["qty"] for f in fills
+                   if not f["is_option"] and f["side"].startswith("sell"))
+    if kind == "OPT_TAF":
+        return sum(f["qty"] for f in fills
+                   if f["is_option"] and f["side"].startswith("sell"))
+    if kind in ("ORF", "OCC"):
+        return sum(f["qty"] for f in fills if f["is_option"])
+    return 0.0
+
+
+def _split_cents(total_cents: int, weights: Dict[int, float]) -> Dict[int, int]:
+    """Largest-remainder split of `total_cents` across books by weight:
+    the shares are integers and sum exactly to the total."""
+    w_sum = sum(w for w in weights.values() if w > 0)
+    if total_cents == 0 or w_sum <= 0:
+        return {pid: 0 for pid in weights}
+    raw = {pid: (total_cents * max(w, 0.0) / w_sum) for pid, w in weights.items()}
+    shares = {pid: int(v) for pid, v in raw.items()}
+    short = total_cents - sum(shares.values())
+    for pid, _ in sorted(((p, raw[p] - shares[p]) for p in raw),
+                         key=lambda kv: (-kv[1], kv[0]))[:short]:
+        shares[pid] += 1
+    return shares
+
+
+def _write_fee(ctx, activity: Any, api=None) -> bool:
+    """FEE → THIS PROFILE'S share of an account-level broker fee as a
+    cash-only 'cash_debit' row (pnl = −share). See the module notes
+    above `_FEE_SHAPES` for the attribution rule and its validation."""
+    from journal import log_trade
+    activity_id = str(getattr(activity, "id", ""))
+    if not activity_id:
+        return False
+    if _has_activity(ctx.db_path, activity_id):
+        return False
+    desc = str(getattr(activity, "description", "") or "")
+    try:
+        net = float(getattr(activity, "net_amount", 0) or 0)
+    except (ValueError, TypeError):
+        return False
+    if net == 0:
+        return False
+
+    def _refuse(why: str) -> bool:
+        logger.warning(
+            "activities_capture: FEE %s ($%+.2f, %r) NOT booked — %s. "
+            "Fail-closed: the account cash-parity audit still adjusts "
+            "for this fee broker-side until it is booked.",
+            activity_id, net, desc[:60], why)
+        _alert_once(
+            ctx, "fee_unattributable", "warning",
+            f"Broker fee not booked: ${net:+.2f}",
+            f"Activity {activity_id} ({desc}): {why}.", activity_id)
+        return False
+
+    shape = _fee_shape(desc, getattr(activity, "date", ""))
+    if shape is None:
+        return _refuse("unknown fee description shape")
+    kind, base, day = shape
+    if not day:
+        return _refuse("no trading day on the activity")
+    if api is None:
+        api = (ctx.get_alpaca_api() if hasattr(ctx, "get_alpaca_api")
+               else getattr(ctx, "api", None))
+    sibs = _sibling_db_paths(ctx)
+    if sibs is None:
+        return _refuse("the account's books cannot be enumerated")
+    try:
+        fills = _account_fills_on(api, getattr(ctx, "alpaca_account_id", None), day)
+    except Exception as exc:
+        logger.warning("activities_capture: FEE %s deferred — fills for %s "
+                       "unavailable (%s: %s)", activity_id, day,
+                       type(exc).__name__, exc)
+        return False
+    # own order_id → book; every fill must belong to exactly one book
+    by_book: Dict[int, list] = {pid: [] for pid, _ in sibs}
+    owners: Dict[str, int] = {}
+    for pid, db_path in sibs:
+        ids = _journal_order_ids(db_path)
+        if ids is None:
+            return _refuse(f"book p{pid} unreadable")
+        for f in fills:
+            if f["order_id"] in ids:
+                if f["order_id"] in owners and owners[f["order_id"]] != pid:
+                    return _refuse(f"fill order {f['order_id'][:8]} is claimed "
+                                   f"by two books")
+                owners[f["order_id"]] = pid
+    if any(f["order_id"] not in owners for f in fills):
+        # A spread's fills carry LEG ids; the journal carries the PARENT.
+        try:
+            parents = _account_leg_parents(
+                api, getattr(ctx, "alpaca_account_id", None), day)
+        except Exception as exc:
+            logger.warning("activities_capture: FEE %s deferred — orders for %s "
+                           "unavailable (%s: %s)", activity_id, day,
+                           type(exc).__name__, exc)
+            return False
+        for f in fills:
+            if f["order_id"] in owners:
+                continue
+            parent = parents.get(f["order_id"])
+            if parent is None:
+                continue
+            for pid, db_path in sibs:
+                ids = _journal_order_ids(db_path) or set()
+                if parent in ids:
+                    owners[f["order_id"]] = pid
+                    break
+    unowned = sorted({f["order_id"][:8] for f in fills if f["order_id"] not in owners})
+    if unowned:
+        return _refuse(f"{len(unowned)} fill order(s) on {day} belong to no "
+                       f"book: {unowned[:5]}")
+    for f in fills:
+        by_book[owners[f["order_id"]]].append(f)
+    metrics = {pid: _fee_metric(kind, fl) for pid, fl in by_book.items()}
+    total = sum(metrics.values())
+    if base is None:
+        if total <= 0:
+            return _refuse(f"no option fills on {day} to carry an OCC fee")
+    elif kind in ("REG", "OPT_REG"):
+        if abs(total - base) > max(0.02, 0.001 * base):
+            return _refuse(f"books' {kind} base {total:.2f} != broker's "
+                           f"{base:.2f} on {day}")
+    else:
+        if abs(total - base) > 0.5:
+            return _refuse(f"books' {kind} base {total:g} != broker's "
+                           f"{base:g} on {day}")
+    cents = _split_cents(int(round(abs(net) * 100)), metrics)
+    own_cents = cents.get(getattr(ctx, "profile_id", None), 0)
+    if own_cents <= 0:
+        return False
+    own = own_cents / 100.0
+    side = "cash_debit" if net < 0 else "dividend"
+    signed = -own if net < 0 else own
+    try:
+        log_trade(
+            symbol="FEE",
+            side=side,
+            qty=1,
+            price=own,
+            order_id=activity_id,
+            signal_type="FEE",
+            strategy="alpaca_activity",
+            reason=(f"broker fee {kind} {day}: own share ${signed:+.2f} of "
+                    f"${net:+.2f} (base {metrics[getattr(ctx, 'profile_id', None)]:g}"
+                    f"/{total:g} across {sum(1 for m in metrics.values() if m > 0)} "
+                    f"book(s)); {desc[:80]}"),
+            status="closed",
+            pnl=signed,
+            decision_price=own,
+            db_path=ctx.db_path,
+        )
+        logger.info("[%s] FEE captured: %s %s own $%+.2f of $%+.2f (activity=%s)",
+                    getattr(ctx, "display_name", "?"), kind, day, signed, net,
+                    activity_id)
+        return True
+    except (sqlite3.OperationalError, ValueError) as exc:
+        logger.error("activities_capture: FEE %s log_trade failed: %s",
+                     activity_id, exc)
+        return False
+
+
 def capture_activities_for_profile(ctx,
                                    since: Optional[datetime] = None,
                                    ) -> Dict[str, int]:
@@ -971,11 +1307,23 @@ def capture_activities_for_profile(ctx,
     activities = []
     for _a_type in _HANDLED_TYPES:
         try:
-            batch = api.get_activities(
-                activity_types=_a_type,
-                after=since.isoformat(),
-            )
-            activities.extend(list(batch) if batch is not None else [])
+            # 2026-11-01 — PAGE. A single call returns at most one page
+            # (100 rows); the 7-day window never hit it, but the fee
+            # backfill from the 08-24 reset did (319 FEE rows on one
+            # account → 100 fetched, 219 silently never seen).
+            _token = None
+            while True:
+                _kw = dict(activity_types=_a_type, after=since.isoformat(),
+                           page_size=100)
+                if _token:
+                    _kw["page_token"] = _token
+                batch = list(api.get_activities(**_kw) or [])
+                activities.extend(batch)
+                if len(batch) < 100:
+                    break
+                _token = getattr(batch[-1], "id", None)
+                if not _token:
+                    break
         except Exception as exc:
             logger.warning(
                 "activities_capture: get_activities(%s) failed for "
@@ -994,6 +1342,9 @@ def capture_activities_for_profile(ctx,
         elif a_type == "MA":
             if _write_cash_merger(ctx, a, api):
                 summary["MA"] += 1
+        elif a_type == "FEE":
+            if _write_fee(ctx, a, api):
+                summary["FEE"] += 1
         else:
             logger.debug(
                 "activities_capture: ignoring unhandled type %s", a_type,

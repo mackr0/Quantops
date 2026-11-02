@@ -912,20 +912,14 @@ copies: all 12 books at 0.00).
 - [x] Unhandled reorg types (REORG/CSD/CSW/JNLS/SC/SPIN) explained on
       /issues when they touch a held symbol; never booked blind.
 - [x] Fill poller no longer polls activity-keyed rows.
-- [ ] ⏳ OPEN (free) — **broker FEEs are booked nowhere.** REG/TAF/ORF/
-      OCC fees (cents to ~$1.50/day per account) debit the broker's
-      cash and no journal row carries them. They do not touch the
-      per-profile identity (virtual equity is journal-derived) but
-      the account-level cash parity drifts by their running sum.
-      Attribution is by fill: each fee row's description names the
-      proceeds / contract count it was charged on, so a per-book
-      split by that day's own sells is derivable. Build: a `FEE`
-      handler in `activities_capture` writing `cash_debit` rows
-      split pro-rata by each book's same-day sell proceeds (REG/CAT)
-      or contracts closed (OPT TAF/ORF/OCC), Σ-checked like
-      dividends; test on the 10-19..10-23 fee rows.
-- [ ] ⏳ OPEN (free) — **the gate's $250 decomposition tolerance hid
-      +136.92 on p237/p240** for ten days. The tolerance exists for
-      "fee/slippage noise" that the fill-true cash math no longer
-      produces (every book rehearsed to 0.00/0.01). Lower it to $5
-      once FEEs are booked and a week of clean passes is on record.
+- [x] **broker FEEs are booked per book** — RESOLVED 2026-11-01
+      (CHANGELOG 2026-11-01): `activities_capture._write_fee` splits
+      each account-level fee across the books from the broker's own
+      fills by own order_id, Σ-checked against the base the broker
+      names, fail-closed with a `fee_unattributable` alert; the parity
+      audit adjusts only for fees no book has journaled; backfill
+      script `scripts/backfill_broker_fees_2026_11_01.py`.
+- [x] **the gate's $250 decomposition tolerance** — RESOLVED
+      2026-11-01: the identity is now price-free (one positions
+      snapshot; `certify_books.check_decomposition`) and the gate runs
+      at $5; verified 0 findings on the live books before shipping.

@@ -14,9 +14,10 @@ Checks (all must pass for exit code 0):
   2. RECONCILE — dry-run reconcile_with_ctx across all profiles
      must produce zero cancel/backfill/ambiguous actions.
   3. DECOMPOSITION — per profile: (equity − initial_capital) −
-     (Σ realized pnl + Σ unrealized) within $100. Equity truth
-     comes from check 1; this verifies the realized/unrealized
-     ATTRIBUTION adds up too.
+     (Σ realized pnl + Σ unrealized) within $5 (price-free form since
+     2026-11-01: exact journal arithmetic from one positions snapshot).
+     Equity truth comes from check 1; this verifies the
+     realized/unrealized ATTRIBUTION adds up too.
   4. ISSUES — issues_collector.collect_issues(since_hours) must
      report 0 groups (use --since-hours 168 after a reset).
 
@@ -88,7 +89,22 @@ def check_reconcile() -> list:
     return findings
 
 
-def check_decomposition(tolerance: float = 100.0) -> list:
+def check_decomposition(tolerance: float = 5.0) -> list:
+    """Per profile: (equity − initial_capital) == Σ realized + Σ
+    unrealized, within `tolerance` dollars.
+
+    2026-11-01 — PRICE-FREE form. The old form read equity from one
+    call and unrealized from a second; prices moved between the two
+    and the difference (Σ qty × Δprice) showed up as a "gap", which is
+    why the gate needed a $250 tolerance ("fee/slippage noise") and
+    why that tolerance hid a real +$136.92 mis-booking on two books for
+    ten days. Algebraically equity − initial − unrealized = cash −
+    initial + Σ(market_value − unrealized_pl) = cash − initial + Σ cost
+    basis — no price in it. Computed from ONE positions snapshot, it
+    is exact arithmetic over the journal, so the default tolerance is
+    $5 (cents of rounding; the gate passes the same). The equity shown
+    in a finding is cash + Σ market_value from that same snapshot.
+    A degraded (unreadable) book is a finding, never a silent pass."""
     from models import get_active_profiles, build_user_context_from_profile
     from client import get_account_info, get_positions
     findings = []
@@ -96,10 +112,16 @@ def check_decomposition(tolerance: float = 100.0) -> list:
         pid = prof["id"]
         ctx = build_user_context_from_profile(pid)
         acct = get_account_info(ctx=ctx)
-        eq = float(acct["equity"])
+        if acct.get("degraded"):
+            findings.append(f"p{pid} {prof['name']}: book UNVERIFIABLE "
+                            "(trades table unreadable)")
+            continue
+        cash = float(acct["cash"])
         init = float(prof.get("initial_capital") or 0)
-        upl = sum(float(p.get("unrealized_pl") or 0)
-                  for p in get_positions(ctx=ctx))
+        positions = get_positions(ctx=ctx)
+        mv = sum(float(p.get("market_value") or 0) for p in positions)
+        upl = sum(float(p.get("unrealized_pl") or 0) for p in positions)
+        eq = cash + mv
         with closing(sqlite3.connect(
                 f"quantopsai_profile_{pid}.db")) as c:
             from journal import data_quality_clause
@@ -117,7 +139,7 @@ def check_decomposition(tolerance: float = 100.0) -> list:
         if abs(gap) > tolerance:
             findings.append(
                 f"p{pid} {prof['name']}: equity={eq:,.2f} "
-                f"P&L={eq - init:+,.2f} decomposition gap={gap:+,.0f}")
+                f"P&L={eq - init:+,.2f} decomposition gap={gap:+,.2f}")
     return findings
 
 
@@ -156,7 +178,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--since-hours", type=int, default=24,
                     help="issues_collector window (168 after a reset)")
-    ap.add_argument("--gap-tolerance", type=float, default=100.0,
+    ap.add_argument("--gap-tolerance", type=float, default=5.0,
                     help="max per-profile decomposition gap in $")
     args = ap.parse_args()
 
