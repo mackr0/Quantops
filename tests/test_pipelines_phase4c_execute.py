@@ -69,7 +69,7 @@ def _single_leg_proposal(symbol="MSFT"):
     return {
         "symbol": symbol,
         "action": "OPTIONS",
-        "option_strategy": "long_call",
+        "option_strategy": "cash_secured_put",  # 2026-11-02: naked longs are refused; a traded single-leg
         "strike": 400,
         "expiry": "2026-06-12",
         "contracts": 1,

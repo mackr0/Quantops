@@ -82,7 +82,7 @@ def test_execute_single_leg_handles_proposal_shape():
             ctx = MagicMock(db_path=None)
             result = OptionPipeline._execute_single_leg(
                 ctx,
-                {"option_strategy": "long_call", "contracts": 1,
+                {"option_strategy": "cash_secured_put",  # 2026-11-02: naked longs are refused; a traded single-leg "contracts": 1,
                  "strike": 180, "expiry": "2024-01-18",
                  "symbol": "AAPL"},
                 "AAPL",
@@ -105,7 +105,7 @@ def test_execute_single_leg_returns_error_dict_on_broker_failure():
             ctx = MagicMock(db_path=None)
             result = OptionPipeline._execute_single_leg(
                 ctx,
-                {"option_strategy": "long_call", "contracts": 1,
+                {"option_strategy": "cash_secured_put",  # 2026-11-02: naked longs are refused; a traded single-leg "contracts": 1,
                  "strike": 180, "expiry": "2024-01-18"},
                 "AAPL",
             )
@@ -135,7 +135,7 @@ def test_both_call_paths_produce_dict_with_symbol_set():
             ctx = MagicMock(db_path=None)
             r1 = OptionPipeline._execute_single_leg(
                 ctx,
-                {"option_strategy": "long_call", "contracts": 1,
+                {"option_strategy": "cash_secured_put",  # 2026-11-02: naked longs are refused; a traded single-leg "contracts": 1,
                  "symbol": "AAPL"},
                 "AAPL",
             )
