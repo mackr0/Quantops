@@ -103,7 +103,11 @@ class TestMechanismIsWired:
         for that tree and could drift from it."""
         hits = []
         for dirpath, _dirs, files in os.walk(REPO):
-            if any(part in dirpath for part in
+            # Filter on the path INSIDE the repo, not the absolute one:
+            # a checkout that itself lives under a `.claude/worktrees/`
+            # directory would otherwise match and walk nothing.
+            rel = "/" + os.path.relpath(dirpath, REPO).replace(os.sep, "/")
+            if any(part in rel for part in
                    ("/venv", "/.claude", "/node_modules", "/.git")):
                 continue
             for name in files:

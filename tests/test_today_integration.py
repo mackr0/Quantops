@@ -4,16 +4,17 @@ These cover the cross-component behaviors that unit tests can't:
   - Capital allocation with mixed Sharpe at the new 16-strategy library size
   - Multi-strategy score aggregation when many strategies vote on one symbol
   - call_ai → ledger threading (kwargs flow through to a real ledger row)
-  - Scheduler wiring assertions (backup task is actually registered)
-  - Backup integrity on a WAL-mode database that's actively being written
+  - Scheduler wiring assertions (event tick fires with the scan block)
+
+Database backups left the scheduler on 2026-11-01: backup_daily.sh
+(system cron) is the one backup system, pinned by
+tests/test_backup_single_system_2026_11_01.py.
 """
 
 from __future__ import annotations
 
 import json
 import sqlite3
-import threading
-import time
 
 import pytest
 
@@ -261,50 +262,12 @@ class TestCallAiLedgerThreading:
 
 
 # ---------------------------------------------------------------------------
-# 4. Scheduler wiring — backup task must be registered
+# 4. Scheduler wiring
 # ---------------------------------------------------------------------------
 
 class TestSchedulerWiring:
-    """Make sure tonight's two new scheduler tasks are actually wired in.
-    A regression here would silently disable backups or AI cost tracking."""
-
-    def test_run_segment_cycle_invokes_db_backup_in_snapshot_block(self,
-                                                                     monkeypatch,
-                                                                     sample_ctx):
-        """Verify that when run_snapshot=True, the DB backup task fires."""
-        import multi_scheduler
-
-        called: list = []
-
-        def fake_backup(ctx):
-            called.append(("backup", getattr(ctx, "segment", "?")))
-
-        # Stub all the heavy tasks so the cycle runs fast
-        monkeypatch.setattr(multi_scheduler, "_task_db_backup", fake_backup)
-        for stub in ("_task_scan_and_trade", "_task_check_exits",
-                     "_task_cancel_stale_orders", "_task_update_fills",
-                     "_task_resolve_predictions", "_task_daily_snapshot",
-                     "_task_self_tune", "_task_retrain_meta_model",
-                     "_task_alpha_decay", "_task_sec_filings",
-                     "_task_event_tick", "_task_crisis_monitor",
-                     "_task_auto_strategy_lifecycle",
-                     "_task_auto_strategy_generation",
-                     "_task_daily_summary_email",
-                     "_task_app_store_snapshot",
-                     "_task_pdufa_scrape"):
-            monkeypatch.setattr(multi_scheduler, stub, lambda ctx: None)
-
-        # Make init_db a no-op since we're not actually persisting anything
-        monkeypatch.setattr("journal.init_db", lambda db: None)
-
-        multi_scheduler.run_segment_cycle(
-            sample_ctx,
-            run_scan=False, run_exits=False,
-            run_predictions=False, run_snapshot=True,
-            run_summary=False,
-        )
-        assert len(called) == 1, "DB backup task did not fire in snapshot block"
-        assert called[0][0] == "backup"
+    """Make sure scheduler tasks are actually wired in. A regression here
+    would silently disable a task."""
 
     def test_scan_block_invokes_event_tick(self, monkeypatch, sample_ctx):
         """Phase 9 event tick must fire alongside scan. If a refactor
@@ -329,71 +292,7 @@ class TestSchedulerWiring:
 
 
 # ---------------------------------------------------------------------------
-# 5. Backup integrity under WAL-mode write load
-# ---------------------------------------------------------------------------
-
-class TestBackupOnWalDb:
-    """The whole point of using SQLite's .backup API is WAL safety.
-    A `cp` of a WAL-mode DB during writes can corrupt the copy. Verify
-    our backup_one produces a readable, complete DB even when the source
-    is being actively written to."""
-
-    def test_backup_consistent_during_concurrent_writes(self, tmp_path):
-        from backup_db import backup_one
-
-        src = tmp_path / "live.db"
-        dest = tmp_path / "bkp.db"
-
-        # Set up source with WAL mode + 100 rows
-        conn = sqlite3.connect(str(src))
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("CREATE TABLE t (k INTEGER, v TEXT)")
-        for i in range(100):
-            conn.execute("INSERT INTO t VALUES (?, ?)", (i, f"v{i}"))
-        conn.commit()
-        conn.close()
-
-        # Concurrent writer adds rows while backup runs
-        stop = threading.Event()
-        write_count = [0]
-
-        def writer():
-            w = sqlite3.connect(str(src))
-            w.execute("PRAGMA journal_mode=WAL")
-            i = 1000
-            while not stop.is_set():
-                try:
-                    w.execute("INSERT INTO t VALUES (?, ?)", (i, f"w{i}"))
-                    w.commit()
-                    write_count[0] += 1
-                    i += 1
-                except Exception:
-                    pass
-                time.sleep(0.001)
-            w.close()
-
-        t = threading.Thread(target=writer)
-        t.start()
-        time.sleep(0.05)   # let some writes happen first
-
-        ok = backup_one(str(src), str(dest))
-        stop.set()
-        t.join(timeout=2)
-
-        assert ok is True
-        assert dest.exists()
-
-        # Backup must be a valid SQLite DB with at least the original 100 rows
-        bkp = sqlite3.connect(str(dest))
-        n = bkp.execute("SELECT COUNT(*) FROM t").fetchone()[0]
-        bkp.close()
-        assert n >= 100, f"backup lost rows ({n} < 100) — WAL safety broken"
-        # Sanity: writer made progress so the test was meaningful
-        assert write_count[0] > 0, "concurrent writer didn't run — test invalid"
-
-
-# ---------------------------------------------------------------------------
-# 6. Spend summary on a profile DB that's actively being written
+# 5. Spend summary on a profile DB that's actively being written
 # ---------------------------------------------------------------------------
 
 class TestSpendSummaryOnRealJournal:

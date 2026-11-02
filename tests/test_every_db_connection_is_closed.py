@@ -60,9 +60,6 @@ ALLOWLIST_FILES = {
     # One-shot migrations / backfills run once then exit
     "backfill_multileg_negative_prices.py":
         "One-shot script. Process exits before any leak accumulates.",
-    "backup_db.py":
-        "Backup operations open many connections briefly; each is "
-        "explicitly closed in try/finally inside backup_one().",
     "recover_cycle_data.py":
         "Recovery utility. Short-lived process.",
     "repair_opex_phantom_shorts_2026_07_20.py":

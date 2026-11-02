@@ -439,7 +439,6 @@ def test_no_direct_journal_mutation_outside_authorized_modules():
         "cleanup_bug_cascade_buys_2026_05_18.py",
         "reset_for_clean_experiment.py",
         "full_reset_2026_05_18.py",
-        "backup_db.py",
         "db_integrity.py",
         "halt_helpers.py",       # writes audit_alerts only
         "stat_arb_pair_book.py",  # writes via journal + own row UPDATEs

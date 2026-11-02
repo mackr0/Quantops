@@ -878,7 +878,17 @@ the closed market: swap 1,023MB → 127MB.
 - [ ] Until fixed, the process will refill swap in ~2–3 days. Watch
       `VmSwap` in `/proc/<pid>/status`; a restart in a closed market
       is safe (graceful SIGTERM drain, `TimeoutStopSec=600`).
-- [ ] Disk is 95% full (3.3GB free; `backups/` is 20GB, `/var/log`
+- [x] Disk is 95% full (3.3GB free; `backups/` is 20GB, `/var/log`
       1.9GB) and synced writes cost ~33ms. Prune or offload backups
-      beyond the retention actually needed.
+      beyond the retention actually needed. **It reached 100% on
+      2026-10-27 and stayed there until 2026-11-01** (CHANGELOG
+      2026-11-01): two backup systems each copied every DB daily.
+      Fixed: the scheduler's backup task is gone, `backup_daily.sh`
+      is the one system, it refuses snapshots that would leave under
+      5 GB, compresses before it writes, takes alt-data weekly, and
+      the pre-market smoke test now fails on low disk or a failed
+      backup. Still to do by hand on the droplet (23 GB): delete the
+      dead `/var/backups/quantopsai/` tree, the stale
+      `/opt/quantopsai-altdata.OLD-2026-05-04/` copy and
+      `/root/QuantOpsAI/logs/`.
 

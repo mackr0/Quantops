@@ -31,8 +31,10 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import shutil
 import sys
 import time
+from datetime import datetime, timezone
 from typing import Callable, List, Tuple
 
 logging.basicConfig(
@@ -45,6 +47,100 @@ logger = logging.getLogger(__name__)
 # Each check returns (passed, detail). detail explains the pass or
 # the fail. Order: cheapest first; failures cascade because later
 # checks depend on earlier infra working.
+
+# ── Disk headroom + last backup (2026-11-01) ─────────────────────────
+# The disk hit 100% on 2026-10-27 and stayed there for five days before
+# anyone noticed — via the DigitalOcean console refusing to log in. In
+# that time the scheduler's file logging failed on every write, every
+# nightly backup failed, SQLite threw disk-full errors, and nothing
+# said so. These two checks make a full disk and a failing backup fail
+# the pre-market smoke loudly instead.
+
+DISK_MIN_FREE_BYTES = 5 * 1024 ** 3   # 5 GB — same floor backup_daily.sh keeps
+DISK_MIN_FREE_FRACTION = 0.10         # or 10% of the disk, whichever is larger
+
+BACKUP_STATUS_FILE = os.environ.get(
+    "BACKUP_STATUS_FILE", "/opt/quantopsai/backups/last_run.status"
+)
+BACKUP_MAX_AGE_HOURS = 26             # cron is daily at 05:00 UTC; 2h slack
+
+
+def check_disk_headroom() -> Tuple[bool, str]:
+    """The disk the databases live on must have real free space left.
+
+    Measures the filesystem holding this repo (the live DBs are in it).
+    Fails below 5 GB free or below 10% free, whichever is larger.
+    """
+    root = os.path.dirname(os.path.abspath(__file__))
+    usage = shutil.disk_usage(root)
+    free_pct = 100.0 * usage.free / usage.total if usage.total else 0.0
+    detail = (
+        f"{usage.free / 1e9:.1f} GB free of {usage.total / 1e9:.1f} GB "
+        f"({free_pct:.0f}%)"
+    )
+    floor = max(DISK_MIN_FREE_BYTES, DISK_MIN_FREE_FRACTION * usage.total)
+    if usage.free < floor:
+        return False, (
+            f"disk nearly full: {detail}; need at least "
+            f"{floor / 1e9:.1f} GB free. A full disk stops the scheduler's "
+            f"logging, the nightly backups and the DigitalOcean console."
+        )
+    return True, detail
+
+
+def _read_backup_status(path: str) -> dict:
+    out: dict = {}
+    with open(path) as fh:
+        for line in fh:
+            line = line.strip()
+            if "=" in line:
+                k, v = line.split("=", 1)
+                out[k] = v
+    return out
+
+
+def check_last_backup_ok() -> Tuple[bool, str]:
+    """The nightly backup must have run in the last 26 hours with no
+    failures. Reads the summary backup_daily.sh writes after every run."""
+    path = BACKUP_STATUS_FILE
+    if not os.path.exists(path):
+        return False, (
+            f"no backup summary at {path}: the nightly backup has not "
+            f"completed a run since this check shipped, or its cron entry is gone"
+        )
+    try:
+        status = _read_backup_status(path)
+        ran_at = datetime.strptime(
+            status["timestamp"], "%Y-%m-%dT%H:%M:%SZ"
+        ).replace(tzinfo=timezone.utc)
+    except (KeyError, ValueError, OSError) as exc:
+        return False, f"backup summary at {path} is unreadable: {type(exc).__name__}: {exc}"
+
+    age_h = (datetime.now(timezone.utc) - ran_at).total_seconds() / 3600.0
+    backed_up = status.get("backed_up", "?")
+    failed = status.get("failed", "?")
+    skipped = status.get("skipped_disk", "0")
+    free_after = status.get("free_after_bytes")
+    free_txt = (
+        f"{int(free_after) / 1e9:.1f} GB free afterwards"
+        if free_after and free_after.isdigit() else "free space unknown"
+    )
+    if age_h > BACKUP_MAX_AGE_HOURS:
+        return False, (
+            f"last backup ran {age_h:.0f} hours ago (limit {BACKUP_MAX_AGE_HOURS}); "
+            f"the daily cron did not run or did not finish"
+        )
+    if status.get("result") != "OK" or failed != "0":
+        why = (
+            f"{skipped} snapshot(s) refused for lack of disk space"
+            if skipped not in ("0", "?") else "see the quantopsai-backup syslog entries"
+        )
+        return False, (
+            f"last backup {age_h:.0f}h ago FAILED: {backed_up} saved, "
+            f"{failed} failed ({why}); {free_txt}"
+        )
+    return True, f"last backup {age_h:.0f}h ago: {backed_up} databases saved, 0 failures, {free_txt}"
+
 
 def check_alpaca_keys_load() -> Tuple[bool, str]:
     """Env vars present and decryptable."""
@@ -233,6 +329,8 @@ def check_broker_accounts_funded() -> Tuple[bool, str]:
 
 
 CHECKS: List[Tuple[str, Callable[[], Tuple[bool, str]]]] = [
+    ("disk_headroom",             check_disk_headroom),
+    ("last_backup_ok",            check_last_backup_ok),
     ("alpaca_keys_load",          check_alpaca_keys_load),
     ("alpaca_account_endpoint",   check_alpaca_account_endpoint),
     ("broker_accounts_funded",    check_broker_accounts_funded),

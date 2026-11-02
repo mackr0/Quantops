@@ -225,12 +225,14 @@ Every scheduler startup runs `PRAGMA quick_check` on every DB. Real corruption h
 ## 5. Backups and disaster recovery
 
 ### 5.1 Daily backups
-- `backup_daily.sh` runs from system cron at **05:00 UTC** every day.
+- `backup_daily.sh` runs from system cron at **05:00 UTC** every day. It is the only backup writer; the scheduler has no backup task (the in-process one was removed 2026-11-01 after the two together filled the disk).
 - Uses sqlite3's online `.backup` (safe under concurrent writes).
-- Snapshots: master DB + every per-profile DB + alt-data DBs to `/opt/quantopsai/backups/`.
-- Filename format: `<dbname>.<YYYYMMDD-HHMM>`.
-- **Retention: 14 days.** Older backups pruned automatically.
-- Backup directory is excluded from `sync.sh`'s rsync so deploys don't delete snapshots.
+- Snapshots: master DB + every per-profile DB + `strategy_validations.db` daily; the four alt-data DBs on Sundays only.
+- Filename format: `<dbname>.<YYYYMMDD-HHMM>`; snapshots older than ~2 days are gzipped (smallest first).
+- **Retention: 14 days.** Housekeeping (compress, prune) runs *before* new snapshots are written.
+- **Disk-headroom guard:** a snapshot that would leave less than 5 GB free is refused and counted as a failure; the run exits 1.
+- Every run writes `backups/last_run.status`; the pre-market smoke test's `last_backup_ok` and `disk_headroom` checks read it and the filesystem, first thing every weekday.
+- Deploys cannot touch the backup directory: `sync.sh` ships only git-tracked files and never deletes (docs/07 §3).
 
 ### 5.2 Restore runbook
 Single command: `restore_from_backup("<filename>")`.
