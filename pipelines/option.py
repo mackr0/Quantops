@@ -32,6 +32,9 @@ from . import (AIResult, Candidate, ExecutionResult, Metrics,
 
 logger = logging.getLogger(__name__)
 
+#: Single-leg long options the pipeline refuses to open (2026-11-02).
+NAKED_LONG_PREMIUM_STRATEGIES = frozenset({"long_call", "long_put"})
+
 
 # Module-level helpers used by generate_candidates to enrich each
 # Candidate's `extra` dict with option-specific context.
@@ -953,6 +956,21 @@ class OptionPipeline(Pipeline):
         dispatcher (Scope C) is active."""
         from options_trader import execute_option_strategy
         from client import get_api as _get_api
+        # 2026-11-02 — NO NAKED LONG PREMIUM. Single-leg long calls/puts
+        # lost in every arm since the 08-24 reset (NANO: 159 closes, 28%
+        # win, −$16K; the fleet's option book −$17K of which −$16.9K was
+        # single-leg longs), the damage concentrated in 6–14-day holds —
+        # theta decay on coin-flip direction. The menu no longer offers
+        # them (ai_analyst); this gate is the fail-closed backstop for a
+        # model that proposes one anyway. Defined-risk spreads
+        # (MULTILEG_OPEN), covered calls, protective puts and
+        # cash-secured puts are unaffected.
+        _strat = str(proposal.get("option_strategy", "") or "").lower()
+        if _strat in NAKED_LONG_PREMIUM_STRATEGIES:
+            reason = (f"single-leg {_strat} is not traded (no naked long "
+                      f"premium since 2026-11-02; use a defined-risk spread)")
+            print(f"  SKIP OPTIONS {symbol}: {reason}")
+            return {"action": "SKIP", "symbol": symbol, "reason": reason}
         api = _get_api(ctx)
         try:
             print(f"  Executing: OPTIONS {proposal.get('option_strategy', '?')} "
