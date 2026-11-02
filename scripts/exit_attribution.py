@@ -40,7 +40,8 @@ def main() -> int:
     arm_pnl = collections.defaultdict(float)
     for prof in profiles:
         ctx = build_user_context_from_profile(prof["id"])
-        c = sqlite3.connect(ctx.db_path); c.row_factory = sqlite3.Row
+        c = sqlite3.connect(ctx.db_path)
+        c.row_factory = sqlite3.Row
         for r in c.execute("""
             SELECT side, occ_symbol IS NOT NULL AS opt, UPPER(COALESCE(signal_type,'')) sig,
                    COALESCE(strategy,'') strat, COUNT(*) n, SUM(pnl) s
@@ -60,6 +61,7 @@ def main() -> int:
               AND COALESCE(t.status,'') NOT IN ('canceled','expired','rejected') AND t.timestamp >= ?""",
                            (args.since,)):
             trail.append(dict(r))
+        c.close()
     print(f"\n{'instr':7} {'side':10} {'signal':22} {'n':>6} {'pnl':>11}")
     total = 0.0
     for k, (n, s) in sorted(agg.items(), key=lambda kv: kv[1][1]):
