@@ -60,7 +60,7 @@ Three running processes:
 
 ### sync.sh (deploying from the Mac)
 
-Local: `sync.sh` is the deploy command from the operator's laptop. Steps:
+Local: `sync.sh` is the deploy command from the operator's laptop. It ships the checkout at `/Users/mackr0/Quantops` unless `LOCAL_REPO=<path>` is set in the environment, which lets a deploy run from a clean git worktree while the primary checkout holds unrelated uncommitted work (every pre-flight check runs against that checkout). Steps:
 
 1. Ship **exactly the files git tracks** at HEAD to `/opt/quantopsai/` — `rsync --checksum --files-from=<git ls-files>`, an allowlist, with **no `--delete`**. A deploy can only ever write files git knows about and never removes anything on the droplet, so everything that exists only there — journals, `backups/`, `logs/`, `deploy_logs/`, the altdata scrapers' caches, `.cache/`, marker files, the medals cache — is out of its reach by construction, with no exclude list to maintain. (Until 2026-09-21 this was `rsync --delete` of the whole working tree minus a hand-kept exclude list, which deleted every droplet-only path not on the list and uploaded the Mac's untracked files over prod's — see CHANGELOG.) Changes are detected by content, not timestamp, so the list of changed files — which decides what gets restarted — is exact.
 2. `ssh root@67.205.155.63 'cd /opt/quantopsai && git fetch && git reset --hard origin/main'` — sync prod's `.git/` to GitHub. This is also what **removes files that were deleted from the repo**, since step 1 never deletes.

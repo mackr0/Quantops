@@ -38,7 +38,10 @@ if [[ "$1" == "--all" || "$2" == "--all" ]]; then FORCE_MODE="all"; fi
 # Strip flags from DROPLET_IP if a flag was passed as $1
 if [[ "$DROPLET_IP" == --* ]]; then DROPLET_IP="67.205.155.63"; fi
 
-LOCAL_REPO="/Users/mackr0/Quantops"
+# The checkout to ship. Override with LOCAL_REPO=<path> to deploy from a
+# git worktree (e.g. when the primary checkout holds unrelated
+# uncommitted work); every check below runs against that checkout.
+LOCAL_REPO="${LOCAL_REPO:-/Users/mackr0/Quantops}"
 
 # ---------------------------------------------------------------------------
 # Pre-flight gate: prod's .git/ is updated to origin/main as part of every
