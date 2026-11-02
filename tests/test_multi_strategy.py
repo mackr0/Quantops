@@ -52,9 +52,14 @@ class TestRegistryDiscovery:
 
     def test_get_active_strategies_no_db_returns_all(self):
         from strategies import get_active_strategies, discover_strategies
+        from strategy_policy import OPERATOR_DISABLED_STRATEGIES
         all_mods = discover_strategies("stocks")
         active = get_active_strategies("stocks", db_path=None)
-        assert len(active) == len(all_mods)
+        # 2026-11-02: operator policy removes the measured losers even
+        # with no DB (strategy_policy); everything else is active.
+        expected = [m for m in all_mods if m.NAME not in OPERATOR_DISABLED_STRATEGIES]
+        assert len(active) == len(expected)
+        assert not ({m.NAME for m in active} & OPERATOR_DISABLED_STRATEGIES)
 
     def test_get_active_strategies_filters_deprecated(self, tmp_profile_db):
         from strategies import get_active_strategies

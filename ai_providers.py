@@ -680,7 +680,7 @@ def _openai_strict_schema(schema):
 
 
 def _call_provider(provider, prompt, model, api_key, max_tokens,
-                   schema=None):
+                   schema=None, system=None):
     """Dispatch to provider-specific helper. Returns a NORMALIZED 4-tuple
     (text, in_tok, out_tok, cached_tok) — providers whose helper returns the
     legacy 3-tuple get cached_tok=0. cached_tok = prompt tokens served from
@@ -698,6 +698,8 @@ def _call_provider(provider, prompt, model, api_key, max_tokens,
     # patchers of _call_google/_call_openai/_call_anthropic keep working
     # (mock-signature-parity lesson, 2026-07-02).
     extra = {"schema": schema} if schema is not None else {}
+    if system:
+        extra["system"] = system
     if provider == "anthropic":
         result = _call_anthropic(prompt, model, api_key, max_tokens, **extra)
     elif provider == "openai":
@@ -783,13 +785,23 @@ def _enforce_cost_cap(prompt: str, model: Optional[str], max_tokens: int,
 
 
 def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1024,
-            db_path=None, purpose=None, decision_id=None, schema=None):
+            db_path=None, purpose=None, decision_id=None, schema=None, system=None):
     """Send a prompt to the specified AI provider and return the response text.
 
     `schema` (optional JSON schema): when given, the provider's native
     structured-output mode is used and the returned text is JSON that
     conforms to it; the same schema is handed to every shadow arm so
     they are held to the identical contract.
+
+    `system` (optional, 2026-11-02 — prompt caching, docs/25 D14): the
+    STABLE instruction block, sent as the provider's system prompt and
+    marked cacheable (Anthropic `cache_control`; OpenAI / DeepSeek / xAI
+    cache a repeated prefix automatically; Gemini `system_instruction`).
+    The apex call's instructions are the same every cycle for a profile
+    while the data changes, so the split lets the vendor bill the
+    instructions at the cache-read rate. Shadow arms receive the same
+    split. Forwarded only when set, so every existing patcher of the
+    provider helpers keeps its signature.
 
     Args:
         prompt: The user prompt string
@@ -845,7 +857,7 @@ def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1
     # Cost cap (added 2026-05-15 — pipeline-wide hard stop). Raises
     # CostCapExceeded when over budget; falls open when db_path can't
     # be attributed to a user.
-    _enforce_cost_cap(prompt, model, max_tokens, db_path, purpose)
+    _enforce_cost_cap((system or "") + prompt, model, max_tokens, db_path, purpose)
 
     # Build attempt order: primary first, then fallbacks. If primary
     # circuit is currently OPEN, primary is skipped — but we still
@@ -929,6 +941,7 @@ def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1
                     attempt_provider, prompt, attempt_model,
                     attempt_key, max_tokens,
                     **({"schema": schema} if schema is not None else {}),
+                    **({"system": system} if system else {}),
                 )
                 # Tolerate the legacy 3-tuple contract (tests and any
                 # external patcher of _call_provider) — cached tokens
@@ -996,6 +1009,7 @@ def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1
                 primary_response=cleaned_response,
                 decision_id=decision_id,
                 **({"schema": schema} if schema is not None else {}),
+                **({"system": system} if system else {}),
             )
         except Exception as exc:
             logger.debug("shadow eval dispatch skipped: %s", exc)
@@ -1116,7 +1130,7 @@ def _anthropic_text(message):
     return "".join(parts)
 
 
-def _call_anthropic(prompt, model, api_key, max_tokens, schema=None):
+def _call_anthropic(prompt, model, api_key, max_tokens, schema=None, system=None):
     """Call Anthropic Claude API. Returns (text, input_tokens, output_tokens,
     cached_tokens).
 
@@ -1143,6 +1157,12 @@ def _call_anthropic(prompt, model, api_key, max_tokens, schema=None):
         "max_tokens": budget,
         "messages": [{"role": "user", "content": prompt}],
     }
+    if system:
+        # Stable instructions as a cached system block (prompt caching;
+        # the vendor bills a cache read at 10% of the input rate when
+        # the same prefix repeats within the TTL).
+        kwargs["system"] = [{"type": "text", "text": system,
+                             "cache_control": {"type": "ephemeral"}}]
     if schema is not None:
         kwargs["output_config"] = {
             "format": {"type": "json_schema",
@@ -1176,7 +1196,7 @@ _OPENAI_REASONING_MODEL_RE = re.compile(r"^(gpt-[5-9]|o\d)")
 _OPENAI_PINNED_EFFORT_RE = re.compile(r"^gpt-5")
 
 
-def _call_openai(prompt, model, api_key, max_tokens, schema=None):
+def _call_openai(prompt, model, api_key, max_tokens, schema=None, system=None):
     """Call OpenAI API. Returns (text, input_tokens, output_tokens).
 
     2026-08-23: uses `max_completion_tokens` (the GPT-5.x family rejects
@@ -1194,10 +1214,15 @@ def _call_openai(prompt, model, api_key, max_tokens, schema=None):
         ) from exc
 
     client = OpenAI(api_key=api_key)
+    messages = [{"role": "user", "content": prompt}]
+    if system:
+        # OpenAI caches a repeated prefix (≥1,024 tokens) automatically;
+        # the stable block goes first as the system message.
+        messages.insert(0, {"role": "system", "content": system})
     kwargs = {
         "model": model,
         "max_completion_tokens": max_tokens,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": messages,
     }
     if schema is not None:
         kwargs["response_format"] = {
@@ -1242,7 +1267,7 @@ def _openai_cached_tokens(usage):
 
 
 def _call_openai_compatible(base_url, vendor, prompt, model, api_key,
-                            max_tokens, schema=None):
+                            max_tokens, schema=None, system=None):
     """Chat Completions against an OpenAI-compatible endpoint (DeepSeek,
     xAI). `schema` → `response_format=json_object` plus the schema in
     the prompt; these vendors accept json_object but not every strict
@@ -1264,7 +1289,8 @@ def _call_openai_compatible(base_url, vendor, prompt, model, api_key,
         content = (prompt + "\n\nRespond with ONLY a JSON object matching "
                    "this JSON schema exactly:\n" + _json.dumps(schema))
         kwargs["response_format"] = {"type": "json_object"}
-    kwargs["messages"] = [{"role": "user", "content": content}]
+    kwargs["messages"] = ([{"role": "system", "content": system}] if system else []) + \
+        [{"role": "user", "content": content}]
     response = client.chat.completions.create(**kwargs)
     usage = getattr(response, "usage", None)
     in_tok = getattr(usage, "prompt_tokens", 0) if usage else 0
@@ -1273,21 +1299,21 @@ def _call_openai_compatible(base_url, vendor, prompt, model, api_key,
             _openai_cached_tokens(usage))
 
 
-def _call_xai(prompt, model, api_key, max_tokens, schema=None):
+def _call_xai(prompt, model, api_key, max_tokens, schema=None, system=None):
     """xAI Grok via its OpenAI-compatible endpoint."""
     return _call_openai_compatible("https://api.x.ai/v1", "xai", prompt, model,
-                                   api_key, max_tokens, schema=schema)
+                                   api_key, max_tokens, schema=schema, system=system)
 
 
-def _call_deepseek(prompt, model, api_key, max_tokens, schema=None):
+def _call_deepseek(prompt, model, api_key, max_tokens, schema=None, system=None):
     """DeepSeek via its OpenAI-compatible endpoint (api.deepseek.com).
     Returns (text, input_tokens, output_tokens, cached_tokens) — DeepSeek
     reports context-cache hits in prompt_tokens_details.cached_tokens."""
     return _call_openai_compatible("https://api.deepseek.com", "deepseek", prompt,
-                                   model, api_key, max_tokens, schema=schema)
+                                   model, api_key, max_tokens, schema=schema, system=system)
 
 
-def _call_google(prompt, model, api_key, max_tokens, schema=None):
+def _call_google(prompt, model, api_key, max_tokens, schema=None, system=None):
     """Call Google Gemini API. Returns (text, input_tokens, output_tokens).
 
     With `schema` (2026-08-23), `response_json_schema` constrains the
@@ -1322,6 +1348,8 @@ def _call_google(prompt, model, api_key, max_tokens, schema=None):
     }
     if schema is not None:
         config["response_json_schema"] = schema
+    if system:
+        config["system_instruction"] = system
     response = client.models.generate_content(
         model=model,
         contents=prompt,

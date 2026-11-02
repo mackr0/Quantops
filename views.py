@@ -900,6 +900,10 @@ _CROSS_CUTTING_DROP_CODES = frozenset({
     # any risk-increasing action with no surface hint in the reason —
     # same shape as CONFIDENCE_GATE.
     "CRISIS_GATE",
+    # 2026-11-02 — the post-selection specialist-veto gate blocks any
+    # NEW-ENTRY action on a symbol a veto-authorized specialist vetoed;
+    # no surface hint in the reason text — same shape as CRISIS_GATE.
+    "SPECIALIST_VETO",
 })
 
 

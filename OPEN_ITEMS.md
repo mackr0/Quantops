@@ -931,14 +931,15 @@ finding and its reason recorded in docs/26 + docs/25 as it ships.
       path; `FLEET_MONTHLY_AI_BUDGET_USD`. CHANGELOG 2026-11-02.
 - [x] **Experiment 3 manifest** (D9) — four-arm cost ladder in
       `create_experiment_profiles.py`.
-- [ ] ⏳ **Entry-quality policy set** (D13): losing strategies off,
+- [x] **Entry-quality policy set** (D13): losing strategies off,
       confidence out of sizing/gating, binding specialist vetoes,
-      40-bar-return regime rule. (The "require a meta score" lever was
+      40-bar-return regime rule. CHANGELOG 2026-11-02. (The "require a meta score" lever was
       a time artifact — every unscored prediction is from August,
       before any book had a model; dropped.)
-- [ ] ⏳ **Prompt caching** on the apex call (85% of tokens): stable
-      prefix first, `cache_control` on Anthropic, measured through the
-      ledger's `cached_tokens`.
+- [x] **Prompt caching** on the apex call (85% of tokens): stable
+      block as a cached system prompt on every vendor; measured through
+      the ledger's `cached_tokens` — read it after the first week.
+      CHANGELOG 2026-11-02.
 - [ ] ⏳ **Reset to Experiment 3** — `full_fresh_start_2026_11_03.py`
       (clone of 08-24 with the D9 manifest; keys: RESET_NEW_ANTHROPIC /
       _DEEPSEEK / _OPENAI); tag `exp2-learning-phase1-final` before,

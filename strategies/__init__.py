@@ -212,10 +212,15 @@ def get_active_strategies(market_type: str,
             )
         auto_status = _auto_strategy_statuses(db_path)
 
+    # 2026-11-02 — operator entry-quality policy (strategy_policy):
+    # strategies measured to lose on their own direction are excluded
+    # here, where the active set is decided, before any other filter.
+    from strategy_policy import is_disabled as _policy_disabled
+
     active = []
     for mod in discover_strategies(market_type):
         name = getattr(mod, "NAME", "")
-        if not name or name in deprecated:
+        if not name or name in deprecated or _policy_disabled(name):
             continue
         if getattr(mod, "AUTO_GENERATED", False):
             if auto_status.get(name) != "active":
@@ -253,10 +258,13 @@ def get_shadow_strategies(market_type: str,
     auto_status = _auto_strategy_statuses(db_path)
     if not auto_status:
         return []
+    from strategy_policy import is_disabled as _policy_disabled
     shadows = []
     for mod in discover_strategies(market_type):
         name = getattr(mod, "NAME", "")
         if not name or not getattr(mod, "AUTO_GENERATED", False):
+            continue
+        if _policy_disabled(name):
             continue
         if auto_status.get(name) == "shadow":
             shadows.append(mod)

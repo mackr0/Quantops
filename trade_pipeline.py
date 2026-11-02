@@ -745,9 +745,66 @@ def _meta_suppression_plan(scored, threshold):
     return below, spared_ids
 
 
+def _apply_specialist_veto_gate(ai_trades, vetoed, ctx, cycle_id, details):
+    """STEP 4.8 — drop every NEW-ENTRY action (NEW_ENTRY_ACTIONS) whose
+    symbol a veto-authorized specialist vetoed this cycle. Exits and
+    covers pass: a veto blocks risk-increasing trades only. Records a
+    SPECIALIST_VETO drop (with the prediction link when present) and a
+    SPECIALIST_VETOED detail row; returns the filtered list."""
+    kept, blocked = [], []
+    for t in ai_trades:
+        action = (t.get("action") or "").upper()
+        sym = t.get("symbol", "")
+        if action in NEW_ENTRY_ACTIONS and sym in vetoed:
+            blocked.append((sym, action, vetoed[sym]))
+            continue
+        kept.append(t)
+    for sym, action, reason in blocked:
+        logging.info("  Specialist veto gate BLOCKED %s %s: %s", action, sym, reason[:160])
+        details.append({
+            "symbol": sym, "action": "SPECIALIST_VETOED",
+            "reason": (f"AI wanted {action}, but a veto-authorized specialist "
+                       f"vetoed {sym} this cycle: {reason[:200]}"),
+        })
+        if getattr(ctx, "db_path", None):
+            try:
+                from journal import record_trade_drop
+                record_trade_drop(
+                    db_path=ctx.db_path, symbol=sym, side=action.lower() or None,
+                    drop_code="SPECIALIST_VETO",
+                    drop_reason=(f"Specialist veto is binding for new entries "
+                                 f"(2026-11-02): {reason[:300]}"),
+                    cycle_id=cycle_id,
+                    ai_confidence=next((x.get("confidence") for x in ai_trades
+                                        if x.get("symbol") == sym), None),
+                    ai_reasoning=next((x.get("reasoning") for x in ai_trades
+                                       if x.get("symbol") == sym), None),
+                    pred_id=next((x.get("_pred_id") for x in ai_trades
+                                  if x.get("symbol") == sym), None),
+                )
+            except Exception as _sv_exc:
+                logging.warning("specialist-veto drop record failed for %s: %s", sym, _sv_exc)
+    if blocked:
+        print(f"  Specialist veto gate: blocked {len(blocked)} entries "
+              f"({', '.join(b[0] for b in blocked)})")
+    return kept
+
+
+#: 2026-11-02 (docs/25 D13) — the gate is INERT. On the 10,532 directional
+#: predictions resolved since 2026-08-24 the model's confidence is
+#: inverted (80–89 the worst bucket at 40% win / −0.99% per call, the 60s
+#: the best at +0.61%), so a floor on it removes the better ideas. The
+#: machinery stays (drop records, backstop alarm, tuner overrides) and the
+#: confidence is still recorded; flipping this to True re-arms the gate as
+#: a deliberate, documented decision.
+CONFIDENCE_GATE_ACTIVE = False
+
+
 def _apply_confidence_gate(ai_trades, ctx, cycle_id, details):
     """STEP 4.85 — drop NEW ENTRIES whose final (post-meta-blend)
     confidence sits below the profile's resolved ai_confidence_threshold.
+    Inert while CONFIDENCE_GATE_ACTIVE is False (2026-11-02): returns the
+    trades unchanged.
 
     2026-07-15: the first time this parameter has ever gated the live
     path (its previous home, ai_review, had zero callers). The
@@ -758,6 +815,8 @@ def _apply_confidence_gate(ai_trades, ctx, cycle_id, details):
     keeps learning from gated ideas. Exits are NEVER gated — positions
     must always be able to close. Returns the filtered trade list;
     mutates `details` in place (same contract as the sibling gates)."""
+    if not CONFIDENCE_GATE_ACTIVE:
+        return list(ai_trades)
     kept = []
     blocked = []
     for t in ai_trades:
@@ -2871,6 +2930,15 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     target_short_pct_for_rank = float(
         getattr(ctx, "target_short_pct", 0.0) or 0.0
     ) if ctx else 0.0
+    # 2026-11-02 — operator entry-quality policy: strategies measured
+    # to lose on their own direction never run (strategies.get_active_
+    # strategies), and a candidate whose primary vote still names one
+    # (stale cache, auto-strategy wrapper) is dropped here too.
+    try:
+        from strategy_policy import OPERATOR_DISABLED_STRATEGIES as _op_disabled
+        deprecated_types = set(deprecated_types or set()) | set(_op_disabled)
+    except Exception as _sp_exc:
+        logging.warning("strategy_policy unavailable: %s", _sp_exc)
     shortlist = _rank_candidates(strategy_results, held_symbols, enable_shorts,
                                   deprecated_strategies=deprecated_types,
                                   target_short_pct=target_short_pct_for_rank,
@@ -2966,8 +3034,10 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     # ── and makes the calibration data accumulate ~2x faster (because
     # ── more of each specialist's verdicts get a labeled outcome).
     # ──
-    # ── Falls open when the meta-model isn't trained yet — `predict_probability`
-    # ── returns None on cold-start, so the gate passes all candidates.
+    # ── Falls open when the profile has no trained meta-model yet (the
+    # ── August 2026 cold start left 3,319 predictions unscored; since
+    # ── September every book has a model and every prediction a score —
+    # ── verified 2026-11-02, docs/26 Experiment 2 §4).
     # ── Per-profile threshold via `meta_pregate_threshold` (default 0.5,
     # ── 0.0 = disabled).
     _n_pre_pregate = len(candidates_data)
@@ -2983,6 +3053,10 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     # that the final trade-selection AI sees alongside raw data. Risk
     # VETOs drop a candidate from the shortlist entirely.
     ensemble_result = None
+    # 2026-11-02 — every symbol a veto-authorized specialist vetoed this
+    # cycle, INCLUDING the held-exit exemptions below: the post-selection
+    # gate (STEP 4.8) lets those become exits only, never new entries.
+    _ensemble_vetoed: Dict[str, str] = {}
     if getattr(ctx, "enable_specialist_ensemble", True):
         try:
             from ensemble import format_for_final_prompt
@@ -2994,6 +3068,10 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 candidates_data, ctx,
             )
             per_symbol = ensemble_result.get("per_symbol", {})
+            _ensemble_vetoed = {
+                s: (v.get("veto_reason") or f"{v.get('vetoed_by') or 'specialist'} veto")
+                for s, v in per_symbol.items() if v and v.get("vetoed")
+            }
             # Inject the ensemble summary into each candidate so the final
             # AI prompt sees it, and filter out risk-vetoed symbols.
             kept: List[Dict[str, Any]] = []
@@ -3662,6 +3740,19 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 ai_trades = filtered_trades
         except Exception as exc:
             logging.warning(f"Meta-model integration failed: {exc}")
+
+    # ── STEP 4.8: Specialist veto is BINDING for new entries ─────────
+    # 2026-11-02 (docs/25 D13). Experiment 2 journaled 955 SHORT entries
+    # whose ensemble verdict was VETO from a veto-authorized specialist
+    # (adversarial_reviewer 633, risk_assessor 556; −0.28% / −0.27% per
+    # call against +0.25% overall). The pre-selection drop exempts a
+    # bearish candidate on a HELD symbol as an exit — but held_symbols is
+    # the shared Alpaca account's positions (three books per account), so
+    # a sibling's long made the exemption fire and the AI then opened a
+    # fresh SHORT. A vetoed symbol may now become an exit only.
+    if ai_trades and _ensemble_vetoed:
+        ai_trades = _apply_specialist_veto_gate(ai_trades, _ensemble_vetoed, ctx,
+                                                cycle_id, details)
 
     # ── STEP 4.85: Confidence gate ────────────────────────────────────
     # 2026-07-15 — the profile's ai_confidence_threshold finally gates
@@ -4798,13 +4889,19 @@ def _classify_market_regime() -> str:
         from market_data import get_bars as _get_bars_for_regime
         spy = _get_bars_for_regime("SPY", limit=210)
         if spy is not None and len(spy) >= 200:
+            # 2026-11-02 — one trend rule for the whole system
+            # (market_regime.classify_trend): "strong bull" needs a real
+            # 40-day rise above a rising SMA50 AND price above the SMA200.
+            # The old SMA20>SMA50 & px>SMA200 test called a flat quarter
+            # strong-bull and suppressed routine shorts — the side that
+            # was +1.17% per call in Experiment 2.
+            from market_regime import classify_trend as _classify_trend
             close_now = float(spy["close"].iloc[-1])
-            sma_20 = float(spy["close"].iloc[-20:].mean())
-            sma_50 = float(spy["close"].iloc[-50:].mean())
             sma_200 = float(spy["close"].iloc[-200:].mean())
-            if close_now > sma_200 and sma_20 > sma_50:
+            trend = _classify_trend(spy["close"].tolist())
+            if trend["regime"] == "bull" and close_now > sma_200:
                 regime = "strong_bull"
-            elif close_now < sma_200 and sma_20 < sma_50:
+            elif trend["regime"] == "bear":
                 regime = "bear"
     except (KeyError, ValueError, AttributeError, TypeError,
             IndexError, ImportError, OSError) as _reg_exc:

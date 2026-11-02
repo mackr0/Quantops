@@ -610,6 +610,7 @@ def _run_one_shadow(
     model_label: Optional[str] = None,
     decision_id: Optional[str] = None,
     schema: Optional[Dict[str, Any]] = None,
+    system: Optional[str] = None,
 ) -> None:
     """Execute one shadow call and persist its row. Catches every
     exception — never propagates.
@@ -680,6 +681,7 @@ def _run_one_shadow(
         _res = _call_provider(
             provider, prompt, model, api_key, max_tokens,
             **({"schema": schema} if schema is not None else {}),
+            **({"system": system} if system else {}),
         )
         response_text, in_tok, out_tok = _res[0], _res[1], _res[2]
         cached_tok = _res[3] if len(_res) > 3 else 0
@@ -762,6 +764,7 @@ def dispatch_shadow_calls(
     primary_response: str,
     decision_id: Optional[str] = None,
     schema: Optional[Dict[str, Any]] = None,
+    system: Optional[str] = None,
 ) -> Optional[str]:
     """Fire shadow model calls for this primary invocation. Returns the
     `call_id` minted for the primary call so the cost ledger row can be
@@ -868,6 +871,7 @@ def dispatch_shadow_calls(
                 primary_parsed=primary_parsed,
                 decision_id=decision_id,
                 schema=schema,
+                system=system,
             )
         except RuntimeError as exc:
             # RuntimeError = ThreadPoolExecutor rejected the submission

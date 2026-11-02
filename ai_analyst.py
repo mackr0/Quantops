@@ -590,10 +590,15 @@ def ai_select_trades(candidates_data, portfolio_state, market_context, ctx=None)
         # errors across multiple profiles. 4096 gives ample room
         # for the AI to propose every conviction trade without
         # truncation.
-        raw = call_ai(prompt, provider=provider, model=model, api_key=api_key,
+        # Prompt caching (2026-11-02): the stable instruction block goes
+        # as the provider's system prompt, the live data as the user
+        # message. `prompt` itself (the whole text) is what gets stored.
+        _system_block, _user_block = split_prompt_for_caching(prompt)
+        raw = call_ai(_user_block, provider=provider, model=model, api_key=api_key,
                        max_tokens=4096,
                        db_path=getattr(ctx, "db_path", None),
-                       purpose="batch_select")
+                       purpose="batch_select",
+                       **({"system": _system_block} if _system_block else {}))
         result = _parse_ai_response_tolerant(raw)
     except Exception as exc:
         from cost_guard import CostCapExceeded
@@ -762,6 +767,26 @@ def _iv_rank_pct(sym):
         logger.debug("IV-rank lookup failed for %s: %s: %s",
                      sym, type(_iv_exc).__name__, _iv_exc)
     return None
+
+
+#: 2026-11-02 (docs/25 D14) — the apex prompt is built as a STABLE
+#: instruction block (role, rules, output contract: identical every
+#: cycle for a profile) followed by this marker and the LIVE block
+#: (portfolio, market, candidates, this cycle's action notes). The
+#: builder still returns one string — every consumer that stores or
+#: trains on `prompt_text` sees the whole prompt — and the caller splits
+#: at the marker to send the stable block as a cacheable system prompt.
+PROMPT_LIVE_DATA_MARKER = "\n\n=== LIVE DATA (this cycle) ===\n\n"
+
+
+def split_prompt_for_caching(prompt):
+    """(system, user) for `call_ai`: the text before the marker and the
+    text after it. A prompt without the marker is sent whole as the
+    user message (system None)."""
+    if not prompt or PROMPT_LIVE_DATA_MARKER not in prompt:
+        return None, prompt
+    stable, live = prompt.split(PROMPT_LIVE_DATA_MARKER, 1)
+    return (stable.strip() or None), live
 
 
 def _is_discretionary_candidate(c) -> bool:
@@ -1656,8 +1681,11 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context,
         reason = c.get("reason", "")[:120]
         votes = c.get("votes", {})
 
-        votes_parts = [f"{k}={v}" for k, v in votes.items() if v != "HOLD"]
-        votes_str = ", ".join(votes_parts) if votes_parts else "no strong votes"
+        # 2026-11-02 (strategy_policy): disabled strategies never vote;
+        # the emphasized screener (volume_spike, this book's one clear
+        # positive-edge signal) carries its note in the line.
+        from strategy_policy import render_votes as _render_votes
+        votes_str = _render_votes(votes)
 
         adx = c.get("adx", 0)
         stoch = c.get("stoch_rsi", 50)
@@ -2594,7 +2622,9 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context,
             '"confidence": 65, "reasoning": "Bullish + IV rich"}'
         )
 
-    prompt = (
+    # Stable block — identical every cycle for a profile (role, rules,
+    # output contract). Sent as a cacheable system prompt.
+    stable = (
         f"You are a portfolio manager for an automated {market_type} trading system. "
         f"You see a batch of candidates our technical screener flagged. "
         f"Your job is to PROPOSE every trade where conviction is genuine. "
@@ -2618,12 +2648,9 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context,
         f"exists to trade and make money across every asset class "
         f"available; under-deployment when good setups exist is a "
         f"failure mode just like over-trading bad setups.\n\n"
-        f"{portfolio_section}\n\n"
-        f"{market_section}\n\n"
-        f"{candidates_section}\n\n"
         f"RULES:\n"
-        f"- Propose every candidate where conviction is high. Actions "
-        f"allowed: {actions}\n"
+        f"- Propose every candidate where conviction is high. The actions "
+        f"allowed THIS CYCLE are listed in the live data below.\n"
         f"- Max position size: {max_pos_pct * 100:.0f}% of equity for longs"
         f"{', halved for shorts (asymmetric risk)' if enable_shorts else ''}\n"
         f"- For each candidate, judge stock-action and options-action "
@@ -2631,14 +2658,11 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context,
         f"that setup, not whichever has more pre-built analysis\n"
         f"- Consider: portfolio concentration, market regime, drawdown "
         f"state, your track record on each symbol\n"
-        f"- If drawdown is elevated ({dd_action}), be more selective on "
-        f"sizing but do not artificially cap the number of trades\n"
+        f"- If drawdown is elevated (see the drawdown state in the live "
+        f"data), be more selective on sizing but do not artificially "
+        f"cap the number of trades\n"
         f"- If at max positions, only recommend exits"
-        f"{long_short_note}"
-        f"{stock_recs_note}"
-        f"{options_note}"
-        f"{pair_note}"
-        f"{multileg_note}\n"
+        f"{long_short_note}\n"
         # Ranked-alternate substitution (2026-06-17). 13 virtual-account
         # profiles share 3 Alpaca accounts, so a primary pick can be
         # blocked by a SIBLING profile already holding a conflicting
@@ -2656,18 +2680,18 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context,
         f'{{"trades": [{{"symbol": "TICKER", "action": "BUY", '
         f'"size_pct": 7.5, "confidence": 75, '
         f'"stop_loss_pct": 3.0, "take_profit_pct": 10.0, '
-        f'"reasoning": "1-2 sentences"}}'
-        f'{options_example}'
-        f'{pair_example}'
-        f'{multileg_example}], '
+        f'"reasoning": "1-2 sentences"}}], '
         f'"alternates": [{{"symbol": "TICKER", "action": "BUY", '
         f'"size_pct": 5.0, "confidence": 65, '
         f'"stop_loss_pct": 3.0, "take_profit_pct": 10.0, '
         f'"reasoning": "fallback if a primary is blocked"}}], '
         f'"portfolio_reasoning": "Why this combination or why pass", '
-        f'"pass_this_cycle": false}}'
+        f'"pass_this_cycle": false}}\n'
+        f"When the live data lists additional action schemas for this "
+        f"cycle (OPTIONS, PAIR_TRADE, MULTILEG_OPEN), use them exactly as "
+        f"given, as further entries in the same \"trades\" array."
         f'\n\nPORTFOLIO_REASONING CONTRACT: describe ONLY decisions '
-        f'about the candidates listed above. Never claim to be '
+        f'about the candidates listed in the live data. Never claim to be '
         f'"initiating", "rotating into", or "rebalancing toward" '
         f'positions or sectors that are not in the candidate list — '
         f'you cannot trade what was not presented. If a sector you '
@@ -2676,6 +2700,22 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context,
         f'candidates were presented this cycle") instead of narrating '
         f'a rotation. If you pass, say why you pass.'
     )
+    examples = f"{options_example}{pair_example}{multileg_example}"
+    live = (
+        f"{portfolio_section}\n\n"
+        f"{market_section}\n\n"
+        f"{candidates_section}\n\n"
+        f"THIS CYCLE:\n"
+        f"- Actions allowed: {actions}\n"
+        f"- Drawdown state: {dd_action}"
+        f"{stock_recs_note}"
+        f"{options_note}"
+        f"{pair_note}"
+        f"{multileg_note}"
+        + (f"\n- Additional JSON entries allowed in \"trades\" this cycle "
+           f"(same array, exact schema):{examples}" if examples.strip() else "")
+    )
+    prompt = stable + PROMPT_LIVE_DATA_MARKER + live
 
     return prompt
 
