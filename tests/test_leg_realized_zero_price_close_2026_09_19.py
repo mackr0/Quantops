@@ -183,9 +183,17 @@ class TestCashOnlyRowsReachRealized:
     def test_dividend_credit_identity_holds(self, tmp_path):
         db = _mk_db(tmp_path / "div.db", [
             ("2026-09-01T14:00:00", "KO", None, "buy", 100, 60.0, "open")])
+        # 2026-10-26: the writer books THIS book's share by its own
+        # position at the entitlement instant — 100 KO × $0.485.
         a = _act(id="div-1", activity_type="DIV", symbol="KO",
-                 net_amount=48.5)
-        assert _write_dividend(_Ctx(db), a) is True
+                 net_amount=48.5, per_share_amount=0.485,
+                 description="Cash DIV @ 0.485, Pos QTY: 100, "
+                             "Rec Date: 2026-09-10")
+        ctx = _Ctx(db)
+        ctx.profile_id, ctx.alpaca_account_id = 1, 1
+        with patch("activities_capture._sibling_db_paths",
+                   lambda c: [(1, db)]):
+            assert _write_dividend(ctx, a) is True
         out = _audit(db)
         assert out["realized_total"] == 48.5, out
         assert out["drift"] == 0.0, out

@@ -453,6 +453,11 @@ _AUDITED_CANCELED_WRITERS = {
     ("multi_scheduler.py", "_task_update_fills"),
     ("phantom_sweep.py", "sweep_profile"),
     ("options_multileg.py", "_mark_legs_canceled"),
+    # 2026-10-26 — voids rows keyed by a broker ACTIVITY id (dividend /
+    # option-event / merger rows), which have no broker order and
+    # therefore no filled_qty to verify; the repair re-books the event
+    # through the production writer. Not a cancel of an order.
+    ("journal.py", "void_activity_rows"),
 }
 
 # Dated one-off incident scripts (already run, kept for the record) —

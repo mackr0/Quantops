@@ -892,3 +892,40 @@ the closed market: swap 1,023MB → 127MB.
       `/opt/quantopsai-altdata.OLD-2026-05-04/` copy and
       `/root/QuantOpsAI/logs/`.
 
+
+## INCIDENT FOLLOW-UP 2026-10-26 — ✅ RESOLVED (shipped 2026-11-01): shared-account dividends booked into every sibling at the account's net amount; WBD cash merger unbooked (kill switch 10-13 → 11-01)
+
+Full account in CHANGELOG 2026-10-26. The two findings the gate showed
+for weeks — `account 62 WBD: broker=0 virtual=3` and `p235/p238
+decomposition gap=+358` — were (1) a cash merger the journal had no
+handler for and (2) `_write_dividend` writing each account-level DIV
+into all four books on the account, always as a credit. Both fixed in
+`activities_capture.py`; the 44 mis-booked rows are re-booked by
+`scripts/repair_shared_account_dividends_2026_10_26.py` (rehearsed on
+copies: all 12 books at 0.00).
+
+- [x] Per-book dividend attribution at the broker's entitlement
+      instant (prior close, by fill time), Σ-checked against the
+      broker, fail-closed with an `audit_alerts` row. 11/11 real
+      events reproduce.
+- [x] `MA` cash-merger handler + `journal.close_stock_entry_rows`.
+- [x] Unhandled reorg types (REORG/CSD/CSW/JNLS/SC/SPIN) explained on
+      /issues when they touch a held symbol; never booked blind.
+- [x] Fill poller no longer polls activity-keyed rows.
+- [ ] ⏳ OPEN (free) — **broker FEEs are booked nowhere.** REG/TAF/ORF/
+      OCC fees (cents to ~$1.50/day per account) debit the broker's
+      cash and no journal row carries them. They do not touch the
+      per-profile identity (virtual equity is journal-derived) but
+      the account-level cash parity drifts by their running sum.
+      Attribution is by fill: each fee row's description names the
+      proceeds / contract count it was charged on, so a per-book
+      split by that day's own sells is derivable. Build: a `FEE`
+      handler in `activities_capture` writing `cash_debit` rows
+      split pro-rata by each book's same-day sell proceeds (REG/CAT)
+      or contracts closed (OPT TAF/ORF/OCC), Σ-checked like
+      dividends; test on the 10-19..10-23 fee rows.
+- [ ] ⏳ OPEN (free) — **the gate's $250 decomposition tolerance hid
+      +136.92 on p237/p240** for ten days. The tolerance exists for
+      "fee/slippage noise" that the fill-true cash math no longer
+      produces (every book rehearsed to 0.00/0.01). Lower it to $5
+      once FEEs are booked and a week of clean passes is on record.
