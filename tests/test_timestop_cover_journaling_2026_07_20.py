@@ -183,7 +183,8 @@ class TestActivitiesFetchPerType:
 
     def test_activities_capture_fetches_per_type(self, tmp_db):
         from activities_capture import (capture_activities_for_profile,
-                                        _HANDLED_TYPES)
+                                        _HANDLED_TYPES,
+                                        _REORG_EXPLAIN_TYPES)
         ctx = _short_ctx(tmp_db)
         api = self._RejectingApi()
         ctx.get_alpaca_api = lambda: api
@@ -191,7 +192,11 @@ class TestActivitiesFetchPerType:
         # 2026-07-25: the MISC stream joined the contract (exercises
         # can appear ONLY as MISC rows, and assignment settlement cash
         # arrives via MISC 'Options Trade') — still one call per type.
-        assert set(api.calls) == set(_HANDLED_TYPES) | {"MISC"}, (
+        # 2026-10-26: the unbookable reorg types are fetched too (once
+        # per account per hour) so a held symbol's corporate action is
+        # explained on /issues — still one call per type.
+        assert set(api.calls) == (set(_HANDLED_TYPES) | {"MISC"}
+                                  | set(_REORG_EXPLAIN_TYPES)), (
             f"expected one call per type, got {api.calls}")
         assert not any("," in c for c in api.calls)
 

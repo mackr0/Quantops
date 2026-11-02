@@ -1599,6 +1599,15 @@ def _task_update_fills(ctx):
             "          AND timestamp >= datetime('now', '-2 days'))"
             ") "
             "  AND order_id IS NOT NULL "
+            # 2026-10-26 — rows keyed by a broker ACTIVITY id (the
+            # activities pass writes dividends / option events /
+            # merger exits with order_id = Alpaca activity id, which
+            # contains '::'; broker order ids are plain UUIDs) are not
+            # orders: polling them 404s every cycle, and they survived
+            # the >24h order-not-found VOID below only because Alpaca
+            # answers 'invalid order_id' rather than 'not found' for
+            # that id shape. Exclude them by the id shape itself.
+            "  AND order_id NOT LIKE '%::%' "
             "  AND COALESCE(status, 'open') NOT IN "
             "      ('expired', 'canceled', 'rejected', 'done_for_day')"
         ).fetchall()

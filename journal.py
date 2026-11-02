@@ -1368,6 +1368,64 @@ def close_leg_rows_for_occ(db_path, occ_symbol, reason):
             db_path, occ_symbol, exc)
         return None
 
+def close_stock_entry_rows(db_path, symbol, entry_side, reason):
+    """Stock twin of close_leg_rows_for_occ (2026-10-26, the WBD cash
+    merger): flip every LIVE entry row (`entry_side` = 'buy' for a
+    long, 'short' for a short) of a stock symbol to 'closed' with a
+    signed reason, after a broker-initiated removal of the whole
+    position (cash merger) has been booked as an exit row. Without
+    the flip the entry stays status='open', the reconciler keeps
+    reading it as a broker-flat orphan, and the profile halts forever
+    — the 10-12 → 10-26 state. Returns rows flipped; None on error
+    (the caller logs; the idempotent activities pass retries)."""
+    if not db_path or not symbol or entry_side not in ("buy", "short"):
+        return 0
+    try:
+        with closing(sqlite3.connect(db_path)) as conn:
+            cur = conn.execute(
+                "UPDATE trades SET status='closed', "
+                "reason = COALESCE(reason || ' | ', '') || ? "
+                "WHERE symbol = ? AND occ_symbol IS NULL AND side = ? "
+                "AND COALESCE(status, 'open') IN ('open', 'pending_fill')",
+                (reason, (symbol or "").upper(), entry_side),
+            )
+            conn.commit()
+            return cur.rowcount
+    except sqlite3.Error as exc:
+        logging.warning(
+            "close_stock_entry_rows UNVERIFIABLE for %s/%s: %s",
+            db_path, symbol, exc)
+        return None
+
+
+def void_activity_rows(db_path, activity_id, reason):
+    """Void every journal row booked from one broker activity id
+    (2026-10-26 repair surface for the shared-account dividend
+    mis-booking): status='canceled' — which every money lens already
+    excludes (cash, positions, realized, decomposition) — pnl cleared,
+    and the order_id re-keyed to '<id>::voided' so the activities
+    pass's idempotency check no longer sees it and re-books the event
+    through the (corrected) production writer. The row itself is kept
+    for forensics. Returns rows voided; None on error."""
+    if not db_path or not activity_id:
+        return 0
+    try:
+        with closing(sqlite3.connect(db_path)) as conn:
+            cur = conn.execute(
+                "UPDATE trades SET status='canceled', pnl=NULL, "
+                "order_id = order_id || '::voided', "
+                "reason = COALESCE(reason || ' | ', '') || ? "
+                "WHERE order_id = ?",
+                (reason, activity_id),
+            )
+            conn.commit()
+            return cur.rowcount
+    except sqlite3.Error as exc:
+        logging.warning(
+            "void_activity_rows UNVERIFIABLE for %s/%s: %s",
+            db_path, activity_id, exc)
+        return None
+
 
 def log_trade(symbol, side, qty, price=None, order_id=None, signal_type=None,
               strategy=None, reason=None, ai_reasoning=None, ai_confidence=None,

@@ -26,9 +26,11 @@ run, so the existing five integrity audits won't false-flag them.
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
+import time
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -39,11 +41,281 @@ logger = logging.getLogger(__name__)
 # rejected it on EVERY capture run since 2026-07-20: "invalid activity
 # type: OPXRC"), so exercise events were silently uncapturable. The
 # valid name is OPEXC (probed live against the API).
-_HANDLED_TYPES = ("DIV", "OPEXP", "OPASN", "OPEXC")
+# 2026-10-26 — "MA" (merger/acquisition): WBD was cashed out at
+# $31.0167/share on 10-12 (3 shares → $93.05); with no handler the
+# entry row rotted 'open', the integrity gate read broker=0 vs
+# virtual=3, the reconciler halted the profile on an orphan_close, and
+# the fleet sat kill-switched for two weeks. Probed live: accepted.
+_HANDLED_TYPES = ("DIV", "OPEXP", "OPASN", "OPEXC", "MA")
+
+# Corporate-action types the journal CANNOT book (stock-for-stock
+# reorgs, splits, spin-offs, share journals, symbol changes). All
+# probed live 2026-10-26 as accepted by the API (SSO/SSP are rejected
+# and therefore absent). When one touches a symbol this profile
+# holds, the pass writes an explanatory audit alert so the resulting
+# drift halt names its cause instead of reading as a mystery orphan.
+# Fetched once per account per hour (memo below) — the typed activity
+# endpoints are the ones already tripping 429s.
+_REORG_EXPLAIN_TYPES = ("REORG", "CSD", "CSW", "JNLS", "SC", "SPIN")
+_REORG_FETCH_TTL_S = 3600.0
+_reorg_fetch_memo: Dict[Tuple[Any, str], Tuple[float, list]] = {}
+
+# ── Shared-account attribution (2026-10-26) ──────────────────────────
+# The broker reports an account-level event (one DIV row for the
+# account's NET position; one MA row for the account's whole holding).
+# Four virtual books share each account, so the event must be split
+# by each book's OWN position at the broker's entitlement instant —
+# 16:00 ET on the last trading day BEFORE the record date (T+1: ex-
+# date == record date, holders at the prior close are entitled) — by
+# FILL time (a resting protective's journal timestamp is its submit
+# time; p237's VTR trailing stop sat 9 days before filling). Validated
+# against all 11 real dividend events on the three Exp-2 accounts:
+# Σ(sibling own qty) == broker 'Pos QTY' for 11/11. Fail-CLOSED: if
+# the siblings' books do not sum to the broker's quantity the event is
+# NOT booked and an audit alert names it.
+_NEVER_FILLED_STATUSES = (
+    "'pending_protective', 'canceled', 'expired', 'rejected', "
+    "'done_for_day', 'auto_reconciled_phantom_close'"
+)
+_UUID_RX = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+_REC_DATE_RX = re.compile(r"Rec Date:\s*(\d{4}-\d{2}-\d{2})")
+_CASH_MERGER_RX = re.compile(r"Cash Merger \$([0-9]+(?:\.[0-9]+)?) per share")
+_ATTRIBUTION_TTL_S = 3600.0
+_attribution_memo: Dict[str, Tuple[float, Dict[int, float]]] = {}
+
+
+def clear_memos() -> None:
+    """Drop the per-process attribution / reorg-fetch memos (tests)."""
+    _attribution_memo.clear()
+    _reorg_fetch_memo.clear()
 
 
 def _utcnow_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
+
+
+def _trades_cols(conn) -> set:
+    """Column probe. A failed read propagates (sqlite3.Error) so every
+    caller takes its UNVERIFIABLE path — never a guessed schema."""
+    return {r[1] for r in conn.execute("PRAGMA table_info(trades)")}
+
+
+def _entitlement_snapshot_utc(event_date: str) -> Optional[str]:
+    """16:00 America/New_York on the last weekday BEFORE `event_date`
+    (YYYY-MM-DD), returned as a naive-UTC ISO string comparable with
+    journal timestamps. A weekday holiday is harmless: no fills happen
+    on it, so the position at its 16:00 equals the prior close."""
+    from zoneinfo import ZoneInfo
+    try:
+        d = datetime.strptime(str(event_date)[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+    d -= timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    close_et = datetime(d.year, d.month, d.day, 16, 0,
+                        tzinfo=ZoneInfo("America/New_York"))
+    return (close_et.astimezone(timezone.utc)
+            .replace(tzinfo=None).isoformat())
+
+
+def _utc_iso(value) -> Optional[str]:
+    """Normalize a broker/journal timestamp (datetime, pandas
+    Timestamp or ISO text, aware or naive-UTC) to naive-UTC ISO with a
+    'T' separator so string comparison is chronological."""
+    if value is None:
+        return None
+    if not isinstance(value, datetime):
+        try:
+            value = datetime.fromisoformat(
+                str(value).replace("Z", "+00:00").replace(" ", "T"))
+        except ValueError:
+            return None
+    if value.tzinfo is not None:
+        value = value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value.isoformat()
+
+
+def _own_stock_qty_at(api, db_path: str, symbol: str,
+                      snapshot_iso: str) -> Optional[float]:
+    """This profile's signed net STOCK quantity in `symbol` at the
+    instant `snapshot_iso` (naive-UTC ISO), from its own filled rows
+    — the same row set that moves cash (get_virtual_cash's statuses),
+    each dated by its broker FILL time when it is a broker order.
+    Positive = long, negative = short. None = unverifiable (a broker
+    lookup failed) — the caller defers the event; never a guess."""
+    from order_status_cache import get_order_cached
+    try:
+        with sqlite3.connect(db_path) as conn:
+            cols = _trades_cols(conn)
+            occ = " AND occ_symbol IS NULL" if "occ_symbol" in cols else ""
+            dq = " AND data_quality IS NULL" if "data_quality" in cols else ""
+            ace = ((" AND (COALESCE(status, 'open') != 'auto_closed_external'"
+                    " OR COALESCE(fill_price, 0) > 0)")
+                   if "fill_price" in cols else "")
+            strat = "strategy" if "strategy" in cols else "NULL"
+            rows = conn.execute(
+                f"SELECT order_id, side, qty, timestamp, {strat} "
+                "FROM trades WHERE UPPER(symbol) = ? "
+                "AND side IN ('buy', 'sell', 'short', 'cover') "
+                "AND substr(timestamp, 1, 10) <= ? "
+                "AND COALESCE(status, 'open') NOT IN "
+                f"({_NEVER_FILLED_STATUSES}){ace}{occ}{dq}",
+                ((symbol or "").upper(), snapshot_iso[:10]),
+            ).fetchall()
+    except sqlite3.Error as exc:
+        logger.warning("_own_stock_qty_at UNVERIFIABLE for %s/%s: %s",
+                       db_path, symbol, exc)
+        return None
+    net = 0.0
+    for order_id, side, qty, ts, strategy in rows:
+        effective = _utc_iso(ts)
+        oid = str(order_id or "")
+        if strategy != "alpaca_activity" and _UUID_RX.match(oid):
+            try:
+                order = get_order_cached(api, oid)
+            except Exception as exc:
+                logger.warning(
+                    "_own_stock_qty_at UNVERIFIABLE for %s/%s: order %s "
+                    "lookup failed (%s: %s) — event deferred",
+                    db_path, symbol, oid[:8], type(exc).__name__, exc)
+                return None
+            filled_at = _utc_iso(getattr(order, "filled_at", None))
+            if filled_at is None:
+                continue  # never filled at the broker → not a position
+            effective = filled_at
+        if effective is None or effective > snapshot_iso:
+            continue
+        q = float(qty or 0)
+        net += q if side in ("buy", "cover") else -q
+    return net
+
+
+def _own_stock_qty_live(db_path: str, symbol: str) -> Optional[float]:
+    """Signed live stock qty from the canonical position lens."""
+    from journal import get_virtual_positions
+    try:
+        total = 0.0
+        for pos in get_virtual_positions(db_path=db_path,
+                                         price_fetcher=lambda s: 0.0,
+                                         include_unpriced=True):
+            if pos.get("occ_symbol"):
+                continue
+            if (pos.get("symbol") or "").upper() == (symbol or "").upper():
+                total += float(pos.get("qty") or 0)
+        return total
+    except Exception as exc:
+        logger.warning("_own_stock_qty_live UNVERIFIABLE for %s/%s: %s",
+                       db_path, symbol, exc)
+        return None
+
+
+def _own_stock_avg_entry(db_path: str, symbol: str,
+                         entry_side: str) -> Optional[float]:
+    """Average executed entry price of this profile's live stock
+    entry rows (`entry_side` 'buy' or 'short') — the basis for the
+    realized pnl of a broker-initiated close. None = unverifiable."""
+    try:
+        with sqlite3.connect(db_path) as conn:
+            cols = _trades_cols(conn)
+            px = ("COALESCE(NULLIF(fill_price, 0), price)"
+                  if "fill_price" in cols else "price")
+            occ = " AND occ_symbol IS NULL" if "occ_symbol" in cols else ""
+            row = conn.execute(
+                f"SELECT COALESCE(SUM(qty * {px}), 0), COALESCE(SUM(qty), 0) "
+                "FROM trades WHERE UPPER(symbol) = ? AND side = ? "
+                "AND COALESCE(status, 'open') IN ('open', 'pending_fill')"
+                f"{occ}",
+                ((symbol or "").upper(), entry_side),
+            ).fetchone()
+            notional, qty = float(row[0] or 0), float(row[1] or 0)
+            return (notional / qty) if qty > 0 else None
+    except sqlite3.Error as exc:
+        logger.warning("_own_stock_avg_entry UNVERIFIABLE for %s/%s: %s",
+                       db_path, symbol, exc)
+        return None
+
+
+def _sibling_db_paths(ctx) -> Optional[List[Tuple[int, str]]]:
+    """(profile_id, db_path) for every active profile on this ctx's
+    execution account, this profile included. None when the account
+    cannot be resolved — attribution then fails closed."""
+    aid = getattr(ctx, "alpaca_account_id", None)
+    pid = getattr(ctx, "profile_id", None)
+    if not aid:
+        return None
+    try:
+        from models import get_active_profiles, build_user_context_from_profile
+        out: List[Tuple[int, str]] = []
+        for prof in get_active_profiles():
+            if prof.get("alpaca_account_id") != aid:
+                continue
+            out.append((prof["id"],
+                        build_user_context_from_profile(prof["id"]).db_path))
+        if pid is not None and all(p != pid for p, _ in out):
+            out.append((pid, ctx.db_path))
+        return out
+    except Exception as exc:
+        logger.warning("_sibling_db_paths UNVERIFIABLE for account %s: %s",
+                       aid, exc)
+        return None
+
+
+def _attribute_account_event(ctx, api, activity_id: str, symbol: str,
+                             snapshot_iso: str, account_qty: float,
+                             ) -> Optional[Dict[int, float]]:
+    """Split an account-level event across the account's books:
+    {profile_id: own signed qty at the snapshot}. Returns None (book
+    nothing) unless Σ own qty == the broker's `account_qty` within
+    half a share — the exact decomposition invariant certify_books
+    enforces. Successful splits are memoized per activity for an hour
+    (the same event is re-examined by every sibling's pass)."""
+    hit = _attribution_memo.get(activity_id)
+    if hit is not None and (time.time() - hit[0]) < _ATTRIBUTION_TTL_S:
+        return hit[1]
+    sibs = _sibling_db_paths(ctx)
+    if sibs is None:
+        return None
+    shares: Dict[int, float] = {}
+    for pid, db_path in sibs:
+        q = _own_stock_qty_at(api, db_path, symbol, snapshot_iso)
+        if q is None:
+            return None
+        shares[pid] = q
+    total = sum(shares.values())
+    if abs(total - float(account_qty)) > 0.5:
+        logger.warning(
+            "activities_capture: %s %s does NOT decompose at %sZ — "
+            "Σ own qty %+g across %d book(s) vs broker %+g; event NOT "
+            "booked (fail-closed). Books: %s",
+            activity_id, symbol, snapshot_iso[:16], total, len(shares),
+            account_qty, {f"p{p}": q for p, q in shares.items()},
+        )
+        return None
+    _attribution_memo[activity_id] = (time.time(), shares)
+    return shares
+
+
+def _alert_once(ctx, alert_type: str, severity: str, title: str,
+                detail: str, key: str) -> None:
+    """Write an audit_alerts row (the /issues surface) unless one
+    already carries `key` in its detail — one alert per event."""
+    db_path = getattr(ctx, "db_path", None)
+    if not db_path:
+        return
+    try:
+        with sqlite3.connect(db_path) as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM audit_alerts WHERE detail LIKE ? LIMIT 1",
+                (f"%{key}%",),
+            ).fetchone()
+            if exists:
+                return
+    except sqlite3.Error as exc:
+        logger.debug("audit_alerts dedup read failed (%s) — writing", exc)
+    from halt_helpers import _write_audit_alert
+    _write_audit_alert(db_path, alert_type, severity, title, detail)
 
 
 def _has_activity(db_path: str, activity_id: str) -> bool:
@@ -64,16 +336,35 @@ def _has_activity(db_path: str, activity_id: str) -> bool:
         return False
 
 
-def _write_dividend(ctx, activity: Any) -> bool:
-    """Dividend cash credit → trades row with side='dividend',
-    qty=1, price=dividend_amount. Adds 'dividend' to the credit
-    branch of get_virtual_account_info (see journal.py).
+def _write_dividend(ctx, activity: Any, api=None) -> bool:
+    """DIV → THIS PROFILE'S share of the account's dividend, as a
+    cash-only row: side='dividend' (credit) or 'cash_debit' (a SHORT
+    position pays the dividend), qty=1, price=|own amount|,
+    pnl=own amount (signed, so realized composes with cash and the
+    equity identity holds).
 
-    Field names per Alpaca's NonTradeActivity entity docs
-    (verified 2026-05-17): `id`, `activity_type='DIV'`, `symbol`,
-    `date`, `qty`, `per_share_amount`, **`net_amount`** (the
-    canonical dollar-amount field). No `amount` fallback — that was
-    speculative and isn't a documented field.
+    Rewritten 2026-10-26 — the account-level DIV was being written
+    VERBATIM into every profile sharing the account (the very defect
+    the 07-25 option-event rewrite named and fixed for OPEXP/OPASN/
+    OPEXC; this writer was left behind), and always as a CREDIT
+    (price=abs(net), side='dividend') even when the account was net
+    short and the broker DEBITED it. First dividends of Experiment 2
+    (10-14..10-22): 44 rows over 12 books, each account's net amount
+    booked 4×; on account 61 all four events belonged to p229 alone,
+    yet p232/p235/p238 each carried +$312.29 of phantom cash with
+    sign-mixed pnl — the "+358 decomposition gap" that held the kill
+    switch, and a book that read CLEAN once recompute_realized_pnl
+    flipped the pnl signs to match the wrong cash.
+
+    Attribution: own signed qty at the broker's entitlement instant
+    (`_entitlement_snapshot_utc` — the prior close, by fill time) ×
+    `per_share_amount`; the siblings' own quantities must sum to the
+    broker's position (net_amount / per_share_amount) or the event is
+    not booked (fail-closed, audit alert). A profile with no position
+    at the snapshot writes nothing. Field names per Alpaca's
+    NonTradeActivity entity (verified 2026-05-17 / 2026-10-26): `id`,
+    `symbol`, `date`, `per_share_amount`, `net_amount`, and the
+    record date only inside `description` ("... Rec Date: YYYY-MM-DD").
     """
     from journal import log_trade
     activity_id = str(getattr(activity, "id", ""))
@@ -103,26 +394,85 @@ def _write_dividend(ctx, activity: Any) -> bool:
         return False
     if amount == 0:
         return False
-    getattr(activity, "date", None) or _utcnow_iso()
+
+    def _refuse(why: str) -> bool:
+        logger.warning(
+            "activities_capture: DIV %s (%s $%+.2f) NOT booked — %s. "
+            "Fail-closed: the cash-parity audit will show the drift "
+            "until the event is booked.", activity_id, symbol, amount, why)
+        _alert_once(
+            ctx, "dividend_unattributable", "warning",
+            f"Dividend not booked: {symbol} ${amount:+.2f}",
+            f"Activity {activity_id}: {why}. The shared account's "
+            f"dividend could not be split across its books, so no "
+            f"book received it. {getattr(activity, 'description', '')}",
+            activity_id,
+        )
+        return False
+
+    try:
+        per_share = float(getattr(activity, "per_share_amount", None) or 0)
+    except (ValueError, TypeError):
+        per_share = 0.0
+    if per_share <= 0:
+        return _refuse("no per_share_amount on the activity")
+    desc = str(getattr(activity, "description", "") or "")
+    m = _REC_DATE_RX.search(desc)
+    if not m:
+        return _refuse("no 'Rec Date' in the activity description")
+    record_date = m.group(1)
+    account_qty = float(round(amount / per_share))
+    if abs(account_qty * per_share - amount) > 0.011:
+        return _refuse(
+            f"net_amount {amount:+.2f} is not a whole number of shares "
+            f"at {per_share}/sh")
+    snapshot = _entitlement_snapshot_utc(record_date)
+    if snapshot is None:
+        return _refuse(f"unparseable record date {record_date!r}")
+    if api is None:
+        api = (ctx.get_alpaca_api() if hasattr(ctx, "get_alpaca_api")
+               else getattr(ctx, "api", None))
+    shares = _attribute_account_event(
+        ctx, api, activity_id, symbol, snapshot, account_qty)
+    if shares is None:
+        return _refuse(
+            f"the account's books do not sum to the broker's "
+            f"{account_qty:+.0f} {symbol} at {snapshot[:16]}Z")
+    own = shares.get(getattr(ctx, "profile_id", None), 0.0)
+    if abs(own) < 0.5:
+        logger.info(
+            "activities_capture: DIV %s %s is not this profile's (own "
+            "qty 0 at %sZ)", activity_id, symbol, snapshot[:16])
+        return False
+    own_amount = round(own * per_share, 2)
+    if own_amount == 0:
+        return False
+    side = "dividend" if own_amount > 0 else "cash_debit"
     try:
         log_trade(
             symbol=symbol or "CASH",
-            side="dividend",
+            side=side,
             qty=1,
-            price=abs(amount),
+            price=abs(own_amount),
             order_id=activity_id,
             signal_type="DIVIDEND",
             strategy="alpaca_activity",
-            reason=f"dividend credit {symbol or '?'} ${amount:.2f}",
+            reason=(
+                f"dividend {symbol} ${per_share:.4f}/sh × own {own:+.0f} "
+                f"at {snapshot[:16]}Z (close before rec {record_date}) "
+                f"= ${own_amount:+.2f}; account net ${amount:+.2f} over "
+                f"{account_qty:+.0f} sh split across {len(shares)} book(s)"
+            ),
             status="closed",
-            pnl=amount,
-            decision_price=abs(amount),
+            pnl=own_amount,
+            decision_price=abs(own_amount),
             db_path=ctx.db_path,
         )
         logger.info(
-            "[%s] DIV captured: %s $%.2f (activity=%s)",
-            ctx.display_name if hasattr(ctx, "display_name") else "?",
-            symbol, amount, activity_id,
+            "[%s] DIV captured: %s own %+.0f × %.4f = $%+.2f as %s "
+            "(account net $%+.2f; activity=%s)",
+            getattr(ctx, "display_name", "?"), symbol, own, per_share,
+            own_amount, side, amount, activity_id,
         )
         return True
     except (sqlite3.OperationalError, ValueError) as exc:
@@ -131,7 +481,6 @@ def _write_dividend(ctx, activity: Any) -> bool:
             activity_id, exc,
         )
         return False
-
 
 def _own_occ_net(db_path: str, occ_symbol: str) -> float:
     """This profile's LIVE net contracts for `occ_symbol` (buys −
@@ -423,6 +772,172 @@ def _write_option_settlement(ctx, activity: Any,
         return False
 
 
+def _write_cash_merger(ctx, activity: Any, api=None) -> bool:
+    """MA (cash merger): close THIS PROFILE'S stock position at the
+    merger price. Born 2026-10-26 from WBD: Alpaca reports a cash
+    merger as two MA rows on the removal date — a share leg
+    (symbol, qty=-held, price=cost basis, net_amount=0, description
+    'Cash Merger $<px> per share') and a cash leg (qty None,
+    net_amount=held×px). The share leg drives the booking: own qty at
+    the prior close (same attribution + Σ-check as dividends) is
+    written as a 'sell' (long) / 'cover' (short) exit row at <px>
+    with fill_price stamped (so the fill poller never polls it) and
+    realized pnl from the profile's own average entry; the live entry
+    rows are flipped 'closed' via journal.close_stock_entry_rows so
+    the reconciler stops reading a broker-flat orphan. The cash leg
+    writes nothing — the exit row IS the cash. A merger whose
+    description does not name a cash price (stock consideration) is
+    refused with an audit alert: the journal cannot book shares it
+    was never told about."""
+    from journal import log_trade, close_stock_entry_rows
+    activity_id = str(getattr(activity, "id", ""))
+    if not activity_id:
+        return False
+    if _has_activity(ctx.db_path, activity_id):
+        return False
+    symbol = (getattr(activity, "symbol", "") or "").upper()
+    desc = str(getattr(activity, "description", "") or "")
+    try:
+        removed = -float(getattr(activity, "qty", None) or 0)
+    except (ValueError, TypeError):
+        removed = 0.0
+    if removed == 0:
+        logger.debug("activities_capture: MA %s %s cash leg — the share "
+                     "leg books the exit; nothing to write", activity_id,
+                     symbol)
+        return False
+
+    def _refuse(why: str, severity: str = "critical") -> bool:
+        logger.warning(
+            "activities_capture: MA %s (%s %+g) NOT booked — %s. The "
+            "integrity gate / reconciler will hold the drift until the "
+            "event is booked by hand.", activity_id, symbol, removed, why)
+        _alert_once(
+            ctx, "corporate_action_unbooked", severity,
+            f"Corporate action not booked: {symbol} MA",
+            f"Activity {activity_id} ({desc}): {why}. Broker removed "
+            f"{removed:+g} {symbol} from the account.", activity_id)
+        return False
+
+    m = _CASH_MERGER_RX.search(desc)
+    if not m:
+        return _refuse("not a cash merger (no '$x per share' price in the "
+                       "description) — stock consideration must be "
+                       "booked by hand")
+    per_share = float(m.group(1))
+    snapshot = _entitlement_snapshot_utc(str(getattr(activity, "date", "")))
+    if snapshot is None:
+        return _refuse("activity has no usable date")
+    if api is None:
+        api = (ctx.get_alpaca_api() if hasattr(ctx, "get_alpaca_api")
+               else getattr(ctx, "api", None))
+    shares = _attribute_account_event(
+        ctx, api, activity_id, symbol, snapshot, removed)
+    if shares is None:
+        return _refuse(f"the account's books do not sum to the broker's "
+                       f"{removed:+g} {symbol} at {snapshot[:16]}Z")
+    own = shares.get(getattr(ctx, "profile_id", None), 0.0)
+    if abs(own) < 0.5:
+        return False
+    live = _own_stock_qty_live(ctx.db_path, symbol)
+    if live is None or abs(live - own) > 0.5:
+        return _refuse(f"own qty at the snapshot was {own:+g} but the live "
+                       f"book holds {live} — the position changed since; "
+                       "refusing to write a blind exit")
+    entry_side = "buy" if own > 0 else "short"
+    exit_side = "sell" if own > 0 else "cover"
+    basis = _own_stock_avg_entry(ctx.db_path, symbol, entry_side)
+    if basis is None:
+        return _refuse("no live entry rows to take the cost basis from")
+    qty = abs(own)
+    pnl = round(((per_share - basis) if own > 0 else (basis - per_share))
+                * qty, 2)
+    try:
+        log_trade(
+            symbol=symbol,
+            side=exit_side,
+            qty=qty,
+            price=per_share,
+            order_id=activity_id,
+            signal_type="MA",
+            strategy="alpaca_activity",
+            reason=(
+                f"cash merger: {exit_side}-to-close x{qty:g} @ ${per_share} "
+                f"(broker-initiated; account removed {removed:+g}; own "
+                f"{own:+g} at {snapshot[:16]}Z; realized {pnl:+.2f} from "
+                f"avg entry {basis:.4f})"
+            ),
+            status="closed",
+            decision_price=per_share,
+            fill_price=per_share,
+            pnl=pnl,
+            db_path=ctx.db_path,
+        )
+        flipped = close_stock_entry_rows(
+            ctx.db_path, symbol, entry_side,
+            f"position removed by cash merger (activity {activity_id})")
+        if not flipped:
+            logger.warning(
+                "activities_capture: MA %s booked but flipped %s entry "
+                "row(s) for %s — the reconciler may still see an open "
+                "entry", activity_id, flipped, symbol)
+        logger.info(
+            "[%s] MA captured: %s %s-to-close x%g @ %.4f pnl %+.2f "
+            "(activity=%s)", getattr(ctx, "display_name", "?"), symbol,
+            exit_side, qty, per_share, pnl, activity_id)
+        return True
+    except (sqlite3.OperationalError, ValueError) as exc:
+        logger.error("activities_capture: MA %s log_trade failed: %s",
+                     activity_id, exc)
+        return False
+
+
+def _explain_unhandled_reorgs(ctx, api, since: datetime) -> int:
+    """Corporate actions the journal cannot book (`_REORG_EXPLAIN_
+    TYPES`): when one names a symbol this profile holds live, write
+    one audit alert per event so the drift halt that follows is
+    explained on /issues. Fetched once per account per hour. Returns
+    the number of alerts written."""
+    aid = getattr(ctx, "alpaca_account_id", None)
+    written = 0
+    for a_type in _REORG_EXPLAIN_TYPES:
+        key = (aid, a_type)
+        hit = _reorg_fetch_memo.get(key)
+        if aid and hit and (time.time() - hit[0]) < _REORG_FETCH_TTL_S:
+            acts = hit[1]
+        else:
+            try:
+                acts = list(api.get_activities(
+                    activity_types=a_type, after=since.isoformat()) or [])
+            except Exception as exc:
+                logger.warning(
+                    "activities_capture: get_activities(%s) failed for "
+                    "profile %s: %s", a_type,
+                    getattr(ctx, "profile_id", "?"), exc)
+                continue
+            if aid:
+                _reorg_fetch_memo[key] = (time.time(), acts)
+        for a in acts:
+            activity_id = str(getattr(a, "id", "") or "")
+            symbol = (getattr(a, "symbol", "") or "").upper()
+            if not activity_id or not symbol:
+                continue
+            live = _own_stock_qty_live(ctx.db_path, symbol)
+            if not live:
+                continue
+            _alert_once(
+                ctx, "corporate_action_unbooked", "critical",
+                f"Unhandled corporate action: {symbol} {a_type}",
+                f"Activity {activity_id} ({a_type}) on {symbol}: qty="
+                f"{getattr(a, 'qty', None)} net=${getattr(a, 'net_amount', None)} "
+                f"'{getattr(a, 'description', '')}'. This profile holds "
+                f"{live:+g} {symbol}. The journal has no handler for "
+                f"{a_type}; any broker drift / orphan halt on {symbol} is "
+                f"this event — book it by hand.", activity_id)
+            written += 1
+    return written
+
+
 def capture_activities_for_profile(ctx,
                                    since: Optional[datetime] = None,
                                    ) -> Dict[str, int]:
@@ -471,11 +986,14 @@ def capture_activities_for_profile(ctx,
     for a in activities:
         a_type = getattr(a, "activity_type", "")
         if a_type == "DIV":
-            if _write_dividend(ctx, a):
+            if _write_dividend(ctx, a, api):
                 summary["DIV"] += 1
         elif a_type in ("OPEXP", "OPASN", "OPEXC"):
             if _write_option_expiry_or_exercise(ctx, a):
                 summary[a_type] += 1
+        elif a_type == "MA":
+            if _write_cash_merger(ctx, a, api):
+                summary["MA"] += 1
         else:
             logger.debug(
                 "activities_capture: ignoring unhandled type %s", a_type,
@@ -539,6 +1057,13 @@ def capture_activities_for_profile(ctx,
         elif desc == "Options Trade":
             if _write_option_settlement(ctx, a, group_occ):
                 summary["SETTLEMENT"] = summary.get("SETTLEMENT", 0) + 1
+    try:
+        n = _explain_unhandled_reorgs(ctx, api, since)
+        if n:
+            summary["REORG_ALERT"] = n
+    except Exception as exc:
+        logger.warning("activities_capture: reorg explain pass failed for "
+                       "profile %s: %s", getattr(ctx, "profile_id", "?"), exc)
     return summary
 
 

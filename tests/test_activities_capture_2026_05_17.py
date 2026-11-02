@@ -63,15 +63,36 @@ def _ctx(profile_id, db_path, api):
         profile_id=profile_id,
         db_path=db_path,
         api=api,
+        alpaca_account_id=1,
         display_name=f"P{profile_id}",
     )
 
 
 def _div_activity(aid, symbol, amount, date="2026-05-17"):
+    """A $1.00/share dividend on `amount` shares (the 2026-10-26
+    writer attributes by position: per_share_amount and the record
+    date in the description are required)."""
     return SimpleNamespace(
         id=aid, activity_type="DIV", symbol=symbol,
         net_amount=amount, amount=amount, date=date,
+        per_share_amount=1.0,
+        description=f"Cash DIV @ 1.0, Pos QTY: {amount:g}, Rec Date: {date}",
     )
+
+
+def _entitle(db, symbol, qty, price=1.0):
+    """Hold `qty` shares since well before any record date, so the
+    2026-10-26 per-book attribution pays this (only) book. order_id
+    NULL = a legacy row with no broker order to look up; the patch
+    makes this profile the account's only book."""
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "INSERT INTO trades (timestamp, symbol, side, qty, price, "
+            "fill_price, status) VALUES ('2026-05-01T14:00:00', ?, 'buy', "
+            "?, ?, ?, 'open')", (symbol, qty, price, price))
+        conn.commit()
+    return patch("activities_capture._sibling_db_paths",
+                 lambda ctx: [(ctx.profile_id, db)])
 
 
 def _opasn_activity(aid, occ, qty, price, date="2026-05-17"):
@@ -101,7 +122,8 @@ class TestDividendCapture:
             _div_activity("act-div-1", "AAPL", 50.0),
         ]
         ctx = _ctx(1, db, api)
-        summary = capture_activities_for_profile(ctx)
+        with _entitle(db, "AAPL", 50):
+            summary = capture_activities_for_profile(ctx)
         assert summary["DIV"] == 1
         with sqlite3.connect(db) as conn:
             row = conn.execute(
@@ -124,9 +146,10 @@ class TestDividendCapture:
             _div_activity("act-div-2", "MSFT", 25.0),
         ]
         ctx = _ctx(1, db, api)
-        capture_activities_for_profile(ctx)
-        # Second call: same activity returned again
-        capture_activities_for_profile(ctx)
+        with _entitle(db, "MSFT", 25):
+            capture_activities_for_profile(ctx)
+            # Second call: same activity returned again
+            capture_activities_for_profile(ctx)
         with sqlite3.connect(db) as conn:
             count = conn.execute(
                 "SELECT COUNT(*) FROM trades WHERE order_id = ?",
@@ -147,13 +170,16 @@ class TestDividendCreditsVirtualCash:
             _div_activity("act-div-3", "AAPL", 100.0),
         ]
         ctx = _ctx(1, db, api)
-        capture_activities_for_profile(ctx)
+        # 100 AAPL @ $150 held since May 1: cash 100k − 15k = 85k
+        with _entitle(db, "AAPL", 100, price=150.0):
+            capture_activities_for_profile(ctx)
         info = get_virtual_account_info(
             db_path=db, initial_capital=100_000.0,
+            price_fetcher=lambda s: 150.0,
         )
-        # initial 100k + $100 dividend = $100,100 cash, no positions
-        assert info["cash"] == 100_100.0
-        assert info["portfolio_value"] == 0.0
+        # $85,000 cash + $100 dividend = $85,100 cash; 100 sh @ $150
+        assert info["cash"] == 85_100.0
+        assert info["portfolio_value"] == 15_000.0
         assert info["equity"] == 100_100.0
 
 
@@ -323,7 +349,8 @@ class TestErrorHandling:
         api.get_activities.side_effect = OSError("network down")
         ctx = _ctx(1, db, api)
         summary = capture_activities_for_profile(ctx)
-        assert summary == {"DIV": 0, "OPEXP": 0, "OPASN": 0, "OPEXC": 0}
+        assert summary == {"DIV": 0, "OPEXP": 0, "OPASN": 0, "OPEXC": 0,
+                           "MA": 0}
 
     def test_activity_without_id_skipped(self, tmp_path):
         from activities_capture import capture_activities_for_profile
@@ -379,7 +406,7 @@ class TestBatchCapture:
 
         with patch(
             "models.build_user_context_from_profile", side_effect=_build,
-        ):
+        ), _entitle(db1, "AAPL", 30):
             result = capture_activities_for_all_profiles([1, 2])
         assert 1 in result
         assert 2 not in result
