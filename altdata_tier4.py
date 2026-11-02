@@ -119,6 +119,20 @@ def parse_threshold_file(text: str) -> Set[str]:
     return out
 
 
+def _looks_like_threshold_file(text: Optional[str]) -> bool:
+    """A real list is pipe-delimited with a `Symbol|…|Reg SHO Threshold
+    Flag` header. Nasdaq answers a missing date with an HTML page (HTTP
+    200), which the 2026-11-02 live check caught being parsed as an
+    empty list."""
+    if not text:
+        return False
+    head = text.lstrip()[:400].lower()
+    if head.startswith("<!doctype") or head.startswith("<html") or "<html" in head:
+        return False
+    first = text.strip().splitlines()[0] if text.strip() else ""
+    return "|" in first and "symbol" in first.lower()
+
+
 def load_threshold_lists(today: Optional[date] = None) -> Dict[str, Any]:
     """Union of the latest available Nasdaq + NYSE lists (tries the last
     five business days). Cached 6h."""
@@ -132,10 +146,13 @@ def load_threshold_lists(today: Optional[date] = None) -> Dict[str, Any]:
         for d in _business_days_back(5, today):
             url = tmpl.format(ymd=d.strftime("%Y%m%d"), iso=d.isoformat())
             text = _http_get_text(url)
-            if not text or "|" not in text:
+            if not _looks_like_threshold_file(text):
                 continue
             syms = parse_threshold_file(text)
-            if not syms and "Symbol" not in text:
+            if not syms:
+                # Header-only file: the venue publishes today's stub
+                # before the close and fills it afterwards. An empty
+                # threshold list is not a fact — use the previous day.
                 continue
             for s in syms:
                 symbols.setdefault(s, []).append(venue)
@@ -294,7 +311,8 @@ def get_form144(symbol: str) -> Dict[str, Any]:
         return {"has_data": False, "reason": f"EDGAR lookup failed: {type(exc).__name__}"}
     dates: List[str] = []
     for f in filings:
-        d = (f.get("filing_date") or f.get("filingDate") or f.get("date") or "")[:10]
+        d = (f.get("filed_date") or f.get("filing_date") or f.get("filingDate")
+             or f.get("date") or "")[:10]
         if d:
             dates.append(d)
     dates.sort()
