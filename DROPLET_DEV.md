@@ -58,6 +58,17 @@ House rules — all of them, every time:
 - **fail-closed** behavior in the fix itself.
 - **dated CHANGELOG entry** + OPEN_ITEMS updated.
 - develop on a branch; full suite green **before** push.
+- **Nothing session-tied, ever** (operator rule, restated 2026-11-01
+  after the n-th violation). The suite, a deploy, a repair script AND
+  any wait/poll on them run detached — `setsid nohup <cmd> >
+  deploy_logs/<name>.log 2>&1 < /dev/null &` — and the result is read
+  from the log on a later turn. Sessions on this box drop without
+  warning; a session-tied wait dies silently and looks exactly like a
+  dead job. No background waits, no log tails, no sleep loops.
+- **Commit on the branch as soon as the targeted tests pass.** Every
+  deploy runs `git reset --hard origin/main`; on 2026-10-26 a finished,
+  suite-green fix sat uncommitted for a week and was erased by the
+  next deploy.
 
 Use `-p no:randomly` for reproducibility; drop it occasionally, since
 `pytest-randomly` is what catches order-dependent flakes.
