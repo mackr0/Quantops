@@ -47,6 +47,22 @@
 </article>
 {% endif %}
 
+{% if provider_health_failures %}
+<article id="provider-health-banner" style="background:#fff8e1;border:2px solid #b26a00;padding:0.85rem 1.1rem;margin-bottom:1rem;border-radius:6px;">
+    <strong style="color:#b26a00;font-size:1.05rem;">⚠ AI PROVIDER HEALTH — {{ provider_health_failures|length }} check(s) failing</strong>
+    <div style="margin-top:0.35rem;color:#555;font-size:0.9rem;">
+        A failing probe means that book makes <em>no decisions</em> until it is fixed (its stops still run).
+        <ul style="margin:0.4rem 0 0 1rem;">
+        {% for f in provider_health_failures %}
+            <li><strong>{{ f.profile_name or ('profile ' ~ f.profile_id) }}</strong> · {{ f.check_kind }} · {{ f.failure_class or 'FAILED' }}
+                {% if f.provider %}({{ f.provider }}/{{ f.model }}){% endif %} — {{ f.detail }}
+                <span class="muted">since {{ (f.first_failed_at or f.checked_at)[:16] }}Z</span></li>
+        {% endfor %}
+        </ul>
+    </div>
+</article>
+{% endif %}
+
 {% if kill_switch and kill_switch.enabled %}
 <article style="background:#fff5f5;border:2px solid #d32f2f;padding:0.85rem 1.1rem;margin-bottom:1rem;border-radius:6px;">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;">

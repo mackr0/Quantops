@@ -35,6 +35,9 @@ _DEPRECATED_IDS = {
     "gemini-2.0-flash",            # Google deprecated — generateContent 404s
     "claude-sonnet-4-20250514",    # gone from Anthropic /v1/models
     "claude-opus-4-20250514",      # gone from Anthropic /v1/models
+    "gpt-4.1-nano",                # OpenAI retired 2026-10-23 (404 model_not_found)
+    "o3-mini",                     # OpenAI retired 2026-10-23
+    "gemini-2.0-flash-lite",       # Google shut down 2026-06-01
 }
 
 
@@ -180,7 +183,7 @@ def logged_in_client(tmp_main_db, monkeypatch):
 
 # Static coverage set — MUST equal the full provider list (guards against a
 # new provider being added to PROVIDERS without a picker smoke test).
-_COVERED_PROVIDERS = ["anthropic", "openai", "google", "deepseek"]
+_COVERED_PROVIDERS = ["anthropic", "openai", "google", "deepseek", "xai"]
 
 
 def test_endpoint_coverage_matches_all_providers():

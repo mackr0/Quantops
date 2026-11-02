@@ -39,29 +39,36 @@ log = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────
-# THE ARMS (docs/25 decision D1, 2026-08-23)
+# THE ARMS — Experiment 3 cost ladder (docs/25 decision D9, 2026-11-02)
 # ─────────────────────────────────────────────────────────────────────
 #
-# Each arm: (name stem, account group, ai_provider, ai_model, shadow list).
+# Each arm: (name stem, ai_provider, ai_model, shadow list). Four price
+# points spanning 10× ($0.10/$0.50 → $1/$5 per 1M tokens) and the
+# Artificial Analysis intelligence index 32 → 51, three vendors, same
+# system / data / policies for all. Question: does cost buy returns when
+# the system supplies the data? Budget: < $100/month fleet-wide (D10),
+# projected ≈ $52 at September's measured volume.
+#
+#   HAIKU55  anthropic:claude-haiku-5-5   floor      $0.10 / $0.50
+#   DSFLASH  deepseek:deepseek-flash      open-weight $0.30 / $1.20 peak (½ off-peak)
+#   LUNA     openai:gpt-5.6-luna          incumbent  $0.20 / $1.20 — the only arm with a
+#                                          continuous record since 08-24; bridges
+#                                          Experiment 2's decision corpus to 3
+#   TERRA    openai:gpt-6.1-terra         top        $1.00 / $5.00
+#
+# Experiment 2's arms (D1): gpt-4.1-nano (RETIRED by OpenAI 2026-10-23),
+# gpt-5.6-luna, gemini-3.5-flash-lite and gemini-3.7-flash (both
+# deprecated by Google 2026-10-08; the Google account's prepaid credits
+# ran out 09-25). See docs/26 Experiment 2 post-mortem.
+#
 # Cross-shadowing is SPECIALIST purposes only (config.SHADOW_PURPOSES,
-# decision D5). The Luna arm also shadows gpt-4.1-nano — Experiment 1's
-# one real finding — to bridge old evidence to new.
-
-#
-# 2026-08-23 (operator): the INCUMBENT must be an arm. gpt-4.1-nano is
-# the one model with measured evidence from Experiment 1 (beat the
-# primary on specialist verdicts p=0.001; beat haiku head-to-head
-# p=0.0005). A new model is only "better" if it beats nano on real
-# trades, so nano runs as a full arm; Luna (its successor) runs beside
-# it as the hedge against nano's deprecation.
-#
-# Each arm cross-shadows every OTHER arm on specialist calls.
+# decision D5): each arm shadows every other arm on specialist calls.
 
 _ARM_DEFS: List[Dict[str, str]] = [
-    {"stem": "NANO", "ai_provider": "openai", "ai_model": "gpt-4.1-nano"},
+    {"stem": "HAIKU55", "ai_provider": "anthropic", "ai_model": "claude-haiku-5-5"},
+    {"stem": "DSFLASH", "ai_provider": "deepseek", "ai_model": "deepseek-flash"},
     {"stem": "LUNA", "ai_provider": "openai", "ai_model": "gpt-5.6-luna"},
-    {"stem": "G35LITE", "ai_provider": "google", "ai_model": "gemini-3.5-flash-lite"},
-    {"stem": "G37FLASH", "ai_provider": "google", "ai_model": "gemini-3.7-flash"},
+    {"stem": "TERRA", "ai_provider": "openai", "ai_model": "gpt-6.1-terra"},
 ]
 
 ARMS: List[Dict[str, Any]] = [

@@ -910,12 +910,46 @@ Still open on the decision side — recorded here so it is not forgotten:
       single-leg long premium (28% win, theta in 6–14-day holds).
       long_call/long_put removed from the menu and refused at
       execution; defined-risk spreads (priced from live quotes) stay.
-- [ ] ⏳ **Entry quality is the remaining lever**: hit rates 41–53% by
-      month, no arm improving. This is P4.3's problem statement (batch-5
-      requirements: class balance, label quality) — no fix exists to
-      ship tonight; it is research, tracked there, not here.
+- [~] ⏳ **Entry quality is the remaining lever**: hit rates 41–53% by
+      month, no arm improving. 2026-11-02: measured on 10,532 resolved
+      directional predictions → the policy set in the Experiment 3
+      build queue above (D13); the model-side remainder is P4.3.
 - [x] Re-measurement tooling — `scripts/exit_attribution.py` (committed
       2026-11-02); run it after two weeks on the new exit policy.
+
+## EXPERIMENT 3 BUILD QUEUE (2026-11-02, operator: "do all the things") — docs/26 Experiment 3, docs/25 D8–D14
+
+Operator constraints: self-built data only (no paid feeds); fleet AI
+spend < $100/month; the 12-book / 3-account structure stays; every
+finding and its reason recorded in docs/26 + docs/25 as it ships.
+
+- [x] **Warning system** (D8) — `provider_health.py`: provider probe,
+      deprecation lookahead, decision-flow watchdog, credit runway;
+      dashboard banner; `/api/provider-health`. CHANGELOG 2026-11-02.
+- [x] **Catalog + lifecycle table + budget cap** (D10, D14) — current
+      models of five vendors priced; `MODEL_STATUS`; Anthropic 5.x call
+      path; `FLEET_MONTHLY_AI_BUDGET_USD`. CHANGELOG 2026-11-02.
+- [x] **Experiment 3 manifest** (D9) — four-arm cost ladder in
+      `create_experiment_profiles.py`.
+- [ ] ⏳ **Entry-quality policy set** (D13): losing strategies off,
+      confidence out of sizing/gating, binding specialist vetoes,
+      40-bar-return regime rule. (The "require a meta score" lever was
+      a time artifact — every unscored prediction is from August,
+      before any book had a model; dropped.)
+- [ ] ⏳ **Prompt caching** on the apex call (85% of tokens): stable
+      prefix first, `cache_control` on Anthropic, measured through the
+      ledger's `cached_tokens`.
+- [ ] ⏳ **Reset to Experiment 3** — `full_fresh_start_2026_11_03.py`
+      (clone of 08-24 with the D9 manifest; keys: RESET_NEW_ANTHROPIC /
+      _DEEPSEEK / _OPENAI); tag `exp2-learning-phase1-final` before,
+      `exp3-cost-ladder-start` after. Needs the operator's Anthropic and
+      DeepSeek keys and the three Alpaca paper keys.
+- [ ] ⏳ **Data tranche 1** (D12, free sources): SEC fails-to-deliver,
+      Reg SHO threshold list, Form 144, N-PORT holdings, CBOE VIX term
+      structure, own-universe breadth, IPO lockup calendar — each a
+      checker + weightable signal.
+- [ ] ⏳ Batch 5 of the owned model on the corrected-policy corpus
+      (P4.3), when the corpus exists.
 
 ## INCIDENT FOLLOW-UP 2026-10-26 — ✅ RESOLVED (shipped 2026-11-01): shared-account dividends booked into every sibling at the account's net amount; WBD cash merger unbooked (kill switch 10-13 → 11-01)
 

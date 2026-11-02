@@ -91,10 +91,28 @@ def trailing_avg_daily_spend(user_id: int, days: int = 7) -> float:
     return total / max(days, 1)
 
 
+def fleet_daily_budget_usd() -> float:
+    """config.FLEET_MONTHLY_AI_BUDGET_USD spread over the trading days
+    of a month (2026-11-02, docs/25 D10). The hard cap no code path may
+    exceed; the per-user override below can only LOWER it."""
+    import config as _cfg
+    monthly = float(getattr(_cfg, "FLEET_MONTHLY_AI_BUDGET_USD", 100.0) or 0.0)
+    days = int(getattr(_cfg, "FLEET_TRADING_DAYS_PER_MONTH", 21) or 21)
+    return monthly / max(days, 1) if monthly > 0 else float("inf")
+
+
 def daily_ceiling_usd(user_id: int) -> float:
-    """Compute today's ceiling. User-configured override wins if set;
-    else auto-compute as trailing-7-day-avg × 1.5, floored at $5."""
-    # User override takes precedence — they've explicitly chosen a cap.
+    """Compute today's ceiling: the fleet budget's daily share
+    (`fleet_daily_budget_usd`), lowered by a user-configured override
+    when one is set below it. Before 2026-11-02 the override could
+    RAISE the ceiling (it stood at $14/day ≈ $300/month against an
+    operator budget of $100); the budget is authoritative now."""
+    return min(fleet_daily_budget_usd(), _user_or_auto_ceiling_usd(user_id))
+
+
+def _user_or_auto_ceiling_usd(user_id: int) -> float:
+    """User-configured override if set; else trailing-7-day-avg × 1.5,
+    floored at $5 (the pre-2026-11-02 rule, kept as the inner term)."""
     try:
         from models import _get_conn
         with closing(_get_conn()) as conn:

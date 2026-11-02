@@ -255,6 +255,19 @@ def init_user_db(db_path: Optional[str] = None) -> None:
                 FOREIGN KEY (profile_id) REFERENCES trading_profiles(id),
                 FOREIGN KEY (user_id) REFERENCES users(id)
             );
+            CREATE TABLE IF NOT EXISTS provider_health (
+                profile_id INTEGER NOT NULL,
+                check_kind TEXT NOT NULL,
+                provider TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                ok INTEGER NOT NULL,
+                failure_class TEXT,
+                detail TEXT NOT NULL DEFAULT '',
+                checked_at TEXT NOT NULL,
+                first_failed_at TEXT,
+                last_alerted_at TEXT,
+                PRIMARY KEY (profile_id, check_kind)
+            );
             CREATE TABLE IF NOT EXISTS symbol_names (
                 symbol TEXT PRIMARY KEY,
                 name TEXT NOT NULL,

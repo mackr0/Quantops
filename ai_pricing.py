@@ -22,12 +22,16 @@ from typing import Dict, Optional
 # lapses, update the number AND this date. The previous table had
 # claude-opus-4-6 at 3x its real rate and gemini-2.5-flash / -pro
 # output prices ~3.5x and 2x too low.
-PRICES_VERIFIED_ON = "2026-08-23"
+PRICES_VERIFIED_ON = "2026-11-02"
 
 PRICING: Dict[str, Dict[str, float]] = {
     # ---- Anthropic Claude (Claude 4.7+ models use a tokenizer that
     #      produces ~30% more tokens for the same text — effective cost
     #      per call is higher than the per-token rate suggests) ----
+    "claude-fable-5-1":             {"input": 10.00, "output": 50.00},
+    "claude-opus-5-5":              {"input":  4.00, "output": 20.00},
+    "claude-sonnet-5-5":            {"input":  2.00, "output": 10.00},
+    "claude-haiku-5-5":             {"input":  0.10, "output":  0.50},  # ≤100K prompts; $0.50/$2.50 beyond
     "claude-fable-5":               {"input": 10.00, "output": 50.00},
     "claude-opus-5":                {"input":  5.00, "output": 25.00},
     "claude-opus-4-8":              {"input":  5.00, "output": 25.00},
@@ -39,7 +43,12 @@ PRICING: Dict[str, Dict[str, float]] = {
     "claude-haiku-4-5-20251001":    {"input":  1.00, "output":  5.00},
     "claude-haiku-4-5":             {"input":  1.00, "output":  5.00},
     # ---- OpenAI ----
-    "gpt-5.6-sol":                  {"input":  4.00, "output": 20.00},  # promo through 2026-11-21 (list $5/$30)
+    "gpt-6-astra":                  {"input": 10.00, "output": 50.00},
+    "gpt-6.1-sol":                  {"input":  2.00, "output": 10.00},
+    "gpt-6-sol":                    {"input":  2.00, "output": 10.00},
+    "gpt-6.1-terra":                {"input":  1.00, "output":  5.00},
+    "gpt-6-luna":                   {"input":  0.10, "output":  0.50},
+    "gpt-5.6-sol":                  {"input":  4.00, "output": 20.00},
     "gpt-5.6-terra":                {"input":  2.00, "output": 12.00},
     "gpt-5.6-luna":                 {"input":  0.20, "output":  1.20},
     "gpt-5.5":                      {"input":  5.00, "output": 30.00},
@@ -60,6 +69,9 @@ PRICING: Dict[str, Dict[str, float]] = {
     "o3-mini":                      {"input":  1.10, "output":  4.40},
     "o4-mini":                      {"input":  1.10, "output":  4.40},
     # ---- Google Gemini ----
+    "gemini-4-argon":               {"input":  2.00, "output": 10.00},  # rises 2026-12-01
+    "gemini-3.8-flash":             {"input":  0.75, "output":  3.75},  # rises 2027-01-01
+    "gemini-3.6-flash":             {"input":  0.75, "output":  3.75},  # rises 2027-01-01
     "gemini-3.7-flash":             {"input":  0.75, "output":  3.75},  # promo through 2026-12-31 (then $1.50/$7.50)
     "gemini-3.6-flash":             {"input":  0.75, "output":  3.75},  # promo through 2026-12-31 (then $1.50/$7.50)
     "gemini-3.5-flash":             {"input":  1.50, "output":  9.00},
@@ -72,8 +84,14 @@ PRICING: Dict[str, Dict[str, float]] = {
     "gemini-2.5-flash-lite":        {"input":  0.10, "output":  0.40},
     "gemini-2.0-flash":             {"input":  0.15, "output":  0.60},  # shut down 2026-06-01
     # ---- DeepSeek (unchanged; not re-verified 2026-08-23) ----
-    "deepseek-chat":                {"input":  0.14, "output":  0.28},
-    "deepseek-reasoner":            {"input":  0.55, "output":  2.19},
+    "deepseek-chat":                {"input":  0.30, "output":  1.20},  # alias of V4.1 Flash, peak rate (½ off-peak)
+    "deepseek-reasoner":            {"input":  1.32, "output":  3.96},  # legacy alias, priced as V4 Pro peak
+    # ---- DeepSeek (peak rates; off-peak is half — ledger prices conservatively) ----
+    "deepseek-flash":               {"input":  0.30, "output":  1.20},
+    "deepseek-v4-pro":              {"input":  1.32, "output":  3.96},
+    # ---- xAI ----
+    "grok-4.7":                     {"input":  2.00, "output":  6.00},
+    "grok-4.3":                     {"input":  1.25, "output":  2.50},
 }
 
 # Fallback used when model is unknown. Conservative (mid-tier) so unknown-

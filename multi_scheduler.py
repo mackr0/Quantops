@@ -455,6 +455,15 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_data_source_health(ctx),
             db_path=ctx.db_path,
         )
+        # AI provider health (2026-11-02, docs/25 D8): probe this
+        # profile's own model+key, the decision-flow watchdog, and once a
+        # day the deprecation lookahead + fleet credit runway. The check
+        # that would have caught nine dead books in September.
+        run_task(
+            f"[{seg_label}] Provider Health",
+            lambda: _task_provider_health(ctx),
+            db_path=ctx.db_path,
+        )
         # Auto-expiry of gate-tightening tuning changes that haven't
         # shown evidence of improving win rate. Daily — internally
         # rate-limited via _auto_expiry_last_run_date.
@@ -2601,6 +2610,49 @@ def _task_auto_expire_gate_tightens(ctx):
             "auto_expiry task failed for profile %s: %s: %s",
             pid, type(exc).__name__, exc,
         )
+
+
+_provider_health_last_run: dict = {}
+_provider_health_daily_date = None
+
+
+def _task_provider_health(ctx):
+    """Per-profile AI provider probe + decision-flow watchdog every
+    `provider_health.PROBE_INTERVAL_SEC`; deprecation lookahead and the
+    fleet credit-runway projection once per UTC day (first profile to
+    reach the task runs them for the whole active fleet)."""
+    global _provider_health_daily_date
+    import time as _t
+    import datetime as _dt
+    pid = getattr(ctx, "profile_id", 0)
+    now = _t.time()
+    try:
+        import provider_health as ph
+        if now - _provider_health_last_run.get(pid, 0.0) >= ph.PROBE_INTERVAL_SEC:
+            _provider_health_last_run[pid] = now
+            res = ph.run_profile_checks(ctx)
+            bad = {k: v for k, v in res.items() if not v.get("ok")}
+            if bad:
+                logging.error("Provider health %s: %s", getattr(ctx, "display_name", pid),
+                              {k: (v.get("failure_class"), v.get("detail")) for k, v in bad.items()})
+            else:
+                logging.info("Provider health %s: ok", getattr(ctx, "display_name", pid))
+        today = _dt.datetime.utcnow().date()
+        if _provider_health_daily_date != today:
+            _provider_health_daily_date = today
+            from models import get_active_profiles, build_user_context_from_profile
+            ctxs = []
+            for prof in get_active_profiles():
+                try:
+                    ctxs.append(build_user_context_from_profile(prof["id"]))
+                except Exception as exc:
+                    logging.warning("provider health: ctx for %s failed: %s", prof.get("id"), exc)
+            daily = ph.run_daily_checks(ctxs, user_id=getattr(ctx, "user_id", 1))
+            rw = daily.get("runway") or {}
+            logging.info("Provider health daily: deprecation checked for %d profiles; runway %s",
+                         len(daily.get("deprecation") or {}), rw.get("detail"))
+    except Exception as exc:
+        logging.warning("provider_health task crashed: %s", exc)
 
 
 def _task_data_source_health(ctx):

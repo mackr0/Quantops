@@ -1201,6 +1201,22 @@ def api_provider_models():
     return jsonify({"provider": provider, "models": catalog})
 
 
+@views_bp.route("/api/provider-health")
+@login_required
+def api_provider_health():
+    """Every AI-provider health check row (probe / stall / deprecation /
+    runway) for the dashboard banner and the operator's morning check.
+    2026-11-02, docs/25 D8."""
+    try:
+        from provider_health import current_status
+        rows = current_status()
+    except Exception as exc:
+        logger.warning("provider-health read failed: %s", exc)
+        rows = []
+    return jsonify({"rows": rows,
+                    "failures": [r for r in rows if not r.get("ok")]})
+
+
 def _next_session_label(ctx, now):
     """Human 'next session' string for an inactive profile, holiday-aware.
 
@@ -1489,7 +1505,14 @@ def dashboard():
                        type(exc).__name__, exc)
         benchmark_rows = []
 
+    try:
+        from provider_health import open_failures as _ph_open
+        _provider_health_failures = _ph_open()
+    except Exception as _ph_exc:
+        logger.warning("provider health read failed: %s", _ph_exc)
+        _provider_health_failures = []
     return render_template("dashboard.html",
+                           provider_health_failures=_provider_health_failures,
                            profiles_data=profiles_data,
                            any_profile_active=any_profile_active,
                            profile_schedules=profile_schedules,
