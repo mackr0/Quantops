@@ -100,7 +100,6 @@ class TestAlertEdges:
 
     def test_first_failure_alerts_repeat_waits_recovery_logs(self, tmp_main_db, monkeypatch):
         import ai_providers
-        calls = {"n": 0}
         monkeypatch.setattr(ai_providers, "_call_provider",
                             lambda *a, **k: (_ for _ in ()).throw(_Exc("model_not_found", 404)))
         emails = []
@@ -128,7 +127,9 @@ class TestAlertEdges:
         assert [r for r in ph.current_status() if r["profile_id"] == 229 and r["check_kind"] == "probe"][0]["ok"] == 1
 
     def test_class_change_realerts(self, tmp_main_db, monkeypatch):
-        import ai_providers, notifications, models
+        import ai_providers
+        import notifications
+        import models
         emails = []
         monkeypatch.setattr(notifications, "notify_error",
                             lambda msg, context="", ctx=None: emails.append(context))
@@ -150,7 +151,8 @@ class TestDecisionFlowWatchdog:
         assert ph._market_minutes_since(fri.isoformat(), mon) == pytest.approx(90, abs=1)
 
     def test_stall_fires_after_threshold_and_not_before(self, tmp_main_db, tmp_path, monkeypatch):
-        import sqlite3, models
+        import sqlite3
+        import models
         monkeypatch.setattr(models, "log_activity", lambda *a, **k: 1)
         import notifications
         monkeypatch.setattr(notifications, "notify_error", lambda *a, **k: None)
@@ -170,7 +172,8 @@ class TestDecisionFlowWatchdog:
         assert row["ok"] == 0 and "no successful AI decision" in row["detail"]
 
     def test_empty_book_never_alerts(self, tmp_main_db, tmp_path, monkeypatch):
-        import sqlite3, models
+        import sqlite3
+        import models
         monkeypatch.setattr(models, "log_activity", lambda *a, **k: 1)
         db = str(tmp_path / "p.db")
         with sqlite3.connect(db) as c:
@@ -186,7 +189,8 @@ class TestDeprecationLookahead:
                                ai_model=model, ai_api_key="", db_path=None)
 
     def test_retired_and_near_retirement_fail_active_passes(self, tmp_main_db, monkeypatch):
-        import models, notifications
+        import models
+        import notifications
         monkeypatch.setattr(models, "log_activity", lambda *a, **k: 1)
         monkeypatch.setattr(notifications, "notify_error", lambda *a, **k: None)
         assert ph.deprecation_lookahead(self._ctx("gpt-4.1-nano"))["ok"] == 0
@@ -213,7 +217,9 @@ class TestDeprecationLookahead:
 
 class TestCreditRunway:
     def test_projection_against_budget(self, tmp_main_db, tmp_path, monkeypatch):
-        import sqlite3, models, notifications
+        import sqlite3
+        import models
+        import notifications
         monkeypatch.setattr(models, "log_activity", lambda *a, **k: 1)
         monkeypatch.setattr(notifications, "notify_error", lambda *a, **k: None)
         db = str(tmp_path / "p.db")
@@ -248,7 +254,8 @@ class TestPickerAndBudget:
             assert arm in offered and arm in PRICING
 
     def test_cost_guard_ceiling_is_budget_bound(self, monkeypatch):
-        import cost_guard, config
+        import cost_guard
+        import config
         monkeypatch.setattr(config, "FLEET_MONTHLY_AI_BUDGET_USD", 100.0)
         monkeypatch.setattr(config, "FLEET_TRADING_DAYS_PER_MONTH", 20)
         monkeypatch.setattr(cost_guard, "_user_or_auto_ceiling_usd", lambda uid: 14.0)

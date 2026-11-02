@@ -45,7 +45,6 @@ error) is a failure (`UNKNOWN`), never a pass.
 """
 from __future__ import annotations
 
-import json
 import logging
 import re
 import sqlite3
@@ -515,8 +514,8 @@ def run_profile_checks(ctx, now: Optional[datetime] = None) -> Dict[str, Dict[st
                                                False, UNKNOWN, f"check crashed: {exc}",
                                                getattr(ctx, "user_id", 1),
                                                getattr(ctx, "display_name", "") or "")
-            except Exception:
-                pass
+            except (sqlite3.Error, OSError, ValueError) as rec_exc:
+                logger.error("provider_health could not even record the %s crash: %s", kind, rec_exc)
     return out
 
 
@@ -526,7 +525,7 @@ def run_daily_checks(ctxs: List[Any], user_id: int = 1) -> Dict[str, Any]:
     for ctx in ctxs:
         try:
             out["deprecation"][getattr(ctx, "profile_id", 0)] = deprecation_lookahead(ctx)
-        except Exception as exc:
+        except Exception:
             logger.exception("deprecation lookahead crashed for %s", getattr(ctx, "profile_id", "?"))
     try:
         out["runway"] = credit_runway([c.db_path for c in ctxs if getattr(c, "db_path", None)],

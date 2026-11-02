@@ -71,7 +71,6 @@ PRICING: Dict[str, Dict[str, float]] = {
     # ---- Google Gemini ----
     "gemini-4-argon":               {"input":  2.00, "output": 10.00},  # rises 2026-12-01
     "gemini-3.8-flash":             {"input":  0.75, "output":  3.75},  # rises 2027-01-01
-    "gemini-3.6-flash":             {"input":  0.75, "output":  3.75},  # rises 2027-01-01
     "gemini-3.7-flash":             {"input":  0.75, "output":  3.75},  # promo through 2026-12-31 (then $1.50/$7.50)
     "gemini-3.6-flash":             {"input":  0.75, "output":  3.75},  # promo through 2026-12-31 (then $1.50/$7.50)
     "gemini-3.5-flash":             {"input":  1.50, "output":  9.00},

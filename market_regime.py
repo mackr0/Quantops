@@ -199,12 +199,6 @@ def detect_regime() -> Dict[str, Any]:
         result["spy_price"] = round(spy_price, 2)
         result["spy_sma50"] = round(sma50, 2)
 
-        if len(spy_hist) >= 60:
-            sma50_10d_ago = float(spy_hist["close"].iloc[-60:-10].tail(50).mean())
-        else:
-            sma50_10d_ago = sma50
-        sma50_slope = sma50 - sma50_10d_ago
-
         trend = classify_trend(spy_hist["close"].tolist())
         result["spy_trend"] = trend["spy_trend"]
         result["spy_ret_40d"] = trend["ret_window"]

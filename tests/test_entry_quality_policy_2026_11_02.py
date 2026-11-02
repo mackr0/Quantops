@@ -149,7 +149,8 @@ class TestRegimeRule:
 
     def test_detect_regime_uses_the_rule(self, monkeypatch):
         import pandas as pd
-        import market_regime, market_data
+        import market_regime
+        import market_data
         market_regime._cache["regime"] = None; market_regime._cache["regime_ts"] = 0
         closes = _series("flat", 100)
         df = pd.DataFrame({"close": closes, "high": [c + 1 for c in closes], "low": [c - 1 for c in closes]})

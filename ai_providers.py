@@ -1126,7 +1126,7 @@ def _anthropic_text(message):
     """Concatenate the text blocks. Claude 5.x responses carry
     `thinking` blocks before the text, so `content[0].text` is wrong."""
     parts = [getattr(b, "text", "") for b in (getattr(message, "content", None) or [])
-             if getattr(b, "type", None) == "text"]
+             if getattr(b, "type", "text") == "text" and getattr(b, "text", None) is not None]
     return "".join(parts)
 
 
