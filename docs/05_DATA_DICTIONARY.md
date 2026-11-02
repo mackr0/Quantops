@@ -574,7 +574,6 @@ Source: `multi_scheduler.py` `_task_*` functions. 50 tasks total. Each is either
 | `_task_universe_audit` | once/day | Survivorship-bias correction. |
 | `_task_alpha_decay` | once/day | Per-strategy decay tracking. |
 | `_task_sec_filings` | once/day | SEC EDGAR scan. |
-| `_task_db_backup` | once/day | Per-profile DB backup. |
 | `_task_cost_check` | once/day | Daily AI spend audit. |
 | `_task_cross_account_reconcile` | once/day | Virtual ↔ broker position sync. |
 | `_task_virtual_audit` | once/day | Virtual position FIFO consistency. Negative-stock-position warnings are suppressed when a `side='short'` journal entry exists for the symbol (legitimate stock short, not corruption). |

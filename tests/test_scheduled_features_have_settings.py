@@ -117,8 +117,8 @@ INFRASTRUCTURE_TASKS = {
     "_task_capital_rebalance",         # auto-allocator scale updates
 
     # ── Operational ───────────────────────────────────────────────
-    "_task_db_backup",                 # nightly backup
-    "_task_daily_summary_email",       # email digest (silent if no SMTP)
+    # (DB backups are system cron — backup_daily.sh — not a task.)
+    "_task_daily_summary_email",      # email digest (silent if no SMTP)
     "_task_options_lifecycle",         # exercise/assignment detection on
                                          # options positions; no-op when none
     "_task_options_proactive_exits",   # 2026-06-07 TODO #7 — pre-expiry

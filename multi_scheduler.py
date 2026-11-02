@@ -591,12 +591,11 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_auto_strategy_lifecycle(ctx),
             db_path=ctx.db_path,
         )
-        # Daily DB backup with rotation (proprietary training data)
-        run_task(
-            f"[{seg_label}] DB Backup",
-            lambda: _task_db_backup(ctx),
-            db_path=ctx.db_path,
-        )
+        # Database backups are NOT a scheduler task. backup_daily.sh
+        # (system cron, 05:00 UTC) is the one backup system — see
+        # docs/07 §6. Until 2026-11-01 a second copy of every DB was
+        # also written here, once per profile, into a second directory;
+        # the two together filled the disk (CHANGELOG 2026-11-01).
         # docs/18 item #2: nightly Phase 5c backfill — catches new
         # historical option rows that get created during the day
         # with broken underlying-price math. force=True bypasses
@@ -5269,35 +5268,6 @@ def _task_phase5c_backfill_nightly(ctx):
             f"Phase 5c nightly backfill task failed: "
             f"{type(exc).__name__}: {exc}"
         )
-
-
-def _task_db_backup(ctx):
-    """Daily SQLite backup with rotation.
-
-    Per-profile DBs hold all proprietary training data. A plain `cp` of
-    a WAL-mode database can corrupt the copy — `backup_db.backup_all`
-    uses SQLite's native backup API to produce consistent snapshots
-    even while other tasks are writing.
-
-    Runs once per day from the daily snapshot block so we get exactly
-    one backup per profile per day. Dedup is per-date: re-running the
-    task later the same day overwrites atomically (atomic via .tmp).
-    """
-    try:
-        from backup_db import backup_all
-        seg_label = ctx.display_name or ctx.segment
-        project_dir = os.path.dirname(os.path.abspath(__file__))
-        summary = backup_all(project_dir)
-        logging.info(
-            f"[{seg_label}] DB backup: "
-            f"backed_up={summary['backed_up']}, "
-            f"pruned={summary['pruned']}, "
-            f"failed={summary['failed']}"
-        )
-        if summary["failed"] > 0:
-            logging.warning(f"[{seg_label}] DB backup had {summary['failed']} failures")
-    except Exception as exc:
-        logging.warning(f"DB backup task failed: {exc}")
 
 
 def _task_weekly_digest(master_db_path=None):

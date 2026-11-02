@@ -194,7 +194,7 @@ Scheduler and web run as systemd units. `sync.sh` deploys both (rsync + systemd 
 | `migrate.py` | One-shot migrations utility. |
 | `migrate_activity_log_format.py` | Specific migration script. |
 | `recover_cycle_data.py` | Recovery utility for incomplete cycles. |
-| `backup_db.py` | DB backup utility. |
+| `backup_daily.sh` | The one backup system (system cron, 05:00 UTC) — docs/07 §6. |
 
 ### 3i. Backtesting
 | Module | Purpose |
@@ -334,7 +334,7 @@ Schedules:
 - `_task_scan_and_trade` + `_task_check_exits`: every cycle.
 - `_task_resolve_predictions`: every cycle.
 - `_task_daily_snapshot`: once / day per profile.
-- `_task_self_tune`, `_task_retrain_meta_model`, `_task_calibrate_specialists`, `_task_db_backup`, etc: once / day, marker-protected.
+- `_task_self_tune`, `_task_retrain_meta_model`, `_task_calibrate_specialists`, etc: once / day, marker-protected. (Database backups are system cron, not a scheduler task.)
 - `_task_post_mortem`: weekly (Sunday).
 - `_task_auto_strategy_generation`: weekly.
 - `_task_universe_audit`, `_task_app_store_snapshot`, `_task_pdufa_scrape`: once / day, marker-protected.

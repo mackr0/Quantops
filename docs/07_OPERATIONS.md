@@ -197,7 +197,23 @@ sqlite3 /opt/quantopsai/quantopsai_profile_229.db \
 
 ## 6. Backups
 
-`backup_daily.sh` runs from system cron at 05:00 UTC every day. Uses sqlite3's online `.backup` command (safe while the scheduler is writing). Snapshots the master DB, every per-profile DB, and the four alt-data DBs to `/opt/quantopsai/backups/` with filenames like `quantopsai.db.20260506-0500`. Prunes backups older than 14 days.
+`backup_daily.sh` is the **one** backup system. It runs from system cron at 05:00 UTC every day, uses sqlite3's online `.backup` command (safe while the scheduler is writing), and writes to `/opt/quantopsai/backups/` with filenames like `quantopsai.db.20260506-0500`. The scheduler does not back anything up. (Until 2026-11-01 it also wrote a second copy of every DB, once per profile, into `/var/backups/quantopsai/`; the two systems together filled the disk — CHANGELOG 2026-11-01.)
+
+Each run does, in this order:
+
+1. Removes orphaned `-wal` / `-shm` sidecars.
+2. Gzips snapshots older than about two days, **smallest first**, so on a tight disk each success frees room for the next. The newest snapshots stay uncompressed because `find_latest_backup` / `restore_from_backup` do not read `.gz` — gunzip an older one first to restore from it.
+3. Prunes snapshots older than 14 days.
+4. Snapshots the irreplaceable databases: the master DB, every per-profile DB, `strategy_validations.db`.
+5. Snapshots the four alt-data DBs **on Sundays only**. They are ~8 GB together and `altdata/run-altdata-daily.sh` rebuilds them every morning; a weekly copy is enough.
+
+Housekeeping runs before anything new is written on purpose: gzip needs free space for its output, and on a full disk the old order (snapshot, then compress) could never free anything.
+
+**Disk-headroom guard.** A snapshot is refused if writing it would leave less than 5 GB free (`BACKUP_MIN_FREE_GB`). A full disk is worse than a missed snapshot — it stops the scheduler's logging and journal writes and breaks the DigitalOcean console. A refused snapshot counts as a failure and the run exits 1.
+
+**Run summary.** Every run writes `/opt/quantopsai/backups/last_run.status`: `result=OK|FAIL`, a UTC `timestamp`, `backed_up` / `failed` / `skipped_disk` / `compressed` / `pruned` counts, `altdata_included`, and `free_after_bytes`. `premarket_smoke_test.py` reads it every weekday morning (§5): `last_backup_ok` fails when the file is missing, older than 26 hours, or reports any failure, and `disk_headroom` fails below 5 GB or 10% free. They are the first two checks, so a filling disk fails the morning gate before it fails the system.
+
+Expected footprint at 14-day retention: about two days uncompressed (~5 GB) plus twelve days gzipped plus two weekly alt-data snapshots — roughly 15–20 GB of the 58 GB disk.
 
 ```bash
 # Cron entry on prod
@@ -206,8 +222,11 @@ sqlite3 /opt/quantopsai/quantopsai_profile_229.db \
 # Run a backup manually
 ssh root@67.205.155.63 'bash /opt/quantopsai/backup_daily.sh'
 
-# View backup directory
-ssh root@67.205.155.63 'ls -lt /opt/quantopsai/backups/ | head'
+# View backup directory and the last run's summary
+ssh root@67.205.155.63 'ls -lt /opt/quantopsai/backups/ | head; cat /opt/quantopsai/backups/last_run.status'
+
+# Disk usage — what is big
+ssh root@67.205.155.63 'df -h /; du -xh --max-depth=1 /opt/quantopsai /var | sort -rh | head'
 ```
 
 Filename format produced: `<dbname>.db.<YYYYMMDD-HHMM>`. The `find_latest_backup` helper recognizes both this format and the legacy ad-hoc snapshot pattern `<basename>_<YYYY-MM-DD>_<HHMM>.db`. It explicitly rejects sidecar files (`-wal`, `-shm`) and corrupt-archive files (`<name>.corrupt-<TS>`) — both of which can appear in the directory and would corrupt a restore if matched.
