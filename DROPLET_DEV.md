@@ -40,7 +40,7 @@ cd /opt/quantopsai
 ./venv/bin/python3 -m pytest -q -p no:randomly        # ~17 min
 ```
 
-Expected: **7,236 passed, 0 failed, 0 skipped** (2026-11-01), in ~14 minutes **when run with its temp files in RAM**:
+Expected: **7,237 passed, 0 failed, 0 skipped** (2026-11-01), in ~14 minutes **when run with its temp files in RAM**:
 
 ```bash
 mkdir -p /dev/shm/qo-pytest/tmp
@@ -172,6 +172,23 @@ API and the journal DBs, not logs.
   Applications when done, then `gh auth login` next time.
 - **`node` / `pyflakes` / `gh` are host-level** — `sync.sh` does not manage
   them and a rebuild won't restore them. Re-install per §1.
+- **The operator's terminal is the DigitalOcean BROWSER CONSOLE, not
+  ssh** (established 2026-11-01: every login in `last` comes from DO's
+  own IPs — 198.211.111.194 / 162.243.190.66 / 162.243.188.66, all
+  AS14061 — and `journalctl -u droplet-agent` shows the console's
+  port-knock + injected-key signature at each connect). The sshd
+  keepalives below only protect the DO-proxy↔droplet leg; the leg that
+  drops is browser↔DO (tab/laptop sleep, proxy idle, network blips),
+  typically after 10–35 minutes, and sshd logs nothing. DigitalOcean
+  publishes no console session limit and no knob (docs, Droplets
+  release notes and droplet-agent releases through 1.4.4 checked).
+  Mitigation installed 2026-11-01: `~/.bashrc` attaches every
+  interactive login to the persistent tmux session `main`
+  (`tmux new-session -A -s main`; `NO_TMUX=1` opts out once), so a
+  dropped console DETACHES instead of killing the shell / Claude Code;
+  reconnect and `claude -r`. Stronger: native ssh from the Mac with
+  `ServerAliveInterval 30` / `ServerAliveCountMax 6` + the same tmux.
+  Either way the rule stands — long commands AND waits run detached.
 - **sshd keepalives are host-level too**: `/etc/ssh/sshd_config.d/`
   `99-session-keepalive.conf` (ClientAliveInterval 60, CountMax 120,
   TCPKeepAlive yes — 2026-07-24, stops idle web/terminal sessions being
