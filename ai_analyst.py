@@ -2484,8 +2484,11 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context,
             "strike / expiry / contracts based on the candidate's IV "
             "rank and your conviction, or PROPOSE a different option "
             "setup. **option_strategy MUST be EXACTLY one of: "
-            "covered_call, protective_put, long_call, long_put, "
-            "cash_secured_put.** SPREADS (bull_put_spread, "
+            "covered_call, protective_put, cash_secured_put.** "
+            "Outright long_call / long_put are NOT traded (2026-11-02: "
+            "naked long premium lost in every arm — express a "
+            "directional view as a defined-risk spread via "
+            "MULTILEG_OPEN). SPREADS (bull_put_spread, "
             "bear_call_spread, iron_condor, etc.) ARE NOT allowed "
             "under OPTIONS — they require action='MULTILEG_OPEN' "
             "instead, which has different required fields. Proposals "
@@ -2498,8 +2501,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context,
             "tolerance. Required fields: option_strategy (single-leg "
             "from the list above), strike (number that exists on "
             "Alpaca's chain), expiry (YYYY-MM-DD, must be a listed "
-            "expiration), contracts (int). Premium budget capped at "
-            "1% of equity for long_call/long_put. covered_call "
+            "expiration), contracts (int). covered_call "
             "requires the underlying held in long quantity ≥ "
             "contracts × 100. size_pct/stop_loss_pct/take_profit_pct "
             "NOT required. Option setups are first-class trades — "
@@ -2508,10 +2510,10 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context,
         )
         options_example = (
             ', {"symbol": "TICKER", "action": "OPTIONS", '
-            '"option_strategy": "long_call", "strike": 180.0, '
+            '"option_strategy": "cash_secured_put", "strike": 180.0, '
             '"expiry": "2026-06-19", "contracts": 1, "confidence": 65, '
-            '"reasoning": "Bullish on TICKER, IV rank 22 (cheap premium), '
-            'directional bet via 30-DTE OTM call"}'
+            '"reasoning": "Willing owner of TICKER at 180; IV rank 68 (rich '
+            'premium), collect it via a 30-DTE OTM put"}'
         )
 
     pair_note = ""

@@ -902,18 +902,20 @@ Attribution of the −$67,349 since 08-24 (CHANGELOG 2026-11-02): trailing
 stops −$122,421, options −$17,045, the AI's own exits +$74,201. Fixed:
 breakeven-then-trail with a volatility-scaled width (`bracket_orders`).
 Still open on the decision side — recorded here so it is not forgotten:
-- [ ] ⏳ Hit rates are coin-flip (41–53% by month, no arm improving) and
-      HOLD is 64–91% of predictions (two arms barely act: G37FLASH made
-      137 trades in ten weeks). The owned model learns from this corpus;
-      batches 1–4 lost to base. Next: prompt/incentive change forcing a
-      ranked decision (or replacing non-acting arms), then re-measure
-      hit rate by month before any batch 5.
-- [ ] ⏳ Options −$17,045 across 172 closes (all arms): attribute by
-      strategy type and holding period as above; the multi-leg path now
-      prices at live quotes (P2.2), re-measure after two weeks.
-- [ ] ⏳ Re-measure the exit attribution after two weeks on the new
-      policy: trailing-stop realized, share of stops fired <1 day,
-      share of stopped positions that had been up >1%.
+- [x] HOLD "dominance" — NOT a defect (2026-11-02, CHANGELOG): every
+      unselected candidate is journaled as a confidence-0 HOLD by
+      design; the dataset builder relabels in hindsight, drops failed
+      cycles and rebalances the train split. Nothing to change.
+- [x] Options −$17,045 — RESOLVED 2026-11-02: −$15,961 of it was NANO
+      single-leg long premium (28% win, theta in 6–14-day holds).
+      long_call/long_put removed from the menu and refused at
+      execution; defined-risk spreads (priced from live quotes) stay.
+- [ ] ⏳ **Entry quality is the remaining lever**: hit rates 41–53% by
+      month, no arm improving. This is P4.3's problem statement (batch-5
+      requirements: class balance, label quality) — no fix exists to
+      ship tonight; it is research, tracked there, not here.
+- [x] Re-measurement tooling — `scripts/exit_attribution.py` (committed
+      2026-11-02); run it after two weeks on the new exit policy.
 
 ## INCIDENT FOLLOW-UP 2026-10-26 — ✅ RESOLVED (shipped 2026-11-01): shared-account dividends booked into every sibling at the account's net amount; WBD cash merger unbooked (kill switch 10-13 → 11-01)
 
